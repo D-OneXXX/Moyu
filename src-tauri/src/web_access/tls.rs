@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http_body_util::Empty;
+use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::net::TcpListener;
@@ -20,6 +20,7 @@ use crate::ca::{CaError, CaManager};
 
 use super::addrs::select_san_ips;
 use super::error::{WebAccessError, WebAccessResult};
+use super::http::{empty_response, health_response, not_found_response, RequestGuard};
 
 /// The only DNS name the CA issues leaves for.
 const LEAF_DNS: &str = "moyu.local";
@@ -252,21 +253,18 @@ async fn accept_loop(
 
 async fn handle_request(
     request: Request<hyper::body::Incoming>,
-) -> Result<Response<Empty<Bytes>>, std::convert::Infallible> {
+) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    // Production is health-only, so the shared guard has no authority and is a
+    // no-op here. The call keeps the production path on the same compiled
+    // validation code used by the test-only pairing router and fails closed if
+    // that invariant ever changes.
+    if let Err(status) = RequestGuard::health_only().check(&request) {
+        return Ok(empty_response(status));
+    }
     let response = if request.method() == Method::GET && request.uri().path() == HEALTH_PATH {
-        Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header("Cache-Control", "no-store")
-            .header("Connection", "close")
-            .body(Empty::new())
-            .expect("static health response")
+        health_response()
     } else {
-        Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header("Cache-Control", "no-store")
-            .header("Connection", "close")
-            .body(Empty::new())
-            .expect("static not-found response")
+        not_found_response()
     };
     Ok(response)
 }

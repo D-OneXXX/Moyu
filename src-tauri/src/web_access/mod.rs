@@ -7,7 +7,20 @@
 //! [`start_tls_server`] and must be shut down explicitly.
 
 mod addrs;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod auth;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod clock;
 mod error;
+mod http;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod pairing;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod secret;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod session;
+#[cfg(test)]
+mod test_http;
 mod tls;
 
 pub use addrs::{is_private_lan_ipv4, local_private_ipv4s, select_san_ips};

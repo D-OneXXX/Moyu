@@ -245,6 +245,27 @@ async fn tls_server_serves_only_health_and_verifies_chain_and_san() {
         response.starts_with("HTTP/1.1 404"),
         "unexpected unknown-route response: {response:?}"
     );
+
+    // Pairing routes are mounted only by the cfg(test) router; the production
+    // TLS server must never expose them.
+    for (method, path) in [
+        ("GET", "/api/pair/claim/claim_test"),
+        ("POST", "/api/pair/claim"),
+    ] {
+        let mut stream = connect_tls(
+            addr,
+            config.clone(),
+            ServerName::try_from("moyu.local").unwrap(),
+        )
+        .await
+        .unwrap();
+        let response = http_request(&mut stream, method, path).await;
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "production exposed a pairing route: {method} {path}: {response:?}"
+        );
+    }
+
     for method in ["POST", "HEAD"] {
         let mut stream = connect_tls(
             addr,

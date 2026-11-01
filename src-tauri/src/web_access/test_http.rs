@@ -12,6 +12,9 @@
 //! injections are the IPv4 authority passed to the constructor and the
 //! [`TestSourceIp`] request extension. There is no header, environment, or
 //! runtime bypass.
+//!
+//! `GET /api/pair/claim/{id}` is a read-only status/long-poll and may report
+//! `approved`; the one-time pickup is `POST /api/pair/claim/{id}/consume`.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -38,6 +41,7 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const HEALTH_PATH: &str = "/api/health";
 const CLAIM_ROUTE: &str = "/api/pair/claim";
 const CLAIM_POLL_PREFIX: &str = "/api/pair/claim/";
+const CONSUME_SUFFIX: &str = "/consume";
 
 const CLAIM_COOKIE: &str = "moyu_claim";
 const SESSION_COOKIE: &str = "moyus_session";
@@ -104,7 +108,12 @@ impl TestRouter {
         }
         if method == Method::GET {
             if let Some(claim_id) = poll_claim_id(&path) {
-                return self.poll(request, claim_id).await;
+                return self.status(request, claim_id).await;
+            }
+        }
+        if method == Method::POST {
+            if let Some(claim_id) = consume_claim_id(&path) {
+                return self.consume(request, claim_id).await;
             }
         }
         not_found_response()
@@ -147,26 +156,13 @@ impl TestRouter {
         }
     }
 
-    async fn poll(&self, request: Request<Full<Bytes>>, claim_id: &str) -> Response<Full<Bytes>> {
+    /// Read-only claim status / long-poll. It never consumes the claim, never
+    /// issues a token, and never clears the claim cookie. `approved` is a
+    /// visible state; the client follows up with the `consume` POST.
+    async fn status(&self, request: Request<Full<Bytes>>, claim_id: &str) -> Response<Full<Bytes>> {
         let Some(secret) = claim_cookie(request.headers()) else {
             return error_response(StatusCode::UNAUTHORIZED, "unauthorized", None);
         };
-
-        // A trusted pickup attempt is a state change and is answered by the
-        // atomic consume precheck, before the read-only status read. `status`
-        // removes a terminal claim as soon as it hands out the one-time
-        // receipt, so a pickup attempt answered after `status` could no longer
-        // report 403 `pairing-denied`. The precheck is a pure no-op for every
-        // terminal claim, so a rejected pickup never burns the receipt.
-        // `consume` answers a still-pending claim with `pairing-not-found`;
-        // only that answer falls through to the status loop.
-        if self.trusted_pickup(request.headers()) {
-            match self.service.consume(claim_id, secret.as_str()) {
-                Ok(issued) => return consumed_response(issued),
-                Err(AuthError::Pairing(PairingError::NotFound)) => {}
-                Err(error) => return auth_error_response(&error),
-            }
-        }
 
         // Long-poll on the monotonic clock; the state machines keep their own
         // injected clock, so only the polling window uses wall-independent
@@ -186,31 +182,15 @@ impl TestRouter {
                         tokio::time::sleep(self.poll_interval).await;
                     }
                     ClaimState::Approved => {
-                        // Pickup is a state change: exact Origin and the
-                        // custom header are required in addition to the claim
-                        // cookie. A failed check never consumes the claim.
-                        if !self.trusted_pickup(request.headers()) {
-                            return guard_error_response(StatusCode::FORBIDDEN);
-                        }
-                        return match self.service.consume(claim_id, secret.as_str()) {
-                            Ok(issued) => consumed_response(issued),
-                            Err(error) => auth_error_response(&error),
-                        };
+                        // Read-only: no Origin or custom header is required for
+                        // a GET, and no state changes here. The client must
+                        // follow up with the consume POST.
+                        return json_response(StatusCode::OK, json!({ "state": "approved" }), &[]);
                     }
                     ClaimState::Denied | ClaimState::Cancelled | ClaimState::Expired => {
-                        // The pickup precheck above already answered trusted
-                        // pickup headers with 403/410. Reaching this arm with
-                        // those headers is only possible when the claim turned
-                        // terminal in between; map the known state so a pickup
-                        // attempt is never answered with a receipt.
-                        if self.trusted_pickup(request.headers()) {
-                            let error = match status.state {
-                                ClaimState::Denied => PairingError::Denied,
-                                ClaimState::Cancelled => PairingError::Cancelled,
-                                _ => PairingError::Expired,
-                            };
-                            return auth_error_response(&AuthError::Pairing(error));
-                        }
+                        // The store only returns Ok for a terminal claim while
+                        // its one-time receipt is pending. Reading it clears
+                        // the secret hash, so a second read cannot repeat it.
                         return terminal_response(status.state);
                     }
                     // `status` reports a consumed claim as an error, but keep
@@ -224,6 +204,28 @@ impl TestRouter {
         }
     }
 
+    /// One-time pickup. This is the only route that consumes a claim and the
+    /// only route that may set a session cookie. The shared request guard has
+    /// already enforced exact Host + Origin + `X-Moyu-Request` for this POST;
+    /// the check is repeated here so the route contract cannot be dropped if
+    /// the guard changes in a later phase.
+    async fn consume(
+        &self,
+        request: Request<Full<Bytes>>,
+        claim_id: &str,
+    ) -> Response<Full<Bytes>> {
+        if !self.trusted_pickup(request.headers()) {
+            return guard_error_response(StatusCode::FORBIDDEN);
+        }
+        let Some(secret) = claim_cookie(request.headers()) else {
+            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", None);
+        };
+        match self.service.consume(claim_id, secret.as_str()) {
+            Ok(issued) => consumed_response(issued),
+            Err(error) => auth_error_response(&error),
+        }
+    }
+
     fn trusted_pickup(&self, headers: &HeaderMap) -> bool {
         single_header(headers, "origin") == Some(self.origin.as_str())
             && single_header(headers, "x-moyu-request") == Some("1")
@@ -232,6 +234,18 @@ impl TestRouter {
 
 fn poll_claim_id(path: &str) -> Option<&str> {
     let claim_id = path.strip_prefix(CLAIM_POLL_PREFIX)?;
+    if claim_id.is_empty() || claim_id.contains('/') {
+        return None;
+    }
+    Some(claim_id)
+}
+
+/// Matches exactly `/api/pair/claim/{id}/consume`; extra segments or a
+/// missing id are unknown paths (404), never a pickup.
+fn consume_claim_id(path: &str) -> Option<&str> {
+    let claim_id = path
+        .strip_prefix(CLAIM_POLL_PREFIX)?
+        .strip_suffix(CONSUME_SUFFIX)?;
     if claim_id.is_empty() || claim_id.contains('/') {
         return None;
     }
@@ -558,13 +572,12 @@ mod tests {
         raw_cookie(read(&path), &format!("{CLAIM_COOKIE}={secret}"))
     }
 
-    /// Read-only receipt poll: the pickup-only headers are removed so the route
-    /// answers the one-time terminal receipt instead of a pickup attempt.
-    fn receipt_request(claim_id: &str, secret: &str) -> Request<Full<Bytes>> {
-        let mut request = poll_request(claim_id, secret);
-        request.headers_mut().remove("origin");
-        request.headers_mut().remove("x-moyu-request");
-        request
+    fn consume_request(claim_id: &str, secret: &str) -> Request<Full<Bytes>> {
+        let path = format!("{CLAIM_POLL_PREFIX}{claim_id}{CONSUME_SUFFIX}");
+        raw_cookie(
+            write(&path, Bytes::new()),
+            &format!("{CLAIM_COOKIE}={secret}"),
+        )
     }
 
     fn claim_body(fixture: &Fixture, claim_nonce: &str, device_name: &str) -> Bytes {
@@ -768,31 +781,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approved_poll_requires_origin_and_x_moyu_then_consumes_once() {
+    async fn approved_get_is_read_only_and_never_issues_a_session() {
         let fixture = Fixture::new();
         let (claim_id, secret) = claim_over_http(&fixture, &nonce(1), None).await;
         fixture.service.approve(&claim_id).expect("approval");
         assert_eq!(fixture.service.session_slots(), (0, 1));
 
-        let mut without_origin = poll_request(&claim_id, &secret);
-        without_origin.headers_mut().remove("origin");
-        let response = TestResponse::of(fixture.router.handle(without_origin).await);
-        assert_eq!(response.status, StatusCode::FORBIDDEN);
-        assert_eq!(response.error_code(), "forbidden");
+        // A same-origin GET normally carries no Origin. The read-only status
+        // route must work without it and without the custom header.
+        let mut request = poll_request(&claim_id, &secret);
+        request.headers_mut().remove("origin");
+        request.headers_mut().remove("x-moyu-request");
+        let response = TestResponse::of(fixture.router.handle(request).await);
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.json().get("state").and_then(Value::as_str),
+            Some("approved")
+        );
         assert!(response.set_cookies().is_empty());
-
-        let mut without_header = poll_request(&claim_id, &secret);
-        without_header.headers_mut().remove("x-moyu-request");
-        let response = TestResponse::of(fixture.router.handle(without_header).await);
-        assert_eq!(response.status, StatusCode::FORBIDDEN);
-        assert_eq!(response.error_code(), "forbidden");
-        assert!(response.set_cookies().is_empty());
+        assert!(!response.text().contains("moyus_"));
+        assert!(!response.text().contains(&secret));
+        // Approval reserved a slot, but no token was issued by the read.
         assert_eq!(fixture.service.session_slots(), (0, 1));
 
+        // Polling again behaves identically: GET has no side effects.
         let response = TestResponse::of(
             fixture
                 .router
                 .handle(poll_request(&claim_id, &secret))
+                .await,
+        );
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.json().get("state").and_then(Value::as_str),
+            Some("approved")
+        );
+        assert!(response.set_cookies().is_empty());
+        assert_eq!(fixture.service.session_slots(), (0, 1));
+    }
+
+    #[tokio::test]
+    async fn consume_post_requires_origin_and_x_moyu_then_issues_once() {
+        let fixture = Fixture::new();
+        let (claim_id, secret) = claim_over_http(&fixture, &nonce(1), None).await;
+        fixture.service.approve(&claim_id).expect("approval");
+        assert_eq!(fixture.service.session_slots(), (0, 1));
+
+        let mut missing_origin = consume_request(&claim_id, &secret);
+        missing_origin.headers_mut().remove("origin");
+        let mut missing_header = consume_request(&claim_id, &secret);
+        missing_header.headers_mut().remove("x-moyu-request");
+        let mut wrong_origin = consume_request(&claim_id, &secret);
+        wrong_origin.headers_mut().insert(
+            "origin",
+            HeaderValue::from_static("https://192.168.1.11:8443"),
+        );
+        for case in [missing_origin, missing_header, wrong_origin] {
+            let response = TestResponse::of(fixture.router.handle(case).await);
+            assert_eq!(response.status, StatusCode::FORBIDDEN);
+            assert_eq!(response.error_code(), "forbidden");
+            assert!(response.set_cookies().is_empty());
+            assert!(!response.text().contains("moyus_"));
+            assert_eq!(fixture.service.session_slots(), (0, 1));
+        }
+
+        // Missing cookie on an otherwise valid POST is 401 and consumes
+        // nothing.
+        let response = TestResponse::of(
+            fixture
+                .router
+                .handle(write(
+                    &format!("{CLAIM_POLL_PREFIX}{claim_id}{CONSUME_SUFFIX}"),
+                    Bytes::new(),
+                ))
+                .await,
+        );
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(response.error_code(), "unauthorized");
+        assert!(response.set_cookies().is_empty());
+        assert_eq!(fixture.service.session_slots(), (0, 1));
+
+        // Duplicate or unrelated cookies are ambiguous/fail-closed on POST too.
+        for cookie in [
+            "other=x".to_owned(),
+            format!("{CLAIM_COOKIE}=a; {CLAIM_COOKIE}=b"),
+        ] {
+            let response = TestResponse::of(
+                fixture
+                    .router
+                    .handle(raw_cookie(
+                        write(
+                            &format!("{CLAIM_POLL_PREFIX}{claim_id}{CONSUME_SUFFIX}"),
+                            Bytes::new(),
+                        ),
+                        &cookie,
+                    ))
+                    .await,
+            );
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+            assert_eq!(response.error_code(), "unauthorized");
+            assert!(response.set_cookies().is_empty());
+            assert_eq!(fixture.service.session_slots(), (0, 1));
+        }
+
+        let response = TestResponse::of(
+            fixture
+                .router
+                .handle(consume_request(&claim_id, &secret))
                 .await,
         );
         assert_eq!(response.status, StatusCode::OK);
@@ -825,31 +920,65 @@ mod tests {
             ]
         );
         assert!(!response.text().contains(&token));
+        assert!(!response.text().contains(&secret));
         assert_eq!(fixture.service.session_slots(), (1, 0));
 
+        // A second pickup is 409 and never re-issues a token.
         let second = TestResponse::of(
             fixture
                 .router
-                .handle(poll_request(&claim_id, &secret))
+                .handle(consume_request(&claim_id, &secret))
                 .await,
         );
         assert_eq!(second.status, StatusCode::CONFLICT);
         assert_eq!(second.error_code(), "pairing-consumed");
         assert!(second.cookies_named(SESSION_COOKIE).is_empty());
+        assert!(!second.text().contains("moyus_"));
+
+        // The read-only GET after consumption reports the same terminal code
+        // and never exposes the token.
+        let read = TestResponse::of(
+            fixture
+                .router
+                .handle(poll_request(&claim_id, &secret))
+                .await,
+        );
+        assert_eq!(read.status, StatusCode::CONFLICT);
+        assert_eq!(read.error_code(), "pairing-consumed");
+        assert!(read.cookies_named(SESSION_COOKIE).is_empty());
+        assert!(!read.text().contains("moyus_"));
     }
 
     #[tokio::test]
-    async fn terminal_deny_receipt_is_one_time_and_carries_no_token() {
+    async fn consume_handler_rechecks_pickup_headers_without_the_guard() {
+        let fixture = Fixture::new();
+        let (claim_id, secret) = claim_over_http(&fixture, &nonce(6), None).await;
+        fixture.service.approve(&claim_id).expect("approval");
+        assert_eq!(fixture.service.session_slots(), (0, 1));
+
+        let mut request = consume_request(&claim_id, &secret);
+        request.headers_mut().remove("x-moyu-request");
+        // Call the handler directly: its defense-in-depth check must hold even
+        // if a future router stops running the shared RequestGuard first.
+        let response = TestResponse::of(fixture.router.consume(request, &claim_id).await);
+        assert_eq!(response.status, StatusCode::FORBIDDEN);
+        assert_eq!(response.error_code(), "forbidden");
+        assert!(response.set_cookies().is_empty());
+        assert_eq!(fixture.service.session_slots(), (0, 1));
+    }
+
+    #[tokio::test]
+    async fn terminal_deny_rejects_consume_and_allows_one_status_receipt() {
         let fixture = Fixture::new();
         let (claim_id, secret) = claim_over_http(&fixture, &nonce(2), None).await;
         fixture.service.deny(&claim_id).expect("deny");
 
-        // A pickup attempt on a denied claim is a state change: 403 with the
+        // The POST pickup on a denied claim is a state change: 403 with the
         // stable denied code, never a token, and it does not burn the receipt.
         let pickup = TestResponse::of(
             fixture
                 .router
-                .handle(poll_request(&claim_id, &secret))
+                .handle(consume_request(&claim_id, &secret))
                 .await,
         );
         assert_eq!(pickup.status, StatusCode::FORBIDDEN);
@@ -861,7 +990,7 @@ mod tests {
         let first = TestResponse::of(
             fixture
                 .router
-                .handle(receipt_request(&claim_id, &secret))
+                .handle(poll_request(&claim_id, &secret))
                 .await,
         );
         assert_eq!(first.status, StatusCode::OK);
@@ -886,7 +1015,7 @@ mod tests {
         let second = TestResponse::of(
             fixture
                 .router
-                .handle(receipt_request(&claim_id, &secret))
+                .handle(poll_request(&claim_id, &secret))
                 .await,
         );
         assert_eq!(second.status, StatusCode::NOT_FOUND);
@@ -937,7 +1066,7 @@ mod tests {
         let response = TestResponse::of(
             fixture
                 .router
-                .handle(poll_request(&claim_id, &secret))
+                .handle(consume_request(&claim_id, &secret))
                 .await,
         );
         assert_eq!(response.status, StatusCode::GONE);
@@ -947,6 +1076,19 @@ mod tests {
         assert!(!response.text().contains(&secret));
         // The timed-out pickup releases the reserved session slot.
         assert_eq!(fixture.service.session_slots(), (0, 0));
+
+        // A read-only poll reports the same expired code without a receipt.
+        let read = TestResponse::of(
+            fixture
+                .router
+                .handle(poll_request(&claim_id, &secret))
+                .await,
+        );
+        assert_eq!(read.status, StatusCode::GONE);
+        assert_eq!(read.error_code(), "pairing-expired");
+        assert!(read.cookies_named(SESSION_COOKIE).is_empty());
+        assert!(!read.text().contains("moyus_"));
+        assert!(!read.text().contains(&secret));
     }
 
     #[tokio::test]
@@ -960,7 +1102,7 @@ mod tests {
         let response = TestResponse::of(
             fixture
                 .router
-                .handle(poll_request(&claim_id, &wrong_secret))
+                .handle(consume_request(&claim_id, &wrong_secret))
                 .await,
         );
         assert_eq!(response.status, StatusCode::NOT_FOUND);
@@ -968,10 +1110,22 @@ mod tests {
         assert!(response.cookies_named(SESSION_COOKIE).is_empty());
         assert_eq!(fixture.service.session_slots(), (0, 1));
 
+        // The read-only status route is equally secret-bound and no-op.
+        let read = TestResponse::of(
+            fixture
+                .router
+                .handle(poll_request(&claim_id, &wrong_secret))
+                .await,
+        );
+        assert_eq!(read.status, StatusCode::NOT_FOUND);
+        assert_eq!(read.error_code(), "pairing-not-found");
+        assert!(read.cookies_named(SESSION_COOKIE).is_empty());
+        assert_eq!(fixture.service.session_slots(), (0, 1));
+
         let response = TestResponse::of(
             fixture
                 .router
-                .handle(poll_request(&claim_id, &secret))
+                .handle(consume_request(&claim_id, &secret))
                 .await,
         );
         assert_eq!(response.status, StatusCode::OK);
@@ -988,9 +1142,13 @@ mod tests {
             (Method::GET, CLAIM_ROUTE),
             (Method::GET, "/api/pair/claim/"),
             (Method::GET, "/api/pair/claim/claim_x/extra"),
+            (Method::GET, "/api/pair/claim/claim_x/consume"),
+            (Method::POST, "/api/pair/claim/claim_x"),
+            (Method::POST, "/api/pair/claim/claim_x/consume/extra"),
             (Method::POST, HEALTH_PATH),
             (Method::GET, "/api/unknown"),
             (Method::DELETE, "/api/pair/claim/claim_x"),
+            (Method::DELETE, "/api/pair/claim/claim_x/consume"),
         ] {
             let response = TestResponse::of(
                 fixture
@@ -1079,8 +1237,8 @@ mod tests {
         fixture.router.poll_interval = Duration::from_millis(5);
         let (claim_id, secret) = claim_over_http(&fixture, &nonce(4), None).await;
 
-        // A read-only pending poll may omit Origin and X-Moyu-Request; only
-        // the approved pickup is a state change.
+        // The status route is read-only, so it never requires Origin or
+        // X-Moyu-Request; removing them must not change the poll.
         let mut pending_poll = poll_request(&claim_id, &secret);
         pending_poll.headers_mut().remove("origin");
         pending_poll.headers_mut().remove("x-moyu-request");
@@ -1132,10 +1290,26 @@ mod tests {
             .to_owned();
         fixture.service.approve(&claim_id).expect("approval");
 
-        let poll_response = TestResponse::of(
+        // An approved status read never sets a cookie; only a terminal receipt
+        // clears the dead claim cookie, and only the POST pickup issues the
+        // session cookie.
+        let status_response = TestResponse::of(
             fixture
                 .router
                 .handle(poll_request(&claim_id, &claim_secret))
+                .await,
+        );
+        assert_eq!(status_response.status, StatusCode::OK);
+        assert_eq!(
+            status_response.json().get("state").and_then(Value::as_str),
+            Some("approved")
+        );
+        assert!(status_response.set_cookies().is_empty());
+
+        let poll_response = TestResponse::of(
+            fixture
+                .router
+                .handle(consume_request(&claim_id, &claim_secret))
                 .await,
         );
         assert_eq!(poll_response.status, StatusCode::OK);

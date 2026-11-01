@@ -247,10 +247,12 @@ async fn tls_server_serves_only_health_and_verifies_chain_and_san() {
     );
 
     // Pairing routes are mounted only by the cfg(test) router; the production
-    // TLS server must never expose them.
+    // TLS server must never expose them. The POST consume route is included
+    // even though D1a's test-only router can now consume claims.
     for (method, path) in [
         ("GET", "/api/pair/claim/claim_test"),
         ("POST", "/api/pair/claim"),
+        ("POST", "/api/pair/claim/claim_test/consume"),
     ] {
         let mut stream = connect_tls(
             addr,

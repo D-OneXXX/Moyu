@@ -315,6 +315,34 @@ async fn renewal_failure_keeps_valid_old_certificate() {
 }
 
 #[tokio::test]
+async fn renew_after_expiry_stop_is_rejected() {
+    let ca = TestCa::renewal("tls-expired-api");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+    let state_path = ca.root.join("state.json");
+    let original_state = std::fs::read(&state_path).unwrap();
+    std::fs::write(&state_path, b"{").unwrap();
+    ca.advance(TimeDuration::days(31));
+    assert_eq!(
+        handle.renew_now().await.unwrap_err().code(),
+        "ca-state-corrupt"
+    );
+    assert_eq!(
+        handle.certificate_snapshot().state,
+        TlsCertificateState::Expired
+    );
+
+    std::fs::write(&state_path, original_state).unwrap();
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "web-access-certificate-expired");
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(snapshot.state, TlsCertificateState::Expired);
+    assert_eq!(snapshot.leaf_fingerprint_sha256, old_fingerprint);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn failed_renewal_retries_after_ca_recovers() {
     let ca = TestCa::renewal("tls-renew-retry");
     ca.initialize();
@@ -484,7 +512,11 @@ async fn intermediate_rotation_reloads_under_same_root() {
 async fn root_rotation_requires_explicit_reload_and_retrust() {
     let ca = TestCa::new("tls-root-rotate");
     ca.initialize();
-    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let policy = TlsRenewalPolicy {
+        tick: Duration::from_millis(10),
+        ..TlsRenewalPolicy::default()
+    };
+    let handle = start_with_test_clock(&ca, policy).await;
     let old_root_der = ca.root_cert_der();
     let old_root_fingerprint = handle.root_fingerprint_sha256();
     let mut old_stream = connect_tls(
@@ -501,14 +533,23 @@ async fn root_rotation_requires_explicit_reload_and_retrust() {
     let new_root_fingerprint = ca.manager().status().unwrap().root_fingerprint_sha256;
     assert_ne!(old_root_fingerprint, new_root_fingerprint);
 
+    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = handle.certificate_snapshot();
+            if matches!(
+                snapshot.state,
+                TlsCertificateState::RootChangePending { .. }
+            ) {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor did not detect the root change");
+    assert_eq!(snapshot.root_fingerprint_sha256, old_root_fingerprint);
     let err = handle.renew_now().await.unwrap_err();
     assert_eq!(err.code(), "web-access-root-change-pending");
-    let snapshot = handle.certificate_snapshot();
-    assert!(matches!(
-        snapshot.state,
-        TlsCertificateState::RootChangePending { .. }
-    ));
-    assert_eq!(snapshot.root_fingerprint_sha256, old_root_fingerprint);
 
     // The old leaf remains serviceable while the root change is pending.
     let response = http_request(&mut old_stream, "GET", "/api/health").await;

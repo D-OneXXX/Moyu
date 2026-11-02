@@ -112,6 +112,20 @@ impl TlsRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn live_snapshot(&self) -> (ServingCertificate, bool) {
+        let now = (self.clock)().unix_timestamp();
+        let current = self.cert_tx.borrow().clone();
+        let expired = certificate_expired(now, current.leaf_not_after);
+        (current, expired)
+    }
+
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self.lock_meta().state,
+            TlsCertificateState::Expired | TlsCertificateState::Stopped
+        )
+    }
+
     fn next_wait(&self) -> Duration {
         let base = {
             let meta = self.lock_meta();
@@ -243,42 +257,60 @@ impl TlsRuntime {
         let now = (self.clock)().unix_timestamp();
         let current = self.cert_tx.borrow().clone();
         self.prune_previous(now, &current);
-        let expired = certificate_expired(now, current.leaf_not_after);
         let manager = self.manager.clone();
         let status = tokio::task::spawn_blocking(move || manager.status()).await;
         let status = match status {
             Err(_) => {
+                let _guard = self.renewal_lock.lock().await;
+                let (_, expired) = self.live_snapshot();
                 self.record_failure("web-access-server-join", expired);
                 return;
             }
             Ok(Err(err)) => {
+                let _guard = self.renewal_lock.lock().await;
+                let (_, expired) = self.live_snapshot();
                 self.record_failure(err.code(), expired);
                 return;
             }
             Ok(Ok(status)) => status,
         };
 
-        if status.root_generation != current.root_generation
-            || status.root_fingerprint_sha256 != current.root_fingerprint_sha256
+        // Re-read the live certificate under the renewal lock before any
+        // terminal decision. A concurrent renew/reload may already have
+        // installed a fresh certificate while status() was running.
         {
-            self.set_root_pending(status.root_fingerprint_sha256, expired);
-            return;
+            let _guard = self.renewal_lock.lock().await;
+            let (live, expired) = self.live_snapshot();
+            if status.root_generation > live.root_generation
+                || (status.root_generation == live.root_generation
+                    && status.root_fingerprint_sha256 != live.root_fingerprint_sha256)
+            {
+                self.set_root_pending(status.root_fingerprint_sha256.clone(), expired);
+                return;
+            }
+            if status.root_generation < live.root_generation {
+                // status() raced a newer explicit root reload; the next tick
+                // observes the new active root.
+                return;
+            }
+            if issuer_rotation_required(
+                status.root_days_remaining,
+                status.intermediate_days_remaining,
+            ) {
+                self.set_issuer_required(expired);
+                return;
+            }
         }
-        if issuer_rotation_required(
-            status.root_days_remaining,
-            status.intermediate_days_remaining,
-        ) {
-            self.set_issuer_required(expired);
-            return;
-        }
+
+        let (live, expired) = self.live_snapshot();
         let retry_failed = matches!(
             self.lock_meta().state,
             TlsCertificateState::RenewalFailed { .. }
         );
         if expired
             || retry_failed
-            || status.intermediate_generation != current.intermediate_generation
-            || renewal_due(now, current.leaf_not_after, self.policy.renew_before)
+            || status.intermediate_generation > live.intermediate_generation
+            || renewal_due(now, live.leaf_not_after, self.policy.renew_before)
         {
             let _ = self.renew_locked().await;
         }
@@ -322,6 +354,9 @@ impl TlsRuntime {
 
     async fn reload_after_root_rotation(&self, expected: &str) -> WebAccessResult<()> {
         let _guard = self.renewal_lock.lock().await;
+        if self.is_terminal() {
+            return Err(WebAccessError::CertificateExpired);
+        }
         let now = (self.clock)().unix_timestamp();
         let current = self.cert_tx.borrow().clone();
         let expired = certificate_expired(now, current.leaf_not_after);
@@ -366,6 +401,9 @@ impl TlsRuntime {
 
     async fn rollback_last_reload(&self) -> WebAccessResult<()> {
         let _guard = self.renewal_lock.lock().await;
+        if self.is_terminal() {
+            return Err(WebAccessError::CertificateExpired);
+        }
         let now = (self.clock)().unix_timestamp();
         let current = self.cert_tx.borrow().clone();
         let previous = {
@@ -396,6 +434,9 @@ impl TlsRuntime {
 
     async fn renew_locked(&self) -> WebAccessResult<()> {
         let _guard = self.renewal_lock.lock().await;
+        if self.is_terminal() {
+            return Err(WebAccessError::CertificateExpired);
+        }
         let now = (self.clock)().unix_timestamp();
         let current = self.cert_tx.borrow().clone();
         let expired = certificate_expired(now, current.leaf_not_after);

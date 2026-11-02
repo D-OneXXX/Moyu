@@ -28,6 +28,8 @@ pub enum WebAccessError {
     RootChangeMismatch,
     #[error("TLS previous certificate is not available for rollback")]
     RollbackUnavailable,
+    #[error("TLS listener has stopped after certificate expiry")]
+    CertificateExpired,
 }
 
 impl WebAccessError {
@@ -46,6 +48,7 @@ impl WebAccessError {
             Self::RootChangePending => "web-access-root-change-pending",
             Self::RootChangeMismatch => "web-access-root-change-mismatch",
             Self::RollbackUnavailable => "web-access-rollback-unavailable",
+            Self::CertificateExpired => "web-access-certificate-expired",
         }
     }
 }

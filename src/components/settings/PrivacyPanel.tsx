@@ -42,6 +42,7 @@ import {
   PRIVACY_DIALOG_EVENT,
   PRIVACY_POLICY_VERSION,
 } from "@/components/privacy/PrivacyDialog";
+import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
 
 const TRACE_KEYS = new Set(["mr-browser-recents", "mr-online-last-test"]);
 
@@ -372,6 +373,7 @@ export default function PrivacyPanel() {
 
   return (
     <div className="space-y-4">
+      <CaDistributionPanel />
       <SettingsSection
         icon={ShieldCheck}
         title={t("privacy.statement.title")}

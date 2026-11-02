@@ -511,6 +511,10 @@ pub fn run() {
             migrate_legacy_into(&data_dir, isolated);
             // 3) AppState 的渲染/在线缓存根依赖已安装的 cache_dir，必须最后创建。
             app.manage(Arc::new(AppState::new()));
+            // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
+            let ca_root = ca::resolve_ca_root(None, Some(data_dir.as_path()))
+                .unwrap_or_else(|_| data_dir.join("security").join("ca"));
+            app.manage(Arc::new(web_access::CaDistributionRuntime::new(ca_root)));
             cache_health::install(app.handle().clone());
             if init_app(app).is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。
@@ -619,6 +623,14 @@ pub fn run() {
             update::restart_app,
             security::security_audit,
             security::clear_online_traces,
+            // G1：仅根 CA 初始化/导出/短时分发；不含 D1b 配对或数据路由。
+            web_access::ca_distribution_commands::web_access_ca_status,
+            web_access::ca_distribution_commands::web_access_ca_initialize,
+            web_access::ca_distribution_commands::web_access_ca_export_root,
+            web_access::ca_distribution_commands::web_access_ca_distribution_addresses,
+            web_access::ca_distribution_commands::web_access_ca_distribution_start,
+            web_access::ca_distribution_commands::web_access_ca_distribution_stop,
+            web_access::ca_distribution_commands::web_access_ca_distribution_status,
             diagnostics::diagnostics_record_frontend_error,
             diagnostics::diagnostics_record_breadcrumb,
             diagnostics::diagnostics_update_context,

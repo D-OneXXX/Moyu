@@ -9,6 +9,8 @@
 mod addrs;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod auth;
+mod ca_distribution;
+pub(crate) mod ca_distribution_commands;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod clock;
 mod error;
@@ -26,6 +28,8 @@ mod tls;
 pub use addrs::{is_private_lan_ipv4, local_private_ipv4s, select_san_ips};
 pub use error::{WebAccessError, WebAccessResult};
 pub use tls::{start_tls_server, TlsServerConfig, TlsServerHandle};
+
+pub(crate) use ca_distribution::CaDistributionRuntime;
 
 #[cfg(test)]
 mod tests;

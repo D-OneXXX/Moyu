@@ -167,6 +167,46 @@ fn test_server_config(ca: &TestCa) -> TlsServerConfig {
 }
 
 #[tokio::test]
+async fn handle_snapshot_matches_the_served_leaf() {
+    let ca = TestCa::new("tls-snapshot");
+    ca.initialize();
+    let handle = start_tls_server(test_server_config(&ca)).await.unwrap();
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(snapshot.state, TlsCertificateState::Serving);
+    assert_eq!(snapshot.leaf_not_after, handle.leaf_not_after());
+    assert_eq!(
+        snapshot.leaf_fingerprint_sha256,
+        handle.leaf_fingerprint_sha256()
+    );
+    assert_eq!(
+        snapshot.root_fingerprint_sha256,
+        ca.manager().status().unwrap().root_fingerprint_sha256
+    );
+
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    let peer = stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .expect("server must send a peer chain")
+        .to_vec();
+    assert_eq!(peer.len(), 2);
+    assert_eq!(
+        crate::ca::fingerprint_sha256(peer[0].as_ref()),
+        snapshot.leaf_fingerprint_sha256
+    );
+    let response = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn tls_server_serves_only_health_and_verifies_chain_and_san() {
     let ca = TestCa::new("tls-health");
     ca.initialize();

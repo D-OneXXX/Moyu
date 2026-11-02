@@ -11,7 +11,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::{oneshot, watch, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_rustls::TlsAcceptor;
 use zeroize::Zeroizing;
@@ -21,6 +21,7 @@ use crate::ca::{CaError, CaManager};
 use super::addrs::select_san_ips;
 use super::error::{WebAccessError, WebAccessResult};
 use super::http::{empty_response, health_response, not_found_response, RequestGuard};
+use super::tls_renewal::{TlsCertificateSnapshot, TlsCertificateState};
 
 /// The only DNS name the CA issues leaves for.
 const LEAF_DNS: &str = "moyu.local";
@@ -28,6 +29,16 @@ const HEALTH_PATH: &str = "/api/health";
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ACTIVE_CONNECTIONS: usize = 32;
+
+/// The certificate currently served to new TLS connections.
+pub(crate) struct ServingCertificate {
+    pub config: Arc<rustls::ServerConfig>,
+    pub leaf_fingerprint_sha256: String,
+    pub leaf_not_after: i64,
+    pub root_fingerprint_sha256: String,
+    pub root_generation: u32,
+    pub intermediate_generation: u32,
+}
 
 /// Configuration for an explicitly started TLS listener.
 #[derive(Clone)]
@@ -66,9 +77,9 @@ impl std::fmt::Debug for TlsServerConfig {
 pub struct TlsServerHandle {
     local_addr: SocketAddr,
     san_ips: Vec<Ipv4Addr>,
-    leaf_not_after: i64,
-    leaf_fingerprint_sha256: String,
-    root_fingerprint_sha256: String,
+    current: watch::Receiver<ServingCertificate>,
+    /// Kept alive for the renewal task added in the next slice.
+    _cert_tx: watch::Sender<ServingCertificate>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
 }
@@ -83,17 +94,33 @@ impl TlsServerHandle {
         &self.san_ips
     }
 
-    /// Unix timestamp of the served leaf's `notAfter`.
+    /// Unix timestamp of the currently served leaf's `notAfter`.
     pub fn leaf_not_after(&self) -> i64 {
-        self.leaf_not_after
+        self.current.borrow().leaf_not_after
     }
 
-    pub fn leaf_fingerprint_sha256(&self) -> &str {
-        &self.leaf_fingerprint_sha256
+    pub fn leaf_fingerprint_sha256(&self) -> String {
+        self.current.borrow().leaf_fingerprint_sha256.clone()
     }
 
-    pub fn root_fingerprint_sha256(&self) -> &str {
-        &self.root_fingerprint_sha256
+    pub fn root_fingerprint_sha256(&self) -> String {
+        self.current.borrow().root_fingerprint_sha256.clone()
+    }
+
+    /// A path/key-free snapshot of the certificate currently served.
+    pub fn certificate_snapshot(&self) -> TlsCertificateSnapshot {
+        let current = self.current.borrow();
+        TlsCertificateSnapshot {
+            state: TlsCertificateState::Serving,
+            leaf_fingerprint_sha256: current.leaf_fingerprint_sha256.clone(),
+            leaf_not_after: current.leaf_not_after,
+            root_fingerprint_sha256: current.root_fingerprint_sha256.clone(),
+            root_generation: current.root_generation,
+            intermediate_generation: current.intermediate_generation,
+            last_error_code: None,
+            previous_leaf_fingerprint_sha256: None,
+            previous_not_after: None,
+        }
     }
 
     pub async fn shutdown(mut self) -> WebAccessResult<()> {
@@ -143,22 +170,32 @@ pub async fn start_tls_server(config: TlsServerConfig) -> WebAccessResult<TlsSer
     let status = manager.status()?;
     let san_ips = select_san_ips(config.san_ips)?;
     let leaf = manager.issue_leaf(LEAF_DNS, &san_ips)?;
-    let leaf_not_after = leaf.not_after;
-    let leaf_fingerprint_sha256 = leaf.fingerprint_sha256.clone();
-    let server_config = build_server_config(&leaf)?;
+    let server_config = Arc::new(build_server_config(&leaf)?);
+    let serving = ServingCertificate {
+        config: server_config,
+        leaf_fingerprint_sha256: leaf.fingerprint_sha256,
+        leaf_not_after: leaf.not_after,
+        root_fingerprint_sha256: status.root_fingerprint_sha256,
+        root_generation: status.root_generation,
+        intermediate_generation: status.intermediate_generation,
+    };
 
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let connections = Arc::new(Semaphore::new(MAX_ACTIVE_CONNECTIONS));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let task = tokio::spawn(accept_loop(listener, acceptor, connections, shutdown_rx));
+    let (cert_tx, cert_rx) = watch::channel(serving);
+    let task = tokio::spawn(accept_loop(
+        listener,
+        cert_rx.clone(),
+        connections,
+        shutdown_rx,
+    ));
     Ok(TlsServerHandle {
         local_addr,
         san_ips,
-        leaf_not_after,
-        leaf_fingerprint_sha256,
-        root_fingerprint_sha256: status.root_fingerprint_sha256,
+        current: cert_rx,
+        _cert_tx: cert_tx,
         shutdown: Some(shutdown_tx),
         task: Some(task),
     })
@@ -200,7 +237,7 @@ fn build_server_config(leaf: &crate::ca::LeafMaterial) -> WebAccessResult<rustls
 
 async fn accept_loop(
     listener: TcpListener,
-    acceptor: TlsAcceptor,
+    cert_rx: watch::Receiver<ServingCertificate>,
     connections: Arc<Semaphore>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
@@ -219,9 +256,13 @@ async fn accept_loop(
                                 continue;
                             }
                         };
-                        let acceptor = acceptor.clone();
+                        // Snapshot the certificate at accept time. Existing
+                        // connections keep their already-negotiated session;
+                        // every new connection sees the latest swap.
+                        let server_config = cert_rx.borrow().config.clone();
                         tasks.spawn(async move {
                             let _permit = permit;
+                            let acceptor = TlsAcceptor::from(server_config);
                             let accepted =
                                 tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream))
                                     .await;

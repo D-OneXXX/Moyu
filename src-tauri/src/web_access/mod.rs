@@ -30,6 +30,7 @@ mod tls_renewal;
 pub use addrs::{is_private_lan_ipv4, local_private_ipv4s, select_san_ips};
 pub use error::{WebAccessError, WebAccessResult};
 pub use tls::{start_tls_server, TlsServerConfig, TlsServerHandle};
+pub use tls_renewal::{TlsCertificateSnapshot, TlsCertificateState};
 
 pub(crate) use ca_distribution::CaDistributionRuntime;
 

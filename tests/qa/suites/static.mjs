@@ -2771,4 +2771,86 @@ export function checkAntiMockGuards(root, report) {
       fix: "确认 G1 文件存在且命名稳定",
     });
   }
+
+  try {
+    const errors = [];
+    const tlsSource = stripRustComments(
+      fs.readFileSync(
+        path.join(root, "src-tauri", "src", "web_access", "tls.rs"),
+        "utf8",
+      ),
+    );
+    const renewalSource = stripRustComments(
+      fs.readFileSync(
+        path.join(root, "src-tauri", "src", "web_access", "tls_renewal.rs"),
+        "utf8",
+      ),
+    );
+    const libSource = stripRustComments(
+      fs.readFileSync(path.join(root, "src-tauri", "src", "lib.rs"), "utf8"),
+    );
+
+    for (const forbidden of [
+      "leaves/",
+      "std::fs::write",
+      "tokio::fs::write",
+      "File::create",
+      "tauri::command",
+    ]) {
+      if (tlsSource.includes(forbidden) || renewalSource.includes(forbidden)) {
+        errors.push(`G2 TLS 生产路径出现叶持久化/命令接线：${forbidden}`);
+      }
+    }
+    if (
+      /leaf\.key(?![_A-Za-z0-9])/.test(tlsSource) ||
+      /leaf\.key(?![_A-Za-z0-9])/.test(renewalSource)
+    ) {
+      errors.push("G2 TLS 生产路径出现叶 key 文件引用");
+    }
+    for (const forbidden of [
+      "start_tls_server",
+      "TlsServerHandle",
+      "renew_now",
+      "reload_after_root_rotation",
+    ]) {
+      if (libSource.includes(forbidden)) {
+        errors.push(`lib.rs 出现 G2 生产接线：${forbidden}`);
+      }
+    }
+
+    if (errors.length) {
+      fail(report, {
+        id: "static:g2-tls-renewal-boundary",
+        suite: "static",
+        layer: "static",
+        title: "G2 续期保持仅内存叶与无生产接线",
+        severity: "P1",
+        details: errors.join(" | "),
+        location: "src-tauri/src/web_access/tls*.rs；src-tauri/src/lib.rs",
+        expected: "叶私钥不落盘；G2 不注册命令、不在启动路径接线",
+        actual: errors.join(" | "),
+        rootCause: "G2 边界被破坏",
+        fix: "恢复只内存叶与 library/test-only 边界",
+      });
+    } else {
+      ok(report, {
+        id: "static:g2-tls-renewal-boundary",
+        suite: "static",
+        layer: "static",
+        title: "G2 续期保持仅内存叶与无生产接线",
+      });
+    }
+  } catch (error) {
+    fail(report, {
+      id: "static:g2-tls-renewal-boundary",
+      suite: "static",
+      layer: "static",
+      title: "G2 TLS 续期静态边界检查",
+      severity: "P1",
+      details: error.message,
+      location: "src-tauri/src/web_access/tls*.rs；src-tauri/src/lib.rs",
+      rootCause: "静态守卫无法读取 G2 文件",
+      fix: "确认 G2 文件存在且命名稳定",
+    });
+  }
 }

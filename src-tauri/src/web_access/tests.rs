@@ -1,14 +1,16 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rustls_pki_types::ServerName;
+use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::ca::CaManager;
 
+use super::tls::start_tls_server_with_clock;
 use super::*;
 
 #[test]
@@ -74,10 +76,19 @@ fn select_san_ips_deduplicates_sorts_and_enforces_the_ca_limit() {
 struct TestCa {
     root: PathBuf,
     wrapper: PathBuf,
+    clock: Arc<Mutex<OffsetDateTime>>,
 }
 
 impl TestCa {
     fn new(tag: &str) -> Self {
+        Self::with_clock_at(tag, OffsetDateTime::now_utc())
+    }
+
+    fn renewal(tag: &str) -> Self {
+        Self::with_clock_at(tag, OffsetDateTime::now_utc() - TimeDuration::days(23))
+    }
+
+    fn with_clock_at(tag: &str, now: OffsetDateTime) -> Self {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -90,11 +101,21 @@ impl TestCa {
         Self {
             root: wrapper.join("ca"),
             wrapper,
+            clock: Arc::new(Mutex::new(now)),
         }
     }
 
     fn manager(&self) -> CaManager {
-        CaManager::new(self.root.clone())
+        CaManager::with_clock(self.root.clone(), self.clock_handle())
+    }
+
+    fn clock_handle(&self) -> Arc<dyn Fn() -> OffsetDateTime + Send + Sync> {
+        let clock = self.clock.clone();
+        Arc::new(move || *clock.lock().unwrap())
+    }
+
+    fn advance(&self, duration: TimeDuration) {
+        *self.clock.lock().unwrap() += duration;
     }
 
     fn initialize(&self) {
@@ -102,8 +123,7 @@ impl TestCa {
     }
 
     fn root_cert_der(&self) -> Vec<u8> {
-        let pem = std::fs::read_to_string(self.root.join("roots/0001/root.crt")).unwrap();
-        pem::parse(pem).unwrap().contents().to_vec()
+        self.manager().root_certificate().unwrap().cert_der
     }
 }
 
@@ -164,6 +184,630 @@ fn test_server_config(ca: &TestCa) -> TlsServerConfig {
         san_ips: Some(vec![Ipv4Addr::new(192, 168, 1, 10)]),
         ..TlsServerConfig::new(ca.root.clone())
     }
+}
+
+async fn start_with_test_clock(ca: &TestCa, policy: TlsRenewalPolicy) -> TlsServerHandle {
+    start_tls_server_with_clock(test_server_config(ca), ca.clock_handle(), policy)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn handle_snapshot_matches_the_served_leaf() {
+    let ca = TestCa::new("tls-snapshot");
+    ca.initialize();
+    let handle = start_tls_server(test_server_config(&ca)).await.unwrap();
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(snapshot.state, TlsCertificateState::Serving);
+    assert_eq!(snapshot.leaf_not_after, handle.leaf_not_after());
+    assert_eq!(
+        snapshot.leaf_fingerprint_sha256,
+        handle.leaf_fingerprint_sha256()
+    );
+    assert_eq!(
+        snapshot.root_fingerprint_sha256,
+        ca.manager().status().unwrap().root_fingerprint_sha256
+    );
+
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    let peer = stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .expect("server must send a peer chain")
+        .to_vec();
+    assert_eq!(peer.len(), 2);
+    assert_eq!(
+        crate::ca::fingerprint_sha256(peer[0].as_ref()),
+        snapshot.leaf_fingerprint_sha256
+    );
+    let response = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn explicit_renewal_swaps_new_connections_only() {
+    let ca = TestCa::renewal("tls-renew");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+    let addr = handle.local_addr();
+
+    let mut old_stream = connect_tls(
+        addr,
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+
+    ca.advance(TimeDuration::days(23));
+    let snapshot = handle.renew_now().await.unwrap();
+    assert_eq!(snapshot.state, TlsCertificateState::Serving);
+    assert_ne!(snapshot.leaf_fingerprint_sha256, old_fingerprint);
+
+    let mut new_stream = connect_tls(
+        addr,
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let peer = new_stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .expect("server must send a peer chain")
+        .to_vec();
+    assert_eq!(
+        crate::ca::fingerprint_sha256(peer[0].as_ref()),
+        snapshot.leaf_fingerprint_sha256
+    );
+
+    // The already-established TLS session survives the swap.
+    let response = http_request(&mut old_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    let response = http_request(&mut new_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn renewal_failure_keeps_valid_old_certificate() {
+    let ca = TestCa::renewal("tls-renew-fail");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+    let root_der = ca.root_cert_der();
+
+    let state_path = ca.root.join("state.json");
+    std::fs::write(&state_path, b"{").unwrap();
+    ca.advance(TimeDuration::days(1));
+
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "ca-state-corrupt");
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(
+        snapshot.state,
+        TlsCertificateState::RenewalFailed {
+            code: "ca-state-corrupt"
+        }
+    );
+    assert_eq!(snapshot.leaf_fingerprint_sha256, old_fingerprint);
+
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(root_der),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let response = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn renew_after_expiry_stop_is_rejected() {
+    let ca = TestCa::renewal("tls-expired-api");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+    let state_path = ca.root.join("state.json");
+    let original_state = std::fs::read(&state_path).unwrap();
+    std::fs::write(&state_path, b"{").unwrap();
+    ca.advance(TimeDuration::days(31));
+    assert_eq!(
+        handle.renew_now().await.unwrap_err().code(),
+        "ca-state-corrupt"
+    );
+    assert_eq!(
+        handle.certificate_snapshot().state,
+        TlsCertificateState::Expired
+    );
+
+    std::fs::write(&state_path, original_state).unwrap();
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "web-access-certificate-expired");
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(snapshot.state, TlsCertificateState::Expired);
+    assert_eq!(snapshot.leaf_fingerprint_sha256, old_fingerprint);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_renewal_retries_after_ca_recovers() {
+    let ca = TestCa::renewal("tls-renew-retry");
+    ca.initialize();
+    let policy = TlsRenewalPolicy {
+        tick: Duration::from_millis(10),
+        retry_after_failure: Duration::from_millis(10),
+        ..TlsRenewalPolicy::default()
+    };
+    let handle = start_with_test_clock(&ca, policy).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+    let state_path = ca.root.join("state.json");
+    let original_state = std::fs::read(&state_path).unwrap();
+    ca.advance(TimeDuration::days(1));
+    std::fs::write(&state_path, b"{").unwrap();
+    assert_eq!(
+        handle.renew_now().await.unwrap_err().code(),
+        "ca-state-corrupt"
+    );
+
+    std::fs::write(&state_path, original_state).unwrap();
+    // The CA operation lock is process-wide; under the parallel full suite a
+    // competing CA test can delay this retry beyond the usual short window.
+    let renewed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let fingerprint = handle.leaf_fingerprint_sha256();
+            if fingerprint != old_fingerprint {
+                break fingerprint;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor did not retry after the CA recovered");
+    assert_ne!(renewed, old_fingerprint);
+    assert_eq!(
+        handle.certificate_snapshot().state,
+        TlsCertificateState::Serving
+    );
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_renewal_at_expiry_stops_listener() {
+    let ca = TestCa::renewal("tls-renew-expired");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let addr = handle.local_addr();
+
+    let state_path = ca.root.join("state.json");
+    std::fs::write(&state_path, b"{").unwrap();
+    ca.advance(TimeDuration::days(31));
+
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "ca-state-corrupt");
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(snapshot.state, TlsCertificateState::Expired);
+    assert_eq!(
+        snapshot.last_error_code,
+        Some("web-access-certificate-expired")
+    );
+
+    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if TcpListener::bind(addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(stopped.is_ok(), "listener port still bound after expiry");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn monitor_renews_before_expiry() {
+    let ca = TestCa::renewal("tls-monitor");
+    ca.initialize();
+    let policy = TlsRenewalPolicy {
+        tick: Duration::from_millis(10),
+        ..TlsRenewalPolicy::default()
+    };
+    let handle = start_with_test_clock(&ca, policy).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+
+    ca.advance(TimeDuration::days(23) + TimeDuration::seconds(1));
+    let changed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let fingerprint = handle.leaf_fingerprint_sha256();
+            if fingerprint != old_fingerprint {
+                break fingerprint;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor did not renew inside the test window");
+    assert_ne!(changed, old_fingerprint);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn intermediate_rotation_reloads_under_same_root() {
+    let ca = TestCa::with_clock_at(
+        "tls-intermediate-rotate",
+        OffsetDateTime::now_utc() - TimeDuration::days(170),
+    );
+    ca.initialize();
+    ca.advance(TimeDuration::days(150));
+    let policy = TlsRenewalPolicy {
+        tick: Duration::from_millis(10),
+        ..TlsRenewalPolicy::default()
+    };
+    let handle = start_with_test_clock(&ca, policy).await;
+    let old_root_fingerprint = handle.root_fingerprint_sha256();
+    let old_intermediate_generation = handle.certificate_snapshot().intermediate_generation;
+    let old_leaf_fingerprint = handle.leaf_fingerprint_sha256();
+    let mut old_stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+
+    ca.advance(TimeDuration::days(20));
+    let rotation = ca.manager().rotate_intermediate().unwrap();
+    assert_eq!(rotation.old_generation, old_intermediate_generation);
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let snapshot = handle.certificate_snapshot();
+            if snapshot.intermediate_generation == rotation.new_generation
+                && snapshot.leaf_fingerprint_sha256 != old_leaf_fingerprint
+            {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor did not reload after intermediate rotation");
+    assert_eq!(snapshot.root_fingerprint_sha256, old_root_fingerprint);
+    assert_eq!(snapshot.intermediate_generation, rotation.new_generation);
+
+    let response = http_request(&mut old_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    let mut new_stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let peer = new_stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .expect("server must send a peer chain")
+        .to_vec();
+    assert_eq!(peer.len(), 2, "server must send leaf + intermediate only");
+    let response = http_request(&mut new_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn root_rotation_requires_explicit_reload_and_retrust() {
+    let ca = TestCa::new("tls-root-rotate");
+    ca.initialize();
+    let policy = TlsRenewalPolicy {
+        tick: Duration::from_millis(10),
+        ..TlsRenewalPolicy::default()
+    };
+    let handle = start_with_test_clock(&ca, policy).await;
+    let old_root_der = ca.root_cert_der();
+    let old_root_fingerprint = handle.root_fingerprint_sha256();
+    let mut old_stream = connect_tls(
+        handle.local_addr(),
+        client_config(old_root_der.clone()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let plan = ca.manager().prepare_root_rotation().unwrap();
+    ca.manager().activate_root_rotation(&plan).unwrap();
+    let new_root_der = ca.root_cert_der();
+    let new_root_fingerprint = ca.manager().status().unwrap().root_fingerprint_sha256;
+    assert_ne!(old_root_fingerprint, new_root_fingerprint);
+
+    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = handle.certificate_snapshot();
+            if matches!(
+                snapshot.state,
+                TlsCertificateState::RootChangePending { .. }
+            ) {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor did not detect the root change");
+    assert_eq!(snapshot.root_fingerprint_sha256, old_root_fingerprint);
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "web-access-root-change-pending");
+
+    // The old leaf remains serviceable while the root change is pending.
+    let response = http_request(&mut old_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+
+    let err = handle.reload_after_root_rotation("00").await.unwrap_err();
+    assert_eq!(err.code(), "web-access-root-change-mismatch");
+    let snapshot = handle
+        .reload_after_root_rotation(&new_root_fingerprint)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.state, TlsCertificateState::Serving);
+    assert_eq!(snapshot.root_fingerprint_sha256, new_root_fingerprint);
+
+    // Old-root clients are no longer trusted; new-root clients are.
+    let err = connect_tls(
+        handle.local_addr(),
+        client_config(old_root_der),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("UnknownIssuer")
+            || format!("{err:?}").contains("InvalidCertificate"),
+        "old root unexpectedly accepted: {err:?}"
+    );
+    let mut new_stream = connect_tls(
+        handle.local_addr(),
+        client_config(new_root_der),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let response = http_request(&mut new_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn issuer_validity_gate_keeps_old_until_expiry_then_stops() {
+    let ca = TestCa::with_clock_at(
+        "tls-issuer-window",
+        OffsetDateTime::now_utc() - TimeDuration::days(170),
+    );
+    ca.initialize();
+    ca.advance(TimeDuration::days(150));
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_leaf_fingerprint = handle.leaf_fingerprint_sha256();
+    let mut old_stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+
+    ca.advance(TimeDuration::days(1));
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "ca-insufficient-validity");
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(
+        snapshot.state,
+        TlsCertificateState::IssuerRotationRequired {
+            code: "ca-insufficient-validity"
+        }
+    );
+    assert_eq!(snapshot.leaf_fingerprint_sha256, old_leaf_fingerprint);
+    let response = http_request(&mut old_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+
+    ca.advance(TimeDuration::days(30));
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "ca-insufficient-validity");
+    assert_eq!(
+        handle.certificate_snapshot().state,
+        TlsCertificateState::Expired
+    );
+    let addr = handle.local_addr();
+    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if TcpListener::bind(addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(stopped.is_ok(), "listener port still bound after expiry");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn rollback_restores_previous_certificate_once() {
+    let ca = TestCa::renewal("tls-rollback");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+
+    ca.advance(TimeDuration::days(23));
+    let renewed = handle.renew_now().await.unwrap();
+    assert_ne!(renewed.leaf_fingerprint_sha256, old_fingerprint);
+    assert_eq!(
+        renewed.previous_leaf_fingerprint_sha256,
+        Some(old_fingerprint.clone())
+    );
+
+    let rolled_back = handle.rollback_last_reload().await.unwrap();
+    assert_eq!(rolled_back.state, TlsCertificateState::Serving);
+    assert_eq!(rolled_back.leaf_fingerprint_sha256, old_fingerprint);
+    assert_eq!(rolled_back.previous_leaf_fingerprint_sha256, None);
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let peer = stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .expect("server must send a peer chain")
+        .to_vec();
+    assert_eq!(
+        crate::ca::fingerprint_sha256(peer[0].as_ref()),
+        old_fingerprint
+    );
+    let response = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+
+    let err = handle.rollback_last_reload().await.unwrap_err();
+    assert_eq!(err.code(), "web-access-rollback-unavailable");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn accept_loop_rejects_expired_leaf_and_wakes_monitor() {
+    let ca = TestCa::with_clock_at(
+        "tls-expiry-guard",
+        OffsetDateTime::now_utc() - TimeDuration::days(29),
+    );
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+    let addr = handle.local_addr();
+    let config = client_config(ca.root_cert_der());
+
+    ca.advance(TimeDuration::days(30));
+    let expired = tokio::time::timeout(
+        Duration::from_secs(2),
+        connect_tls(
+            addr,
+            config.clone(),
+            ServerName::try_from("moyu.local").unwrap(),
+        ),
+    )
+    .await;
+    assert!(
+        matches!(expired, Ok(Err(_)) | Err(_)),
+        "expired leaf was served or the connection hung"
+    );
+
+    let renewed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let fingerprint = handle.leaf_fingerprint_sha256();
+            if fingerprint != old_fingerprint {
+                break fingerprint;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("accept-time wake did not renew the expired leaf");
+    assert_ne!(renewed, old_fingerprint);
+
+    let mut stream = connect_tls(addr, config, ServerName::try_from("moyu.local").unwrap())
+        .await
+        .unwrap();
+    let response = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_handshakes_survive_certificate_swap() {
+    let ca = TestCa::renewal("tls-concurrent");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let addr = handle.local_addr();
+    let config = client_config(ca.root_cert_der());
+    let barrier = Arc::new(tokio::sync::Barrier::new(9));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let barrier = barrier.clone();
+        let config = config.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            let mut stream =
+                connect_tls(addr, config, ServerName::try_from("moyu.local").unwrap()).await?;
+            let response = http_request(&mut stream, "GET", "/api/health").await;
+            Ok::<bool, std::io::Error>(response.starts_with("HTTP/1.1 204"))
+        });
+    }
+
+    barrier.wait().await;
+    ca.advance(TimeDuration::days(23));
+    handle.renew_now().await.unwrap();
+    while let Some(result) = tasks.join_next().await {
+        assert!(result.unwrap().unwrap(), "a concurrent handshake failed");
+    }
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn rollback_is_unavailable_after_previous_leaf_expiry() {
+    let ca = TestCa::renewal("tls-rollback-expired");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    ca.advance(TimeDuration::days(23));
+    handle.renew_now().await.unwrap();
+    ca.advance(TimeDuration::days(8));
+    assert_eq!(
+        handle
+            .certificate_snapshot()
+            .previous_leaf_fingerprint_sha256,
+        None
+    );
+    let err = handle.rollback_last_reload().await.unwrap_err();
+    assert_eq!(err.code(), "web-access-rollback-unavailable");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn restart_reissues_and_does_not_persist_leaf_files() {
+    let ca = TestCa::renewal("tls-restart");
+    ca.initialize();
+    let first = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let first_leaf = first.leaf_fingerprint_sha256();
+    let root_fingerprint = first.root_fingerprint_sha256();
+    first.shutdown().await.unwrap();
+
+    let second = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    assert_ne!(second.leaf_fingerprint_sha256(), first_leaf);
+    assert_eq!(second.root_fingerprint_sha256(), root_fingerprint);
+    let mut stream = connect_tls(
+        second.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let response = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    second.shutdown().await.unwrap();
+
+    assert!(!ca.root.join("leaves").exists());
+    assert!(!ca.root.join("leaf.key").exists());
 }
 
 #[tokio::test]

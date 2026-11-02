@@ -335,7 +335,9 @@ async fn failed_renewal_retries_after_ca_recovers() {
     );
 
     std::fs::write(&state_path, original_state).unwrap();
-    let renewed = tokio::time::timeout(Duration::from_secs(2), async {
+    // The CA operation lock is process-wide; under the parallel full suite a
+    // competing CA test can delay this retry beyond the usual short window.
+    let renewed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let fingerprint = handle.leaf_fingerprint_sha256();
             if fingerprint != old_fingerprint {

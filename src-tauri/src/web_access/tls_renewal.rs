@@ -37,7 +37,6 @@ impl Default for TlsRenewalPolicy {
 }
 
 /// Stable, non-secret lifecycle state exposed to callers.
-#[allow(dead_code)] // Variants are constructed by the TLS runtime in later tasks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsCertificateState {
     Serving,
@@ -52,6 +51,7 @@ pub enum TlsCertificateState {
         active_root_fingerprint_sha256: String,
     },
     Expired,
+    #[allow(dead_code)] // Reserved for a future explicit shutdown snapshot.
     Stopped,
 }
 

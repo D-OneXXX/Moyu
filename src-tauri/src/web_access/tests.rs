@@ -1,9 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rustls_pki_types::ServerName;
+use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -74,10 +75,15 @@ fn select_san_ips_deduplicates_sorts_and_enforces_the_ca_limit() {
 struct TestCa {
     root: PathBuf,
     wrapper: PathBuf,
+    clock: Arc<Mutex<OffsetDateTime>>,
 }
 
 impl TestCa {
     fn new(tag: &str) -> Self {
+        Self::with_clock_at(tag, OffsetDateTime::now_utc())
+    }
+
+    fn with_clock_at(tag: &str, now: OffsetDateTime) -> Self {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -90,11 +96,21 @@ impl TestCa {
         Self {
             root: wrapper.join("ca"),
             wrapper,
+            clock: Arc::new(Mutex::new(now)),
         }
     }
 
     fn manager(&self) -> CaManager {
-        CaManager::new(self.root.clone())
+        CaManager::with_clock(self.root.clone(), self.clock_handle())
+    }
+
+    fn clock_handle(&self) -> Arc<dyn Fn() -> OffsetDateTime + Send + Sync> {
+        let clock = self.clock.clone();
+        Arc::new(move || *clock.lock().unwrap())
+    }
+
+    fn advance(&self, duration: TimeDuration) {
+        *self.clock.lock().unwrap() += duration;
     }
 
     fn initialize(&self) {
@@ -166,6 +182,12 @@ fn test_server_config(ca: &TestCa) -> TlsServerConfig {
     }
 }
 
+async fn start_with_test_clock(ca: &TestCa, policy: TlsRenewalPolicy) -> TlsServerHandle {
+    start_tls_server_with_clock(test_server_config(ca), ca.clock_handle(), policy)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn handle_snapshot_matches_the_served_leaf() {
     let ca = TestCa::new("tls-snapshot");
@@ -203,6 +225,147 @@ async fn handle_snapshot_matches_the_served_leaf() {
     );
     let response = http_request(&mut stream, "GET", "/api/health").await;
     assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn explicit_renewal_swaps_new_connections_only() {
+    let ca = TestCa::new("tls-renew");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+    let addr = handle.local_addr();
+
+    let mut old_stream = connect_tls(
+        addr,
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+
+    ca.advance(TimeDuration::days(23));
+    let snapshot = handle.renew_now().await.unwrap();
+    assert_eq!(snapshot.state, TlsCertificateState::Serving);
+    assert_ne!(snapshot.leaf_fingerprint_sha256, old_fingerprint);
+
+    let mut new_stream = connect_tls(
+        addr,
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let peer = new_stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .expect("server must send a peer chain")
+        .to_vec();
+    assert_eq!(
+        crate::ca::fingerprint_sha256(peer[0].as_ref()),
+        snapshot.leaf_fingerprint_sha256
+    );
+
+    // The already-established TLS session survives the swap.
+    let response = http_request(&mut old_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    let response = http_request(&mut new_stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn renewal_failure_keeps_valid_old_certificate() {
+    let ca = TestCa::new("tls-renew-fail");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+
+    let state_path = ca.root.join("state.json");
+    std::fs::write(&state_path, b"{").unwrap();
+    ca.advance(TimeDuration::days(1));
+
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "ca-state-corrupt");
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(
+        snapshot.state,
+        TlsCertificateState::RenewalFailed {
+            code: "ca-state-corrupt"
+        }
+    );
+    assert_eq!(snapshot.leaf_fingerprint_sha256, old_fingerprint);
+
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::try_from("moyu.local").unwrap(),
+    )
+    .await
+    .unwrap();
+    let response = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_renewal_at_expiry_stops_listener() {
+    let ca = TestCa::new("tls-renew-expired");
+    ca.initialize();
+    let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
+    let addr = handle.local_addr();
+
+    let state_path = ca.root.join("state.json");
+    std::fs::write(&state_path, b"{").unwrap();
+    ca.advance(TimeDuration::days(31));
+
+    let err = handle.renew_now().await.unwrap_err();
+    assert_eq!(err.code(), "ca-state-corrupt");
+    let snapshot = handle.certificate_snapshot();
+    assert_eq!(snapshot.state, TlsCertificateState::Expired);
+    assert_eq!(
+        snapshot.last_error_code,
+        Some("web-access-certificate-expired")
+    );
+
+    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if TcpStream::connect(addr).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(stopped.is_ok(), "listener still accepts after expiry");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn monitor_renews_before_expiry() {
+    let ca = TestCa::new("tls-monitor");
+    ca.initialize();
+    let policy = TlsRenewalPolicy {
+        tick: Duration::from_millis(10),
+        ..TlsRenewalPolicy::default()
+    };
+    let handle = start_with_test_clock(&ca, policy).await;
+    let old_fingerprint = handle.leaf_fingerprint_sha256();
+
+    ca.advance(TimeDuration::days(23));
+    let changed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let fingerprint = handle.leaf_fingerprint_sha256();
+            if fingerprint != old_fingerprint {
+                break fingerprint;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("monitor did not renew inside the test window");
+    assert_ne!(changed, old_fingerprint);
     handle.shutdown().await.unwrap();
 }
 

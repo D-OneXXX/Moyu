@@ -24,6 +24,8 @@ pub(crate) mod session;
 #[cfg(test)]
 mod test_http;
 mod tls;
+#[cfg_attr(not(test), allow(dead_code))]
+mod tls_renewal;
 
 pub use addrs::{is_private_lan_ipv4, local_private_ipv4s, select_san_ips};
 pub use error::{WebAccessError, WebAccessResult};

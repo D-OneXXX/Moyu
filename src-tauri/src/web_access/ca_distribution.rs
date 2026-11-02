@@ -577,6 +577,16 @@ mod tests {
             send_raw(addr, &request("GET", CA_DISTRIBUTION_PATH, "evil.local:1")).await;
         assert!(wrong_host.starts_with("HTTP/1.1 421"));
 
+        // Duplicate Host is ambiguous even when both values match.
+        let duplicate_host = format!(
+            "GET {CA_DISTRIBUTION_PATH} HTTP/1.1\r\nHost: {authority}\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+        );
+        let duplicate_host = send_raw(addr, &duplicate_host).await;
+        assert!(
+            duplicate_host.contains(" 421 "),
+            "duplicate Host must be 421: {duplicate_host:?}"
+        );
+
         let absolute_form = send_raw(
             addr,
             &request("GET", "http://evil.example/ca.crt", &authority),

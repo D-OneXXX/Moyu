@@ -174,6 +174,13 @@ impl CaDistributionRuntime {
         local_private_ipv4s().unwrap_or_default()
     }
 
+    /// Start on the first current private LAN IPv4 when the caller did not
+    /// choose one. No address is a stable failure, never a wildcard bind.
+    pub(crate) async fn start_default(&self) -> CaDistributionResult<CaDistributionStatus> {
+        let ips = local_private_ipv4s().map_err(|_| CaDistributionError::NoLanAddress)?;
+        self.start(choose_bind_ip(ips)?).await
+    }
+
     pub(crate) async fn status(&self) -> CaDistributionStatus {
         let state = self.state.lock().await;
         Self::status_from(&state)
@@ -277,6 +284,12 @@ pub(crate) fn validate_bind_ip(ip: Ipv4Addr) -> CaDistributionResult<()> {
     } else {
         Err(CaDistributionError::InvalidBindAddress)
     }
+}
+
+pub(crate) fn choose_bind_ip(ips: Vec<Ipv4Addr>) -> CaDistributionResult<Ipv4Addr> {
+    ips.into_iter()
+        .next()
+        .ok_or(CaDistributionError::NoLanAddress)
 }
 
 async fn accept_loop(

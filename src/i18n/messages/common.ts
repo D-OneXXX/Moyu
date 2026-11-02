@@ -138,6 +138,16 @@ const zhCN = {
   "error.pdfCoverTooLarge": "该 PDF 的封面数据超过体积上限",
   "error.pdfCoverDimensions": "该 PDF 的封面尺寸超过上限",
   "error.onlinePageCountDrop": "在线清单页数少于现有记录，已保留当前进度；如网页确实变短，请先删除该书再重新导入",
+  "error.caNotInitialized": "本地 CA 尚未初始化。",
+  "error.caStateCorrupt": "本地 CA 状态损坏，请从备份恢复。",
+  "error.caPartialInitialization": "本地 CA 存在不完整的初始化残留，请检查 CA 目录。",
+  "error.caAclVerification": "本地 CA 私钥目录权限异常，已拒绝操作。",
+  "error.caIo": "本地 CA 文件操作失败。",
+  "error.caExportPath": "导出路径必须是绝对路径。",
+  "error.caDistributionRunning": "CA 分发服务已在运行，请先停止。",
+  "error.caDistributionNoLan": "未找到可用的私有局域网 IPv4 地址。",
+  "error.caDistributionInvalidIp": "只能选择当前设备的私有局域网 IPv4 地址。",
+  "error.caDistributionIo": "CA 分发服务启动或停止失败。",
 } as const;
 
 type CommonMessages = { [K in keyof typeof zhCN]: string };
@@ -282,6 +292,16 @@ const zhTW: CommonMessages = {
   "error.pdfCoverTooLarge": "該 PDF 的封面資料超過體積上限",
   "error.pdfCoverDimensions": "該 PDF 的封面尺寸超過上限",
   "error.onlinePageCountDrop": "線上清單頁數少於現有紀錄，已保留目前進度；若網頁確實變短，請先刪除該書再重新匯入",
+  "error.caNotInitialized": "本機 CA 尚未初始化。",
+  "error.caStateCorrupt": "本機 CA 狀態損壞，請從備份還原。",
+  "error.caPartialInitialization": "本機 CA 存在不完整的初始化殘留，請檢查 CA 目錄。",
+  "error.caAclVerification": "本機 CA 私鑰目錄權限異常，已拒絕操作。",
+  "error.caIo": "本機 CA 檔案操作失敗。",
+  "error.caExportPath": "匯出路徑必須是絕對路徑。",
+  "error.caDistributionRunning": "CA 分發服務已在執行，請先停止。",
+  "error.caDistributionNoLan": "找不到可用的私有區域網路 IPv4 位址。",
+  "error.caDistributionInvalidIp": "只能選擇目前裝置的私有區域網路 IPv4 位址。",
+  "error.caDistributionIo": "CA 分發服務啟動或停止失敗。",
 };
 
 const en: CommonMessages = {
@@ -431,6 +451,16 @@ const en: CommonMessages = {
   "error.pdfCoverDimensions":
     "The cover dimensions of this PDF exceed the limit.",
   "error.onlinePageCountDrop": "The online manifest has fewer pages than the existing record, so your progress was kept. If the page really got shorter, delete the book and import it again.",
+  "error.caNotInitialized": "The local CA is not initialized.",
+  "error.caStateCorrupt": "The local CA state is corrupt. Restore it from a backup.",
+  "error.caPartialInitialization": "The local CA has an incomplete initialization. Check the CA directory.",
+  "error.caAclVerification": "The local CA private-key directory has invalid permissions; the operation was refused.",
+  "error.caIo": "A local CA file operation failed.",
+  "error.caExportPath": "The export path must be absolute.",
+  "error.caDistributionRunning": "The CA distribution service is already running. Stop it first.",
+  "error.caDistributionNoLan": "No private LAN IPv4 address is available.",
+  "error.caDistributionInvalidIp": "Choose a private LAN IPv4 address of this device.",
+  "error.caDistributionIo": "The CA distribution service failed to start or stop.",
 };
 
 const es: CommonMessages = {
@@ -589,6 +619,16 @@ const es: CommonMessages = {
   "error.pdfCoverDimensions":
     "Las dimensiones de la portada de este PDF superan el límite.",
   "error.onlinePageCountDrop": "El manifiesto en línea tiene menos páginas que el registro actual, así que se conservó tu progreso. Si la página realmente se acortó, elimina el libro y vuelve a importarlo.",
+  "error.caNotInitialized": "La CA local no está inicializada.",
+  "error.caStateCorrupt": "El estado de la CA local está dañado. Restáuralo desde una copia de seguridad.",
+  "error.caPartialInitialization": "La CA local tiene una inicialización incompleta. Revisa el directorio de la CA.",
+  "error.caAclVerification": "Los permisos del directorio de la clave privada de la CA no son válidos; la operación se rechazó.",
+  "error.caIo": "Falló una operación de archivo de la CA local.",
+  "error.caExportPath": "La ruta de exportación debe ser absoluta.",
+  "error.caDistributionRunning": "El servicio de distribución de la CA ya está en ejecución. Deténlo primero.",
+  "error.caDistributionNoLan": "No hay ninguna dirección IPv4 privada de LAN disponible.",
+  "error.caDistributionInvalidIp": "Elige una dirección IPv4 privada de LAN de este dispositivo.",
+  "error.caDistributionIo": "El servicio de distribución de la CA no pudo iniciarse o detenerse.",
 };
 
 const ja: CommonMessages = {
@@ -744,6 +784,16 @@ const ja: CommonMessages = {
     "この PDF の表紙のサイズ（寸法）が上限を超えています。",
   "error.pdfCoverMissing": "この PDF の表紙はまだ生成されていません。",
   "error.onlinePageCountDrop": "オンラインリストのページ数が既存の記録より少ないため、現在の進捗を保持しました。実際にページが減った場合は、この本を削除して再読み込みしてください。",
+  "error.caNotInitialized": "ローカル CA は未初期化です。",
+  "error.caStateCorrupt": "ローカル CA の状態が破損しています。バックアップから復元してください。",
+  "error.caPartialInitialization": "ローカル CA の初期化が不完全です。CA ディレクトリを確認してください。",
+  "error.caAclVerification": "ローカル CA の秘密鍵ディレクトリの権限が不正なため、操作を拒否しました。",
+  "error.caIo": "ローカル CA のファイル操作に失敗しました。",
+  "error.caExportPath": "エクスポート先は絶対パスで指定してください。",
+  "error.caDistributionRunning": "CA 配布サービスは既に実行中です。先に停止してください。",
+  "error.caDistributionNoLan": "利用可能なプライベート LAN IPv4 アドレスがありません。",
+  "error.caDistributionInvalidIp": "このデバイスのプライベート LAN IPv4 アドレスを選択してください。",
+  "error.caDistributionIo": "CA 配布サービスの開始または停止に失敗しました。",
 };
 
 const ko: CommonMessages = {
@@ -897,6 +947,16 @@ const ko: CommonMessages = {
   "error.pdfCoverTooLarge": "이 PDF의 표지 데이터가 크기 한도를 초과합니다.",
   "error.pdfCoverDimensions": "이 PDF의 표지 크기가 한도를 초과합니다.",
   "error.onlinePageCountDrop": "온라인 목록의 페이지 수가 기존 기록보다 적어 현재 진행 상황을 유지했습니다. 페이지가 실제로 줄었다면 이 책을 삭제한 뒤 다시 가져오세요.",
+  "error.caNotInitialized": "로컬 CA가 초기화되지 않았습니다.",
+  "error.caStateCorrupt": "로컬 CA 상태가 손상되었습니다. 백업에서 복원하세요.",
+  "error.caPartialInitialization": "로컬 CA 초기화가 불완전합니다. CA 디렉터리를 확인하세요.",
+  "error.caAclVerification": "로컬 CA 개인 키 디렉터리 권한이 올바르지 않아 작업을 거부했습니다.",
+  "error.caIo": "로컬 CA 파일 작업에 실패했습니다.",
+  "error.caExportPath": "내보내기 경로는 절대 경로여야 합니다.",
+  "error.caDistributionRunning": "CA 배포 서비스가 이미 실행 중입니다. 먼저 중지하세요.",
+  "error.caDistributionNoLan": "사용 가능한 사설 LAN IPv4 주소가 없습니다.",
+  "error.caDistributionInvalidIp": "이 기기의 사설 LAN IPv4 주소를 선택하세요.",
+  "error.caDistributionIo": "CA 배포 서비스를 시작하거나 중지하지 못했습니다.",
 };
 
 export const commonMessages = {

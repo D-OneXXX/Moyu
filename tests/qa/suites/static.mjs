@@ -2650,4 +2650,125 @@ export function checkAntiMockGuards(root, report) {
       details: evidence.join("；"),
     });
   }
+
+  try {
+    const errors = [];
+    const distributionFile = path.join(
+      root,
+      "src-tauri",
+      "src",
+      "web_access",
+      "ca_distribution.rs",
+    );
+    const distributionSource = fs.readFileSync(distributionFile, "utf8");
+    const testModule = distributionSource.indexOf("#[cfg(test)]\nmod tests");
+    const production = stripRustComments(
+      testModule >= 0
+        ? distributionSource.slice(0, testModule)
+        : distributionSource,
+    );
+    for (const forbidden of [
+      "read_active_root_key",
+      "read_root_generation_key",
+      "key_pem",
+      "root.key",
+      "PRIVATE KEY",
+    ]) {
+      if (production.includes(forbidden)) {
+        errors.push(`CA 分发生产路径出现私钥符号：${forbidden}`);
+      }
+    }
+    if (/\/api\//.test(production)) {
+      errors.push("CA 分发出现 /api/ 数据路由");
+    }
+    for (const route of ["/pair", "/books", "/session", "/devices"]) {
+      if (production.includes(`"${route}`)) {
+        errors.push(`CA 分发出现非证书路由：${route}`);
+      }
+    }
+    if (!production.includes('const CA_DISTRIBUTION_PATH: &str = "/ca.crt";')) {
+      errors.push("缺少唯一 /ca.crt 路由常量");
+    }
+    if (/Access-Control-Allow/i.test(production)) {
+      errors.push("CA 分发不得返回 CORS 头");
+    }
+    if (!/#\[cfg\(test\)\]\s*pub\(crate\) fn for_test/.test(distributionSource)) {
+      errors.push("for_test 未用 #[cfg(test)] 隔离");
+    }
+
+    const commandsSource = fs.readFileSync(
+      path.join(
+        root,
+        "src-tauri",
+        "src",
+        "web_access",
+        "ca_distribution_commands.rs",
+      ),
+      "utf8",
+    );
+    for (const forbidden of [
+      "web_access_pairing_",
+      "web_access_start",
+      "web_access_stop",
+      "web_access_devices_list",
+      "web_access_device_revoke",
+    ]) {
+      if (commandsSource.includes(forbidden)) {
+        errors.push(`G1 命令出现 D1b 命令：${forbidden}`);
+      }
+    }
+
+    const libSource = fs.readFileSync(
+      path.join(root, "src-tauri", "src", "lib.rs"),
+      "utf8",
+    );
+    if (/CaDistributionRuntime[\s\S]{0,200}\.start/.test(libSource)) {
+      errors.push("lib.rs 启动路径调用了 CA 分发服务");
+    }
+
+    const packageSource = fs.readFileSync(path.join(root, "package.json"), "utf8");
+    const cargoSource = fs.readFileSync(
+      path.join(root, "src-tauri", "Cargo.toml"),
+      "utf8",
+    );
+    if (/qrcode|react-qr/i.test(packageSource) || /qrcode/i.test(cargoSource)) {
+      errors.push("引入了 QR 依赖");
+    }
+
+    if (errors.length) {
+      fail(report, {
+        id: "static:g1-ca-distribution",
+        suite: "static",
+        layer: "static",
+        title: "G1 CA 分发保持单路由、无私钥与无启动接线",
+        severity: "P1",
+        details: errors.join(" | "),
+        location: "src-tauri/src/web_access/ca_distribution*.rs",
+        expected:
+          "只服务 /ca.crt；生产路径不读取私钥；setup 不启动；无 D1b 命令/QR 依赖",
+        actual: errors.join(" | "),
+        rootCause: "G1 边界被破坏或主密钥进入分发路径",
+        fix: "恢复单路由、公开 PEM 快照与显式启动边界",
+      });
+    } else {
+      ok(report, {
+        id: "static:g1-ca-distribution",
+        suite: "static",
+        layer: "static",
+        title: "G1 CA 分发保持单路由、无私钥与无启动接线",
+      });
+    }
+  } catch (error) {
+    fail(report, {
+      id: "static:g1-ca-distribution",
+      suite: "static",
+      layer: "static",
+      title: "G1 CA 分发静态边界检查",
+      severity: "P1",
+      details: error.message,
+      location: "src-tauri/src/web_access/ca_distribution*.rs",
+      rootCause: "静态守卫无法读取 G1 文件",
+      fix: "确认 G1 文件存在且命名稳定",
+    });
+  }
 }

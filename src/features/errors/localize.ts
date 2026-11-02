@@ -45,6 +45,17 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "pdf-cover-invalid", key: "error.pdfCoverInvalid" },
   { code: "pdf-cover-too-large", key: "error.pdfCoverTooLarge" },
   { code: "pdf-cover-dimensions", key: "error.pdfCoverDimensions" },
+  { code: "ca-not-initialized", key: "error.caNotInitialized" },
+  { code: "ca-state-corrupt", key: "error.caStateCorrupt" },
+  { code: "ca-partial-initialization", key: "error.caPartialInitialization" },
+  { code: "ca-acl-verification", key: "error.caAclVerification" },
+  { code: "ca-acl", key: "error.caAclVerification" },
+  { code: "ca-io", key: "error.caIo" },
+  { code: "ca-export-path", key: "error.caExportPath" },
+  { code: "ca-distribution-running", key: "error.caDistributionRunning" },
+  { code: "ca-distribution-no-lan", key: "error.caDistributionNoLan" },
+  { code: "ca-distribution-invalid-ip", key: "error.caDistributionInvalidIp" },
+  { code: "ca-distribution-io", key: "error.caDistributionIo" },
 ];
 
 /**

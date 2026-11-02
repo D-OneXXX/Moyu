@@ -256,6 +256,52 @@ const zhCN = {
   "settings.backup.skipWarningMessage":
     "备份中有 {count} 本本地书当前无法访问（外置盘或网络位置未挂载）。继续恢复会删除它们在当前书库中的阅读进度与历史。恢复前会自动保存当前书库的快照。",
   "settings.backup.forwardSchema": "备份来自更高版本（{version}）：已按兼容模式恢复核心书库与进度，高版本新增配置项被忽略",
+  "settings.ca.title": "根 CA 与设备信任",
+  "settings.ca.description":
+    "初始化、导出根证书，并在短时内通过明文 HTTP 分发给手机安装；用于让设备信任本机的 HTTPS 服务。",
+  "settings.ca.badgeNotInitialized": "CA 未初始化",
+  "settings.ca.badgeInitialized": "CA 已初始化",
+  "settings.ca.notInitialized":
+    "本地 CA 尚未初始化。初始化会创建新的根证书；请只在你控制的设备上安装，并妥善备份 CA。",
+  "settings.ca.initialize": "初始化本地 CA",
+  "settings.ca.initializeConfirmTitle": "初始化本地根 CA？",
+  "settings.ca.initializeConfirmMessage":
+    "这会创建新的本地根 CA。丢失 CA 后，所有已安装设备都需要重新安装信任证书；初始化过程不会上传任何数据。",
+  "settings.ca.initialized": "本地 CA 已初始化并通过私钥 ACL 校验。",
+  "settings.ca.fingerprint": "根证书 SHA-256 指纹",
+  "settings.ca.fingerprintHint":
+    "在手机上安装证书前，核对完整 SHA-256 指纹：共 64 个十六进制字符，忽略冒号与大小写。",
+  "settings.ca.verifyOnPhone":
+    "重要：手机安装页可能显示 SHA-1 或 SHA-256；必须切到 SHA-256 并与上方逐段核对。不一致就不要安装。",
+  "settings.ca.copyFingerprint": "复制指纹",
+  "settings.ca.copied": "已复制",
+  "settings.ca.copyFailed": "复制失败，请手动选择文本复制。",
+  "settings.ca.expires": "根证书到期：{date}（剩余 {days} 天）",
+  "settings.ca.rotationWarning":
+    "根证书将在 {days} 天后进入轮换窗口；轮换后需要向所有设备重新分发并安装。",
+  "settings.ca.intermediateFingerprint": "中间 CA 指纹（诊断）",
+  "settings.ca.export": "导出根证书",
+  "settings.ca.exportTitle": "保存根证书",
+  "settings.ca.exported": "根证书已导出；安装前请核对指纹。",
+  "settings.ca.exportFailed": "导出根证书失败，请重试。",
+  "settings.ca.loadError": "无法加载 CA 状态：{detail}",
+  "settings.ca.distribution.title": "短时分发服务",
+  "settings.ca.distribution.description":
+    "显式启动后，仅提供根证书下载；服务使用明文 HTTP（手机在信任 CA 前无法验证 HTTPS），120 秒后自动关闭。",
+  "settings.ca.distribution.address": "分发地址",
+  "settings.ca.distribution.start": "启动分发",
+  "settings.ca.distribution.stop": "停止分发",
+  "settings.ca.distribution.running": "运行中",
+  "settings.ca.distribution.stopped": "已停止",
+  "settings.ca.distribution.url": "下载地址",
+  "settings.ca.distribution.expiresIn": "剩余 {seconds} 秒",
+  "settings.ca.distribution.expired": "分发服务已到期并自动关闭。",
+  "settings.ca.distribution.securityNote":
+    "只分发公开根证书；请只在可信局域网内使用。分发地址是明文 HTTP，不要向不可信网络暴露。",
+  "settings.ca.distribution.noAddress":
+    "未找到可用的私有局域网 IPv4 地址，无法启动分发。",
+  "settings.ca.privateKeyNote":
+    "CA 私钥只保存在本机 CA 目录中；HTTP 分发任务没有读取私钥的能力。",
 } as const;
 
 type SettingsMessages = { [K in keyof typeof zhCN]: string };
@@ -517,6 +563,52 @@ const zhTW: SettingsMessages = {
   "settings.backup.skipWarningMessage":
     "備份中有 {count} 本本機書籍目前無法存取（外接磁碟或網路位置未掛載）。繼續還原會刪除它們在目前書庫中的閱讀進度與歷史。還原前會自動儲存目前書庫的快照。",
   "settings.backup.forwardSchema": "備份來自更高版本（{version}）：已按相容模式還原核心書庫與進度，高版本新增設定項已忽略",
+  "settings.ca.title": "根 CA 與裝置信任",
+  "settings.ca.description":
+    "初始化、匯出根憑證，並在短時間內透過明文 HTTP 分發給手機安裝；用於讓裝置信任本機的 HTTPS 服務。",
+  "settings.ca.badgeNotInitialized": "CA 未初始化",
+  "settings.ca.badgeInitialized": "CA 已初始化",
+  "settings.ca.notInitialized":
+    "本機 CA 尚未初始化。初始化會建立新的根憑證；請只在您控制的裝置上安裝，並妥善備份 CA。",
+  "settings.ca.initialize": "初始化本機 CA",
+  "settings.ca.initializeConfirmTitle": "初始化本機根 CA？",
+  "settings.ca.initializeConfirmMessage":
+    "這會建立新的本機根 CA。遺失 CA 後，所有已安裝裝置都需要重新安裝信任憑證；初始化不會上傳任何資料。",
+  "settings.ca.initialized": "本機 CA 已初始化並通過私鑰 ACL 檢查。",
+  "settings.ca.fingerprint": "根憑證 SHA-256 指紋",
+  "settings.ca.fingerprintHint":
+    "在手機安裝憑證前，核對完整 SHA-256 指紋：共 64 個十六進位字元，忽略冒號與大小寫。",
+  "settings.ca.verifyOnPhone":
+    "重要：手機安裝頁可能顯示 SHA-1 或 SHA-256；必須切到 SHA-256 並與上方逐段核對。不一致就不要安裝。",
+  "settings.ca.copyFingerprint": "複製指紋",
+  "settings.ca.copied": "已複製",
+  "settings.ca.copyFailed": "複製失敗，請手動選取文字複製。",
+  "settings.ca.expires": "根憑證到期：{date}（剩餘 {days} 天）",
+  "settings.ca.rotationWarning":
+    "根憑證將在 {days} 天後進入輪換窗口；輪換後需要向所有裝置重新分發並安裝。",
+  "settings.ca.intermediateFingerprint": "中間 CA 指紋（診斷）",
+  "settings.ca.export": "匯出根憑證",
+  "settings.ca.exportTitle": "儲存根憑證",
+  "settings.ca.exported": "根憑證已匯出；安裝前請核對指紋。",
+  "settings.ca.exportFailed": "匯出根憑證失敗，請重試。",
+  "settings.ca.loadError": "無法載入 CA 狀態：{detail}",
+  "settings.ca.distribution.title": "短時分發服務",
+  "settings.ca.distribution.description":
+    "明確啟動後，僅提供根憑證下載；服務使用明文 HTTP（手機在信任 CA 前無法驗證 HTTPS），120 秒後自動關閉。",
+  "settings.ca.distribution.address": "分發位址",
+  "settings.ca.distribution.start": "啟動分發",
+  "settings.ca.distribution.stop": "停止分發",
+  "settings.ca.distribution.running": "執行中",
+  "settings.ca.distribution.stopped": "已停止",
+  "settings.ca.distribution.url": "下載位址",
+  "settings.ca.distribution.expiresIn": "剩餘 {seconds} 秒",
+  "settings.ca.distribution.expired": "分發服務已到期並自動關閉。",
+  "settings.ca.distribution.securityNote":
+    "只分發公開根憑證；請只在可信區域網路內使用。分發位址是明文 HTTP，不要向不可信網路暴露。",
+  "settings.ca.distribution.noAddress":
+    "找不到可用的私有區域網路 IPv4 位址，無法啟動分發。",
+  "settings.ca.privateKeyNote":
+    "CA 私鑰只保存在本機 CA 目錄中；HTTP 分發工作沒有讀取私鑰的能力。",
 };
 
 const en: SettingsMessages = {
@@ -782,6 +874,52 @@ const en: SettingsMessages = {
   "settings.backup.skipWarningMessage":
     "{count} local books in this backup cannot be reached right now (an external drive or network location is not mounted). Continuing deletes their reading progress and history from the current library. A snapshot of the current library is saved first.",
   "settings.backup.forwardSchema": "Backup was exported by a newer version ({version}). Core library and progress were restored in compatibility mode; settings added in newer versions were ignored.",
+  "settings.ca.title": "Root CA and device trust",
+  "settings.ca.description":
+    "Initialize and export the root CA, then distribute it briefly over plain HTTP so a phone can install it and trust this device's HTTPS service.",
+  "settings.ca.badgeNotInitialized": "CA not initialized",
+  "settings.ca.badgeInitialized": "CA initialized",
+  "settings.ca.notInitialized":
+    "The local CA is not initialized. Initialization creates a new root certificate; install it only on devices you control and back up the CA.",
+  "settings.ca.initialize": "Initialize local CA",
+  "settings.ca.initializeConfirmTitle": "Initialize the local root CA?",
+  "settings.ca.initializeConfirmMessage":
+    "This creates a new local root CA. If the CA is lost, every installed device must install the trust certificate again. Nothing is uploaded.",
+  "settings.ca.initialized": "Local CA initialized and private-key ACL verified.",
+  "settings.ca.fingerprint": "Root certificate SHA-256 fingerprint",
+  "settings.ca.fingerprintHint":
+    "Before installing on the phone, compare the full SHA-256 fingerprint: 64 hexadecimal characters, ignoring colons and letter case.",
+  "settings.ca.verifyOnPhone":
+    "Important: the phone may show SHA-1 or SHA-256. Switch to SHA-256 and compare every group with the value above. Do not install if they differ.",
+  "settings.ca.copyFingerprint": "Copy fingerprint",
+  "settings.ca.copied": "Copied",
+  "settings.ca.copyFailed": "Copy failed; select the text and copy it manually.",
+  "settings.ca.expires": "Root expires: {date} ({days} days remaining)",
+  "settings.ca.rotationWarning":
+    "The root CA enters its rotation window in {days} days. After rotation, redistribute and reinstall it on every device.",
+  "settings.ca.intermediateFingerprint": "Intermediate CA fingerprint (diagnostic)",
+  "settings.ca.export": "Export root certificate",
+  "settings.ca.exportTitle": "Save root certificate",
+  "settings.ca.exported": "Root certificate exported; verify the fingerprint before installing.",
+  "settings.ca.exportFailed": "Failed to export the root certificate. Try again.",
+  "settings.ca.loadError": "Could not load CA status: {detail}",
+  "settings.ca.distribution.title": "Short-lived distribution",
+  "settings.ca.distribution.description":
+    "After an explicit start, only the root certificate is offered. The service uses plain HTTP (a phone cannot verify HTTPS before trusting the CA) and closes automatically after 120 seconds.",
+  "settings.ca.distribution.address": "Distribution address",
+  "settings.ca.distribution.start": "Start distribution",
+  "settings.ca.distribution.stop": "Stop distribution",
+  "settings.ca.distribution.running": "Running",
+  "settings.ca.distribution.stopped": "Stopped",
+  "settings.ca.distribution.url": "Download URL",
+  "settings.ca.distribution.expiresIn": "{seconds} seconds remaining",
+  "settings.ca.distribution.expired": "The distribution service expired and closed automatically.",
+  "settings.ca.distribution.securityNote":
+    "Only the public root certificate is served. Use it only on a trusted LAN; the URL is plain HTTP, so do not expose it to untrusted networks.",
+  "settings.ca.distribution.noAddress":
+    "No private LAN IPv4 address is available, so distribution cannot start.",
+  "settings.ca.privateKeyNote":
+    "The CA private key stays in the local CA directory; the HTTP distribution task cannot read it.",
 };
 
 const es: SettingsMessages = {
@@ -1057,6 +1195,52 @@ const es: SettingsMessages = {
   "settings.backup.skipWarningMessage":
     "{count} libros locales de esta copia no están accesibles ahora mismo (una unidad externa o una ubicación de red no está montada). Si continúas, se borrarán su progreso e historial de lectura de la biblioteca actual. Antes se guarda una instantánea de la biblioteca actual.",
   "settings.backup.forwardSchema": "La copia procede de una versión más reciente ({version}). La biblioteca y el progreso esenciales se restauraron en modo de compatibilidad; se ignoraron las opciones añadidas en versiones más recientes.",
+  "settings.ca.title": "CA raíz y confianza del dispositivo",
+  "settings.ca.description":
+    "Inicializa y exporta la CA raíz y distribúyela brevemente por HTTP sin cifrar para que el teléfono la instale y confíe en el servicio HTTPS de este equipo.",
+  "settings.ca.badgeNotInitialized": "CA no inicializada",
+  "settings.ca.badgeInitialized": "CA inicializada",
+  "settings.ca.notInitialized":
+    "La CA local no está inicializada. La inicialización crea un certificado raíz nuevo; instálalo solo en dispositivos que controles y haz una copia de seguridad.",
+  "settings.ca.initialize": "Inicializar CA local",
+  "settings.ca.initializeConfirmTitle": "¿Inicializar la CA raíz local?",
+  "settings.ca.initializeConfirmMessage":
+    "Esto crea una CA raíz local nueva. Si se pierde, todos los dispositivos instalados deberán instalar de nuevo el certificado de confianza. No se sube nada.",
+  "settings.ca.initialized": "CA local inicializada y ACL de la clave privada verificada.",
+  "settings.ca.fingerprint": "Huella SHA-256 del certificado raíz",
+  "settings.ca.fingerprintHint":
+    "Antes de instalar en el teléfono, compara la huella SHA-256 completa: 64 caracteres hexadecimales, ignorando dos puntos y mayúsculas.",
+  "settings.ca.verifyOnPhone":
+    "Importante: el teléfono puede mostrar SHA-1 o SHA-256. Cambia a SHA-256 y compara cada grupo con el valor superior. No instales si no coinciden.",
+  "settings.ca.copyFingerprint": "Copiar huella",
+  "settings.ca.copied": "Copiado",
+  "settings.ca.copyFailed": "No se pudo copiar; selecciona el texto y cópialo manualmente.",
+  "settings.ca.expires": "La raíz caduca: {date} ({days} días restantes)",
+  "settings.ca.rotationWarning":
+    "La CA raíz entra en su ventana de rotación en {days} días. Tras la rotación, redistribúyela y reinstálala en todos los dispositivos.",
+  "settings.ca.intermediateFingerprint": "Huella de la CA intermedia (diagnóstico)",
+  "settings.ca.export": "Exportar certificado raíz",
+  "settings.ca.exportTitle": "Guardar certificado raíz",
+  "settings.ca.exported": "Certificado raíz exportado; verifica la huella antes de instalarlo.",
+  "settings.ca.exportFailed": "No se pudo exportar el certificado raíz. Inténtalo de nuevo.",
+  "settings.ca.loadError": "No se pudo cargar el estado de la CA: {detail}",
+  "settings.ca.distribution.title": "Distribución temporal",
+  "settings.ca.distribution.description":
+    "Tras un inicio explícito, solo se ofrece el certificado raíz. El servicio usa HTTP sin cifrar (el teléfono no puede verificar HTTPS antes de confiar en la CA) y se cierra automáticamente a los 120 segundos.",
+  "settings.ca.distribution.address": "Dirección de distribución",
+  "settings.ca.distribution.start": "Iniciar distribución",
+  "settings.ca.distribution.stop": "Detener distribución",
+  "settings.ca.distribution.running": "En ejecución",
+  "settings.ca.distribution.stopped": "Detenido",
+  "settings.ca.distribution.url": "URL de descarga",
+  "settings.ca.distribution.expiresIn": "Quedan {seconds} segundos",
+  "settings.ca.distribution.expired": "El servicio de distribución caducó y se cerró automáticamente.",
+  "settings.ca.distribution.securityNote":
+    "Solo se sirve el certificado raíz público. Úsalo solo en una LAN de confianza; la URL es HTTP sin cifrar, así que no la expongas a redes no confiables.",
+  "settings.ca.distribution.noAddress":
+    "No hay ninguna dirección IPv4 privada de LAN disponible; no se puede iniciar la distribución.",
+  "settings.ca.privateKeyNote":
+    "La clave privada de la CA permanece en el directorio local de la CA; la tarea HTTP no puede leerla.",
 };
 
 const ja: SettingsMessages = {
@@ -1333,6 +1517,52 @@ const ja: SettingsMessages = {
   "settings.backup.skipWarningMessage":
     "このバックアップには現在アクセスできないローカル書籍が {count} 冊あります（外付けドライブやネットワークの場所が未接続）。続行すると、現在のライブラリからこれらの読書進捗と履歴が削除されます。復元前に現在のライブラリのスナップショットを保存します。",
   "settings.backup.forwardSchema": "新しいバージョン（{version}）で書き出されたバックアップです。互換モードで中核のライブラリと進捗を復元し、新バージョンで追加された設定は無視しました。",
+  "settings.ca.title": "ルート CA とデバイス信頼",
+  "settings.ca.description":
+    "ルート CA を初期化・エクスポートし、短時間だけ平文 HTTP で配布して、スマートフォンが本機の HTTPS サービスを信頼できるようにします。",
+  "settings.ca.badgeNotInitialized": "CA 未初期化",
+  "settings.ca.badgeInitialized": "CA 初期化済み",
+  "settings.ca.notInitialized":
+    "ローカル CA は未初期化です。初期化すると新しいルート証明書が作成されます。管理下の端末にのみインストールし、CA をバックアップしてください。",
+  "settings.ca.initialize": "ローカル CA を初期化",
+  "settings.ca.initializeConfirmTitle": "ローカルルート CA を初期化しますか？",
+  "settings.ca.initializeConfirmMessage":
+    "新しいローカルルート CA を作成します。CA を失うと、インストール済みの全端末で信頼証明書の再インストールが必要です。データはアップロードされません。",
+  "settings.ca.initialized": "ローカル CA を初期化し、秘密鍵 ACL を検証しました。",
+  "settings.ca.fingerprint": "ルート証明書の SHA-256 フィンガープリント",
+  "settings.ca.fingerprintHint":
+    "スマートフォンへのインストール前に、SHA-256 フィンガープリント全体を照合してください。16 進数 64 文字で、コロンと大文字小文字は無視します。",
+  "settings.ca.verifyOnPhone":
+    "重要: スマートフォン側は SHA-1 を表示する場合があります。SHA-256 表示に切り替え、上の値と全グループを照合してください。一致しない場合はインストールしないでください。",
+  "settings.ca.copyFingerprint": "フィンガープリントをコピー",
+  "settings.ca.copied": "コピーしました",
+  "settings.ca.copyFailed": "コピーできませんでした。テキストを選択して手動でコピーしてください。",
+  "settings.ca.expires": "ルートの有効期限: {date}（残り {days} 日）",
+  "settings.ca.rotationWarning":
+    "ルート CA は {days} 日後にローテーション期間に入ります。ローテーション後は全端末へ再配布・再インストールが必要です。",
+  "settings.ca.intermediateFingerprint": "中間 CA フィンガープリント（診断用）",
+  "settings.ca.export": "ルート証明書をエクスポート",
+  "settings.ca.exportTitle": "ルート証明書を保存",
+  "settings.ca.exported": "ルート証明書をエクスポートしました。インストール前にフィンガープリントを確認してください。",
+  "settings.ca.exportFailed": "ルート証明書のエクスポートに失敗しました。再試行してください。",
+  "settings.ca.loadError": "CA 状態を読み込めませんでした: {detail}",
+  "settings.ca.distribution.title": "短時間配布サービス",
+  "settings.ca.distribution.description":
+    "明示的に開始した場合のみ、ルート証明書だけを配布します。スマートフォンは CA を信頼する前に HTTPS を検証できないため平文 HTTP を使用し、120 秒後に自動停止します。",
+  "settings.ca.distribution.address": "配布アドレス",
+  "settings.ca.distribution.start": "配布を開始",
+  "settings.ca.distribution.stop": "配布を停止",
+  "settings.ca.distribution.running": "実行中",
+  "settings.ca.distribution.stopped": "停止済み",
+  "settings.ca.distribution.url": "ダウンロード URL",
+  "settings.ca.distribution.expiresIn": "残り {seconds} 秒",
+  "settings.ca.distribution.expired": "配布サービスは期限切れとなり、自動的に停止しました。",
+  "settings.ca.distribution.securityNote":
+    "公開ルート証明書のみを配布します。信頼できる LAN でのみ使用してください。URL は平文 HTTP のため、信頼できないネットワークに公開しないでください。",
+  "settings.ca.distribution.noAddress":
+    "利用可能なプライベート LAN IPv4 アドレスがないため、配布を開始できません。",
+  "settings.ca.privateKeyNote":
+    "CA 秘密鍵はローカル CA ディレクトリにのみ保存され、HTTP 配布タスクは読み取れません。",
 };
 
 const ko: SettingsMessages = {
@@ -1604,6 +1834,52 @@ const ko: SettingsMessages = {
   "settings.backup.skipWarningMessage":
     "이 백업의 로컬 책 {count}권에 지금 접근할 수 없습니다(외장 드라이브나 네트워크 위치가 연결되지 않음). 계속하면 현재 라이브러리에서 해당 책의 읽기 진행률과 기록이 삭제됩니다. 복원 전에 현재 라이브러리의 스냅샷을 저장합니다.",
   "settings.backup.forwardSchema": "더 최신 버전({version})에서 내보낸 백업입니다. 호환 모드로 핵심 라이브러리와 진행 상황을 복원했으며, 최신 버전에서 추가된 설정은 무시했습니다.",
+  "settings.ca.title": "루트 CA 및 기기 신뢰",
+  "settings.ca.description":
+    "루트 CA를 초기화·내보내고 짧은 시간 동안 평문 HTTP로 배포하여 휴대폰이 이 기기의 HTTPS 서비스를 신뢰하도록 합니다.",
+  "settings.ca.badgeNotInitialized": "CA 미초기화",
+  "settings.ca.badgeInitialized": "CA 초기화됨",
+  "settings.ca.notInitialized":
+    "로컬 CA가 초기화되지 않았습니다. 초기화하면 새 루트 인증서가 생성됩니다. 관리하는 기기에만 설치하고 CA를 백업하세요.",
+  "settings.ca.initialize": "로컬 CA 초기화",
+  "settings.ca.initializeConfirmTitle": "로컬 루트 CA를 초기화할까요?",
+  "settings.ca.initializeConfirmMessage":
+    "새 로컬 루트 CA를 만듭니다. CA를 잃으면 설치된 모든 기기에서 신뢰 인증서를 다시 설치해야 합니다. 어떤 데이터도 업로드되지 않습니다.",
+  "settings.ca.initialized": "로컬 CA를 초기화하고 개인 키 ACL을 검증했습니다.",
+  "settings.ca.fingerprint": "루트 인증서 SHA-256 지문",
+  "settings.ca.fingerprintHint":
+    "휴대폰에 설치하기 전에 전체 SHA-256 지문을 확인하세요. 16진수 64자이며 콜론과 대소문자는 무시합니다.",
+  "settings.ca.verifyOnPhone":
+    "중요: 휴대폰 설치 화면에 SHA-1이 표시될 수 있습니다. SHA-256으로 전환한 뒤 위 값과 모든 그룹을 비교하세요. 다르면 설치하지 마세요.",
+  "settings.ca.copyFingerprint": "지문 복사",
+  "settings.ca.copied": "복사됨",
+  "settings.ca.copyFailed": "복사하지 못했습니다. 텍스트를 선택해 직접 복사하세요.",
+  "settings.ca.expires": "루트 만료: {date} ({days}일 남음)",
+  "settings.ca.rotationWarning":
+    "루트 CA가 {days}일 후 교체 기간에 들어갑니다. 교체 후 모든 기기에 다시 배포하고 설치해야 합니다.",
+  "settings.ca.intermediateFingerprint": "중간 CA 지문(진단용)",
+  "settings.ca.export": "루트 인증서 내보내기",
+  "settings.ca.exportTitle": "루트 인증서 저장",
+  "settings.ca.exported": "루트 인증서를 내보냈습니다. 설치 전에 지문을 확인하세요.",
+  "settings.ca.exportFailed": "루트 인증서를 내보내지 못했습니다. 다시 시도하세요.",
+  "settings.ca.loadError": "CA 상태를 불러오지 못했습니다: {detail}",
+  "settings.ca.distribution.title": "단기 배포 서비스",
+  "settings.ca.distribution.description":
+    "명시적으로 시작한 경우에만 루트 인증서를 제공합니다. 휴대폰은 CA를 신뢰하기 전에 HTTPS를 검증할 수 없으므로 평문 HTTP를 사용하며 120초 후 자동으로 종료됩니다.",
+  "settings.ca.distribution.address": "배포 주소",
+  "settings.ca.distribution.start": "배포 시작",
+  "settings.ca.distribution.stop": "배포 중지",
+  "settings.ca.distribution.running": "실행 중",
+  "settings.ca.distribution.stopped": "중지됨",
+  "settings.ca.distribution.url": "다운로드 URL",
+  "settings.ca.distribution.expiresIn": "{seconds}초 남음",
+  "settings.ca.distribution.expired": "배포 서비스가 만료되어 자동으로 종료되었습니다.",
+  "settings.ca.distribution.securityNote":
+    "공개 루트 인증서만 제공합니다. 신뢰할 수 있는 LAN에서만 사용하세요. URL은 평문 HTTP이므로 신뢰할 수 없는 네트워크에 노출하지 마세요.",
+  "settings.ca.distribution.noAddress":
+    "사용 가능한 사설 LAN IPv4 주소가 없어 배포를 시작할 수 없습니다.",
+  "settings.ca.privateKeyNote":
+    "CA 개인 키는 로컬 CA 디렉터리에만 있으며 HTTP 배포 작업은 이를 읽을 수 없습니다.",
 };
 
 export const settingsMessages = {

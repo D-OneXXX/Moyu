@@ -7,6 +7,8 @@
 //! [`start_tls_server`] and must be shut down explicitly.
 
 mod addrs;
+#[allow(dead_code)] // wired by ca_distribution_commands in Task 3
+mod ca_distribution;
 mod error;
 mod tls;
 

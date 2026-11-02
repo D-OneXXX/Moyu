@@ -10,6 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::ca::CaManager;
 
+use super::tls::start_tls_server_with_clock;
 use super::*;
 
 #[test]
@@ -81,6 +82,10 @@ struct TestCa {
 impl TestCa {
     fn new(tag: &str) -> Self {
         Self::with_clock_at(tag, OffsetDateTime::now_utc())
+    }
+
+    fn renewal(tag: &str) -> Self {
+        Self::with_clock_at(tag, OffsetDateTime::now_utc() - TimeDuration::days(23))
     }
 
     fn with_clock_at(tag: &str, now: OffsetDateTime) -> Self {
@@ -230,7 +235,7 @@ async fn handle_snapshot_matches_the_served_leaf() {
 
 #[tokio::test]
 async fn explicit_renewal_swaps_new_connections_only() {
-    let ca = TestCa::new("tls-renew");
+    let ca = TestCa::renewal("tls-renew");
     ca.initialize();
     let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
     let old_fingerprint = handle.leaf_fingerprint_sha256();
@@ -277,7 +282,7 @@ async fn explicit_renewal_swaps_new_connections_only() {
 
 #[tokio::test]
 async fn renewal_failure_keeps_valid_old_certificate() {
-    let ca = TestCa::new("tls-renew-fail");
+    let ca = TestCa::renewal("tls-renew-fail");
     ca.initialize();
     let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
     let old_fingerprint = handle.leaf_fingerprint_sha256();
@@ -311,7 +316,7 @@ async fn renewal_failure_keeps_valid_old_certificate() {
 
 #[tokio::test]
 async fn failed_renewal_at_expiry_stops_listener() {
-    let ca = TestCa::new("tls-renew-expired");
+    let ca = TestCa::renewal("tls-renew-expired");
     ca.initialize();
     let handle = start_with_test_clock(&ca, TlsRenewalPolicy::default()).await;
     let addr = handle.local_addr();
@@ -331,20 +336,20 @@ async fn failed_renewal_at_expiry_stops_listener() {
 
     let stopped = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if TcpStream::connect(addr).await.is_err() {
+            if TcpListener::bind(addr).await.is_ok() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    assert!(stopped.is_ok(), "listener still accepts after expiry");
+    assert!(stopped.is_ok(), "listener port still bound after expiry");
     handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]
 async fn monitor_renews_before_expiry() {
-    let ca = TestCa::new("tls-monitor");
+    let ca = TestCa::renewal("tls-monitor");
     ca.initialize();
     let policy = TlsRenewalPolicy {
         tick: Duration::from_millis(10),
@@ -353,7 +358,7 @@ async fn monitor_renews_before_expiry() {
     let handle = start_with_test_clock(&ca, policy).await;
     let old_fingerprint = handle.leaf_fingerprint_sha256();
 
-    ca.advance(TimeDuration::days(23));
+    ca.advance(TimeDuration::days(23) + TimeDuration::seconds(1));
     let changed = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let fingerprint = handle.leaf_fingerprint_sha256();

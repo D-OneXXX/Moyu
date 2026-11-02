@@ -1,6 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use http_body_util::Full;
@@ -10,8 +10,9 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use time::OffsetDateTime;
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, watch, Semaphore};
+use tokio::sync::{watch, Mutex as AsyncMutex, Notify, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_rustls::TlsAcceptor;
 use zeroize::Zeroizing;
@@ -21,7 +22,10 @@ use crate::ca::{CaError, CaManager};
 use super::addrs::select_san_ips;
 use super::error::{WebAccessError, WebAccessResult};
 use super::http::{empty_response, health_response, not_found_response, RequestGuard};
-use super::tls_renewal::{TlsCertificateSnapshot, TlsCertificateState};
+use super::tls_renewal::{
+    certificate_expired, issuer_rotation_required, renewal_due, TlsCertificateSnapshot,
+    TlsCertificateState, TlsRenewalPolicy,
+};
 
 /// The only DNS name the CA issues leaves for.
 const LEAF_DNS: &str = "moyu.local";
@@ -30,7 +34,10 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ACTIVE_CONNECTIONS: usize = 32;
 
+type Clock = Arc<dyn Fn() -> OffsetDateTime + Send + Sync>;
+
 /// The certificate currently served to new TLS connections.
+#[derive(Clone)]
 pub(crate) struct ServingCertificate {
     pub config: Arc<rustls::ServerConfig>,
     pub leaf_fingerprint_sha256: String,
@@ -38,6 +45,277 @@ pub(crate) struct ServingCertificate {
     pub root_fingerprint_sha256: String,
     pub root_generation: u32,
     pub intermediate_generation: u32,
+}
+
+struct PreviousCertificate {
+    serving: ServingCertificate,
+    #[allow(dead_code)] // Used by the rollback API in the next task.
+    swapped_at: i64,
+}
+
+struct RuntimeMeta {
+    state: TlsCertificateState,
+    last_error_code: Option<&'static str>,
+    previous: Option<PreviousCertificate>,
+}
+
+impl RuntimeMeta {
+    fn new() -> Self {
+        Self {
+            state: TlsCertificateState::Serving,
+            last_error_code: None,
+            previous: None,
+        }
+    }
+}
+
+struct TlsRuntime {
+    manager: Arc<CaManager>,
+    san_ips: Vec<Ipv4Addr>,
+    clock: Clock,
+    policy: TlsRenewalPolicy,
+    cert_tx: watch::Sender<ServingCertificate>,
+    meta: Mutex<RuntimeMeta>,
+    renewal_lock: AsyncMutex<()>,
+    wake: Arc<Notify>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
+}
+
+impl TlsRuntime {
+    fn new(
+        manager: Arc<CaManager>,
+        san_ips: Vec<Ipv4Addr>,
+        clock: Clock,
+        policy: TlsRenewalPolicy,
+        serving: ServingCertificate,
+        shutdown_tx: Arc<watch::Sender<bool>>,
+    ) -> (Arc<Self>, watch::Receiver<ServingCertificate>) {
+        let (cert_tx, cert_rx) = watch::channel(serving);
+        (
+            Arc::new(Self {
+                manager,
+                san_ips,
+                clock,
+                policy,
+                cert_tx,
+                meta: Mutex::new(RuntimeMeta::new()),
+                renewal_lock: AsyncMutex::new(()),
+                wake: Arc::new(Notify::new()),
+                shutdown_tx,
+            }),
+            cert_rx,
+        )
+    }
+
+    fn lock_meta(&self) -> std::sync::MutexGuard<'_, RuntimeMeta> {
+        self.meta
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn next_wait(&self) -> Duration {
+        let meta = self.lock_meta();
+        match meta.state {
+            TlsCertificateState::RenewalFailed { .. }
+            | TlsCertificateState::IssuerRotationRequired { .. } => self.policy.retry_after_failure,
+            _ => self.policy.tick,
+        }
+    }
+
+    fn mark_renewing(&self) {
+        let mut meta = self.lock_meta();
+        meta.state = TlsCertificateState::Renewing;
+        meta.last_error_code = None;
+    }
+
+    fn record_failure(&self, code: &'static str, expired: bool) {
+        let terminal = expired;
+        let state = if terminal {
+            TlsCertificateState::Expired
+        } else {
+            TlsCertificateState::RenewalFailed { code }
+        };
+        let last_error = if terminal {
+            "web-access-certificate-expired"
+        } else {
+            code
+        };
+        {
+            let mut meta = self.lock_meta();
+            meta.state = state;
+            meta.last_error_code = Some(last_error);
+        }
+        if terminal {
+            let _ = self.shutdown_tx.send(true);
+        }
+    }
+
+    fn set_root_pending(&self, active_root_fingerprint_sha256: String, expired: bool) {
+        let terminal = expired;
+        let state = if terminal {
+            TlsCertificateState::Expired
+        } else {
+            TlsCertificateState::RootChangePending {
+                active_root_fingerprint_sha256,
+            }
+        };
+        let last_error = if terminal {
+            "web-access-certificate-expired"
+        } else {
+            "web-access-root-change-pending"
+        };
+        {
+            let mut meta = self.lock_meta();
+            meta.state = state;
+            meta.last_error_code = Some(last_error);
+        }
+        if terminal {
+            let _ = self.shutdown_tx.send(true);
+        }
+    }
+
+    fn set_issuer_required(&self, expired: bool) {
+        let terminal = expired;
+        let state = if terminal {
+            TlsCertificateState::Expired
+        } else {
+            TlsCertificateState::IssuerRotationRequired {
+                code: "ca-insufficient-validity",
+            }
+        };
+        let last_error = if terminal {
+            "web-access-certificate-expired"
+        } else {
+            "ca-insufficient-validity"
+        };
+        {
+            let mut meta = self.lock_meta();
+            meta.state = state;
+            meta.last_error_code = Some(last_error);
+        }
+        if terminal {
+            let _ = self.shutdown_tx.send(true);
+        }
+    }
+
+    fn swap(&self, new: ServingCertificate, swapped_at: i64) {
+        let previous = self.cert_tx.send_replace(new);
+        let mut meta = self.lock_meta();
+        meta.state = TlsCertificateState::Serving;
+        meta.last_error_code = None;
+        meta.previous = Some(PreviousCertificate {
+            serving: previous,
+            swapped_at,
+        });
+    }
+
+    async fn tick(&self) {
+        let now = (self.clock)().unix_timestamp();
+        let current = self.cert_tx.borrow().clone();
+        let expired = certificate_expired(now, current.leaf_not_after);
+        let manager = self.manager.clone();
+        let status = tokio::task::spawn_blocking(move || manager.status()).await;
+        let status = match status {
+            Err(_) => {
+                self.record_failure("web-access-server-join", expired);
+                return;
+            }
+            Ok(Err(err)) => {
+                self.record_failure(err.code(), expired);
+                return;
+            }
+            Ok(Ok(status)) => status,
+        };
+
+        if status.root_generation != current.root_generation
+            || status.root_fingerprint_sha256 != current.root_fingerprint_sha256
+        {
+            self.set_root_pending(status.root_fingerprint_sha256, expired);
+            return;
+        }
+        if issuer_rotation_required(
+            status.root_days_remaining,
+            status.intermediate_days_remaining,
+        ) {
+            self.set_issuer_required(expired);
+            return;
+        }
+        if expired
+            || status.intermediate_generation != current.intermediate_generation
+            || renewal_due(now, current.leaf_not_after, self.policy.renew_before)
+        {
+            let _ = self.renew_locked().await;
+        }
+    }
+
+    async fn renew_locked(&self) -> WebAccessResult<()> {
+        let _guard = self.renewal_lock.lock().await;
+        let now = (self.clock)().unix_timestamp();
+        let current = self.cert_tx.borrow().clone();
+        let expired = certificate_expired(now, current.leaf_not_after);
+        self.mark_renewing();
+
+        let manager = self.manager.clone();
+        let status = tokio::task::spawn_blocking(move || manager.status()).await;
+        let status = match status {
+            Err(_) => {
+                self.record_failure("web-access-server-join", expired);
+                return Err(WebAccessError::ServerJoin);
+            }
+            Ok(Err(err)) => {
+                self.record_failure(err.code(), expired);
+                return Err(WebAccessError::Ca(err));
+            }
+            Ok(Ok(status)) => status,
+        };
+
+        if status.root_generation != current.root_generation
+            || status.root_fingerprint_sha256 != current.root_fingerprint_sha256
+        {
+            self.set_root_pending(status.root_fingerprint_sha256, expired);
+            return Err(WebAccessError::RootChangePending);
+        }
+        if issuer_rotation_required(
+            status.root_days_remaining,
+            status.intermediate_days_remaining,
+        ) {
+            self.set_issuer_required(expired);
+            return Err(WebAccessError::Ca(CaError::InsufficientValidity));
+        }
+
+        let root_fingerprint_sha256 = status.root_fingerprint_sha256.clone();
+        let root_generation = status.root_generation;
+        let intermediate_generation = status.intermediate_generation;
+        let manager = self.manager.clone();
+        let san_ips = self.san_ips.clone();
+        let new = tokio::task::spawn_blocking(move || -> WebAccessResult<ServingCertificate> {
+            let leaf = manager.issue_leaf(LEAF_DNS, &san_ips)?;
+            let config = build_server_config(&leaf)?;
+            Ok(ServingCertificate {
+                config: Arc::new(config),
+                leaf_fingerprint_sha256: leaf.fingerprint_sha256,
+                leaf_not_after: leaf.not_after,
+                root_fingerprint_sha256,
+                root_generation,
+                intermediate_generation,
+            })
+        })
+        .await;
+        let new = match new {
+            Ok(Ok(new)) => new,
+            Ok(Err(err)) => {
+                self.record_failure(err.code(), expired);
+                return Err(err);
+            }
+            Err(_) => {
+                self.record_failure("web-access-server-join", expired);
+                return Err(WebAccessError::ServerJoin);
+            }
+        };
+
+        self.swap(new, now);
+        Ok(())
+    }
 }
 
 /// Configuration for an explicitly started TLS listener.
@@ -72,16 +350,16 @@ impl std::fmt::Debug for TlsServerConfig {
     }
 }
 
-/// A running TLS listener. Dropping the handle aborts the accept task and
-/// closes the listener; [`Self::shutdown`] waits for the task to finish.
+/// A running TLS listener. Dropping the handle aborts the accept/renewal tasks
+/// and closes the listener; [`Self::shutdown`] waits for both tasks to finish.
 pub struct TlsServerHandle {
     local_addr: SocketAddr,
     san_ips: Vec<Ipv4Addr>,
     current: watch::Receiver<ServingCertificate>,
-    /// Kept alive for the renewal task added in the next slice.
-    _cert_tx: watch::Sender<ServingCertificate>,
-    shutdown: Option<oneshot::Sender<()>>,
+    runtime: Arc<TlsRuntime>,
+    shutdown: Option<Arc<watch::Sender<bool>>>,
     task: Option<JoinHandle<()>>,
+    renewal_task: Option<JoinHandle<()>>,
 }
 
 impl TlsServerHandle {
@@ -110,17 +388,30 @@ impl TlsServerHandle {
     /// A path/key-free snapshot of the certificate currently served.
     pub fn certificate_snapshot(&self) -> TlsCertificateSnapshot {
         let current = self.current.borrow();
+        let meta = self.runtime.lock_meta();
         TlsCertificateSnapshot {
-            state: TlsCertificateState::Serving,
+            state: meta.state.clone(),
             leaf_fingerprint_sha256: current.leaf_fingerprint_sha256.clone(),
             leaf_not_after: current.leaf_not_after,
             root_fingerprint_sha256: current.root_fingerprint_sha256.clone(),
             root_generation: current.root_generation,
             intermediate_generation: current.intermediate_generation,
-            last_error_code: None,
-            previous_leaf_fingerprint_sha256: None,
-            previous_not_after: None,
+            last_error_code: meta.last_error_code,
+            previous_leaf_fingerprint_sha256: meta
+                .previous
+                .as_ref()
+                .map(|previous| previous.serving.leaf_fingerprint_sha256.clone()),
+            previous_not_after: meta
+                .previous
+                .as_ref()
+                .map(|previous| previous.serving.leaf_not_after),
         }
+    }
+
+    /// Force one certificate renewal and return the resulting snapshot.
+    pub async fn renew_now(&self) -> WebAccessResult<TlsCertificateSnapshot> {
+        self.runtime.renew_locked().await?;
+        Ok(self.certificate_snapshot())
     }
 
     pub async fn shutdown(mut self) -> WebAccessResult<()> {
@@ -128,12 +419,15 @@ impl TlsServerHandle {
         if let Some(task) = self.task.take() {
             task.await.map_err(|_| WebAccessError::ServerJoin)?;
         }
+        if let Some(task) = self.renewal_task.take() {
+            task.await.map_err(|_| WebAccessError::ServerJoin)?;
+        }
         Ok(())
     }
 
     fn signal_shutdown(&mut self) {
         if let Some(sender) = self.shutdown.take() {
-            let _ = sender.send(());
+            let _ = sender.send(true);
         }
     }
 }
@@ -142,6 +436,9 @@ impl Drop for TlsServerHandle {
     fn drop(&mut self) {
         self.signal_shutdown();
         if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.renewal_task.take() {
             task.abort();
         }
     }
@@ -155,6 +452,28 @@ impl Drop for TlsServerHandle {
 /// `GET /api/health` is served (204); every other request is 404. There is no
 /// pairing, session, auth, data route, Tauri command, UI, or startup wiring.
 pub async fn start_tls_server(config: TlsServerConfig) -> WebAccessResult<TlsServerHandle> {
+    start_tls_server_inner(
+        config,
+        Arc::new(OffsetDateTime::now_utc),
+        TlsRenewalPolicy::default(),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn start_tls_server_with_clock(
+    config: TlsServerConfig,
+    clock: Clock,
+    policy: TlsRenewalPolicy,
+) -> WebAccessResult<TlsServerHandle> {
+    start_tls_server_inner(config, clock, policy).await
+}
+
+async fn start_tls_server_inner(
+    config: TlsServerConfig,
+    clock: Clock,
+    policy: TlsRenewalPolicy,
+) -> WebAccessResult<TlsServerHandle> {
     // The CA root must be absolute; never resolve it against the process CWD.
     if !config.ca_root.is_absolute() {
         return Err(WebAccessError::Ca(CaError::RelativeCaRoot));
@@ -165,7 +484,7 @@ pub async fn start_tls_server(config: TlsServerConfig) -> WebAccessResult<TlsSer
         return Err(WebAccessError::InvalidBindAddress);
     }
 
-    let manager = CaManager::new(config.ca_root);
+    let manager = Arc::new(CaManager::with_clock(config.ca_root, clock.clone()));
     // Full CA health check; an uninitialized or damaged CA fails before bind.
     let status = manager.status()?;
     let san_ips = select_san_ips(config.san_ips)?;
@@ -183,21 +502,33 @@ pub async fn start_tls_server(config: TlsServerConfig) -> WebAccessResult<TlsSer
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;
     let connections = Arc::new(Semaphore::new(MAX_ACTIVE_CONNECTIONS));
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let (cert_tx, cert_rx) = watch::channel(serving);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown_tx = Arc::new(shutdown_tx);
+    let (runtime, cert_rx) = TlsRuntime::new(
+        manager,
+        san_ips.clone(),
+        clock.clone(),
+        policy,
+        serving,
+        shutdown_tx.clone(),
+    );
     let task = tokio::spawn(accept_loop(
         listener,
         cert_rx.clone(),
+        clock,
+        runtime.wake.clone(),
         connections,
-        shutdown_rx,
+        shutdown_rx.clone(),
     ));
+    let renewal_task = tokio::spawn(renewal_loop(runtime.clone(), shutdown_rx));
     Ok(TlsServerHandle {
         local_addr,
         san_ips,
         current: cert_rx,
-        _cert_tx: cert_tx,
+        runtime,
         shutdown: Some(shutdown_tx),
         task: Some(task),
+        renewal_task: Some(renewal_task),
     })
 }
 
@@ -235,16 +566,47 @@ fn build_server_config(leaf: &crate::ca::LeafMaterial) -> WebAccessResult<rustls
         .map_err(|err| WebAccessError::TlsConfig(err.to_string()))
 }
 
+async fn renewal_loop(runtime: Arc<TlsRuntime>, mut shutdown: watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        let wait = runtime.next_wait();
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            _ = runtime.wake.notified() => {}
+            _ = tokio::time::sleep(wait) => {}
+        }
+        if *shutdown.borrow() {
+            break;
+        }
+        runtime.tick().await;
+    }
+}
+
 async fn accept_loop(
     listener: TcpListener,
     cert_rx: watch::Receiver<ServingCertificate>,
+    clock: Clock,
+    wake: Arc<Notify>,
     connections: Arc<Semaphore>,
-    mut shutdown: oneshot::Receiver<()>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     let mut tasks = JoinSet::new();
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
-            _ = &mut shutdown => break,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _peer)) => {
@@ -256,10 +618,15 @@ async fn accept_loop(
                                 continue;
                             }
                         };
-                        // Snapshot the certificate at accept time. Existing
-                        // connections keep their already-negotiated session;
-                        // every new connection sees the latest swap.
-                        let server_config = cert_rx.borrow().config.clone();
+                        let current = cert_rx.borrow().clone();
+                        if certificate_expired((clock)().unix_timestamp(), current.leaf_not_after) {
+                            // Do not complete a handshake with an expired leaf.
+                            // Wake the monitor so it can renew or stop the listener.
+                            wake.notify_one();
+                            drop(stream);
+                            continue;
+                        }
+                        let server_config = current.config.clone();
                         tasks.spawn(async move {
                             let _permit = permit;
                             let acceptor = TlsAcceptor::from(server_config);

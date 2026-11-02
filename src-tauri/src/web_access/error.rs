@@ -22,6 +22,8 @@ pub enum WebAccessError {
     Io(#[from] std::io::Error),
     #[error("TLS server task failed")]
     ServerJoin,
+    #[error("TLS serving certificate requires an explicit root-rotation reload")]
+    RootChangePending,
 }
 
 impl WebAccessError {
@@ -37,6 +39,7 @@ impl WebAccessError {
             Self::TlsConfig(_) => "web-access-tls-config",
             Self::Io(_) => "web-access-io",
             Self::ServerJoin => "web-access-server-join",
+            Self::RootChangePending => "web-access-root-change-pending",
         }
     }
 }

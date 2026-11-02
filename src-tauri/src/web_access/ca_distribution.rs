@@ -559,6 +559,7 @@ mod tests {
             ("GET", "/ca.crt/"),
             ("GET", "/api/health"),
             ("GET", "/ca.crt?x=1"),
+            ("GET", "/ca.crt?"),
             ("POST", CA_DISTRIBUTION_PATH),
             ("HEAD", CA_DISTRIBUTION_PATH),
             ("OPTIONS", CA_DISTRIBUTION_PATH),

@@ -6,7 +6,7 @@
 //! service. They do not implement pairing, sessions, data routes, G2, or D1b.
 
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -95,10 +95,6 @@ impl From<CaDistributionStatus> for CaDistributionStatusView {
     }
 }
 
-fn ca_manager(runtime: &CaDistributionRuntime) -> CaManager {
-    CaManager::new(runtime.ca_root().to_path_buf())
-}
-
 /// Initialize only on an explicit command, then verify `status()` (which runs
 /// the full ACL audit) instead of trusting the initialize return value. A
 /// post-commit audit failure can return `Err` while the CA is healthy; status
@@ -154,20 +150,29 @@ fn distribution_error_message(error: &CaDistributionError) -> String {
     }
 }
 
-fn validate_export_path(raw: &str) -> Result<PathBuf, String> {
+fn validate_export_path(raw: &str, ca_root: &Path) -> Result<PathBuf, String> {
     let path = PathBuf::from(raw.trim());
     if path.as_os_str().is_empty() || !path.is_absolute() {
         return Err("导出路径必须是绝对路径（ca-export-path）".to_string());
+    }
+    // Never allow the public PEM export to overwrite CA state, keys or audit
+    // files. The save dialog normally points elsewhere; this is a fail-closed
+    // backend check, not a UI-only guard.
+    if path.starts_with(ca_root) {
+        return Err("导出路径不能位于本地 CA 目录内（ca-export-path）".to_string());
     }
     Ok(path)
 }
 
 #[tauri::command]
-pub(crate) fn web_access_ca_status(
+pub(crate) async fn web_access_ca_status(
     runtime: State<'_, Arc<CaDistributionRuntime>>,
 ) -> Result<CaStatusView, String> {
-    let manager = ca_manager(runtime.inner().as_ref());
-    match manager.status() {
+    let ca_root = runtime.inner().ca_root().to_path_buf();
+    let result = tokio::task::spawn_blocking(move || CaManager::new(ca_root).status())
+        .await
+        .map_err(|_| "CA 状态读取失败（ca-io）".to_string())?;
+    match result {
         Ok(status) => Ok(CaStatusView::from_status(status)),
         Err(CaError::NotInitialized) => Ok(CaStatusView::not_initialized()),
         Err(error) => Err(ca_error_message(&error)),
@@ -175,25 +180,33 @@ pub(crate) fn web_access_ca_status(
 }
 
 #[tauri::command]
-pub(crate) fn web_access_ca_initialize(
+pub(crate) async fn web_access_ca_initialize(
     runtime: State<'_, Arc<CaDistributionRuntime>>,
 ) -> Result<CaStatusView, String> {
-    let manager = ca_manager(runtime.inner().as_ref());
-    initialize_and_verify(&manager)
+    let ca_root = runtime.inner().ca_root().to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        let manager = CaManager::new(ca_root);
+        initialize_and_verify(&manager)
+    })
+    .await
+    .map_err(|_| "CA 初始化失败（ca-io）".to_string())?;
+    result
         .map(CaStatusView::from_status)
         .map_err(|error| ca_error_message(&error))
 }
 
 #[tauri::command]
-pub(crate) fn web_access_ca_export_root(
+pub(crate) async fn web_access_ca_export_root(
     runtime: State<'_, Arc<CaDistributionRuntime>>,
     path: String,
 ) -> Result<CaExportView, String> {
-    let path = validate_export_path(&path)?;
-    let manager = ca_manager(runtime.inner().as_ref());
-    let certificate = manager
-        .export_root_certificate(&path)
-        .map_err(|error| ca_error_message(&error))?;
+    let ca_root = runtime.inner().ca_root().to_path_buf();
+    let path = validate_export_path(&path, &ca_root)?;
+    let result =
+        tokio::task::spawn_blocking(move || CaManager::new(ca_root).export_root_certificate(&path))
+            .await
+            .map_err(|_| "CA 导出失败（ca-io）".to_string())?;
+    let certificate = result.map_err(|error| ca_error_message(&error))?;
     Ok(CaExportView {
         fingerprint_sha256: certificate.fingerprint_sha256,
     })
@@ -327,11 +340,14 @@ mod tests {
     }
 
     #[test]
-    fn export_path_must_be_absolute() {
-        assert!(validate_export_path("relative.crt").is_err());
-        assert!(validate_export_path("   ").is_err());
+    fn export_path_must_be_absolute_and_outside_ca_root() {
+        let ca_root = temp_path("commands-export-root").join("ca");
+        assert!(validate_export_path("relative.crt", &ca_root).is_err());
+        assert!(validate_export_path("   ", &ca_root).is_err());
+        let inside = ca_root.join("state.json");
+        assert!(validate_export_path(inside.to_str().unwrap(), &ca_root).is_err());
         let absolute = temp_path("commands-export").join("ca.crt");
-        assert!(validate_export_path(absolute.to_str().unwrap()).is_ok());
+        assert!(validate_export_path(absolute.to_str().unwrap(), &ca_root).is_ok());
     }
 
     #[test]

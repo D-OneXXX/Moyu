@@ -394,7 +394,10 @@ export default function CaDistributionPanel() {
             </div>
 
             <div className="rounded-2xl border border-border bg-background/60 p-4">
-              <div className="flex flex-wrap items-center gap-2">
+              <div
+                className="flex flex-wrap items-center gap-2"
+                aria-live="polite"
+              >
                 <p className="text-sm font-semibold">
                   {t("settings.ca.distribution.title")}
                 </p>

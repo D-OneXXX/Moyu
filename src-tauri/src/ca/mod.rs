@@ -113,6 +113,33 @@ impl std::fmt::Debug for LeafMaterial {
     }
 }
 
+/// Public root certificate snapshot for device-trust distribution.
+///
+/// Contains only public certificate data. It deliberately carries no private
+/// key, key path, ACL handle, or `CaManager` reference, so a caller that only
+/// serves this snapshot has no structural path to the CA private key.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RootCertificate {
+    pub generation: u32,
+    pub cert_pem: String,
+    pub cert_der: Vec<u8>,
+    pub fingerprint_sha256: String,
+    pub not_after: i64,
+}
+
+impl std::fmt::Debug for RootCertificate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RootCertificate")
+            .field("generation", &self.generation)
+            .field("cert_pem_len", &self.cert_pem.len())
+            .field("cert_der_len", &self.cert_der.len())
+            .field("fingerprint_sha256", &self.fingerprint_sha256)
+            .field("not_after", &self.not_after)
+            .finish()
+    }
+}
+
 /// Result of [`CaManager::rotate_intermediate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RotationResult {
@@ -317,6 +344,35 @@ impl CaManager {
             needs_root_rotation: root_days_remaining < 365,
             needs_intermediate_rotation: intermediate_days_remaining < 30,
         })
+    }
+
+    /// Read a consistent public snapshot of the active root certificate.
+    ///
+    /// The process-wide operation lock is held across `status()` and the
+    /// generation read, so a concurrent rotation cannot produce a snapshot
+    /// whose fingerprint disagrees with its certificate. Only public data is
+    /// read; the root private key is never opened.
+    pub fn root_certificate(&self) -> CaResult<RootCertificate> {
+        let _guard = Self::lock_operations()?;
+        self.status()?;
+        let root = storage::read_active_root_public(&self.paths)?;
+        Ok(RootCertificate {
+            generation: root.generation,
+            cert_pem: root.cert_pem,
+            cert_der: root.cert_der,
+            fingerprint_sha256: root.info.fingerprint_sha256,
+            not_after: root.info.not_after,
+        })
+    }
+
+    /// Export the active public root certificate as PEM.
+    ///
+    /// The caller chooses the destination (the desktop save dialog confirms
+    /// overwrite). Only public certificate bytes are written.
+    pub fn export_root_certificate(&self, path: &Path) -> CaResult<RootCertificate> {
+        let certificate = self.root_certificate()?;
+        std::fs::write(path, certificate.cert_pem.as_bytes())?;
+        Ok(certificate)
     }
 
     /// Issue an in-memory leaf for `moyu.local` plus 1–8 RFC1918 IPv4 SANs.
@@ -1746,6 +1802,70 @@ mod tests {
 
         mgr.verify_acl().unwrap();
         cleanup(&mgr);
+    }
+
+    #[test]
+    fn root_certificate_matches_status_and_export_contains_no_private_key() {
+        let mgr = test_manager();
+        mgr.initialize().unwrap();
+        let status = mgr.status().unwrap();
+        let certificate = mgr.root_certificate().unwrap();
+
+        assert_eq!(
+            certificate.fingerprint_sha256,
+            status.root_fingerprint_sha256
+        );
+        assert_eq!(certificate.generation, status.root_generation);
+        assert_eq!(certificate.not_after, status.root_not_after);
+        assert_eq!(certificate.cert_der, read_root_der(&mgr));
+        assert!(certificate.cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(!certificate.cert_pem.contains("PRIVATE KEY"));
+        // The existing CA fingerprint format is uppercase, colon-separated
+        // SHA-256 and is directly usable for user comparison.
+        assert_eq!(certificate.fingerprint_sha256.len(), 95);
+        assert!(certificate
+            .fingerprint_sha256
+            .split(':')
+            .all(|pair| pair.len() == 2 && pair.chars().all(|c| c.is_ascii_hexdigit())));
+
+        let export_dir = temp_path("root-export");
+        std::fs::create_dir_all(&export_dir).unwrap();
+        let export_path = export_dir.join("moyu-root-ca.crt");
+        let exported = mgr.export_root_certificate(&export_path).unwrap();
+        assert_eq!(exported.fingerprint_sha256, certificate.fingerprint_sha256);
+        let bytes = std::fs::read_to_string(&export_path).unwrap();
+        assert_eq!(bytes, certificate.cert_pem);
+        assert!(!bytes.contains("PRIVATE KEY"));
+
+        cleanup(&mgr);
+        let _ = std::fs::remove_dir_all(export_dir);
+    }
+
+    #[test]
+    fn root_certificate_fails_closed_when_ca_is_missing_or_corrupt() {
+        let missing = CaManager::new(temp_path("root-missing"));
+        assert_eq!(
+            missing.root_certificate().unwrap_err().code(),
+            "ca-not-initialized"
+        );
+        let missing_export = temp_path("root-missing-export").join("ca.crt");
+        std::fs::create_dir_all(missing_export.parent().unwrap()).unwrap();
+        assert_eq!(
+            missing
+                .export_root_certificate(&missing_export)
+                .unwrap_err()
+                .code(),
+            "ca-not-initialized"
+        );
+        let _ = std::fs::remove_dir_all(missing_export.parent().unwrap());
+
+        let corrupt = test_manager();
+        corrupt.initialize().unwrap();
+        replace_file_with(&corrupt.paths_for_test().state_file(), b"{");
+        assert_eq!(
+            corrupt.root_certificate().unwrap_err().code(),
+            "ca-state-corrupt"
+        );
     }
 
     #[test]

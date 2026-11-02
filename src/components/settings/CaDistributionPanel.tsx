@@ -218,7 +218,13 @@ export default function CaDistributionPanel() {
       if (!mountedRef.current) return;
       setDistribution(next);
       wasRunningRef.current = false;
-      toast(t("settings.ca.distribution.stopped"));
+      toast(
+        t(
+          next.stopReason === "expired"
+            ? "settings.ca.distribution.expired"
+            : "settings.ca.distribution.stopped",
+        ),
+      );
       recordBreadcrumb("privacy");
     } catch (cause) {
       if (mountedRef.current) {

@@ -601,8 +601,16 @@ mod tests {
         let status = runtime.status().await;
         let addr = local_addr(&status);
 
-        tokio::time::sleep(Duration::from_millis(350)).await;
-        let stopped = runtime.status().await;
+        // Poll instead of sleeping a fixed margin: CI scheduling can delay the
+        // timer even though the runtime is correct.
+        let mut stopped = runtime.status().await;
+        for _ in 0..200 {
+            if !stopped.running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            stopped = runtime.status().await;
+        }
         assert!(!stopped.running);
         assert_eq!(stopped.stop_reason, Some(CaDistributionStopReason::Expired));
         assert_eq!(

@@ -192,6 +192,15 @@ async fn start_with_test_clock(ca: &TestCa, policy: TlsRenewalPolicy) -> TlsServ
         .unwrap()
 }
 
+/// Upper bound for positive waits on a monitor transition or listener shutdown.
+///
+/// `CaManager` serializes every mutating operation behind a process-wide lock
+/// (`CA_OPERATION_LOCK`), so a long-running CA test in the parallel full suite
+/// can delay renewal well past the usual sub-second path. A short deadline
+/// reports lock contention as a renewal bug; this bound only slows down tests
+/// that are already failing.
+const ASYNC_CA_WAIT: Duration = Duration::from_secs(30);
+
 #[tokio::test]
 async fn handle_snapshot_matches_the_served_leaf() {
     let ca = TestCa::new("tls-snapshot");
@@ -363,9 +372,7 @@ async fn failed_renewal_retries_after_ca_recovers() {
     );
 
     std::fs::write(&state_path, original_state).unwrap();
-    // The CA operation lock is process-wide; under the parallel full suite a
-    // competing CA test can delay this retry beyond the usual short window.
-    let renewed = tokio::time::timeout(Duration::from_secs(10), async {
+    let renewed = tokio::time::timeout(ASYNC_CA_WAIT, async {
         loop {
             let fingerprint = handle.leaf_fingerprint_sha256();
             if fingerprint != old_fingerprint {
@@ -404,7 +411,7 @@ async fn failed_renewal_at_expiry_stops_listener() {
         Some("web-access-certificate-expired")
     );
 
-    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+    let stopped = tokio::time::timeout(ASYNC_CA_WAIT, async {
         loop {
             if TcpListener::bind(addr).await.is_ok() {
                 break;
@@ -429,7 +436,7 @@ async fn monitor_renews_before_expiry() {
     let old_fingerprint = handle.leaf_fingerprint_sha256();
 
     ca.advance(TimeDuration::days(23) + TimeDuration::seconds(1));
-    let changed = tokio::time::timeout(Duration::from_secs(2), async {
+    let changed = tokio::time::timeout(ASYNC_CA_WAIT, async {
         loop {
             let fingerprint = handle.leaf_fingerprint_sha256();
             if fingerprint != old_fingerprint {
@@ -471,7 +478,7 @@ async fn intermediate_rotation_reloads_under_same_root() {
     ca.advance(TimeDuration::days(20));
     let rotation = ca.manager().rotate_intermediate().unwrap();
     assert_eq!(rotation.old_generation, old_intermediate_generation);
-    let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+    let snapshot = tokio::time::timeout(ASYNC_CA_WAIT, async {
         loop {
             let snapshot = handle.certificate_snapshot();
             if snapshot.intermediate_generation == rotation.new_generation
@@ -533,7 +540,7 @@ async fn root_rotation_requires_explicit_reload_and_retrust() {
     let new_root_fingerprint = ca.manager().status().unwrap().root_fingerprint_sha256;
     assert_ne!(old_root_fingerprint, new_root_fingerprint);
 
-    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+    let snapshot = tokio::time::timeout(ASYNC_CA_WAIT, async {
         loop {
             let snapshot = handle.certificate_snapshot();
             if matches!(
@@ -629,7 +636,7 @@ async fn issuer_validity_gate_keeps_old_until_expiry_then_stops() {
         TlsCertificateState::Expired
     );
     let addr = handle.local_addr();
-    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+    let stopped = tokio::time::timeout(ASYNC_CA_WAIT, async {
         loop {
             if TcpListener::bind(addr).await.is_ok() {
                 break;
@@ -713,7 +720,7 @@ async fn accept_loop_rejects_expired_leaf_and_wakes_monitor() {
         "expired leaf was served or the connection hung"
     );
 
-    let renewed = tokio::time::timeout(Duration::from_secs(2), async {
+    let renewed = tokio::time::timeout(ASYNC_CA_WAIT, async {
         loop {
             let fingerprint = handle.leaf_fingerprint_sha256();
             if fingerprint != old_fingerprint {

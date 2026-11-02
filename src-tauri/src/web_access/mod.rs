@@ -1,10 +1,11 @@
-//! W7-TLS transport slice.
+//! W7 Web Access.
 //!
-//! This module provides a real TLS listener backed by the local CA. It is
-//! deliberately **not** wired into Tauri startup, commands, UI, pairing,
-//! sessions, or data routes: the only served endpoint is a public health
-//! check. The listener is created explicitly by calling
-//! [`start_tls_server`] and must be shut down explicitly.
+//! This module provides the local CA/leaf TLS listener, G1 root-CA
+//! distribution, the in-memory pairing/session state machines, and the D1b
+//! control plane. The production pair-only router is mounted only by
+//! [`WebAccessRuntime`], which starts `Disabled` and listens only after an
+//! explicit Tauri command. There are no data routes. Callers that still use
+//! [`start_tls_server`] directly get the health-only listener.
 
 mod addrs;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -14,9 +15,15 @@ pub(crate) mod ca_distribution_commands;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod clock;
 mod error;
+mod events;
 mod http;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod pairing;
+mod router;
+mod runtime;
+pub(crate) use events::TauriEventSink;
+pub(crate) use runtime::{StopReason, WebAccessRuntime};
+pub(crate) mod commands;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod secret;
 #[cfg_attr(not(test), allow(dead_code))]

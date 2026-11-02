@@ -1,4 +1,4 @@
-//! In-memory pairing window/claim state machine (D1a, library/test-only).
+//! In-memory pairing window/claim state machine (D1a).
 //!
 //! Frozen contract: `docs/dev/W7_DATA_PAIRING_DESIGN_DRAFT.md` §4.1 and
 //! `.superpowers/sdd/2026-11-01-w7-d1a-pairing-session/interfaces.md`.
@@ -90,6 +90,17 @@ impl ClaimState {
 pub(crate) struct ClaimStatus {
     pub state: ClaimState,
     pub terminal_receipt: bool,
+}
+
+/// Desktop-facing view of one claim awaiting approval. Identity material
+/// (secret/hash/reservation id) is deliberately absent.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingClaimView {
+    pub claim_id: String,
+    pub device_name: String,
+    pub source_ip: Ipv4Addr,
+    pub created_at: Instant,
+    pub expires_at: Instant,
 }
 
 /// One-time claim issuance result. The secret is zeroized on drop and is
@@ -188,6 +199,7 @@ struct ClaimEntry {
     /// Sanitized with [`sanitize_device_name`]; rendered by the D1b desktop UI.
     device_name: String,
     source_ip: Ipv4Addr,
+    created_at: Instant,
     state: ClaimState,
     /// Window expiry: pending claims expire with their window.
     expires_at: Instant,
@@ -671,6 +683,7 @@ impl PairingStore {
             pairing_id: pairing_id.to_owned(),
             device_name: sanitize_device_name(device_name),
             source_ip,
+            created_at: now,
             state: ClaimState::Pending,
             expires_at,
             pickup_deadline: None,
@@ -781,6 +794,47 @@ impl PairingStore {
         let mut state = self.lock();
         state.purge_locked(now);
         state.cancel_all_locked(now)
+    }
+
+    /// Expiry of a still-open pairing window, or `None` when it is unknown,
+    /// expired, or closed by approval/denial/cancel. Used by the desktop UI to
+    /// drop a stale QR code after a reload.
+    pub(crate) fn window_expiry(&self, pairing_id: &str) -> Option<Instant> {
+        let now = self.clock.now();
+        let mut state = self.lock();
+        state.purge_locked(now);
+        state
+            .windows
+            .get(pairing_id)
+            .filter(|window| window.closed.is_none())
+            .map(|window| window.expires_at)
+    }
+
+    /// One snapshot of every claim still awaiting approval, oldest first.
+    /// Contains no secret, hash, or reservation id.
+    pub(crate) fn pending_claims(&self) -> Vec<PendingClaimView> {
+        let now = self.clock.now();
+        let mut state = self.lock();
+        state.purge_locked(now);
+        let mut views = state
+            .claims
+            .iter()
+            .filter(|(_, claim)| claim.state == ClaimState::Pending)
+            .map(|(claim_id, claim)| PendingClaimView {
+                claim_id: claim_id.clone(),
+                device_name: claim.device_name.clone(),
+                source_ip: claim.source_ip,
+                created_at: claim.created_at,
+                expires_at: claim.expires_at,
+            })
+            .collect::<Vec<_>>();
+        views.sort_by_key(|view| view.created_at);
+        views
+    }
+
+    /// Number of claims still awaiting approval. Cheap status-card count.
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pending_claims().len()
     }
 
     /// Reservation ids currently attached to active claims, without changing

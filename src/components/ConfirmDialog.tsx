@@ -1,4 +1,4 @@
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Check } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +16,8 @@ interface Props {
   /** 将被删除的路径清单（已脱敏，等宽小字逐行列出）。 */
   paths?: string[];
   confirmText?: string;
+  /** 破坏性操作使用 danger（默认）；批准等正向确认使用 primary。 */
+  tone?: "danger" | "primary";
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -29,10 +31,12 @@ export default function ConfirmDialog({
   message,
   paths,
   confirmText,
+  tone = "danger",
   onConfirm,
   onCancel,
 }: Props) {
   const { t } = useI18n();
+  const positive = tone === "primary";
   return (
     <Dialog
       open
@@ -46,14 +50,24 @@ export default function ConfirmDialog({
         className="max-w-[calc(100%-2rem)] gap-0 overflow-hidden rounded-2xl border border-border bg-card p-0 text-card-foreground shadow-hard sm:max-w-md"
       >
         <DialogHeader className="gap-3 px-6 pb-4 pt-6">
-          <span className="grid size-10 place-items-center rounded-full border border-border bg-destructive/10 text-destructive">
-            <AlertTriangle className="size-5" />
+          <span
+            className={
+              positive
+                ? "grid size-10 place-items-center rounded-full border border-border bg-primary/10 text-primary"
+                : "grid size-10 place-items-center rounded-full border border-border bg-destructive/10 text-destructive"
+            }
+          >
+            {positive ? (
+              <Check className="size-5" />
+            ) : (
+              <AlertTriangle className="size-5" />
+            )}
           </span>
           <DialogTitle className="text-lg font-bold leading-snug tracking-tight">
             {title}
           </DialogTitle>
           {message ? (
-            <DialogDescription className="text-sm leading-relaxed text-muted-foreground">
+            <DialogDescription className="break-words text-sm leading-relaxed text-muted-foreground">
               {message}
             </DialogDescription>
           ) : null}
@@ -78,7 +92,11 @@ export default function ConfirmDialog({
           <Button variant="pill" size="pill-sm" onClick={onCancel}>
             {t("common.cancel")}
           </Button>
-          <Button variant="pill-danger" size="pill-sm" onClick={onConfirm}>
+          <Button
+            variant={positive ? "pill-primary" : "pill-danger"}
+            size="pill-sm"
+            onClick={onConfirm}
+          >
             {confirmText ?? t("common.confirm")}
           </Button>
         </DialogFooter>

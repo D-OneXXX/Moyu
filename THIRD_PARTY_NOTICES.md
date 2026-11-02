@@ -61,6 +61,7 @@ JavaScript to run, which the project's security policy forbids.
 | `cn` | MIT | Copyright (c) 2026 shadcn |
 | `lucide-react` | ISC | Icon set; see above |
 | `pdfjs-dist` | Apache-2.0 | Mozilla PDF.js 6.4.299; in-WebView PDF rendering (see below) |
+| `qrcode-generator` | MIT | Copyright (c) 2009 Kazuhiko Arase. Local QR rendering for the D1b pairing URL; no network, telemetry, or CDN. MIT text: [docs/licenses/MIT.txt](docs/licenses/MIT.txt) |
 | `react`, `react-dom` | MIT | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-router-dom` | MIT | Routing |
 | `tailwindcss`, `@tailwindcss/vite`, `tw-animate-css` | MIT | Styling and animation tooling |

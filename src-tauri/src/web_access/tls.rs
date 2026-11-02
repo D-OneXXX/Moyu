@@ -1,5 +1,9 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,8 +37,75 @@ const HEALTH_PATH: &str = "/api/health";
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ACTIVE_CONNECTIONS: usize = 32;
+/// One LAN peer must not be able to consume every global connection slot with
+/// slow or half-open TLS handshakes. Normal phones need a handful at most.
+const MAX_ACTIVE_CONNECTIONS_PER_IP: usize = 8;
 
 type Clock = Arc<dyn Fn() -> OffsetDateTime + Send + Sync>;
+
+/// Per-peer connection budget. The global semaphore bounds total resource use;
+/// this keeps one LAN peer from holding all of it during slow handshakes.
+struct ConnectionLimiter {
+    active: Mutex<HashMap<IpAddr, usize>>,
+}
+
+struct ConnectionPermit {
+    limiter: Arc<ConnectionLimiter>,
+    ip: IpAddr,
+}
+
+impl ConnectionLimiter {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            active: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = active.entry(ip).or_insert(0);
+        if *count >= MAX_ACTIVE_CONNECTIONS_PER_IP {
+            return None;
+        }
+        *count += 1;
+        Some(ConnectionPermit {
+            limiter: Arc::clone(self),
+            ip,
+        })
+    }
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        let mut active = self
+            .limiter
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(count) = active.get_mut(&self.ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                active.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// A request handler bound to the listener's actual address and the peer that
+/// opened the connection. The handler is shared by every connection.
+pub(crate) type ResponseFuture =
+    Pin<Box<dyn Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send>>;
+pub(crate) type RequestHandler =
+    Arc<dyn Fn(Request<hyper::body::Incoming>, SocketAddr) -> ResponseFuture + Send + Sync>;
+
+/// Builds the request handler after the listener has bound, so the handler sees
+/// the real `local_addr` (including an ephemeral port). A failure here drops the
+/// listener and never starts an accept loop.
+pub(crate) type HandlerFactory =
+    Arc<dyn Fn(SocketAddr) -> WebAccessResult<RequestHandler> + Send + Sync>;
 
 /// The certificate currently served to new TLS connections.
 #[derive(Clone)]
@@ -653,6 +724,23 @@ pub async fn start_tls_server(config: TlsServerConfig) -> WebAccessResult<TlsSer
         config,
         Arc::new(OffsetDateTime::now_utc),
         TlsRenewalPolicy::default(),
+        None,
+    )
+    .await
+}
+
+/// Start the same TLS listener with a handler built from the actual bound
+/// address. D1b uses this to mount the pair-only router; existing callers keep
+/// `start_tls_server` and its health-only behavior.
+pub(crate) async fn start_tls_server_with(
+    config: TlsServerConfig,
+    factory: HandlerFactory,
+) -> WebAccessResult<TlsServerHandle> {
+    start_tls_server_inner(
+        config,
+        Arc::new(OffsetDateTime::now_utc),
+        TlsRenewalPolicy::default(),
+        Some(factory),
     )
     .await
 }
@@ -663,13 +751,28 @@ pub(crate) async fn start_tls_server_with_clock(
     clock: Clock,
     policy: TlsRenewalPolicy,
 ) -> WebAccessResult<TlsServerHandle> {
-    start_tls_server_inner(config, clock, policy).await
+    start_tls_server_inner(config, clock, policy, None).await
+}
+
+#[cfg(test)]
+pub(crate) async fn start_tls_server_with_clock_and_handler(
+    config: TlsServerConfig,
+    clock: Clock,
+    policy: TlsRenewalPolicy,
+    factory: HandlerFactory,
+) -> WebAccessResult<TlsServerHandle> {
+    start_tls_server_inner(config, clock, policy, Some(factory)).await
+}
+
+fn health_handler() -> RequestHandler {
+    Arc::new(|request, _peer| Box::pin(handle_request(request)))
 }
 
 async fn start_tls_server_inner(
     config: TlsServerConfig,
     clock: Clock,
     policy: TlsRenewalPolicy,
+    factory: Option<HandlerFactory>,
 ) -> WebAccessResult<TlsServerHandle> {
     // The CA root must be absolute; never resolve it against the process CWD.
     if !config.ca_root.is_absolute() {
@@ -686,19 +789,32 @@ async fn start_tls_server_inner(
     let status = manager.status()?;
     let san_ips = select_san_ips(config.san_ips)?;
     let leaf = manager.issue_leaf(LEAF_DNS, &san_ips)?;
+    // A root rotation can land between the health check and issuance. Never
+    // advertise the old root fingerprint for a leaf signed by the new root.
+    let after = manager.status()?;
+    if after.root_fingerprint_sha256 != status.root_fingerprint_sha256 {
+        return Err(WebAccessError::RootChangePending);
+    }
     let server_config = Arc::new(build_server_config(&leaf)?);
     let serving = ServingCertificate {
         config: server_config,
         leaf_fingerprint_sha256: leaf.fingerprint_sha256,
         leaf_not_after: leaf.not_after,
-        root_fingerprint_sha256: status.root_fingerprint_sha256,
-        root_generation: status.root_generation,
-        intermediate_generation: status.intermediate_generation,
+        root_fingerprint_sha256: after.root_fingerprint_sha256,
+        root_generation: after.root_generation,
+        intermediate_generation: after.intermediate_generation,
     };
 
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;
+    // The factory runs only after a successful bind and sees the real port.
+    // Any error drops `listener` before an accept loop exists.
+    let handler = match factory {
+        Some(factory) => factory(local_addr)?,
+        None => health_handler(),
+    };
     let connections = Arc::new(Semaphore::new(MAX_ACTIVE_CONNECTIONS));
+    let per_ip_connections = ConnectionLimiter::new();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
     let (runtime, cert_rx) = TlsRuntime::new(
@@ -712,9 +828,11 @@ async fn start_tls_server_inner(
     let task = tokio::spawn(accept_loop(
         listener,
         cert_rx.clone(),
+        handler,
         clock,
         runtime.wake.clone(),
         connections,
+        per_ip_connections,
         shutdown_rx.clone(),
     ));
     let renewal_task = tokio::spawn(renewal_loop(runtime.clone(), shutdown_rx));
@@ -785,12 +903,15 @@ async fn renewal_loop(runtime: Arc<TlsRuntime>, mut shutdown: watch::Receiver<bo
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Internal accept-loop wiring; callers are explicit.
 async fn accept_loop(
     listener: TcpListener,
     cert_rx: watch::Receiver<ServingCertificate>,
+    handler: RequestHandler,
     clock: Clock,
     wake: Arc<Notify>,
     connections: Arc<Semaphore>,
+    per_ip_connections: Arc<ConnectionLimiter>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut tasks = JoinSet::new();
@@ -806,7 +927,7 @@ async fn accept_loop(
             }
             accepted = listener.accept() => {
                 match accepted {
-                    Ok((stream, _peer)) => {
+                    Ok((stream, peer)) => {
                         let permit = match connections.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
@@ -814,6 +935,11 @@ async fn accept_loop(
                                 drop(stream);
                                 continue;
                             }
+                        };
+                        let Some(ip_permit) = per_ip_connections.try_acquire(peer.ip()) else {
+                            // One peer cannot hold every global slot.
+                            drop(stream);
+                            continue;
                         };
                         let current = cert_rx.borrow().clone();
                         if certificate_expired((clock)().unix_timestamp(), current.leaf_not_after) {
@@ -824,19 +950,28 @@ async fn accept_loop(
                             continue;
                         }
                         let server_config = current.config.clone();
+                        let handler = handler.clone();
                         tasks.spawn(async move {
                             let _permit = permit;
+                            let _ip_permit = ip_permit;
                             let acceptor = TlsAcceptor::from(server_config);
                             let accepted =
                                 tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream))
                                     .await;
                             if let Ok(Ok(tls)) = accepted {
                                 let io = TokioIo::new(tls);
+                                let service = service_fn(move |request| {
+                                    let handler = handler.clone();
+                                    async move { handler(request, peer).await }
+                                });
                                 let _ = tokio::time::timeout(
                                     HTTP_CONNECTION_TIMEOUT,
                                     http1::Builder::new()
+                                        // Bound the request line + headers before
+                                        // any route runs (G5 header limit).
+                                        .max_buf_size(16 * 1024)
                                         .keep_alive(false)
-                                        .serve_connection(io, service_fn(handle_request)),
+                                        .serve_connection(io, service),
                                 )
                                 .await;
                             }
@@ -872,4 +1007,23 @@ async fn handle_request(
         not_found_response()
     };
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_ip_connection_cap_is_enforced_and_released() {
+        let limiter = ConnectionLimiter::new();
+        let peer = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let mut permits = (0..MAX_ACTIVE_CONNECTIONS_PER_IP)
+            .map(|_| limiter.try_acquire(peer).expect("within per-IP cap"))
+            .collect::<Vec<_>>();
+        assert!(limiter.try_acquire(peer).is_none());
+        let other = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 21));
+        assert!(limiter.try_acquire(other).is_some());
+        permits.pop();
+        assert!(limiter.try_acquire(peer).is_some());
+    }
 }

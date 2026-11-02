@@ -55,6 +55,21 @@ pub enum TlsCertificateState {
     Stopped,
 }
 
+impl TlsCertificateState {
+    /// Stable code for command/UI snapshots. Never contains certificate data.
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Serving => "serving",
+            Self::Renewing => "renewing",
+            Self::RenewalFailed { .. } => "renewal-failed",
+            Self::IssuerRotationRequired { .. } => "issuer-rotation-required",
+            Self::RootChangePending { .. } => "root-change-pending",
+            Self::Expired => "expired",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
 /// Current/previous serving certificate metadata. No paths or key material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsCertificateSnapshot {

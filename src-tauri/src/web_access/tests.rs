@@ -10,7 +10,15 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::ca::CaManager;
 
-use super::tls::start_tls_server_with_clock;
+use super::auth::PairingService;
+use super::clock::SystemClock;
+use super::pairing::PairingStore;
+use super::router::PairingHttp;
+use super::session::SessionStore;
+use super::tls::{
+    start_tls_server_with_clock, start_tls_server_with_clock_and_handler, HandlerFactory,
+    RequestHandler,
+};
 use super::*;
 
 #[test]
@@ -1058,4 +1066,241 @@ async fn bind_failure_returns_io_error() {
     .expect("occupied port must fail");
     assert_eq!(err.code(), "web-access-io");
     drop(occupied);
+}
+
+async fn pair_http_request<S>(
+    stream: &mut S,
+    method: &str,
+    path: &str,
+    host: &str,
+    origin: Option<&str>,
+    cookie: Option<&str>,
+    body: Option<&str>,
+) -> String
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if let Some(origin) = origin {
+        request.push_str(&format!("Origin: {origin}\r\n"));
+        request.push_str("X-Moyu-Request: 1\r\n");
+    }
+    if let Some(cookie) = cookie {
+        request.push_str(&format!("Cookie: {cookie}\r\n"));
+    }
+    if let Some(body) = body {
+        request.push_str("Content-Type: application/json\r\n");
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    request.push_str("\r\n");
+    if let Some(body) = body {
+        request.push_str(body);
+    }
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+fn response_set_cookie(response: &str, name: &str) -> Option<String> {
+    let prefix = format!("set-cookie: {name}=");
+    response.lines().find_map(|line| {
+        let line = line.trim();
+        if line.to_ascii_lowercase().starts_with(&prefix) {
+            let value = line.split_once('=')?.1;
+            Some(value.split(';').next()?.trim().to_owned())
+        } else {
+            None
+        }
+    })
+}
+
+/// G4: the production handler factory receives the actual bound address, the
+/// real TLS listener serves health + the three pair routes, and every data
+/// path is 404. The claim is approved through the same in-memory service the
+/// Tauri control plane will use.
+#[tokio::test]
+async fn production_pair_router_serves_only_health_and_pair_over_real_tls() {
+    let ca = TestCa::new("pair-router");
+    ca.initialize();
+
+    let pairing_clock = Arc::new(SystemClock);
+    let service = Arc::new(PairingService::new(
+        PairingStore::new(pairing_clock.clone()),
+        SessionStore::new(pairing_clock),
+    ));
+    let window = service.start_window();
+
+    let factory_service = Arc::clone(&service);
+    let factory: HandlerFactory = Arc::new(move |addr| {
+        let mut router = PairingHttp::new(Arc::clone(&factory_service), addr)?;
+        router.set_polling(Duration::from_millis(20), Duration::from_millis(5));
+        let router = Arc::new(router);
+        let handler: RequestHandler = Arc::new(move |request, peer| {
+            let router = Arc::clone(&router);
+            let source_ip = match peer.ip() {
+                IpAddr::V4(ip) => ip,
+                IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+            };
+            Box::pin(async move {
+                Ok::<_, std::convert::Infallible>(router.handle(request, source_ip).await)
+            })
+        });
+        Ok(handler)
+    });
+
+    let handle = start_tls_server_with_clock_and_handler(
+        test_server_config(&ca),
+        ca.clock_handle(),
+        TlsRenewalPolicy::default(),
+        factory,
+    )
+    .await
+    .unwrap();
+    let host = handle.local_addr().to_string();
+    let origin = format!("https://{host}");
+    let cookie = |secret: &str| format!("moyu_claim={secret}");
+
+    let health = pair_request(&ca, &handle, "GET", "/api/health", &host, None, None, None).await;
+    assert!(health.starts_with("HTTP/1.1 204"), "{health:?}");
+
+    let data = pair_request(&ca, &handle, "GET", "/api/books", &host, None, None, None).await;
+    assert!(data.starts_with("HTTP/1.1 404"), "{data:?}");
+
+    let claim_body = format!(
+        "{{\"pairingId\":\"{}\",\"deviceName\":\"Pixel 8\",\"claimNonce\":\"AAAAAAAAAAAAAAAAAAAAAA\"}}",
+        window.id
+    );
+    let claim = pair_request(
+        &ca,
+        &handle,
+        "POST",
+        "/api/pair/claim",
+        &host,
+        Some(&origin),
+        None,
+        Some(&claim_body),
+    )
+    .await;
+    assert!(claim.starts_with("HTTP/1.1 202"), "{claim:?}");
+    let claim_secret = response_set_cookie(&claim, "moyu_claim").expect("claim cookie");
+    let claim_json = claim.split("\r\n\r\n").nth(1).unwrap_or_default();
+    let claim_id = serde_json::from_str::<serde_json::Value>(claim_json)
+        .unwrap()
+        .get("claimId")
+        .and_then(|value| value.as_str())
+        .expect("claimId")
+        .to_owned();
+    assert_eq!(claim_secret.len(), 43);
+
+    let pending = pair_request(
+        &ca,
+        &handle,
+        "GET",
+        &format!("/api/pair/claim/{claim_id}"),
+        &host,
+        None,
+        Some(&cookie(&claim_secret)),
+        None,
+    )
+    .await;
+    assert!(pending.starts_with("HTTP/1.1 200"), "{pending:?}");
+    assert!(pending.contains("\"pending\""), "{pending:?}");
+
+    service.approve(&claim_id).expect("approve");
+    let approved = pair_request(
+        &ca,
+        &handle,
+        "GET",
+        &format!("/api/pair/claim/{claim_id}"),
+        &host,
+        None,
+        Some(&cookie(&claim_secret)),
+        None,
+    )
+    .await;
+    assert!(approved.starts_with("HTTP/1.1 200"), "{approved:?}");
+    assert!(approved.contains("\"approved\""), "{approved:?}");
+
+    let consumed = pair_request(
+        &ca,
+        &handle,
+        "POST",
+        &format!("/api/pair/claim/{claim_id}/consume"),
+        &host,
+        Some(&origin),
+        Some(&cookie(&claim_secret)),
+        None,
+    )
+    .await;
+    assert!(consumed.starts_with("HTTP/1.1 200"), "{consumed:?}");
+    assert!(
+        response_set_cookie(&consumed, "moyus_session").is_some(),
+        "{consumed:?}"
+    );
+    assert!(!consumed.contains(&claim_secret), "token/secret echo");
+
+    let second = pair_request(
+        &ca,
+        &handle,
+        "POST",
+        &format!("/api/pair/claim/{claim_id}/consume"),
+        &host,
+        Some(&origin),
+        Some(&cookie(&claim_secret)),
+        None,
+    )
+    .await;
+    assert!(second.starts_with("HTTP/1.1 409"), "{second:?}");
+    assert!(second.contains("pairing-consumed"), "{second:?}");
+
+    // G5: a half-open/slow TCP connection must not block a normal client.
+    let _slow = TcpStream::connect(handle.local_addr()).await.unwrap();
+    let health = pair_request(&ca, &handle, "GET", "/api/health", &host, None, None, None).await;
+    assert!(health.starts_with("HTTP/1.1 204"), "{health:?}");
+
+    // G5: oversized headers are rejected by hyper before the pair router. The
+    // exact status may be 431 or a closed connection, but never 204/health.
+    let mut oversized = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    let request = format!(
+        "GET /api/health HTTP/1.1\r\nHost: {host}\r\nX-Big: {}\r\nConnection: close\r\n\r\n",
+        "a".repeat(20 * 1024)
+    );
+    oversized.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    let _ = oversized.read_to_end(&mut response).await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(!text.starts_with("HTTP/1.1 204"), "{text:?}");
+    let health = pair_request(&ca, &handle, "GET", "/api/health", &host, None, None, None).await;
+    assert!(health.starts_with("HTTP/1.1 204"), "{health:?}");
+
+    handle.shutdown().await.unwrap();
+}
+
+#[allow(clippy::too_many_arguments)] // Test helper mirrors the HTTP request.
+async fn pair_request(
+    ca: &TestCa,
+    handle: &TlsServerHandle,
+    method: &str,
+    path: &str,
+    host: &str,
+    origin: Option<&str>,
+    cookie: Option<&str>,
+    body: Option<&str>,
+) -> String {
+    let server_name = ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into());
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        server_name,
+    )
+    .await
+    .unwrap();
+    pair_http_request(&mut stream, method, path, host, origin, cookie, body).await
 }

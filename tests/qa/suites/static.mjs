@@ -2731,8 +2731,25 @@ export function checkAntiMockGuards(root, report) {
       path.join(root, "src-tauri", "Cargo.toml"),
       "utf8",
     );
-    if (/qrcode|react-qr/i.test(packageSource) || /qrcode/i.test(cargoSource)) {
-      errors.push("引入了 QR 依赖");
+    // D1b intentionally uses exactly one local QR renderer. G1 itself still
+    // must not grow QR code; the only allowed frontend package is
+    // qrcode-generator (MIT, no network/telemetry/CDN) and it must be noticed.
+    if (
+      /react-qr|qrcode\.react|qr-code-styling|qrcode-terminal/i.test(
+        packageSource,
+      ) ||
+      /qrcode/i.test(cargoSource)
+    ) {
+      errors.push("引入了未批准的 QR 依赖（仅允许 qrcode-generator）");
+    }
+    if (packageSource.includes("qrcode-generator")) {
+      const notices = fs.readFileSync(
+        path.join(root, "THIRD_PARTY_NOTICES.md"),
+        "utf8",
+      );
+      if (!/qrcode-generator[^\n]*MIT/i.test(notices)) {
+        errors.push("qrcode-generator 缺少 MIT NOTICE");
+      }
     }
 
     if (errors.length) {
@@ -2745,7 +2762,7 @@ export function checkAntiMockGuards(root, report) {
         details: errors.join(" | "),
         location: "src-tauri/src/web_access/ca_distribution*.rs",
         expected:
-          "只服务 /ca.crt；生产路径不读取私钥；setup 不启动；无 D1b 命令/QR 依赖",
+          "只服务 /ca.crt；生产路径不读取私钥；setup 不启动；D1b 命令不进入 G1；QR 仅允许 qrcode-generator(MIT) 且记录 NOTICE",
         actual: errors.join(" | "),
         rootCause: "G1 边界被破坏或主密钥进入分发路径",
         fix: "恢复单路由、公开 PEM 快照与显式启动边界",
@@ -2851,6 +2868,246 @@ export function checkAntiMockGuards(root, report) {
       location: "src-tauri/src/web_access/tls*.rs；src-tauri/src/lib.rs",
       rootCause: "静态守卫无法读取 G2 文件",
       fix: "确认 G2 文件存在且命名稳定",
+    });
+  }
+
+  try {
+    const errors = [];
+    const webAccessRoot = path.join(root, "src-tauri", "src", "web_access");
+    const readProduction = (name) => {
+      const source = fs.readFileSync(path.join(webAccessRoot, name), "utf8");
+      // Exclude only the #[cfg(test)] mod tests block; cfg(test) helper
+      // constructors before it are still part of the reviewed surface.
+      const index = source.indexOf("#[cfg(test)]\nmod tests");
+      return stripRustComments(index >= 0 ? source.slice(0, index) : source);
+    };
+    const routerSource = readProduction("router.rs");
+    const runtimeSource = readProduction("runtime.rs");
+    const commandsSource = readProduction("commands.rs");
+    const eventsSource = readProduction("events.rs");
+    const tlsSource = readProduction("tls.rs");
+    const libSource = stripRustComments(
+      fs.readFileSync(path.join(root, "src-tauri", "src", "lib.rs"), "utf8"),
+    );
+    const resilienceSource = stripRustComments(
+      fs.readFileSync(
+        path.join(root, "src-tauri", "src", "resilience.rs"),
+        "utf8",
+      ),
+    );
+
+    // The production router must mount only health + pair and derive its
+    // authority from the actual bound socket, never from request/setting.
+    for (const forbidden of [
+      "/api/books",
+      "/api/pages",
+      "/api/tiles",
+      "/api/layout",
+      "/api/progress",
+      "/api/session",
+      "/api/devices",
+      "/api/thumbnails",
+      "/api/search",
+    ]) {
+      if (routerSource.includes(forbidden)) {
+        errors.push(`生产 pair router 出现数据路由：${forbidden}`);
+      }
+    }
+    for (const required of [
+      'pub(crate) const HEALTH_PATH: &str = "/api/health";',
+      'pub(crate) const CLAIM_ROUTE: &str = "/api/pair/claim";',
+      "AllowedAuthority::from_socket_addr",
+      "RequestGuard::for_authority",
+    ]) {
+      if (!routerSource.includes(required)) {
+        errors.push(`生产 pair router 缺少冻结边界：${required}`);
+      }
+    }
+    if (/Access-Control-Allow/i.test(routerSource)) {
+      errors.push("生产 pair router 返回了 CORS 头");
+    }
+    if (/tauri::command|AppHandle|Emitter|logging::|println!|eprintln!/.test(routerSource)) {
+      errors.push("生产 pair router 出现命令/事件/日志接线");
+    }
+    // Reject any additional /api route literal; the pair surface is frozen.
+    const allowedRoutes = new Set([
+      "/api/health",
+      "/api/pair/claim",
+      "/api/pair/claim/",
+    ]);
+    for (const match of routerSource.matchAll(/"(\/api\/[^"]*)"/g)) {
+      if (!allowedRoutes.has(match[1])) {
+        errors.push(`生产 pair router 出现未批准路由：${match[1]}`);
+      }
+    }
+    // PairingEventView lives in runtime.rs; scan its exact fields rather than
+    // only the events.rs sink.
+    const eventStruct =
+      runtimeSource.match(/struct PairingEventView[\s\S]*?\n}/)?.[0] ?? "";
+    if (
+      !eventStruct ||
+      /pairing_id|pairingId|claim_secret|claimSecret|token_hash|\btoken\b/.test(
+        eventStruct,
+      )
+    ) {
+      errors.push("PairingEventView 字段含 pairingId/claimSecret/token 或结构缺失");
+    }
+    if (/tauri::|AppHandle|Emitter|logging::|println!|eprintln!/.test(runtimeSource)) {
+      errors.push("WebAccessRuntime 直接依赖 Tauri 或打印日志");
+    }
+    if (/logging::|println!|eprintln!/.test(commandsSource)) {
+      errors.push("D1b 命令出现日志/打印接线");
+    }
+    if (/pairing_id|pairingId|claim_secret|claimSecret|token_hash/.test(eventsSource)) {
+      errors.push("D1b 事件载荷出现 pairingId/claimSecret/token");
+    }
+
+    // The listener may only be started by the runtime's explicit start path.
+    if (!runtimeSource.includes("start_tls_server_with(")) {
+      errors.push("WebAccessRuntime 未使用注入 handler 的 TLS 工厂");
+    }
+    if (/start_tls_server\s*\(/.test(libSource)) {
+      errors.push("lib.rs 启动路径直接启动 TLS");
+    }
+    if (/\.start\s*\(/.test(libSource)) {
+      errors.push("lib.rs 出现 Web Access 启动调用（setup 必须只 manage）");
+    }
+    if (!/phase:\s*Phase::Disabled/.test(runtimeSource)) {
+      errors.push("WebAccessRuntime 默认阶段不是 Disabled");
+    }
+    if ((runtimeSource.match(/\.start_window\s*\(/g) || []).length !== 1) {
+      errors.push("pairing window 只能在显式 pairing_start 中创建一次");
+    }
+
+    const d1bCommands = [
+      "web_access_status",
+      "web_access_addresses",
+      "web_access_start",
+      "web_access_stop",
+      "web_access_pairing_start",
+      "web_access_pairing_state",
+      "web_access_pairing_approve",
+      "web_access_pairing_deny",
+      "web_access_pairing_cancel",
+      "web_access_devices_list",
+      "web_access_device_revoke",
+    ];
+    for (const command of d1bCommands) {
+      if (!libSource.includes(`web_access::commands::${command}`)) {
+        errors.push(`lib.rs 未注册 D1b 命令：${command}`);
+      }
+    }
+    if (!libSource.includes("StopReason::Exit")) {
+      errors.push("退出路径未停止 Web Access");
+    }
+    if (
+      !resilienceSource.includes("StopReason::Recovery") ||
+      !resilienceSource.includes("StopReason::SafeMode")
+    ) {
+      errors.push("恢复窗/安全模式未停止 Web Access");
+    }
+
+    // Frontend: no credentials in storage, no QR/claim logging, no data fetch.
+    const frontendFiles = [
+      path.join(root, "src", "features", "web-access", "types.ts"),
+      path.join(root, "src", "features", "web-access", "api.ts"),
+      path.join(root, "src", "features", "web-access", "useWebAccess.ts"),
+      path.join(root, "src", "components", "settings", "WebAccessPanel.tsx"),
+    ];
+    for (const file of frontendFiles) {
+      if (!fs.existsSync(file)) {
+        errors.push(`缺少 D1b 前端文件：${path.relative(root, file)}`);
+        continue;
+      }
+      const source = stripJsComments(fs.readFileSync(file, "utf8"));
+      if (/localStorage|sessionStorage/.test(source)) {
+        errors.push(`${path.basename(file)} 持久化了 Web Access 状态`);
+      }
+      if (/\bfetch\s*\(|axios|XMLHttpRequest/.test(source)) {
+        errors.push(`${path.basename(file)} 绕过 IPC 直接请求网络`);
+      }
+      if (/console\.(log|debug|info|warn|error)\([^)]*(pair|claim|qr|token)/i.test(source)) {
+        errors.push(`${path.basename(file)} 输出了配对/凭据日志`);
+      }
+      if (/\b(pairingId|claimSecret|token_hash)\b/.test(source)) {
+        errors.push(`${path.basename(file)} 暴露了 pairingId/claimSecret/token`);
+      }
+    }
+    const panelFile = path.join(
+      root,
+      "src",
+      "components",
+      "settings",
+      "WebAccessPanel.tsx",
+    );
+    if (
+      fs.existsSync(panelFile) &&
+      !fs
+        .readFileSync(panelFile, "utf8")
+        .includes("qrcode-generator")
+    ) {
+      errors.push("Web Access 面板未使用经审查的本地 QR 渲染器");
+    }
+    const privacyFile = path.join(
+      root,
+      "src",
+      "components",
+      "settings",
+      "PrivacyPanel.tsx",
+    );
+    if (
+      fs.existsSync(privacyFile) &&
+      !fs.readFileSync(privacyFile, "utf8").includes("<WebAccessPanel")
+    ) {
+      errors.push("PrivacyPanel 未挂载 Web Access 面板");
+    }
+
+    const packageSource = fs.readFileSync(
+      path.join(root, "package.json"),
+      "utf8",
+    );
+    if (!packageSource.includes('"qrcode-generator"')) {
+      errors.push("package.json 缺少 qrcode-generator");
+    }
+    if (/react-qr|qrcode\.react|qr-code-styling|qrcode-terminal/i.test(packageSource)) {
+      errors.push("引入了未批准的 QR 渲染器");
+    }
+
+    if (errors.length) {
+      fail(report, {
+        id: "static:d1b-control-plane",
+        suite: "static",
+        layer: "static",
+        title: "D1b 只开放 health+pair、默认 Disabled、无秘密/数据路由",
+        severity: "P1",
+        details: errors.join(" | "),
+        location:
+          "src-tauri/src/web_access/{router,runtime,commands,events}.rs + src/features/web-access + PrivacyPanel",
+        expected:
+          "生产 router 只挂 health+pair；authority 来自实际绑定地址；默认 Disabled；恢复/安全模式/退出停止；前端不持久化凭据",
+        actual: errors.join(" | "),
+        rootCause: "D1b 边界被破坏或控制面被自动启动",
+        fix: "恢复 pair-only router、显式启动与无持久化凭据的边界",
+      });
+    } else {
+      ok(report, {
+        id: "static:d1b-control-plane",
+        suite: "static",
+        layer: "static",
+        title: "D1b 只开放 health+pair、默认 Disabled、无秘密/数据路由",
+      });
+    }
+  } catch (error) {
+    fail(report, {
+      id: "static:d1b-control-plane",
+      suite: "static",
+      layer: "static",
+      title: "D1b 控制面静态边界检查",
+      severity: "P1",
+      details: error.message,
+      location: "src-tauri/src/web_access + src/features/web-access",
+      rootCause: "静态守卫无法读取 D1b 文件",
+      fix: "确认 D1b 文件存在且命名稳定",
     });
   }
 }

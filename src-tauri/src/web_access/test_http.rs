@@ -1,53 +1,29 @@
-//! `#[cfg(test)]` pairing route mount for W7-D1a.
+//! `#[cfg(test)]` compatibility harness for the production pair router.
 //!
-//! This module is compiled only for tests and is never wired into production
-//! startup, commands, or the TLS listener. It exposes a pair-only router that
-//! reuses the production [`RequestGuard`] and static response helpers from
-//! `http.rs`, so the frozen Host/Origin rules are exercised without sockets,
-//! TLS, or a real listener.
-//!
-//! Tests call [`TestRouter::handle`] with synthetic
-//! `Request<Full<Bytes>>` values and inspect `Response<Full<Bytes>>`. Pairing
-//! claims run against the real in-memory [`PairingService`]; the only test
-//! injections are the IPv4 authority passed to the constructor and the
-//! [`TestSourceIp`] request extension. There is no header, environment, or
-//! runtime bypass.
+//! D1b moved the route implementation to `router.rs`. This module keeps the
+//! synthetic-request helpers used by the D1a tests and delegates every call to
+//! the same production [`PairingHttp`]; there is no second route table.
 //!
 //! `GET /api/pair/claim/{id}` is a read-only status/long-poll and may report
 //! `approved`; the one-time pickup is `POST /api/pair/claim/{id}/consume`.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use http_body_util::Full;
-use hyper::body::{Body as _, Bytes};
-use hyper::header::{HeaderValue, CACHE_CONTROL, CONTENT_TYPE, COOKIE, SET_COOKIE};
-use hyper::{HeaderMap, Method, Request, Response, StatusCode};
-use serde::Deserialize;
-use serde_json::{json, Value};
-use zeroize::Zeroizing;
+use hyper::body::Bytes;
+use hyper::{Request, Response};
 
-use super::auth::{AuthError, PairingService};
-use super::http::{health_response, not_found_response, AllowedAuthority, RequestGuard};
-use super::pairing::{ClaimIssued, ClaimState, PairingError, PICKUP_TIMEOUT};
-use super::session::SessionIssued;
+use super::auth::PairingService;
+use super::router::{
+    PairingHttp, CLAIM_COOKIE, CLAIM_POLL_PREFIX, CLAIM_ROUTE, CONSUME_SUFFIX, HEALTH_PATH,
+    MAX_CLAIM_BODY_BYTES, SESSION_COOKIE,
+};
 
 const DEFAULT_SOURCE_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
-const MAX_CLAIM_BODY_BYTES: usize = 4096;
 const DEFAULT_POLL_WINDOW: Duration = Duration::from_millis(20);
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(5);
-
-const HEALTH_PATH: &str = "/api/health";
-const CLAIM_ROUTE: &str = "/api/pair/claim";
-const CLAIM_POLL_PREFIX: &str = "/api/pair/claim/";
-const CONSUME_SUFFIX: &str = "/consume";
-
-const CLAIM_COOKIE: &str = "moyu_claim";
-const SESSION_COOKIE: &str = "moyus_session";
-const CLAIM_COOKIE_PATH: &str = "/api/pair/claim";
-const CLAIM_COOKIE_MAX_AGE: u64 = 120;
-const SESSION_COOKIE_MAX_AGE: u64 = 2_592_000;
 
 /// Test-only source IP injected through request extensions. Production source
 /// addresses come from the TLS peer; nothing here reads headers or environment.
@@ -62,356 +38,42 @@ impl TestSourceIp {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaimPayload {
-    pairing_id: String,
-    device_name: String,
-    claim_nonce: String,
-}
-
-/// Test-only pair router bound to one exact authority.
+/// Test-only wrapper around the production pair router.
 struct TestRouter {
-    guard: RequestGuard,
-    service: Arc<PairingService>,
-    origin: String,
-    poll_window: Duration,
-    poll_interval: Duration,
+    inner: PairingHttp,
 }
 
 impl TestRouter {
     fn new(service: Arc<PairingService>, addr: SocketAddr) -> Self {
-        let authority = AllowedAuthority::for_test(addr).expect("IPv4 authority");
-        let origin = authority.origin().to_owned();
-        Self {
-            guard: RequestGuard::for_test(authority),
-            service,
-            origin,
-            poll_window: DEFAULT_POLL_WINDOW,
-            poll_interval: DEFAULT_POLL_INTERVAL,
-        }
+        Self::with_polling(service, addr, DEFAULT_POLL_WINDOW, DEFAULT_POLL_INTERVAL)
+    }
+
+    fn with_polling(
+        service: Arc<PairingService>,
+        addr: SocketAddr,
+        window: Duration,
+        interval: Duration,
+    ) -> Self {
+        let mut inner = PairingHttp::for_test(service, addr);
+        inner.set_polling(window, interval);
+        Self { inner }
     }
 
     async fn handle(&self, request: Request<Full<Bytes>>) -> Response<Full<Bytes>> {
-        if let Err(status) = self.guard.check(&request) {
-            return guard_error_response(status);
-        }
-
-        let method = request.method().clone();
-        let path = request.uri().path().to_owned();
-
-        if method == Method::GET && path == HEALTH_PATH {
-            return health_response();
-        }
-        if method == Method::POST && path == CLAIM_ROUTE {
-            return self.claim(request).await;
-        }
-        if method == Method::GET {
-            if let Some(claim_id) = poll_claim_id(&path) {
-                return self.status(request, claim_id).await;
-            }
-        }
-        if method == Method::POST {
-            if let Some(claim_id) = consume_claim_id(&path) {
-                return self.consume(request, claim_id).await;
-            }
-        }
-        not_found_response()
-    }
-
-    async fn claim(&self, request: Request<Full<Bytes>>) -> Response<Full<Bytes>> {
         let source_ip = request
             .extensions()
             .get::<TestSourceIp>()
             .map_or(DEFAULT_SOURCE_IP, |extension| extension.0);
-
-        let body = request.into_body();
-        // A `Full` body always knows its exact length; the post-read check
-        // below still guards a body that reports a missing/inaccurate hint.
-        if body
-            .size_hint()
-            .exact()
-            .is_some_and(|length| length > MAX_CLAIM_BODY_BYTES as u64)
-        {
-            return body_too_large_response();
-        }
-        let Some(bytes) = body.into_inner() else {
-            return invalid_parameter_response();
-        };
-        if bytes.len() > MAX_CLAIM_BODY_BYTES {
-            return body_too_large_response();
-        }
-        let Ok(payload) = serde_json::from_slice::<ClaimPayload>(&bytes) else {
-            return invalid_parameter_response();
-        };
-
-        match self.service.claim(
-            &payload.pairing_id,
-            &payload.device_name,
-            &payload.claim_nonce,
-            source_ip,
-        ) {
-            Ok(issued) => claim_created_response(issued),
-            Err(error) => auth_error_response(&error),
-        }
+        self.inner.handle(request, source_ip).await
     }
 
-    /// Read-only claim status / long-poll. It never consumes the claim, never
-    /// issues a token, and never clears the claim cookie. `approved` is a
-    /// visible state; the client follows up with the `consume` POST.
-    async fn status(&self, request: Request<Full<Bytes>>, claim_id: &str) -> Response<Full<Bytes>> {
-        let Some(secret) = claim_cookie(request.headers()) else {
-            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", None);
-        };
-
-        // Long-poll on the monotonic clock; the state machines keep their own
-        // injected clock, so only the polling window uses wall-independent
-        // `Instant`.
-        let deadline = Instant::now() + self.poll_window;
-        loop {
-            match self.service.status(claim_id, secret.as_str()) {
-                Ok(status) => match status.state {
-                    ClaimState::Pending => {
-                        if Instant::now() >= deadline {
-                            return json_response(
-                                StatusCode::OK,
-                                json!({ "state": "pending" }),
-                                &[],
-                            );
-                        }
-                        tokio::time::sleep(self.poll_interval).await;
-                    }
-                    ClaimState::Approved => {
-                        // Read-only: no Origin or custom header is required for
-                        // a GET, and no state changes here. The client must
-                        // follow up with the consume POST.
-                        return json_response(StatusCode::OK, json!({ "state": "approved" }), &[]);
-                    }
-                    ClaimState::Denied | ClaimState::Cancelled | ClaimState::Expired => {
-                        // The store only returns Ok for a terminal claim while
-                        // its one-time receipt is pending. Reading it clears
-                        // the secret hash, so a second read cannot repeat it.
-                        return terminal_response(status.state);
-                    }
-                    // `status` reports a consumed claim as an error, but keep
-                    // the match exhaustive and token-free if that changes.
-                    ClaimState::Consumed => {
-                        return auth_error_response(&AuthError::Pairing(PairingError::Consumed));
-                    }
-                },
-                Err(error) => return auth_error_response(&error),
-            }
-        }
-    }
-
-    /// One-time pickup. This is the only route that consumes a claim and the
-    /// only route that may set a session cookie. The shared request guard has
-    /// already enforced exact Host + Origin + `X-Moyu-Request` for this POST;
-    /// the check is repeated here so the route contract cannot be dropped if
-    /// the guard changes in a later phase.
     async fn consume(
         &self,
         request: Request<Full<Bytes>>,
         claim_id: &str,
     ) -> Response<Full<Bytes>> {
-        if !self.trusted_pickup(request.headers()) {
-            return guard_error_response(StatusCode::FORBIDDEN);
-        }
-        let Some(secret) = claim_cookie(request.headers()) else {
-            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", None);
-        };
-        match self.service.consume(claim_id, secret.as_str()) {
-            Ok(issued) => consumed_response(issued),
-            Err(error) => auth_error_response(&error),
-        }
+        self.inner.consume(request, claim_id).await
     }
-
-    fn trusted_pickup(&self, headers: &HeaderMap) -> bool {
-        single_header(headers, "origin") == Some(self.origin.as_str())
-            && single_header(headers, "x-moyu-request") == Some("1")
-    }
-}
-
-fn poll_claim_id(path: &str) -> Option<&str> {
-    let claim_id = path.strip_prefix(CLAIM_POLL_PREFIX)?;
-    if claim_id.is_empty() || claim_id.contains('/') {
-        return None;
-    }
-    Some(claim_id)
-}
-
-/// Matches exactly `/api/pair/claim/{id}/consume`; extra segments or a
-/// missing id are unknown paths (404), never a pickup.
-fn consume_claim_id(path: &str) -> Option<&str> {
-    let claim_id = path
-        .strip_prefix(CLAIM_POLL_PREFIX)?
-        .strip_suffix(CONSUME_SUFFIX)?;
-    if claim_id.is_empty() || claim_id.contains('/') {
-        return None;
-    }
-    Some(claim_id)
-}
-
-/// Returns the header only when exactly one value exists and it is valid UTF-8.
-fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    let mut values = headers.get_all(name).iter();
-    let value = values.next()?.to_str().ok()?;
-    if values.next().is_some() {
-        return None;
-    }
-    Some(value)
-}
-
-/// Parses the single `moyu_claim` cookie. A missing, duplicated, or malformed
-/// cookie header yields `None` so the route answers `401 unauthorized`.
-fn claim_cookie(headers: &HeaderMap) -> Option<Zeroizing<String>> {
-    let mut secret = None;
-    for header in headers.get_all(COOKIE).iter() {
-        let value = header.to_str().ok()?;
-        for pair in value.split(';') {
-            let pair = pair.trim();
-            if pair.is_empty() {
-                continue;
-            }
-            let (name, cookie_value) = pair.split_once('=')?;
-            if name.trim() != CLAIM_COOKIE {
-                continue;
-            }
-            let cookie_value = cookie_value.trim();
-            if cookie_value.is_empty() || secret.is_some() {
-                return None;
-            }
-            secret = Some(cookie_value);
-        }
-    }
-    secret.map(|secret| Zeroizing::new(secret.to_owned()))
-}
-
-fn claim_created_response(issued: ClaimIssued) -> Response<Full<Bytes>> {
-    let ClaimIssued {
-        claim_id,
-        claim_secret,
-    } = issued;
-    let cookie = claim_cookie_header(claim_secret.as_str());
-    json_response(
-        StatusCode::ACCEPTED,
-        json!({ "claimId": claim_id }),
-        &[cookie],
-    )
-}
-
-fn consumed_response(issued: SessionIssued) -> Response<Full<Bytes>> {
-    let session_cookie = session_cookie_header(issued.token.as_str());
-    json_response(
-        StatusCode::OK,
-        json!({ "state": "consumed" }),
-        &[session_cookie, clear_claim_cookie_header()],
-    )
-}
-
-fn terminal_response(state: ClaimState) -> Response<Full<Bytes>> {
-    json_response(
-        StatusCode::OK,
-        json!({ "state": state.as_str() }),
-        &[clear_claim_cookie_header()],
-    )
-}
-
-fn claim_cookie_header(secret: &str) -> String {
-    format!(
-        "{CLAIM_COOKIE}={secret}; HttpOnly; Secure; SameSite=Strict; Path={CLAIM_COOKIE_PATH}; Max-Age={CLAIM_COOKIE_MAX_AGE}"
-    )
-}
-
-fn clear_claim_cookie_header() -> String {
-    format!(
-        "{CLAIM_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path={CLAIM_COOKIE_PATH}; Max-Age=0"
-    )
-}
-
-fn session_cookie_header(token: &str) -> String {
-    format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}"
-    )
-}
-
-fn json_response(status: StatusCode, body: Value, set_cookies: &[String]) -> Response<Full<Bytes>> {
-    let payload = serde_json::to_vec(&body).expect("json body serializes");
-    let mut builder = Response::builder()
-        .status(status)
-        .header(CACHE_CONTROL, "no-store")
-        .header(CONTENT_TYPE, "application/json; charset=utf-8");
-    for cookie in set_cookies {
-        builder = builder.header(SET_COOKIE, cookie);
-    }
-    builder
-        .body(Full::new(Bytes::from(payload)))
-        .expect("static response")
-}
-
-fn error_response(
-    status: StatusCode,
-    code: &'static str,
-    retry_after: Option<Duration>,
-) -> Response<Full<Bytes>> {
-    // The unified error body allows `retryAfterMs` only for rate limiting;
-    // every other error keeps the bare stable code.
-    let body = match retry_after {
-        Some(retry_after) => json!({
-            "error": {
-                "code": code,
-                "retryAfterMs": retry_after_millis(retry_after),
-            }
-        }),
-        None => json!({ "error": { "code": code } }),
-    };
-    let mut response = json_response(status, body, &[]);
-    if let Some(retry_after) = retry_after {
-        let value = HeaderValue::from_str(&retry_after_seconds(retry_after).to_string())
-            .expect("retry-after header");
-        response.headers_mut().insert("retry-after", value);
-    }
-    response
-}
-
-fn auth_error_response(error: &AuthError) -> Response<Full<Bytes>> {
-    let status = match error.code() {
-        "pairing-not-found" => StatusCode::NOT_FOUND,
-        "pairing-claimed" | "pairing-consumed" | "device-limit" => StatusCode::CONFLICT,
-        "pairing-rate-limited" => StatusCode::TOO_MANY_REQUESTS,
-        "pairing-expired" => StatusCode::GONE,
-        "pairing-denied" | "pairing-cancelled" => StatusCode::FORBIDDEN,
-        "unauthorized" | "session-expired" => StatusCode::UNAUTHORIZED,
-        _ => StatusCode::BAD_REQUEST,
-    };
-    let retry_after = match error {
-        AuthError::Pairing(PairingError::RateLimited { retry_after }) => Some(*retry_after),
-        _ => None,
-    };
-    error_response(status, error.code(), retry_after)
-}
-
-fn retry_after_seconds(retry_after: Duration) -> u64 {
-    let seconds = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
-    seconds.max(1)
-}
-
-fn retry_after_millis(retry_after: Duration) -> u64 {
-    u64::try_from(retry_after.as_millis().max(1)).unwrap_or(u64::MAX)
-}
-
-/// Host/Origin/header failures share the frozen public `forbidden` code; the
-/// HTTP status still distinguishes 421 (Host) from 403 (Origin/header).
-fn guard_error_response(status: StatusCode) -> Response<Full<Bytes>> {
-    error_response(status, "forbidden", None)
-}
-
-fn body_too_large_response() -> Response<Full<Bytes>> {
-    error_response(StatusCode::PAYLOAD_TOO_LARGE, "body-too-large", None)
-}
-
-fn invalid_parameter_response() -> Response<Full<Bytes>> {
-    error_response(StatusCode::BAD_REQUEST, "invalid-parameter", None)
 }
 
 #[cfg(test)]
@@ -428,7 +90,7 @@ mod tests {
 
     use super::*;
     use crate::web_access::clock::test_support::FakeClock;
-    use crate::web_access::pairing::{PairingStore, PairingWindow};
+    use crate::web_access::pairing::{PairingStore, PairingWindow, PICKUP_TIMEOUT};
     use crate::web_access::session::SessionStore;
 
     const HOST: &str = "192.168.1.10:8443";
@@ -451,6 +113,26 @@ mod tests {
             let router = TestRouter::new(
                 Arc::clone(&service),
                 SocketAddr::from(([192, 168, 1, 10], 8443)),
+            );
+            Self {
+                router,
+                service,
+                window,
+                clock,
+            }
+        }
+
+        fn with_polling(poll_window: Duration, interval: Duration) -> Self {
+            let clock = FakeClock::shared();
+            let pairing = PairingStore::new(clock.clone());
+            let session = SessionStore::new(clock.clone());
+            let service = Arc::new(PairingService::new(pairing, session));
+            let window = service.start_window();
+            let router = TestRouter::with_polling(
+                Arc::clone(&service),
+                SocketAddr::from(([192, 168, 1, 10], 8443)),
+                poll_window,
+                interval,
             );
             Self {
                 router,
@@ -1231,10 +913,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_and_device_views_never_expose_secret_or_token() {
+        let fixture = Fixture::new();
+        let (claim_id, secret) = claim_over_http(&fixture, &nonce(7), None).await;
+
+        let pending = fixture.service.pending_claims();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].claim_id, claim_id);
+        assert_eq!(pending[0].device_name, "Pixel 8");
+        assert_eq!(pending[0].source_ip, DEFAULT_SOURCE_IP);
+        assert_eq!(fixture.service.pending_count(), 1);
+
+        fixture.service.approve(&claim_id).expect("approve");
+        assert_eq!(fixture.service.pending_count(), 0);
+        assert_eq!(fixture.service.session_slots(), (0, 1));
+
+        let issued = fixture
+            .service
+            .consume(&claim_id, &secret)
+            .expect("consume");
+        let devices = fixture.service.devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device_name, "Pixel 8");
+        // `SessionView` has no token/token-hash field by construction; the
+        // plaintext token only exists in the one-time `SessionIssued`.
+        assert_eq!(issued.token.len(), 49);
+        assert!(!format!("{devices:?}").contains(issued.token.as_str()));
+    }
+
+    #[tokio::test]
+    async fn status_route_per_ip_bucket_returns_429_with_retry_after() {
+        let fixture = Fixture::with_polling(Duration::ZERO, Duration::from_millis(1));
+        let (claim_id, secret) = claim_over_http(&fixture, &nonce(8), None).await;
+        let mut last = None;
+        for _ in 0..=60 {
+            last = Some(TestResponse::of(
+                fixture
+                    .router
+                    .handle(poll_request(&claim_id, &secret))
+                    .await,
+            ));
+        }
+        let response = last.expect("one response");
+        assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.error_code(), "pairing-rate-limited");
+        assert!(response.header("retry-after").is_some());
+        assert!(response.json()["error"]["retryAfterMs"]
+            .as_u64()
+            .is_some_and(|value| value >= 1));
+    }
+
+    #[tokio::test]
     async fn pending_long_poll_waits_for_the_window_then_returns_pending() {
-        let mut fixture = Fixture::new();
-        fixture.router.poll_window = Duration::from_millis(30);
-        fixture.router.poll_interval = Duration::from_millis(5);
+        let fixture = Fixture::with_polling(Duration::from_millis(30), Duration::from_millis(5));
         let (claim_id, secret) = claim_over_http(&fixture, &nonce(4), None).await;
 
         // The status route is read-only, so it never requires Origin or

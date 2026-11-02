@@ -1,12 +1,11 @@
 //! Production-compiled HTTP request validation and static responses.
 //!
 //! The validation is shared by the production health-only server and by the
-//! `#[cfg(test)]` pairing router. Production constructs [`RequestGuard`] with
-//! no authority, so its observable behavior stays health-only; only the test
-//! router can inject an exact bound authority. There is no environment,
-//! setting, command, or runtime bypass.
+//! production D1b pairing router. [`RequestGuard::health_only`] is the only
+//! guard used before D1b; [`RequestGuard::for_authority`] is constructed from
+//! the listener's actual bound IPv4 address, never from request input,
+//! environment, or settings. There is no override.
 
-#[cfg(test)]
 use std::net::SocketAddr;
 
 use http_body_util::Full;
@@ -22,11 +21,11 @@ pub(crate) struct AllowedAuthority {
 }
 
 impl AllowedAuthority {
-    /// Test-only injection from a concrete socket address. Production D1b
-    /// will construct this from the actual bound listener address, never from
-    /// request input or configuration.
-    #[cfg(test)]
-    pub(crate) fn for_test(addr: SocketAddr) -> Option<Self> {
+    /// Construct from the listener's actual bound address. Only IPv4 is
+    /// accepted; the leaf SANs are IPv4-only, so an IPv6 authority could never
+    /// be verified by a client. This never reads a request, setting, or
+    /// environment value.
+    pub(crate) fn from_socket_addr(addr: SocketAddr) -> Option<Self> {
         let SocketAddr::V4(addr) = addr else {
             return None;
         };
@@ -37,7 +36,12 @@ impl AllowedAuthority {
         })
     }
 
+    /// Test-only alias kept for existing D1a tests.
     #[cfg(test)]
+    pub(crate) fn for_test(addr: SocketAddr) -> Option<Self> {
+        Self::from_socket_addr(addr)
+    }
+
     pub(crate) fn origin(&self) -> &str {
         &self.origin
     }
@@ -55,12 +59,17 @@ impl RequestGuard {
         Self { authority: None }
     }
 
-    /// Test-only constructor; never compiled into a release build.
-    #[cfg(test)]
-    pub(crate) fn for_test(authority: AllowedAuthority) -> Self {
+    /// Production D1b constructor for a concrete bound IPv4 authority.
+    pub(crate) fn for_authority(authority: AllowedAuthority) -> Self {
         Self {
             authority: Some(authority),
         }
+    }
+
+    /// Test-only alias kept for existing D1a tests.
+    #[cfg(test)]
+    pub(crate) fn for_test(authority: AllowedAuthority) -> Self {
+        Self::for_authority(authority)
     }
 
     pub(crate) fn check<B>(&self, request: &Request<B>) -> Result<(), StatusCode> {
@@ -309,6 +318,14 @@ mod tests {
                 .unwrap();
             assert!(guard().check(&req).is_ok(), "{site}");
         }
+    }
+
+    #[test]
+    fn authority_is_ipv4_only_and_uses_the_actual_socket_address() {
+        let ipv4 = AllowedAuthority::from_socket_addr(SocketAddr::from(([192, 168, 1, 10], 8443)))
+            .expect("IPv4 authority");
+        assert_eq!(ipv4.origin(), "https://192.168.1.10:8443");
+        assert!(AllowedAuthority::from_socket_addr("[::1]:8443".parse().unwrap()).is_none());
     }
 
     #[test]

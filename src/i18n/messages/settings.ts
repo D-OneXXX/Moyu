@@ -302,6 +302,83 @@ const zhCN = {
     "未找到可用的私有局域网 IPv4 地址，无法启动分发。",
   "settings.ca.privateKeyNote":
     "CA 私钥只保存在本机 CA 目录中；HTTP 分发任务没有读取私钥的能力。",
+
+  "settings.webAccess.unknownDevice": "未知设备",
+  "settings.webAccess.networkHint":
+    "手机必须先在系统设置中安装并信任上方根 CA；Windows 首次监听若被防火墙拦截，请在专用网络中允许本程序入站。",
+  "settings.webAccess.title": "Web Access 控制面",
+  "settings.webAccess.description":
+    "在本机显式启动局域网 HTTPS 服务，供手机配对后访问；默认关闭，启动前必须先初始化本地 CA。本面板只管理服务、配对与设备，不提供书库数据入口。",
+  "settings.webAccess.statusTitle": "服务状态",
+  "settings.webAccess.refresh": "刷新状态",
+  "settings.webAccess.loadError": "无法加载 Web Access 状态：{detail}",
+  "settings.webAccess.phase.disabled": "已关闭",
+  "settings.webAccess.phase.starting": "正在启动",
+  "settings.webAccess.phase.enabled": "运行中",
+  "settings.webAccess.phase.stopping": "正在停止",
+  "settings.webAccess.phase.error": "错误",
+  "settings.webAccess.caRequired":
+    "Web Access 需要上方「根 CA 与设备信任」中的本地 CA。请先在那里初始化或修复 CA；本面板不会自动创建 CA，也不会自动启动服务。",
+  "settings.webAccess.safeModeBlocked":
+    "安全模式处于启用状态。Web Access 已被停止，退出安全模式前无法重新启动。",
+  "settings.webAccess.address": "监听地址",
+  "settings.webAccess.noAddress": "未找到可用的私有局域网 IPv4 地址",
+  "settings.webAccess.bindAddress": "绑定地址",
+  "settings.webAccess.port": "实际端口",
+  "settings.webAccess.deviceCount": "已配对设备：{count}",
+  "settings.webAccess.pendingCount": "待批准请求：{count}",
+  "settings.webAccess.notRunning": "服务未运行；启动后可生成配对二维码。",
+  "settings.webAccess.start": "启动服务",
+  "settings.webAccess.starting": "正在启动",
+  "settings.webAccess.stop": "停止服务",
+  "settings.webAccess.stopping": "正在停止",
+  "settings.webAccess.stopConfirmTitle": "停止 Web Access？",
+  "settings.webAccess.stopConfirmMessage":
+    "停止会立即断开所有已配对设备、取消当前配对窗口，并关闭监听端口。需要时可以从本面板重新启动。",
+  "settings.webAccess.stopReasonTitle": "停止原因",
+  "settings.webAccess.stopReason.stopped": "用户手动停止",
+  "settings.webAccess.stopReason.safeMode": "进入安全模式后停止",
+  "settings.webAccess.stopReason.recovery": "崩溃恢复时停止",
+  "settings.webAccess.stopReason.exit": "应用退出时停止",
+  "settings.webAccess.lastError": "最近错误：{detail}",
+  "settings.webAccess.rootFingerprint": "根证书 SHA-256 指纹",
+  "settings.webAccess.leafFingerprint": "叶证书 SHA-256 指纹",
+  "settings.webAccess.leafExpires": "叶证书到期：{date}",
+  "settings.webAccess.copyFingerprint": "复制指纹",
+  "settings.webAccess.pairingTitle": "设备配对",
+  "settings.webAccess.pairingDescription":
+    "点击开始后会生成一个 120 秒有效的配对窗口；手机扫描二维码或打开链接后，需要在本面板逐条确认。",
+  "settings.webAccess.pairingStart": "开始配对",
+  "settings.webAccess.pairingCancel": "取消配对",
+  "settings.webAccess.pairingCountdown": "剩余 {seconds} 秒",
+  "settings.webAccess.pairingExpired": "配对窗口已过期，请重新开始配对。",
+  "settings.webAccess.qrAlt": "Web Access 配对二维码",
+  "settings.webAccess.qrHint":
+    "二维码只包含本次配对链接；请用手机相机扫描，不要截图分享。",
+  "settings.webAccess.copyUrl": "复制链接",
+  "settings.webAccess.copied": "已复制",
+  "settings.webAccess.copyFailed": "复制失败，请手动选择文本复制。",
+  "settings.webAccess.claimsTitle": "待批准请求",
+  "settings.webAccess.claimsEmpty": "当前没有待批准的配对请求。",
+  "settings.webAccess.claimCount": "待批准 {count} 条",
+  "settings.webAccess.unverifiedDevice": "名称未经核实",
+  "settings.webAccess.sourceIp": "来源 IP（服务端观测）",
+  "settings.webAccess.receivedAt": "收到时间：{time}",
+  "settings.webAccess.approve": "批准",
+  "settings.webAccess.deny": "拒绝",
+  "settings.webAccess.approveConfirmTitle": "批准这台设备？",
+  "settings.webAccess.approveConfirmMessage":
+    "即将授权「{name}」连接本机。设备名由手机自行上报，无法证明对方身份；只有你本人发起了这次配对时才应批准。",
+  "settings.webAccess.devicesTitle": "已配对设备",
+  "settings.webAccess.devicesEmpty": "还没有已配对设备。",
+  "settings.webAccess.deviceIssued": "签发：{date}",
+  "settings.webAccess.deviceExpires": "到期：{date}",
+  "settings.webAccess.revoke": "撤销",
+  "settings.webAccess.revokeConfirmTitle": "撤销这台设备？",
+  "settings.webAccess.revokeConfirmMessage":
+    "撤销「{name}」会立即断开它的访问，之后必须重新完成配对。",
+  "settings.webAccess.securityNote":
+    "设备名由手机自行上报，可能被修改；本项目没有 SAS 或密码学绑定，桌面端的人工批准是唯一授权。请不要因为设备出现在列表里就认为它已通过验证。",
 } as const;
 
 type SettingsMessages = { [K in keyof typeof zhCN]: string };
@@ -609,6 +686,83 @@ const zhTW: SettingsMessages = {
     "找不到可用的私有區域網路 IPv4 位址，無法啟動分發。",
   "settings.ca.privateKeyNote":
     "CA 私鑰只保存在本機 CA 目錄中；HTTP 分發工作沒有讀取私鑰的能力。",
+
+  "settings.webAccess.unknownDevice": "未知裝置",
+  "settings.webAccess.networkHint":
+    "手機必須先在系統設定中安裝並信任上方根 CA；Windows 首次監聽若被防火牆攔截，請在專用網路中允許本程式入站。",
+  "settings.webAccess.title": "Web Access 控制面",
+  "settings.webAccess.description":
+    "在本機明確啟動區域網路 HTTPS 服務，供手機配對後存取；預設關閉，啟動前必須先初始化本機 CA。本面板只管理服務、配對與裝置，不提供書庫資料入口。",
+  "settings.webAccess.statusTitle": "服務狀態",
+  "settings.webAccess.refresh": "重新整理狀態",
+  "settings.webAccess.loadError": "無法載入 Web Access 狀態：{detail}",
+  "settings.webAccess.phase.disabled": "已關閉",
+  "settings.webAccess.phase.starting": "正在啟動",
+  "settings.webAccess.phase.enabled": "執行中",
+  "settings.webAccess.phase.stopping": "正在停止",
+  "settings.webAccess.phase.error": "錯誤",
+  "settings.webAccess.caRequired":
+    "Web Access 需要上方「根 CA 與裝置信任」中的本機 CA。請先在那裡初始化或修復 CA；本面板不會自動建立 CA，也不會自動啟動服務。",
+  "settings.webAccess.safeModeBlocked":
+    "安全模式已啟用。Web Access 已停止，結束安全模式前無法重新啟動。",
+  "settings.webAccess.address": "監聽位址",
+  "settings.webAccess.noAddress": "找不到可用的私有區域網路 IPv4 位址",
+  "settings.webAccess.bindAddress": "綁定位址",
+  "settings.webAccess.port": "實際連接埠",
+  "settings.webAccess.deviceCount": "已配對裝置：{count}",
+  "settings.webAccess.pendingCount": "待批准請求：{count}",
+  "settings.webAccess.notRunning": "服務未執行；啟動後可產生配對 QR Code。",
+  "settings.webAccess.start": "啟動服務",
+  "settings.webAccess.starting": "正在啟動",
+  "settings.webAccess.stop": "停止服務",
+  "settings.webAccess.stopping": "正在停止",
+  "settings.webAccess.stopConfirmTitle": "停止 Web Access？",
+  "settings.webAccess.stopConfirmMessage":
+    "停止會立即中斷所有已配對裝置、取消目前的配對視窗，並關閉監聽連接埠。需要時可以從本面板重新啟動。",
+  "settings.webAccess.stopReasonTitle": "停止原因",
+  "settings.webAccess.stopReason.stopped": "使用者手動停止",
+  "settings.webAccess.stopReason.safeMode": "進入安全模式後停止",
+  "settings.webAccess.stopReason.recovery": "當機復原時停止",
+  "settings.webAccess.stopReason.exit": "應用程式結束時停止",
+  "settings.webAccess.lastError": "最近錯誤：{detail}",
+  "settings.webAccess.rootFingerprint": "根憑證 SHA-256 指紋",
+  "settings.webAccess.leafFingerprint": "葉憑證 SHA-256 指紋",
+  "settings.webAccess.leafExpires": "葉憑證到期：{date}",
+  "settings.webAccess.copyFingerprint": "複製指紋",
+  "settings.webAccess.pairingTitle": "裝置配對",
+  "settings.webAccess.pairingDescription":
+    "按下開始後會產生一個 120 秒有效的配對視窗；手機掃描 QR Code 或開啟連結後，需要在本面板逐筆確認。",
+  "settings.webAccess.pairingStart": "開始配對",
+  "settings.webAccess.pairingCancel": "取消配對",
+  "settings.webAccess.pairingCountdown": "剩餘 {seconds} 秒",
+  "settings.webAccess.pairingExpired": "配對視窗已過期，請重新開始配對。",
+  "settings.webAccess.qrAlt": "Web Access 配對 QR Code",
+  "settings.webAccess.qrHint":
+    "QR Code 只包含本次配對連結；請用手機相機掃描，不要截圖分享。",
+  "settings.webAccess.copyUrl": "複製連結",
+  "settings.webAccess.copied": "已複製",
+  "settings.webAccess.copyFailed": "複製失敗，請手動選取文字複製。",
+  "settings.webAccess.claimsTitle": "待批准請求",
+  "settings.webAccess.claimsEmpty": "目前沒有待批准的配對請求。",
+  "settings.webAccess.claimCount": "待批准 {count} 筆",
+  "settings.webAccess.unverifiedDevice": "名稱未經核實",
+  "settings.webAccess.sourceIp": "來源 IP（伺服器端觀測）",
+  "settings.webAccess.receivedAt": "收到時間：{time}",
+  "settings.webAccess.approve": "批准",
+  "settings.webAccess.deny": "拒絕",
+  "settings.webAccess.approveConfirmTitle": "批准這台裝置？",
+  "settings.webAccess.approveConfirmMessage":
+    "即將授權「{name}」連線到本機。裝置名稱由手機自行回報，無法證明對方身分；只有你本人發起這次配對時才應批准。",
+  "settings.webAccess.devicesTitle": "已配對裝置",
+  "settings.webAccess.devicesEmpty": "還沒有已配對裝置。",
+  "settings.webAccess.deviceIssued": "簽發：{date}",
+  "settings.webAccess.deviceExpires": "到期：{date}",
+  "settings.webAccess.revoke": "撤銷",
+  "settings.webAccess.revokeConfirmTitle": "撤銷這台裝置？",
+  "settings.webAccess.revokeConfirmMessage":
+    "撤銷「{name}」會立即中斷它的存取，之後必須重新完成配對。",
+  "settings.webAccess.securityNote":
+    "裝置名稱由手機自行回報，可能被修改；本專案沒有 SAS 或密碼學綁定，桌面端的人工批准是唯一授權。請不要因為裝置出現在清單裡就認為它已通過驗證。",
 };
 
 const en: SettingsMessages = {
@@ -920,6 +1074,91 @@ const en: SettingsMessages = {
     "No private LAN IPv4 address is available, so distribution cannot start.",
   "settings.ca.privateKeyNote":
     "The CA private key stays in the local CA directory; the HTTP distribution task cannot read it.",
+
+  "settings.webAccess.unknownDevice": "Unknown device",
+  "settings.webAccess.networkHint":
+    "The phone must install and trust the root CA above first. If Windows Firewall blocks the first listen, allow this app inbound on the private network.",
+  "settings.webAccess.title": "Web Access control plane",
+  "settings.webAccess.description":
+    "Start a local-network HTTPS service explicitly so a paired phone can connect. It is off by default and requires the local CA from the card above. This panel manages the service, pairing, and devices only; it exposes no library data.",
+  "settings.webAccess.statusTitle": "Service status",
+  "settings.webAccess.refresh": "Refresh status",
+  "settings.webAccess.loadError": "Could not load Web Access status: {detail}",
+  "settings.webAccess.phase.disabled": "Disabled",
+  "settings.webAccess.phase.starting": "Starting",
+  "settings.webAccess.phase.enabled": "Enabled",
+  "settings.webAccess.phase.stopping": "Stopping",
+  "settings.webAccess.phase.error": "Error",
+  "settings.webAccess.caRequired":
+    "Web Access needs the local CA from the “Root CA and device trust” card above. Initialize or repair it there first; this panel never creates a CA and never starts the service automatically.",
+  "settings.webAccess.safeModeBlocked":
+    "Safe mode is active. Web Access has been stopped and cannot be started until you leave safe mode.",
+  "settings.webAccess.address": "Listen address",
+  "settings.webAccess.noAddress":
+    "No private LAN IPv4 address is available",
+  "settings.webAccess.bindAddress": "Bound address",
+  "settings.webAccess.port": "Actual port",
+  "settings.webAccess.deviceCount": "Paired devices: {count}",
+  "settings.webAccess.pendingCount": "Pending requests: {count}",
+  "settings.webAccess.notRunning":
+    "The service is not running. Start it to generate a pairing QR code.",
+  "settings.webAccess.start": "Start service",
+  "settings.webAccess.starting": "Starting",
+  "settings.webAccess.stop": "Stop service",
+  "settings.webAccess.stopping": "Stopping",
+  "settings.webAccess.stopConfirmTitle": "Stop Web Access?",
+  "settings.webAccess.stopConfirmMessage":
+    "Stopping disconnects every paired device, cancels the current pairing window, and closes the listening port. You can start it again from this panel.",
+  "settings.webAccess.stopReasonTitle": "Stop reason",
+  "settings.webAccess.stopReason.stopped": "Stopped manually by the user",
+  "settings.webAccess.stopReason.safeMode":
+    "Stopped after entering safe mode",
+  "settings.webAccess.stopReason.recovery":
+    "Stopped during crash recovery",
+  "settings.webAccess.stopReason.exit": "Stopped because the app is exiting",
+  "settings.webAccess.lastError": "Last error: {detail}",
+  "settings.webAccess.rootFingerprint":
+    "Root certificate SHA-256 fingerprint",
+  "settings.webAccess.leafFingerprint":
+    "Leaf certificate SHA-256 fingerprint",
+  "settings.webAccess.leafExpires": "Leaf certificate expires: {date}",
+  "settings.webAccess.copyFingerprint": "Copy fingerprint",
+  "settings.webAccess.pairingTitle": "Device pairing",
+  "settings.webAccess.pairingDescription":
+    "Starting creates a pairing window that is valid for 120 seconds. After the phone scans the QR code or opens the link, confirm each request in this panel.",
+  "settings.webAccess.pairingStart": "Start pairing",
+  "settings.webAccess.pairingCancel": "Cancel pairing",
+  "settings.webAccess.pairingCountdown": "{seconds}s left",
+  "settings.webAccess.pairingExpired":
+    "The pairing window has expired. Start pairing again.",
+  "settings.webAccess.qrAlt": "Web Access pairing QR code",
+  "settings.webAccess.qrHint":
+    "The QR code contains only this pairing link. Scan it with the phone camera and do not share screenshots.",
+  "settings.webAccess.copyUrl": "Copy link",
+  "settings.webAccess.copied": "Copied",
+  "settings.webAccess.copyFailed":
+    "Could not copy. Select the text and copy it manually.",
+  "settings.webAccess.claimsTitle": "Pending requests",
+  "settings.webAccess.claimsEmpty": "There are no pending pairing requests.",
+  "settings.webAccess.claimCount": "{count} pending",
+  "settings.webAccess.unverifiedDevice": "Unverified name",
+  "settings.webAccess.sourceIp": "Source IP (server-observed)",
+  "settings.webAccess.receivedAt": "Received: {time}",
+  "settings.webAccess.approve": "Approve",
+  "settings.webAccess.deny": "Deny",
+  "settings.webAccess.approveConfirmTitle": "Approve this device?",
+  "settings.webAccess.approveConfirmMessage":
+    "You are about to authorize “{name}” to connect to this desktop. The device name is self-reported by the phone and does not prove its identity; approve only if you started this pairing.",
+  "settings.webAccess.devicesTitle": "Paired devices",
+  "settings.webAccess.devicesEmpty": "No devices are paired yet.",
+  "settings.webAccess.deviceIssued": "Issued: {date}",
+  "settings.webAccess.deviceExpires": "Expires: {date}",
+  "settings.webAccess.revoke": "Revoke",
+  "settings.webAccess.revokeConfirmTitle": "Revoke this device?",
+  "settings.webAccess.revokeConfirmMessage":
+    "Revoking “{name}” disconnects it immediately; it must pair again to reconnect.",
+  "settings.webAccess.securityNote":
+    "Device names are self-reported by the phone and can change. This project has no SAS or cryptographic binding; manual approval on this desktop is the only authorization. Do not treat a device as verified just because it appears in this list.",
 };
 
 const es: SettingsMessages = {
@@ -1241,6 +1480,96 @@ const es: SettingsMessages = {
     "No hay ninguna dirección IPv4 privada de LAN disponible; no se puede iniciar la distribución.",
   "settings.ca.privateKeyNote":
     "La clave privada de la CA permanece en el directorio local de la CA; la tarea HTTP no puede leerla.",
+
+  "settings.webAccess.unknownDevice": "Dispositivo desconocido",
+  "settings.webAccess.networkHint":
+    "El teléfono debe instalar y confiar primero en la CA raíz de arriba. Si el Firewall de Windows bloquea la primera escucha, permite la entrada de esta aplicación en la red privada.",
+  "settings.webAccess.title": "Control de Web Access",
+  "settings.webAccess.description":
+    "Inicia explícitamente un servicio HTTPS de red local para que el teléfono acceda tras vincularse. Está desactivado por defecto y requiere la CA local de la tarjeta superior. Este panel solo gestiona el servicio, la vinculación y los dispositivos; no expone datos de la biblioteca.",
+  "settings.webAccess.statusTitle": "Estado del servicio",
+  "settings.webAccess.refresh": "Actualizar estado",
+  "settings.webAccess.loadError":
+    "No se pudo cargar el estado de Web Access: {detail}",
+  "settings.webAccess.phase.disabled": "Desactivado",
+  "settings.webAccess.phase.starting": "Iniciando",
+  "settings.webAccess.phase.enabled": "Activo",
+  "settings.webAccess.phase.stopping": "Deteniendo",
+  "settings.webAccess.phase.error": "Error",
+  "settings.webAccess.caRequired":
+    "Web Access necesita la CA local de la tarjeta «CA raíz y confianza de dispositivos» de arriba. Inicialízala o repárala allí primero; este panel nunca crea una CA ni inicia el servicio automáticamente.",
+  "settings.webAccess.safeModeBlocked":
+    "El modo seguro está activo. Web Access se ha detenido y no se puede iniciar hasta que salgas del modo seguro.",
+  "settings.webAccess.address": "Dirección de escucha",
+  "settings.webAccess.noAddress":
+    "No hay ninguna dirección IPv4 privada de red local disponible",
+  "settings.webAccess.bindAddress": "Dirección vinculada",
+  "settings.webAccess.port": "Puerto real",
+  "settings.webAccess.deviceCount": "Dispositivos vinculados: {count}",
+  "settings.webAccess.pendingCount": "Solicitudes pendientes: {count}",
+  "settings.webAccess.notRunning":
+    "El servicio no está activo; inícialo para generar el código QR de vinculación.",
+  "settings.webAccess.start": "Iniciar servicio",
+  "settings.webAccess.starting": "Iniciando",
+  "settings.webAccess.stop": "Detener servicio",
+  "settings.webAccess.stopping": "Deteniendo",
+  "settings.webAccess.stopConfirmTitle": "¿Detener Web Access?",
+  "settings.webAccess.stopConfirmMessage":
+    "Al detener se desconectan todos los dispositivos vinculados, se cancela la ventana de vinculación actual y se cierra el puerto. Puedes volver a iniciarlo desde este panel.",
+  "settings.webAccess.stopReasonTitle": "Motivo de la detención",
+  "settings.webAccess.stopReason.stopped":
+    "Detenido manualmente por el usuario",
+  "settings.webAccess.stopReason.safeMode":
+    "Detenido al entrar en modo seguro",
+  "settings.webAccess.stopReason.recovery":
+    "Detenido durante la recuperación",
+  "settings.webAccess.stopReason.exit":
+    "Detenido al salir de la aplicación",
+  "settings.webAccess.lastError": "Último error: {detail}",
+  "settings.webAccess.rootFingerprint": "Huella SHA-256 de la CA raíz",
+  "settings.webAccess.leafFingerprint":
+    "Huella SHA-256 del certificado hoja",
+  "settings.webAccess.leafExpires": "El certificado hoja caduca: {date}",
+  "settings.webAccess.copyFingerprint": "Copiar huella",
+  "settings.webAccess.pairingTitle": "Vinculación de dispositivos",
+  "settings.webAccess.pairingDescription":
+    "Al empezar se crea una ventana de vinculación de 120 segundos; después de escanear el código QR o abrir el enlace, confirma cada solicitud en este panel.",
+  "settings.webAccess.pairingStart": "Iniciar vinculación",
+  "settings.webAccess.pairingCancel": "Cancelar vinculación",
+  "settings.webAccess.pairingCountdown": "Quedan {seconds} s",
+  "settings.webAccess.pairingExpired":
+    "La ventana de vinculación ha caducado. Iníciala de nuevo.",
+  "settings.webAccess.qrAlt": "Código QR de vinculación de Web Access",
+  "settings.webAccess.qrHint":
+    "El código QR solo contiene el enlace de esta vinculación; escanéalo con la cámara del teléfono y no compartas capturas.",
+  "settings.webAccess.copyUrl": "Copiar enlace",
+  "settings.webAccess.copied": "Copiado",
+  "settings.webAccess.copyFailed":
+    "No se pudo copiar. Selecciona el texto y cópialo manualmente.",
+  "settings.webAccess.claimsTitle": "Solicitudes pendientes",
+  "settings.webAccess.claimsEmpty":
+    "No hay solicitudes de vinculación pendientes.",
+  "settings.webAccess.claimCount": "{count} pendientes",
+  "settings.webAccess.unverifiedDevice": "Nombre sin verificar",
+  "settings.webAccess.sourceIp":
+    "IP de origen (observada por el servidor)",
+  "settings.webAccess.receivedAt": "Recibida: {time}",
+  "settings.webAccess.approve": "Aprobar",
+  "settings.webAccess.deny": "Rechazar",
+  "settings.webAccess.approveConfirmTitle": "¿Aprobar este dispositivo?",
+  "settings.webAccess.approveConfirmMessage":
+    "Vas a autorizar que «{name}» se conecte a este equipo. El nombre lo declara el propio teléfono y no demuestra su identidad; aprueba solo si tú iniciaste esta vinculación.",
+  "settings.webAccess.devicesTitle": "Dispositivos vinculados",
+  "settings.webAccess.devicesEmpty":
+    "Todavía no hay dispositivos vinculados.",
+  "settings.webAccess.deviceIssued": "Emitido: {date}",
+  "settings.webAccess.deviceExpires": "Caduca: {date}",
+  "settings.webAccess.revoke": "Revocar",
+  "settings.webAccess.revokeConfirmTitle": "¿Revocar este dispositivo?",
+  "settings.webAccess.revokeConfirmMessage":
+    "Al revocar «{name}» se corta su acceso de inmediato y tendrá que vincularse de nuevo.",
+  "settings.webAccess.securityNote":
+    "El nombre del dispositivo lo declara el teléfono y puede cambiarse; este proyecto no tiene SAS ni vínculo criptográfico, y la aprobación manual en el escritorio es la única autorización. No consideres un dispositivo verificado solo porque aparezca en la lista.",
 };
 
 const ja: SettingsMessages = {
@@ -1563,6 +1892,93 @@ const ja: SettingsMessages = {
     "利用可能なプライベート LAN IPv4 アドレスがないため、配布を開始できません。",
   "settings.ca.privateKeyNote":
     "CA 秘密鍵はローカル CA ディレクトリにのみ保存され、HTTP 配布タスクは読み取れません。",
+
+  "settings.webAccess.unknownDevice": "不明なデバイス",
+  "settings.webAccess.networkHint":
+    "スマートフォン側で上記のルート CA をインストールして信頼する必要があります。Windows ファイアウォールが最初の待受を遮断した場合は、プライベート ネットワークでこのアプリの受信を許可してください。",
+  "settings.webAccess.title": "Web Access コントロールプレーン",
+  "settings.webAccess.description":
+    "ローカルネットワーク向け HTTPS サービスを明示的に起動し、ペアリング済みのスマートフォンから接続できるようにします。既定は無効で、起動にはローカル CA の初期化が必要です。このパネルはサービスの管理、ペアリング、端末の管理のみを行い、書庫データへの入口は提供しません。",
+  "settings.webAccess.statusTitle": "サービスの状態",
+  "settings.webAccess.refresh": "状態を更新",
+  "settings.webAccess.loadError":
+    "Web Access の状態を読み込めませんでした：{detail}",
+  "settings.webAccess.phase.disabled": "無効",
+  "settings.webAccess.phase.starting": "起動中",
+  "settings.webAccess.phase.enabled": "稼働中",
+  "settings.webAccess.phase.stopping": "停止中",
+  "settings.webAccess.phase.error": "エラー",
+  "settings.webAccess.caRequired":
+    "Web Access には上の「ルート CA と端末の信頼」にあるローカル CA が必要です。先にそこで CA を初期化または修復してください。このパネルが CA を自動作成したり、サービスを自動起動したりすることはありません。",
+  "settings.webAccess.safeModeBlocked":
+    "セーフモードが有効です。Web Access は停止されており、セーフモードを終了するまで再起動できません。",
+  "settings.webAccess.address": "待ち受けアドレス",
+  "settings.webAccess.noAddress":
+    "利用可能なプライベート LAN IPv4 アドレスが見つかりません",
+  "settings.webAccess.bindAddress": "バインドアドレス",
+  "settings.webAccess.port": "実際のポート",
+  "settings.webAccess.deviceCount": "ペアリング済み端末：{count}",
+  "settings.webAccess.pendingCount": "承認待ちの要求：{count}",
+  "settings.webAccess.notRunning":
+    "サービスは停止しています。起動するとペアリング用 QR コードを生成できます。",
+  "settings.webAccess.start": "サービスを起動",
+  "settings.webAccess.starting": "起動中",
+  "settings.webAccess.stop": "サービスを停止",
+  "settings.webAccess.stopping": "停止中",
+  "settings.webAccess.stopConfirmTitle": "Web Access を停止しますか？",
+  "settings.webAccess.stopConfirmMessage":
+    "停止すると、ペアリング済みの端末はすべて切断され、現在のペアリングウィンドウは取り消され、待ち受けポートが閉じます。必要ならこのパネルから再起動できます。",
+  "settings.webAccess.stopReasonTitle": "停止理由",
+  "settings.webAccess.stopReason.stopped": "ユーザーによる手動停止",
+  "settings.webAccess.stopReason.safeMode":
+    "セーフモード移行のため停止",
+  "settings.webAccess.stopReason.recovery": "クラッシュ復旧のため停止",
+  "settings.webAccess.stopReason.exit": "アプリ終了のため停止",
+  "settings.webAccess.lastError": "直近のエラー：{detail}",
+  "settings.webAccess.rootFingerprint":
+    "ルート CA の SHA-256 フィンガープリント",
+  "settings.webAccess.leafFingerprint":
+    "リーフ証明書の SHA-256 フィンガープリント",
+  "settings.webAccess.leafExpires": "リーフ証明書の有効期限：{date}",
+  "settings.webAccess.copyFingerprint": "フィンガープリントをコピー",
+  "settings.webAccess.pairingTitle": "端末のペアリング",
+  "settings.webAccess.pairingDescription":
+    "開始すると 120 秒間有効なペアリングウィンドウが作成されます。スマートフォンで QR コードを読み取るかリンクを開いた後、このパネルで 1 件ずつ確認してください。",
+  "settings.webAccess.pairingStart": "ペアリングを開始",
+  "settings.webAccess.pairingCancel": "ペアリングを中止",
+  "settings.webAccess.pairingCountdown": "残り {seconds} 秒",
+  "settings.webAccess.pairingExpired":
+    "ペアリングウィンドウの有効期限が切れました。もう一度開始してください。",
+  "settings.webAccess.qrAlt": "Web Access のペアリング QR コード",
+  "settings.webAccess.qrHint":
+    "QR コードにはこのペアリングのリンクだけが含まれます。スマートフォンのカメラで読み取り、スクリーンショットを共有しないでください。",
+  "settings.webAccess.copyUrl": "リンクをコピー",
+  "settings.webAccess.copied": "コピーしました",
+  "settings.webAccess.copyFailed":
+    "コピーできませんでした。テキストを選択して手動でコピーしてください。",
+  "settings.webAccess.claimsTitle": "承認待ちの要求",
+  "settings.webAccess.claimsEmpty":
+    "承認待ちのペアリング要求はありません。",
+  "settings.webAccess.claimCount": "承認待ち {count} 件",
+  "settings.webAccess.unverifiedDevice": "未確認の名前",
+  "settings.webAccess.sourceIp": "送信元 IP（サーバー側の観測値）",
+  "settings.webAccess.receivedAt": "受信日時：{time}",
+  "settings.webAccess.approve": "承認",
+  "settings.webAccess.deny": "拒否",
+  "settings.webAccess.approveConfirmTitle": "この端末を承認しますか？",
+  "settings.webAccess.approveConfirmMessage":
+    "「{name}」にこの PC への接続を許可しようとしています。端末名はスマートフォンの自己申告であり、本人性の証明にはなりません。自分でこのペアリングを開始した場合にのみ承認してください。",
+  "settings.webAccess.devicesTitle": "ペアリング済み端末",
+  "settings.webAccess.devicesEmpty":
+    "ペアリング済みの端末はまだありません。",
+  "settings.webAccess.deviceIssued": "発行：{date}",
+  "settings.webAccess.deviceExpires": "有効期限：{date}",
+  "settings.webAccess.revoke": "取り消す",
+  "settings.webAccess.revokeConfirmTitle": "この端末を取り消しますか？",
+  "settings.webAccess.revokeConfirmMessage":
+    "「{name}」を取り消すと、ただちにアクセスが切断され、再度ペアリングが必要になります。",
+  "settings.webAccess.securityNote":
+    "端末名はスマートフォンの自己申告であり、変更される可能性があります。本プロジェクトには SAS や暗号学的な紐付けはなく、デスクトップ側での手動承認だけが認可です。一覧に表示されているだけで検証済みとみなさないでください。",
 };
 
 const ko: SettingsMessages = {
@@ -1880,6 +2296,89 @@ const ko: SettingsMessages = {
     "사용 가능한 사설 LAN IPv4 주소가 없어 배포를 시작할 수 없습니다.",
   "settings.ca.privateKeyNote":
     "CA 개인 키는 로컬 CA 디렉터리에만 있으며 HTTP 배포 작업은 이를 읽을 수 없습니다.",
+
+  "settings.webAccess.unknownDevice": "알 수 없는 기기",
+  "settings.webAccess.networkHint":
+    "휴대폰에서 위의 루트 CA를 먼저 설치하고 신뢰해야 합니다. Windows 방화벽이 첫 수신을 차단하면 개인 네트워크에서 이 앱의 인바운드를 허용하세요.",
+  "settings.webAccess.title": "Web Access 제어면",
+  "settings.webAccess.description":
+    "로컬 네트워크용 HTTPS 서비스를 사용자가 직접 시작해 페어링된 휴대폰에서 접속할 수 있게 합니다. 기본값은 꺼짐이며 시작하려면 로컬 CA를 먼저 초기화해야 합니다. 이 패널은 서비스, 페어링, 기기 관리만 담당하고 서재 데이터 입구는 제공하지 않습니다.",
+  "settings.webAccess.statusTitle": "서비스 상태",
+  "settings.webAccess.refresh": "상태 새로 고침",
+  "settings.webAccess.loadError":
+    "Web Access 상태를 불러오지 못했습니다: {detail}",
+  "settings.webAccess.phase.disabled": "꺼짐",
+  "settings.webAccess.phase.starting": "시작 중",
+  "settings.webAccess.phase.enabled": "실행 중",
+  "settings.webAccess.phase.stopping": "중지 중",
+  "settings.webAccess.phase.error": "오류",
+  "settings.webAccess.caRequired":
+    "Web Access에는 위의 '루트 CA 및 기기 신뢰' 카드에 있는 로컬 CA가 필요합니다. 먼저 그곳에서 CA를 초기화하거나 복구하세요. 이 패널은 CA를 자동으로 만들지 않고 서비스를 자동으로 시작하지도 않습니다.",
+  "settings.webAccess.safeModeBlocked":
+    "안전 모드가 활성화되어 있습니다. Web Access가 중지되었으며 안전 모드를 종료할 때까지 다시 시작할 수 없습니다.",
+  "settings.webAccess.address": "수신 주소",
+  "settings.webAccess.noAddress":
+    "사용 가능한 사설 LAN IPv4 주소를 찾지 못했습니다",
+  "settings.webAccess.bindAddress": "바인드 주소",
+  "settings.webAccess.port": "실제 포트",
+  "settings.webAccess.deviceCount": "페어링된 기기: {count}",
+  "settings.webAccess.pendingCount": "승인 대기 요청: {count}",
+  "settings.webAccess.notRunning":
+    "서비스가 실행 중이 아닙니다. 시작하면 페어링 QR 코드를 만들 수 있습니다.",
+  "settings.webAccess.start": "서비스 시작",
+  "settings.webAccess.starting": "시작 중",
+  "settings.webAccess.stop": "서비스 중지",
+  "settings.webAccess.stopping": "중지 중",
+  "settings.webAccess.stopConfirmTitle": "Web Access를 중지할까요?",
+  "settings.webAccess.stopConfirmMessage":
+    "중지하면 페어링된 모든 기기의 연결이 끊기고 현재 페어링 창이 취소되며 수신 포트가 닫힙니다. 필요하면 이 패널에서 다시 시작할 수 있습니다.",
+  "settings.webAccess.stopReasonTitle": "중지 사유",
+  "settings.webAccess.stopReason.stopped": "사용자가 직접 중지",
+  "settings.webAccess.stopReason.safeMode": "안전 모드 진입으로 중지",
+  "settings.webAccess.stopReason.recovery": "충돌 복구로 중지",
+  "settings.webAccess.stopReason.exit": "앱 종료로 중지",
+  "settings.webAccess.lastError": "최근 오류: {detail}",
+  "settings.webAccess.rootFingerprint": "루트 CA SHA-256 지문",
+  "settings.webAccess.leafFingerprint": "리프 인증서 SHA-256 지문",
+  "settings.webAccess.leafExpires": "리프 인증서 만료: {date}",
+  "settings.webAccess.copyFingerprint": "지문 복사",
+  "settings.webAccess.pairingTitle": "기기 페어링",
+  "settings.webAccess.pairingDescription":
+    "시작하면 120초 동안 유효한 페어링 창이 만들어집니다. 휴대폰으로 QR 코드를 스캔하거나 링크를 연 뒤 이 패널에서 요청을 하나씩 확인하세요.",
+  "settings.webAccess.pairingStart": "페어링 시작",
+  "settings.webAccess.pairingCancel": "페어링 취소",
+  "settings.webAccess.pairingCountdown": "{seconds}초 남음",
+  "settings.webAccess.pairingExpired":
+    "페어링 창이 만료되었습니다. 다시 시작하세요.",
+  "settings.webAccess.qrAlt": "Web Access 페어링 QR 코드",
+  "settings.webAccess.qrHint":
+    "QR 코드에는 이번 페어링 링크만 들어 있습니다. 휴대폰 카메라로 스캔하고 스크린샷을 공유하지 마세요.",
+  "settings.webAccess.copyUrl": "링크 복사",
+  "settings.webAccess.copied": "복사됨",
+  "settings.webAccess.copyFailed":
+    "복사하지 못했습니다. 텍스트를 선택해 직접 복사하세요.",
+  "settings.webAccess.claimsTitle": "승인 대기 요청",
+  "settings.webAccess.claimsEmpty":
+    "승인 대기 중인 페어링 요청이 없습니다.",
+  "settings.webAccess.claimCount": "{count}건 대기",
+  "settings.webAccess.unverifiedDevice": "확인되지 않은 이름",
+  "settings.webAccess.sourceIp": "출발지 IP(서버 관측값)",
+  "settings.webAccess.receivedAt": "수신 시각: {time}",
+  "settings.webAccess.approve": "승인",
+  "settings.webAccess.deny": "거부",
+  "settings.webAccess.approveConfirmTitle": "이 기기를 승인할까요?",
+  "settings.webAccess.approveConfirmMessage":
+    "'{name}' 기기가 이 PC에 연결하도록 승인하려 합니다. 기기 이름은 휴대폰이 스스로 신고한 값이라 신원을 증명하지 않습니다. 직접 이 페어링을 시작한 경우에만 승인하세요.",
+  "settings.webAccess.devicesTitle": "페어링된 기기",
+  "settings.webAccess.devicesEmpty": "아직 페어링된 기기가 없습니다.",
+  "settings.webAccess.deviceIssued": "발급: {date}",
+  "settings.webAccess.deviceExpires": "만료: {date}",
+  "settings.webAccess.revoke": "취소",
+  "settings.webAccess.revokeConfirmTitle": "이 기기를 취소할까요?",
+  "settings.webAccess.revokeConfirmMessage":
+    "'{name}' 기기를 취소하면 즉시 연결이 끊기고 다시 페어링해야 합니다.",
+  "settings.webAccess.securityNote":
+    "기기 이름은 휴대폰이 스스로 신고한 값이라 바뀔 수 있습니다. 이 프로젝트에는 SAS나 암호학적 바인딩이 없으며 데스크톱에서의 수동 승인만이 유일한 인가입니다. 목록에 보인다는 이유만으로 검증된 기기로 간주하지 마세요.",
 };
 
 export const settingsMessages = {

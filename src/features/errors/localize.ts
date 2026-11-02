@@ -51,11 +51,50 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "ca-acl-verification", key: "error.caAclVerification" },
   { code: "ca-acl", key: "error.caAclVerification" },
   { code: "ca-io", key: "error.caIo" },
+  { code: "ca-insufficient-validity", key: "error.caInsufficientValidity" },
   { code: "ca-export-path", key: "error.caExportPath" },
   { code: "ca-distribution-running", key: "error.caDistributionRunning" },
   { code: "ca-distribution-no-lan", key: "error.caDistributionNoLan" },
   { code: "ca-distribution-invalid-ip", key: "error.caDistributionInvalidIp" },
   { code: "ca-distribution-io", key: "error.caDistributionIo" },
+  { code: "web-access-already-enabled", key: "error.webAccessAlreadyEnabled" },
+  { code: "web-access-not-enabled", key: "error.webAccessNotEnabled" },
+  { code: "web-access-invalid-state", key: "error.webAccessInvalidState" },
+  { code: "web-access-invalid-ip", key: "error.webAccessInvalidIp" },
+  { code: "web-access-no-lan-address", key: "error.webAccessNoLan" },
+  { code: "web-access-invalid-bind", key: "error.webAccessInvalidBind" },
+  { code: "web-access-tls-config", key: "error.webAccessTlsConfig" },
+  { code: "web-access-io", key: "error.webAccessIo" },
+  { code: "web-access-server-join", key: "error.webAccessServerJoin" },
+  {
+    code: "web-access-certificate-expired",
+    key: "error.webAccessCertificateExpired",
+  },
+  {
+    code: "web-access-root-change-pending",
+    key: "error.webAccessRootChangePending",
+  },
+  {
+    code: "web-access-root-change-mismatch",
+    key: "error.webAccessRootChangeMismatch",
+  },
+  {
+    code: "web-access-rollback-unavailable",
+    key: "error.webAccessRollbackUnavailable",
+  },
+  {
+    code: "web-access-device-not-found",
+    key: "error.webAccessDeviceNotFound",
+  },
+  { code: "pairing-not-found", key: "error.webAccessPairingNotFound" },
+  { code: "pairing-claimed", key: "error.webAccessPairingClaimed" },
+  { code: "pairing-consumed", key: "error.webAccessPairingConsumed" },
+  { code: "pairing-expired", key: "error.webAccessPairingExpired" },
+  { code: "pairing-denied", key: "error.webAccessPairingDenied" },
+  { code: "pairing-cancelled", key: "error.webAccessPairingCancelled" },
+  { code: "device-limit", key: "error.webAccessDeviceLimit" },
+  { code: "pairing-rate-limited", key: "error.webAccessRateLimited" },
+  { code: "invalid-parameter", key: "error.webAccessInvalidParameter" },
 ];
 
 /**
@@ -85,7 +124,9 @@ export function localizeBackendError(
 ): string {
   const raw = typeof input === "string" ? input.trim() : "";
   if (!raw) return translate("error.backendGeneric");
-  if (locale.startsWith("zh")) return raw;
+  // Simplified Chinese backend strings can be shown verbatim; zh-TW must use
+  // the Traditional code table instead of inheriting Simplified text.
+  if (locale === "zh-CN" || locale.startsWith("zh-Hans")) return raw;
   for (const entry of STABLE_ERROR_CODES) {
     if (hasStableCode(raw, entry.code)) return translate(entry.key as MessageKey);
   }

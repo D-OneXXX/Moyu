@@ -1091,6 +1091,7 @@ const SETTINGS_TABS_PROBE = `(() => {
       hasOnlineHeaders: !!panel.querySelector("#online-headers"),
       hasStorage: !!panel.querySelector('[data-testid="disk-cache-usage"]') && !!panel.querySelector("#disk-cache-budget"),
       hasPrivacyVersion: /\\b20\\d\\d-\\d\\d\\b/.test(panelText),
+      hasWebAccess: !!panel.querySelector('[data-testid="settings-web-access"]'),
       hasDiagnostics: !!panel.querySelector("#diagnostics-description"),
       hasUpdate: !!panel.querySelector("#update-check"),
     } : null,
@@ -1139,7 +1140,7 @@ function settingsMarker(id, panel) {
     case "storage":
       return panel.hasStorage;
     case "privacy":
-      return panel.hasPrivacyVersion;
+      return panel.hasPrivacyVersion && panel.hasWebAccess;
     case "about":
       return panel.hasDiagnostics;
     default:

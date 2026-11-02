@@ -43,6 +43,7 @@ import {
   PRIVACY_POLICY_VERSION,
 } from "@/components/privacy/PrivacyDialog";
 import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
+import WebAccessPanel from "@/components/settings/WebAccessPanel";
 
 const TRACE_KEYS = new Set(["mr-browser-recents", "mr-online-last-test"]);
 
@@ -374,6 +375,7 @@ export default function PrivacyPanel() {
   return (
     <div className="space-y-4">
       <CaDistributionPanel />
+      <WebAccessPanel />
       <SettingsSection
         icon={ShieldCheck}
         title={t("privacy.statement.title")}

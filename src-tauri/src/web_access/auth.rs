@@ -20,18 +20,21 @@
 //! - the pairing state lock is always taken before the session state lock,
 //!   never the other way around.
 //!
-//! This module is library/test-only: it registers no Tauri command, mounts no
-//! HTTP route, and is not wired into startup.
+//! This module registers no Tauri command and mounts no HTTP route. D1b's
+//! [`super::runtime::WebAccessRuntime`] and the pair router call
+//! [`PairingService`] directly; the state machines stay transport-agnostic.
 
 use std::fmt;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use thiserror::Error;
 
 use super::pairing::{
     ClaimIssued, ClaimState, ClaimStatus, PairingError, PairingStore, PairingWindow,
+    PendingClaimView,
 };
-use super::session::{SessionError, SessionIssued, SessionStore};
+use super::session::{SessionError, SessionIssued, SessionStore, SessionView};
 
 /// Errors surfaced by [`PairingService`]. Both variants keep the stable
 /// `code()` of the underlying state machine; no variant carries ids, secrets,
@@ -201,6 +204,28 @@ impl PairingService {
 
     pub(crate) fn revoke_device(&self, session_id: &str) -> bool {
         self.session.revoke(session_id)
+    }
+
+    /// Desktop device list; no token or token hash is present.
+    pub(crate) fn devices(&self) -> Vec<SessionView> {
+        self.session.device_views()
+    }
+
+    /// Claims awaiting desktop approval, oldest first.
+    pub(crate) fn pending_claims(&self) -> Vec<PendingClaimView> {
+        self.pairing.pending_claims()
+    }
+
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pairing.pending_count()
+    }
+
+    pub(crate) fn window_expiry(&self, pairing_id: &str) -> Option<std::time::Instant> {
+        self.pairing.window_expiry(pairing_id)
+    }
+
+    pub(crate) fn clock(&self) -> &Arc<dyn super::clock::Clock> {
+        self.pairing.clock()
     }
 
     /// Stop path: cancel every claim, release outstanding reservations, and

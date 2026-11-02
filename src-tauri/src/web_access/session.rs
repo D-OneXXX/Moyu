@@ -1,4 +1,4 @@
-//! In-memory session token state machine (D1a, library/test-only).
+//! In-memory session token state machine (D1a).
 //!
 //! Sessions live only in process memory: stopping Web Access, quitting, or
 //! crashing the desktop drops every token. A token is generated exactly once
@@ -249,6 +249,14 @@ impl SessionStore {
         let mut state = self.lock();
         state.purge_locked(now);
         (state.sessions.len(), state.reservations.len())
+    }
+
+    /// Read-only device list. [`SessionView`] carries no token or token hash.
+    pub(crate) fn device_views(&self) -> Vec<SessionView> {
+        let now = self.clock.now();
+        let mut state = self.lock();
+        state.purge_locked(now);
+        state.sessions.iter().map(SessionRecord::view).collect()
     }
 
     /// Poison-recovering lock shared with Task 3's orchestration layer.

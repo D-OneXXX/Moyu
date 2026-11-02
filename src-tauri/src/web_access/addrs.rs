@@ -19,23 +19,50 @@ pub fn is_private_lan_ipv4(ip: Ipv4Addr) -> bool {
             || (octets[0] == 192 && octets[1] == 168))
 }
 
+/// A currently usable private IPv4 address and its OS interface name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LanAddress {
+    pub ip: Ipv4Addr,
+    pub interface: String,
+}
+
+/// Enumerate the current non-loopback RFC 1918 IPv4 addresses together with
+/// their interface names. The caller enforces the leaf SAN cap; the desktop UI
+/// uses the names only for display.
+pub(crate) fn local_lan_addresses() -> WebAccessResult<Vec<LanAddress>> {
+    let interfaces = if_addrs::get_if_addrs().map_err(WebAccessError::Io)?;
+    let mut addresses = interfaces
+        .into_iter()
+        .filter_map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(v4) if is_private_lan_ipv4(v4.ip) => Some(LanAddress {
+                ip: v4.ip,
+                interface: interface.name,
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    addresses.sort_by(|left, right| {
+        left.ip
+            .cmp(&right.ip)
+            .then_with(|| left.interface.cmp(&right.interface))
+    });
+    addresses.dedup();
+    if addresses.is_empty() {
+        return Err(WebAccessError::NoLanAddress);
+    }
+    Ok(addresses)
+}
+
 /// Enumerate the current non-loopback RFC 1918 IPv4 addresses. The caller is
 /// responsible for enforcing the leaf SAN cap when using this directly;
 /// [`select_san_ips`] does so.
 pub fn local_private_ipv4s() -> WebAccessResult<Vec<Ipv4Addr>> {
-    let interfaces = if_addrs::get_if_addrs().map_err(WebAccessError::Io)?;
-    let mut ips = interfaces
+    let mut ips = local_lan_addresses()?
         .into_iter()
-        .filter_map(|interface| match interface.addr {
-            if_addrs::IfAddr::V4(v4) if is_private_lan_ipv4(v4.ip) => Some(v4.ip),
-            _ => None,
-        })
+        .map(|address| address.ip)
         .collect::<Vec<_>>();
     ips.sort();
     ips.dedup();
-    if ips.is_empty() {
-        return Err(WebAccessError::NoLanAddress);
-    }
     Ok(ips)
 }
 

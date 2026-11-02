@@ -554,12 +554,21 @@ fn emit_context(app: &AppHandle, context: &RecoveryContext) {
     let _ = app.emit_to(RECOVERY_LABEL, "mr-recovery-context", context);
 }
 
+/// D1b: a recovery surface or safe mode must never leave a Web Access listener
+/// running. This stops it once and never starts it again automatically.
+fn stop_web_access_blocking(app: &AppHandle, reason: crate::web_access::StopReason) {
+    if let Some(runtime) = app.try_state::<Arc<crate::web_access::WebAccessRuntime>>() {
+        let _ = tauri::async_runtime::block_on(runtime.stop(reason));
+    }
+}
+
 fn open_recovery(
     app: &AppHandle,
     state: &ResilienceState,
     trigger: RecoveryTrigger,
     detail: String,
 ) -> Result<bool, String> {
+    stop_web_access_blocking(app, crate::web_access::StopReason::Recovery);
     let context = current_context(state, trigger, detail);
     *state.recovery_context.lock() = Some(context.clone());
 
@@ -942,6 +951,12 @@ pub async fn resilience_enable_safe_mode(
     let path = safe_mode_path()?;
     write_safe_mode_at(&path, &state)?;
     crate::logging::log_error("safe_mode", &format!("用户启用安全模式：{reason}"));
+
+    // D1b: safe mode closes Web Access before the browser/main window changes.
+    // It is never restarted automatically when safe mode is later disabled.
+    if let Some(runtime) = app.try_state::<Arc<crate::web_access::WebAccessRuntime>>() {
+        let _ = runtime.stop(crate::web_access::StopReason::SafeMode).await;
+    }
 
     if let Some(browser) = app.get_webview_window("browser") {
         let _ = browser.close();

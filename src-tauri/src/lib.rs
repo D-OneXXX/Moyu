@@ -514,7 +514,14 @@ pub fn run() {
             // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
             let ca_root = ca::resolve_ca_root(None, Some(data_dir.as_path()))
                 .unwrap_or_else(|_| data_dir.join("security").join("ca"));
-            app.manage(Arc::new(web_access::CaDistributionRuntime::new(ca_root)));
+            app.manage(Arc::new(web_access::CaDistributionRuntime::new(
+                ca_root.clone(),
+            )));
+            // D1b：控制面运行时只托管，默认 Disabled；启动不 bind、不建配对窗口。
+            app.manage(Arc::new(web_access::WebAccessRuntime::new(
+                ca_root,
+                Arc::new(web_access::TauriEventSink::new(app.handle().clone())),
+            )));
             cache_health::install(app.handle().clone());
             if init_app(app).is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。
@@ -631,6 +638,18 @@ pub fn run() {
             web_access::ca_distribution_commands::web_access_ca_distribution_start,
             web_access::ca_distribution_commands::web_access_ca_distribution_stop,
             web_access::ca_distribution_commands::web_access_ca_distribution_status,
+            // D1b：控制面命令。默认 Disabled；只有显式 start 才 bind；无数据路由。
+            web_access::commands::web_access_status,
+            web_access::commands::web_access_addresses,
+            web_access::commands::web_access_start,
+            web_access::commands::web_access_stop,
+            web_access::commands::web_access_pairing_start,
+            web_access::commands::web_access_pairing_state,
+            web_access::commands::web_access_pairing_approve,
+            web_access::commands::web_access_pairing_deny,
+            web_access::commands::web_access_pairing_cancel,
+            web_access::commands::web_access_devices_list,
+            web_access::commands::web_access_device_revoke,
             diagnostics::diagnostics_record_frontend_error,
             diagnostics::diagnostics_record_breadcrumb,
             diagnostics::diagnostics_update_context,
@@ -651,6 +670,10 @@ pub fn run() {
         .expect("error while building tauri application");
     app.run(|app_handle, event| {
         if let tauri::RunEvent::ExitRequested { .. } = event {
+            // D1b：退出前先关闭控制面监听、配对窗口与全部会话。失败只记录
+            // 稳定码，不自动重试/重启；随后再做缓存在退出路径上的收尾。
+            let web_access = app_handle.state::<Arc<web_access::WebAccessRuntime>>();
+            let _ = tauri::async_runtime::block_on(web_access.stop(web_access::StopReason::Exit));
             let state = app_handle.state::<Arc<AppState>>();
             state.cancel_handoff();
             // 退出前做最后一次统一淘汰；只动派生缓存。

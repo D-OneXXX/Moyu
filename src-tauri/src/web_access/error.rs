@@ -24,6 +24,10 @@ pub enum WebAccessError {
     ServerJoin,
     #[error("TLS serving certificate requires an explicit root-rotation reload")]
     RootChangePending,
+    #[error("TLS root-rotation reload fingerprint does not match the active root")]
+    RootChangeMismatch,
+    #[error("TLS previous certificate is not available for rollback")]
+    RollbackUnavailable,
 }
 
 impl WebAccessError {
@@ -40,6 +44,8 @@ impl WebAccessError {
             Self::Io(_) => "web-access-io",
             Self::ServerJoin => "web-access-server-join",
             Self::RootChangePending => "web-access-root-change-pending",
+            Self::RootChangeMismatch => "web-access-root-change-mismatch",
+            Self::RollbackUnavailable => "web-access-rollback-unavailable",
         }
     }
 }

@@ -23,8 +23,8 @@ use super::addrs::select_san_ips;
 use super::error::{WebAccessError, WebAccessResult};
 use super::http::{empty_response, health_response, not_found_response, RequestGuard};
 use super::tls_renewal::{
-    certificate_expired, issuer_rotation_required, renewal_due, TlsCertificateSnapshot,
-    TlsCertificateState, TlsRenewalPolicy,
+    certificate_expired, issuer_rotation_required, renewal_due, rollback_available,
+    TlsCertificateSnapshot, TlsCertificateState, TlsRenewalPolicy,
 };
 
 /// The only DNS name the CA issues leaves for.
@@ -49,7 +49,6 @@ pub(crate) struct ServingCertificate {
 
 struct PreviousCertificate {
     serving: ServingCertificate,
-    #[allow(dead_code)] // Used by the rollback API in the next task.
     swapped_at: i64,
 }
 
@@ -119,6 +118,23 @@ impl TlsRuntime {
             TlsCertificateState::RenewalFailed { .. }
             | TlsCertificateState::IssuerRotationRequired { .. } => self.policy.retry_after_failure,
             _ => self.policy.tick,
+        }
+    }
+
+    fn prune_previous(&self, now: i64, current: &ServingCertificate) {
+        let mut meta = self.lock_meta();
+        let Some(previous) = meta.previous.as_ref() else {
+            return;
+        };
+        if !rollback_available(
+            now,
+            previous.serving.leaf_not_after,
+            previous.serving.root_generation,
+            current.root_generation,
+            previous.swapped_at,
+            self.policy.rollback_grace,
+        ) {
+            meta.previous = None;
         }
     }
 
@@ -212,6 +228,7 @@ impl TlsRuntime {
     async fn tick(&self) {
         let now = (self.clock)().unix_timestamp();
         let current = self.cert_tx.borrow().clone();
+        self.prune_previous(now, &current);
         let expired = certificate_expired(now, current.leaf_not_after);
         let manager = self.manager.clone();
         let status = tokio::task::spawn_blocking(move || manager.status()).await;
@@ -240,12 +257,127 @@ impl TlsRuntime {
             self.set_issuer_required(expired);
             return;
         }
+        let retry_failed = matches!(
+            self.lock_meta().state,
+            TlsCertificateState::RenewalFailed { .. }
+        );
         if expired
+            || retry_failed
             || status.intermediate_generation != current.intermediate_generation
             || renewal_due(now, current.leaf_not_after, self.policy.renew_before)
         {
             let _ = self.renew_locked().await;
         }
+    }
+
+    async fn issue_certificate(
+        &self,
+        root_fingerprint_sha256: String,
+        root_generation: u32,
+        intermediate_generation: u32,
+    ) -> WebAccessResult<ServingCertificate> {
+        let manager = self.manager.clone();
+        let san_ips = self.san_ips.clone();
+        let expected_root_fingerprint = root_fingerprint_sha256.clone();
+        let result = tokio::task::spawn_blocking(move || -> WebAccessResult<ServingCertificate> {
+            let leaf = manager.issue_leaf(LEAF_DNS, &san_ips)?;
+            // Re-read the active chain after issuance. If the root changed
+            // while the leaf was being signed, discard it instead of silently
+            // switching the trust anchor.
+            let after = manager.status().map_err(WebAccessError::Ca)?;
+            if after.root_fingerprint_sha256 != expected_root_fingerprint {
+                return Err(WebAccessError::RootChangePending);
+            }
+            let config = build_server_config(&leaf)?;
+            Ok(ServingCertificate {
+                config: Arc::new(config),
+                leaf_fingerprint_sha256: leaf.fingerprint_sha256,
+                leaf_not_after: leaf.not_after,
+                root_fingerprint_sha256: expected_root_fingerprint,
+                root_generation,
+                intermediate_generation,
+            })
+        })
+        .await;
+        match result {
+            Ok(Ok(new)) => Ok(new),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err(WebAccessError::ServerJoin),
+        }
+    }
+
+    async fn reload_after_root_rotation(&self, expected: &str) -> WebAccessResult<()> {
+        let _guard = self.renewal_lock.lock().await;
+        let now = (self.clock)().unix_timestamp();
+        let current = self.cert_tx.borrow().clone();
+        let expired = certificate_expired(now, current.leaf_not_after);
+        self.mark_renewing();
+
+        let manager = self.manager.clone();
+        let status = tokio::task::spawn_blocking(move || manager.status()).await;
+        let status = match status {
+            Err(_) => {
+                self.record_failure("web-access-server-join", expired);
+                return Err(WebAccessError::ServerJoin);
+            }
+            Ok(Err(err)) => {
+                self.record_failure(err.code(), expired);
+                return Err(WebAccessError::Ca(err));
+            }
+            Ok(Ok(status)) => status,
+        };
+        if status.root_fingerprint_sha256 != expected {
+            self.record_failure("web-access-root-change-mismatch", expired);
+            return Err(WebAccessError::RootChangeMismatch);
+        }
+
+        let new = self
+            .issue_certificate(
+                status.root_fingerprint_sha256,
+                status.root_generation,
+                status.intermediate_generation,
+            )
+            .await;
+        match new {
+            Ok(new) => {
+                self.swap(new, now);
+                Ok(())
+            }
+            Err(err) => {
+                self.record_failure(err.code(), expired);
+                Err(err)
+            }
+        }
+    }
+
+    async fn rollback_last_reload(&self) -> WebAccessResult<()> {
+        let _guard = self.renewal_lock.lock().await;
+        let now = (self.clock)().unix_timestamp();
+        let current = self.cert_tx.borrow().clone();
+        let previous = {
+            let mut meta = self.lock_meta();
+            meta.previous.take()
+        };
+        let Some(previous) = previous else {
+            return Err(WebAccessError::RollbackUnavailable);
+        };
+        if !rollback_available(
+            now,
+            previous.serving.leaf_not_after,
+            previous.serving.root_generation,
+            current.root_generation,
+            previous.swapped_at,
+            self.policy.rollback_grace,
+        ) {
+            return Err(WebAccessError::RollbackUnavailable);
+        }
+
+        let _displaced = self.cert_tx.send_replace(previous.serving);
+        let mut meta = self.lock_meta();
+        meta.state = TlsCertificateState::Serving;
+        meta.last_error_code = None;
+        meta.previous = None;
+        Ok(())
     }
 
     async fn renew_locked(&self) -> WebAccessResult<()> {
@@ -283,38 +415,23 @@ impl TlsRuntime {
             return Err(WebAccessError::Ca(CaError::InsufficientValidity));
         }
 
-        let root_fingerprint_sha256 = status.root_fingerprint_sha256.clone();
-        let root_generation = status.root_generation;
-        let intermediate_generation = status.intermediate_generation;
-        let manager = self.manager.clone();
-        let san_ips = self.san_ips.clone();
-        let new = tokio::task::spawn_blocking(move || -> WebAccessResult<ServingCertificate> {
-            let leaf = manager.issue_leaf(LEAF_DNS, &san_ips)?;
-            let config = build_server_config(&leaf)?;
-            Ok(ServingCertificate {
-                config: Arc::new(config),
-                leaf_fingerprint_sha256: leaf.fingerprint_sha256,
-                leaf_not_after: leaf.not_after,
-                root_fingerprint_sha256,
-                root_generation,
-                intermediate_generation,
-            })
-        })
-        .await;
-        let new = match new {
-            Ok(Ok(new)) => new,
-            Ok(Err(err)) => {
+        let new = self
+            .issue_certificate(
+                status.root_fingerprint_sha256,
+                status.root_generation,
+                status.intermediate_generation,
+            )
+            .await;
+        match new {
+            Ok(new) => {
+                self.swap(new, now);
+                Ok(())
+            }
+            Err(err) => {
                 self.record_failure(err.code(), expired);
-                return Err(err);
+                Err(err)
             }
-            Err(_) => {
-                self.record_failure("web-access-server-join", expired);
-                return Err(WebAccessError::ServerJoin);
-            }
-        };
-
-        self.swap(new, now);
-        Ok(())
+        }
     }
 }
 
@@ -388,6 +505,8 @@ impl TlsServerHandle {
     /// A path/key-free snapshot of the certificate currently served.
     pub fn certificate_snapshot(&self) -> TlsCertificateSnapshot {
         let current = self.current.borrow();
+        let now = (self.runtime.clock)().unix_timestamp();
+        self.runtime.prune_previous(now, &current);
         let meta = self.runtime.lock_meta();
         TlsCertificateSnapshot {
             state: meta.state.clone(),
@@ -411,6 +530,29 @@ impl TlsServerHandle {
     /// Force one certificate renewal and return the resulting snapshot.
     pub async fn renew_now(&self) -> WebAccessResult<TlsCertificateSnapshot> {
         self.runtime.renew_locked().await?;
+        Ok(self.certificate_snapshot())
+    }
+
+    /// Explicitly reload the serving certificate after a root rotation.
+    ///
+    /// The caller must confirm the new active root fingerprint and must have
+    /// distributed the new root to clients; this changes the trust anchor.
+    pub async fn reload_after_root_rotation(
+        &self,
+        expected_root_fingerprint_sha256: &str,
+    ) -> WebAccessResult<TlsCertificateSnapshot> {
+        self.runtime
+            .reload_after_root_rotation(expected_root_fingerprint_sha256)
+            .await?;
+        Ok(self.certificate_snapshot())
+    }
+
+    /// Restore the certificate replaced by the most recent successful reload.
+    ///
+    /// Only available for the same root, before the previous leaf expires and
+    /// inside the rollback grace window. One rollback level only.
+    pub async fn rollback_last_reload(&self) -> WebAccessResult<TlsCertificateSnapshot> {
+        self.runtime.rollback_last_reload().await?;
         Ok(self.certificate_snapshot())
     }
 

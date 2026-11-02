@@ -113,11 +113,25 @@ impl TlsRuntime {
     }
 
     fn next_wait(&self) -> Duration {
-        let meta = self.lock_meta();
-        match meta.state {
-            TlsCertificateState::RenewalFailed { .. }
-            | TlsCertificateState::IssuerRotationRequired { .. } => self.policy.retry_after_failure,
-            _ => self.policy.tick,
+        let base = {
+            let meta = self.lock_meta();
+            match meta.state {
+                TlsCertificateState::RenewalFailed { .. }
+                | TlsCertificateState::IssuerRotationRequired { .. } => {
+                    self.policy.retry_after_failure
+                }
+                _ => self.policy.tick,
+            }
+        };
+        // Wake at the leaf's absolute expiry even if the normal tick is later,
+        // so an expired listener cannot remain bound without a status update.
+        let now = (self.clock)().unix_timestamp();
+        let current = self.cert_tx.borrow();
+        let remaining = current.leaf_not_after.saturating_sub(now);
+        if remaining <= 0 {
+            Duration::from_secs(0)
+        } else {
+            base.min(Duration::from_secs(remaining as u64))
         }
     }
 

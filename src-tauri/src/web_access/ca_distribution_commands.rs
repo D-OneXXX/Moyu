@@ -105,7 +105,19 @@ fn ca_manager(runtime: &CaDistributionRuntime) -> CaManager {
 /// is authoritative in that case.
 fn initialize_and_verify(manager: &CaManager) -> Result<CaStatus, CaError> {
     let initialize_result = manager.initialize();
-    match manager.status() {
+    let status_result = manager.status();
+    // A post-commit audit failure can return Err while the CA is healthy.
+    // Status is authoritative, but the audit/observability failure must still
+    // be recorded; it is never a reason to block a healthy CA.
+    if let (Err(initialize_error), Ok(_)) = (&initialize_result, &status_result) {
+        if !matches!(initialize_error, CaError::AlreadyInitialized) {
+            crate::logging::log_error(
+                "ca",
+                &format!("CA 初始化后置审计失败（{}）", initialize_error.code()),
+            );
+        }
+    }
+    match status_result {
         Ok(status) => Ok(status),
         Err(status_error) => match initialize_result {
             Err(initialize_error) if matches!(status_error, CaError::NotInitialized) => {

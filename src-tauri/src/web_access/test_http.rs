@@ -350,6 +350,9 @@ mod tests {
         calls: Arc<AtomicUsize>,
         page_calls: Mutex<Vec<(u32, u32)>>,
         tile_calls: Mutex<Vec<(u32, u32, u32)>>,
+        /// When set, the L2 conditional probe reports a miss so the request has
+        /// to fall back to a real render. Defaults to a warm cache.
+        cache_miss: bool,
     }
 
     impl FakeData {
@@ -434,6 +437,21 @@ mod tests {
             Ok(fake_image())
         }
 
+        fn cached_page(
+            &self,
+            _id: &str,
+            _index: u32,
+            _width: u32,
+        ) -> Result<Option<ImageAsset>, DataError> {
+            // Deliberately uncounted: only `page`/`tile` record, so a
+            // conditional 304 can be proven to skip the render path.
+            if self.cache_miss {
+                Ok(None)
+            } else {
+                Ok(Some(fake_image()))
+            }
+        }
+
         fn layout(&self, _id: &str) -> Result<Vec<PageDim>, DataError> {
             self.record();
             Ok(vec![PageDim {
@@ -460,6 +478,25 @@ mod tests {
                 tile_count: 4,
                 tile_height: 2048,
             })
+        }
+
+        fn cached_tile(
+            &self,
+            _id: &str,
+            _index: u32,
+            _tile: u32,
+            _width: u32,
+        ) -> Result<Option<TileImage>, DataError> {
+            // Uncounted for the same reason as `cached_page`.
+            if self.cache_miss {
+                Ok(None)
+            } else {
+                Ok(Some(TileImage {
+                    image: fake_image(),
+                    tile_count: 4,
+                    tile_height: 2048,
+                }))
+            }
         }
 
         fn progress(&self, _id: &str) -> Result<ProgressView, DataError> {
@@ -497,6 +534,14 @@ mod tests {
         fn page(&self, _id: &str, _index: u32, _width: u32) -> Result<ImageAsset, DataError> {
             Err(self.0)
         }
+        fn cached_page(
+            &self,
+            _id: &str,
+            _index: u32,
+            _width: u32,
+        ) -> Result<Option<ImageAsset>, DataError> {
+            Err(self.0)
+        }
         fn layout(&self, _id: &str) -> Result<Vec<PageDim>, DataError> {
             Err(self.0)
         }
@@ -507,6 +552,15 @@ mod tests {
             _tile: u32,
             _width: u32,
         ) -> Result<TileImage, DataError> {
+            Err(self.0)
+        }
+        fn cached_tile(
+            &self,
+            _id: &str,
+            _index: u32,
+            _tile: u32,
+            _width: u32,
+        ) -> Result<Option<TileImage>, DataError> {
             Err(self.0)
         }
         fn progress(&self, _id: &str) -> Result<ProgressView, DataError> {
@@ -716,6 +770,11 @@ mod tests {
         assert!(first.body.starts_with(&[0xFF, 0xD8]));
         let etag = first.header("etag").expect("etag").to_owned();
         assert!(etag.starts_with("\"p-0-1080-"), "{etag}");
+        assert_eq!(
+            data.page_calls().len(),
+            1,
+            "the initial GET must render exactly once"
+        );
 
         let mut conditional = data_get(&page_path, Some(token));
         conditional
@@ -731,6 +790,13 @@ mod tests {
         assert!(second.header("content-type").is_none());
         // A 304 on a page read still refreshes the session.
         assert_eq!(second.cookies_named(SESSION_COOKIE).len(), 1);
+        // The conditional probe served this from the cached bytes; the render
+        // path must not have run a second time.
+        assert_eq!(
+            data.page_calls().len(),
+            1,
+            "a conditional 304 must be served without calling page()"
+        );
 
         let clamped = TestResponse::of(
             fixture
@@ -743,6 +809,11 @@ mod tests {
             .header("etag")
             .expect("etag")
             .starts_with("\"p-0-320-"));
+        assert_eq!(
+            data.page_calls().len(),
+            2,
+            "a non-conditional request must still render"
+        );
         assert_eq!(
             data.page_calls().last(),
             Some(&(0, 320)),
@@ -781,7 +852,8 @@ mod tests {
 
     #[tokio::test]
     async fn tile_304_keeps_geometry_headers() {
-        let fixture = Fixture::with_data(Arc::new(FakeData::default()));
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
         let tile_path = book_path("/pages/0/tiles/0");
@@ -793,6 +865,7 @@ mod tests {
                 .await,
         );
         assert_eq!(first.status, StatusCode::OK);
+        assert_eq!(data.tile_calls().len(), 1);
         let etag = first.header("etag").expect("etag").to_owned();
 
         let mut conditional = data_get(&tile_path, Some(token));
@@ -804,6 +877,52 @@ mod tests {
         assert_eq!(second.header("etag"), Some(etag.as_str()));
         assert_eq!(second.header("x-tile-count"), Some("4"));
         assert_eq!(second.header("x-tile-height"), Some("2048"));
+        assert_eq!(
+            data.tile_calls().len(),
+            1,
+            "a conditional tile 304 must not call tile() again"
+        );
+    }
+
+    #[tokio::test]
+    async fn conditional_cache_miss_falls_through_to_render() {
+        // A cold L2 cache still has to answer a conditional request by
+        // re-rendering; the fallback must remain intact.
+        let data = Arc::new(FakeData {
+            cache_miss: true,
+            ..FakeData::default()
+        });
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        let page_path = book_path("/pages/0");
+
+        let first = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&page_path, Some(token)))
+                .await,
+        );
+        assert_eq!(first.status, StatusCode::OK);
+        let etag = first.header("etag").expect("etag").to_owned();
+        assert_eq!(data.page_calls().len(), 1);
+
+        let mut conditional = data_get(&page_path, Some(token));
+        conditional
+            .headers_mut()
+            .insert(IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
+        let second = TestResponse::of(fixture.router.handle(conditional).await);
+        // The probe missed, so `page` ran again; identical bytes still hash to
+        // the same ETag and the client gets a 304.
+        assert_eq!(
+            data.page_calls().len(),
+            2,
+            "a cache miss must fall through to page()"
+        );
+        assert_eq!(second.status, StatusCode::NOT_MODIFIED);
+        assert_eq!(second.header("etag"), Some(etag.as_str()));
+        assert!(second.body.is_empty());
+        assert!(data.page_calls().contains(&(0, 1080)));
     }
 
     #[tokio::test]
@@ -978,6 +1097,12 @@ mod tests {
         let busy = error_response_for(DataError::Busy, &book).await;
         assert_error(&busy, StatusCode::SERVICE_UNAVAILABLE, "busy");
         assert_eq!(busy.header("retry-after"), Some("1"));
+        // `retryAfterMs` is reserved for the 429 rate-limit body; a 503 only
+        // carries the header.
+        assert!(
+            busy.json().pointer("/error/retryAfterMs").is_none(),
+            "503 must not serialize retryAfterMs into the error body"
+        );
         assert!(busy.cookies_named(SESSION_COOKIE).is_empty());
 
         let unavailable = error_response_for(DataError::DbUnavailable, &book).await;
@@ -997,7 +1122,8 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_session_is_unauthorized_before_any_304() {
-        let fixture = Fixture::with_data(Arc::new(FakeData::default()));
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
         let page_path = book_path("/pages/0");
@@ -1019,6 +1145,12 @@ mod tests {
             .insert(IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
         let revoked = TestResponse::of(fixture.router.handle(conditional).await);
         assert_error(&revoked, StatusCode::UNAUTHORIZED, "unauthorized");
+        // Authentication must fail closed before the cache probe or a render.
+        assert_eq!(
+            data.page_calls().len(),
+            1,
+            "a revoked session must not probe the cache or re-render"
+        );
     }
 
     #[tokio::test]

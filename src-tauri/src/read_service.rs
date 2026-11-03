@@ -420,6 +420,97 @@ pub(crate) fn tile_asset(
     })
 }
 
+/// Cache-only page probe used before rendering a conditional GET response.
+/// Mirrors the guards of [`page_asset`] but only reads L2: it never renders,
+/// never touches L1 or the database, never prefetches and never notes a write.
+pub(crate) fn cached_page_asset(
+    state: &Arc<AppState>,
+    id: &str,
+    index: u32,
+    width: u32,
+) -> Result<Option<ImageAsset>, DataError> {
+    let row = active_row(state, id)?;
+    if row.format == db::BOOK_FORMAT_PDF {
+        return Err(DataError::PdfUnsupported);
+    }
+    ensure_source_allowed(&row)?;
+    let handle = state
+        .source_handle_for_book(id)
+        .map_err(|_| DataError::SourceMissing)?;
+    let count = handle.page_count().map_err(|_| DataError::SourceMissing)?;
+    if index as usize >= count {
+        return Err(DataError::PageOutOfRange {
+            max_page: count.saturating_sub(1) as u32,
+        });
+    }
+    let width = width.clamp(320, 2160);
+    let Some(bytes) = state.render.get(id, index, width, 0) else {
+        return Ok(None);
+    };
+    match assembled_asset(bytes, 0, 0, false) {
+        Ok(asset) => Ok(Some(asset)),
+        Err(_) => {
+            state.render.remove_page(id, index, width, 0);
+            Ok(None)
+        }
+    }
+}
+
+/// Cache-only tile probe used before rendering a conditional GET response.
+/// Mirrors the guards and geometry of [`tile_asset`] but only reads L2: it
+/// never reads the source, never takes the tile materialisation lock, never
+/// renders, and never writes cache or database state.
+pub(crate) fn cached_tile_asset(
+    state: &Arc<AppState>,
+    id: &str,
+    index: u32,
+    tile: u32,
+    width: u32,
+) -> Result<Option<TileImage>, DataError> {
+    let row = active_row(state, id)?;
+    if row.format == db::BOOK_FORMAT_PDF {
+        return Err(DataError::PdfUnsupported);
+    }
+    ensure_source_allowed(&row)?;
+    let handle = state
+        .source_handle_for_book(id)
+        .map_err(|_| DataError::SourceMissing)?;
+    let count = handle.page_count().map_err(|_| DataError::SourceMissing)?;
+    if index as usize >= count {
+        return Err(DataError::PageOutOfRange {
+            max_page: count.saturating_sub(1) as u32,
+        });
+    }
+    let dims = layout_read_only(state, id)?;
+    let orig = dims
+        .get(index as usize)
+        .map(|dim| (dim.width, dim.height))
+        .unwrap_or((0, 0));
+    let width = bucket_tile_width(width);
+    let display_height = pipeline::fit_size(orig.0, orig.1, Some(width), None).1;
+    let expected_tiles =
+        pipeline::webtoon_tile_count(orig.0, orig.1, width).min(display_height.max(1));
+    if tile >= expected_tiles {
+        return Err(DataError::TileOutOfRange {
+            max_tile: expected_tiles.saturating_sub(1),
+        });
+    }
+    let Some(bytes) = state.render.get_tile(id, index, tile, width) else {
+        return Ok(None);
+    };
+    match assembled_asset(bytes, orig.0, orig.1, false) {
+        Ok(image) => Ok(Some(TileImage {
+            image,
+            tile_count: expected_tiles,
+            tile_height: pipeline::WEBTOON_TILE_H,
+        })),
+        Err(_) => {
+            state.render.remove_tile(id, index, tile, width);
+            Ok(None)
+        }
+    }
+}
+
 /// Read-only layout. Online missing dimensions are probed into memory only;
 /// `persist_online` is false, so `meta_json` is never rewritten.
 pub(crate) fn layout_read_only(state: &AppState, id: &str) -> Result<Vec<PageDim>, DataError> {
@@ -1968,5 +2059,203 @@ mod tests {
         assert_eq!(value["scrollPct"], 0.25);
         assert_eq!(value["rev"], 7);
         assert!(value.get("updatedAt").is_some());
+    }
+
+    #[test]
+    fn cached_page_asset_returns_none_until_rendered_then_hits_l2() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("cached-page");
+        std::fs::write(tree.0.join("page.png"), png_bytes(400, 300)).expect("page");
+        let a = id_for('p');
+        insert_book(
+            &state,
+            &a,
+            "Cached page",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        state.render.remove_page(&a, 0, 320, 0);
+
+        assert_eq!(cached_page_asset(&state, &a, 0, 320), Ok(None));
+
+        let rendered = page_asset(&state, &a, 0, 320, false, false).expect("fill l2");
+        let cached = cached_page_asset(&state, &a, 0, 320)
+            .expect("probe")
+            .expect("l2 hit");
+        assert!(cached.data_url.is_none());
+        assert!(cached.bytes.starts_with(&[0xFF, 0xD8]));
+        assert_eq!(cached.width, 320);
+        assert_eq!(cached.bytes, rendered.bytes);
+        assert!(state.cache.get_page(&a, 0, 320, 0).is_none());
+        assert!(state.prefetching.lock().is_empty());
+
+        state.render.remove_page(&a, 0, 320, 0);
+        assert_eq!(cached_page_asset(&state, &a, 0, 320), Ok(None));
+    }
+
+    #[test]
+    fn cached_tile_asset_returns_none_until_rendered_then_hits_l2() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("cached-tile");
+        std::fs::write(tree.0.join("page.png"), png_bytes(400, 6000)).expect("page");
+        let a = id_for('q');
+        insert_book(
+            &state,
+            &a,
+            "Cached tile",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        let width = bucket_tile_width(320);
+        state.render.remove_tile(&a, 0, 0, width);
+
+        assert_eq!(cached_tile_asset(&state, &a, 0, 0, width), Ok(None));
+
+        let rendered = tile_asset(&state, &a, 0, 0, width).expect("fill tiles");
+        let cached = cached_tile_asset(&state, &a, 0, 0, width)
+            .expect("probe")
+            .expect("l2 hit");
+        assert!(cached.image.data_url.is_none());
+        assert!(cached.image.bytes.starts_with(&[0xFF, 0xD8]));
+        assert!(cached.tile_count >= 1);
+        assert_eq!(cached.tile_count, rendered.tile_count);
+        assert_eq!(cached.tile_height, pipeline::WEBTOON_TILE_H);
+        assert_eq!(cached.image.bytes, rendered.image.bytes);
+        assert!(state.cache.get_page(&a, 0, width, 0).is_none());
+
+        state.render.remove_tile(&a, 0, 0, width);
+        assert_eq!(cached_tile_asset(&state, &a, 0, 0, width), Ok(None));
+    }
+
+    #[test]
+    fn cached_probes_keep_typed_errors() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("cached-errors");
+        std::fs::write(tree.0.join("page.png"), png_bytes(20, 2000)).expect("page");
+        let image = id_for('r');
+        let pdf = id_for('s');
+        let removed = id_for('t');
+        insert_book(
+            &state,
+            &image,
+            "Image",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        insert_book(
+            &state,
+            &pdf,
+            "PDF",
+            "2026-11-03 10:00:00",
+            "C:/library/a.pdf",
+            0,
+            "local",
+            BOOK_FORMAT_PDF,
+            "{}",
+            0,
+        );
+        insert_book(
+            &state,
+            &removed,
+            "Removed",
+            "2026-11-03 10:00:00",
+            "C:/library/removed.cbz",
+            1,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        state.render.remove_page(&image, 0, 320, 0);
+        state.render.remove_tile(&image, 0, 0, 320);
+
+        assert_eq!(
+            cached_page_asset(&state, &pdf, 0, 320),
+            Err(DataError::PdfUnsupported)
+        );
+        assert_eq!(
+            cached_tile_asset(&state, &pdf, 0, 0, 320),
+            Err(DataError::PdfUnsupported)
+        );
+        assert_eq!(
+            cached_page_asset(&state, &image, 5, 320),
+            Err(DataError::PageOutOfRange { max_page: 0 })
+        );
+        assert_eq!(
+            cached_tile_asset(&state, &image, 5, 0, 320),
+            Err(DataError::PageOutOfRange { max_page: 0 })
+        );
+        assert!(matches!(
+            cached_tile_asset(&state, &image, 0, 1000, 320),
+            Err(DataError::TileOutOfRange { .. })
+        ));
+        assert_eq!(
+            cached_page_asset(&state, &removed, 0, 320),
+            Err(DataError::NotFound)
+        );
+        assert_eq!(
+            cached_tile_asset(&state, &removed, 0, 0, 320),
+            Err(DataError::NotFound)
+        );
+    }
+
+    #[test]
+    fn cached_probes_do_not_mutate_progress_or_reading_log() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("cached-integrity");
+        std::fs::write(tree.0.join("page.png"), png_bytes(40, 300)).expect("page");
+        let a = id_for('u');
+        insert_book(
+            &state,
+            &a,
+            "Cached integrity",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        state
+            .db
+            .with(|conn| {
+                conn.execute(
+                    "UPDATE books SET current_page=1, scroll_pct=0.5, progress_rev=4 WHERE id=?1",
+                    params![&a],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "INSERT INTO reading_log(date,book_id,pages) VALUES('2026-11-03',?1,5)",
+                    params![&a],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .expect("seed progress");
+        state.render.remove_page(&a, 0, 320, 0);
+        state.render.remove_tile(&a, 0, 0, 320);
+
+        let before = row_snapshot(&state, &a);
+        let _ = cached_page_asset(&state, &a, 0, 320).expect("probe page");
+        let _ = cached_tile_asset(&state, &a, 0, 0, 320).expect("probe tile");
+        let _ = cached_page_asset(&state, &a, 9, 320).expect_err("range stays typed");
+        let after = row_snapshot(&state, &a);
+        assert_eq!(after, before);
     }
 }

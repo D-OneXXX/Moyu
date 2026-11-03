@@ -5,7 +5,9 @@
 //! state. It is a pure forwarder: every method delegates to a `read_service`
 //! function and none of them write. It never calls `upsert_online_book`, never
 //! updates `books` progress columns or `reading_log`, and never enables the
-//! L1 cache or neighbour prefetch (`page_asset(..., false, false)`). The trait
+//! L1 cache or neighbour prefetch (`page_asset(..., false, false)`).
+//! `cached_page`/`cached_tile` are L2-only probes used by conditional requests;
+//! they never render and never write either. The trait
 //! stays the single contract; only the call sites below know the concrete
 //! `AppState` handle types required by `read_service`.
 
@@ -58,6 +60,27 @@ impl WebDataAccess for AppData {
     }
     fn progress(&self, id: &str) -> Result<ProgressView, DataError> {
         read_service::progress(self.state.as_ref(), id)
+    }
+    /// L2-only probe for conditional page requests. `cached_page_asset` repeats
+    /// the active/PDF/source/range guards of `page_asset` but returns the cached
+    /// bytes only: no render, no neighbour prefetch, no L1 promotion, no write.
+    fn cached_page(
+        &self,
+        id: &str,
+        index: u32,
+        width: u32,
+    ) -> Result<Option<ImageAsset>, DataError> {
+        read_service::cached_page_asset(&self.state, id, index, width)
+    }
+    /// L2-only probe for conditional tile requests; same read-only contract.
+    fn cached_tile(
+        &self,
+        id: &str,
+        index: u32,
+        tile: u32,
+        width: u32,
+    ) -> Result<Option<TileImage>, DataError> {
+        read_service::cached_tile_asset(&self.state, id, index, tile, width)
     }
 }
 

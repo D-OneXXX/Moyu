@@ -198,6 +198,25 @@ pub(crate) trait WebDataAccess: Send + Sync {
     fn layout(&self, id: &str) -> Result<Vec<PageDim>, DataError>;
     fn tile(&self, id: &str, index: u32, tile: u32, width: u32) -> Result<TileImage, DataError>;
     fn progress(&self, id: &str) -> Result<ProgressView, DataError>;
+
+    /// Cache-only page lookup used to answer a conditional request without
+    /// rendering. Implementations must apply the same active/PDF/source/range
+    /// guards as [`Self::page`] but return the L2 bytes only: `Ok(None)` on a
+    /// miss, never a render and never a cache write.
+    fn cached_page(
+        &self,
+        id: &str,
+        index: u32,
+        width: u32,
+    ) -> Result<Option<ImageAsset>, DataError>;
+    /// Cache-only tile lookup; same contract as [`Self::cached_page`].
+    fn cached_tile(
+        &self,
+        id: &str,
+        index: u32,
+        tile: u32,
+        width: u32,
+    ) -> Result<Option<TileImage>, DataError>;
 }
 
 /// Session-authenticated data gate used by the production pair router.
@@ -285,14 +304,21 @@ impl DataHttp {
         };
 
         let provider = Arc::clone(&self.data);
+        // A conditional read is only interesting after authentication: the
+        // session check above already ran, so an unauthenticated caller can
+        // never reach the probe and never learns cache state. `If-None-Match`
+        // is the only validator this route honours (see `not_modified`).
+        let conditional = request.headers().contains_key(IF_NONE_MATCH);
         // Move the permits into the blocking task: a handler timeout must not
         // release the gates while an uncancellable render is still running.
+        // Both permits stay held across the L2 probe *and* any fallback render,
+        // so a cache hit and a cache miss consume the same gate budget.
         let outcome = tokio::time::timeout(
             DATA_HANDLER_TIMEOUT,
             tokio::task::spawn_blocking(move || {
                 let _session_permit = session_permit;
                 let _render_permit = render_permit;
-                call.run(provider.as_ref())
+                call.execute(provider.as_ref(), conditional)
             }),
         )
         .await;
@@ -360,6 +386,62 @@ enum DataCall {
 }
 
 impl DataCall {
+    /// Run a call, using the read-only L2 cache first when the request is
+    /// conditional.
+    ///
+    /// `If-None-Match` means the client already holds a representation and
+    /// only wants to know whether it is still current. The ETag is a content
+    /// hash over the encoded bytes, so a cache hit is sufficient to build the
+    /// identical 200/304 payload without rendering. A miss must fall through to
+    /// `run`: the cached bytes are the only proof of the current validator, so
+    /// answering 304 from a miss would be a fabricated match.
+    fn execute(
+        self,
+        provider: &dyn WebDataAccess,
+        conditional: bool,
+    ) -> Result<Payload, DataError> {
+        if conditional {
+            // Borrow ends at the end of this statement, so `self` can still be
+            // moved into `run` below.
+            let probed = self.probe(provider)?;
+            if let Some(payload) = probed {
+                return Ok(payload);
+            }
+        }
+        self.run(provider)
+    }
+
+    /// Cache-only lookup. Non-image calls have no cacheable representation and
+    /// answer `None` so they keep their existing path.
+    fn probe(&self, provider: &dyn WebDataAccess) -> Result<Option<Payload>, DataError> {
+        let payload = match self {
+            Self::Page { id, index, width } => {
+                let asset = provider.cached_page(id, *index, *width)?;
+                asset.map(|asset| Payload::Page {
+                    asset,
+                    index: *index,
+                    width: *width,
+                })
+            }
+            Self::Tile {
+                id,
+                index,
+                tile,
+                width,
+            } => {
+                let image = provider.cached_tile(id, *index, *tile, *width)?;
+                image.map(|image| Payload::Tile {
+                    image,
+                    index: *index,
+                    tile: *tile,
+                    width: *width,
+                })
+            }
+            _ => None,
+        };
+        Ok(payload)
+    }
+
     fn run(self, provider: &dyn WebDataAccess) -> Result<Payload, DataError> {
         match self {
             Self::Books { q, cursor, limit } => provider

@@ -1,0 +1,79 @@
+# W7-D2 整改登记（Task 4 P2 承接）
+
+> 本文件登记 W7-D2 独立审查遗留的两项 P2，明确责任、完成阶段与验收证据。
+> 提交、合并、发布与 G3 状态仍按 `docs/ENGINEERING_WORKFLOW.md` 与
+> `AGENTS.md` 执行；本文件不代表任何生产启用或发布批准。
+
+- 分支：`feat/w7-d2-read-only-data`
+- 基线：D1b `2382f23`
+- 登记日期：2026-11-03
+- 当前阶段：Task 6（条件请求扩展与传输治理）
+
+## 整改项
+
+| ID | 问题 | 级别 | 责任 | 完成阶段 | 状态 |
+|---|---|---|---|---|---|
+| D2-R1 | 条件 GET 先调用 provider/渲染，再计算 ETag 判定 304 | P2 | Backend（D2 控制器） | Task 6 | **已关闭** |
+| D2-R2 | `source-unsupported` 尚未进入冻结错误码表与六语映射 | P2 | Controller（契约/文档）+ Frontend（六语） | Task 8（契约/静态守卫）+ D4（Web UI 本地化） | **未关闭** |
+
+## D2-R1：条件 GET 预渲染探测
+
+**处理方式**
+
+- 仅当请求携带 `If-None-Match` 时，在 `spawn_blocking` 内先调用只读 L2 探测：
+  - `read_service::cached_page_asset`
+  - `read_service::cached_tile_asset`
+- 探测函数复用 `page_asset`/`tile_asset` 的 active/PDF/source/range 守卫，
+  但只读 `RenderCache` 的 L2 成品字节，不渲染、不写 DB、不写 L1、不预取、
+  不获取 tile 物化锁。
+- 命中时直接用缓存字节构造原有 `Payload`，由既有 `Payload::into_response`
+  计算内容哈希 ETag：匹配返回 `304`，不匹配返回 `200`（仍不渲染）。
+- 未命中时回落到原有 `run`，因为 ETag 是成品字节的内容哈希；没有缓存字节
+  就无法诚实地判定 304。
+- 认证先于探测；撤销会话、移除书籍、PDF、越界页/瓦片都在探测阶段返回原有
+  错误，不会借缓存绕过 401/404/415/416。
+- 会话/渲染许可在探测与可能的后备渲染期间保持持有，超时不释放仍在工作的许可。
+
+**验收证据**
+
+- `read_service`：`cached_page_asset_returns_none_until_rendered_then_hits_l2`、
+  `cached_tile_asset_returns_none_until_rendered_then_hits_l2`、
+  `cached_probes_keep_typed_errors`、
+  `cached_probes_do_not_mutate_progress_or_reading_log`。
+- `web_access::test_http`：条件 304 后 provider `page`/`tile` 调用计数不增加；
+  冷缓存条件请求仍回落到渲染；撤销后条件请求返回 401 且不调用 provider。
+- 真实 TLS：撤销会话后携带 `If-None-Match` 仍返回 `401`，不返回 `304`。
+- `cargo test --lib` 与 `cargo clippy --all-targets -- -D warnings` 全绿
+  （具体计数见 Task 6 交付报告）。
+
+## D2-R2：`source-unsupported` 稳定码登记
+
+**当前事实**
+
+- `data.rs` 对 `DataError::SourceUnsupported` 输出 HTTP `415` 与稳定码
+  `source-unsupported`。
+- 该码**不在** `WEB_ACCESS_API.md` §6.2 冻结词表中，也尚未进入
+  `src/features/errors/localize.ts` 与六语字典。
+- 该码只在 Web 数据面出现；D2 尚未交付 Web Reader UI，因此不是当前桌面 UI 的
+  可见回归，但属于必须在公开 Web V1 前关闭的契约债。
+
+**责任与完成阶段**
+
+- Controller：Task 8 更新 `docs/dev/WEB_ACCESS_API.md` §6.2 与
+  `tests/qa/suites/static.mjs` 的码表/静态守卫，把 `source-unsupported`
+  明确登记为 415 稳定码；如产品决定不新增码，则在 Task 8 改为复用既有码并
+  同步修改 `data.rs` 与测试。
+- Frontend：D4 Web Reader 本地化阶段，在 `localize.ts` 与
+  `zh-CN/zh-TW/en/es/ja/ko` 六语字典中补齐该码的文案。
+- 在以上两项完成前，D2-R2 保持**未关闭**；不得因 Task 4/Task 6 已提交而视为关闭。
+
+**验收口径**
+
+- Task 8：冻结文档与静态守卫能检索到 `source-unsupported`，且与实现一致。
+- D4：非中文界面不直出中文；该码有六语文案；未知码仍落到泛化本地化文案。
+
+## 范围声明
+
+- 本登记不改变 G3 的 **BLOCKED** 状态。
+- 未合并 `main`、未推送、未创建 Tag/Release、未启用生产监听。
+- 真实手机/LAN/信任库仍属于 G3/D5，未在本阶段验证。

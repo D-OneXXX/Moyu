@@ -1492,19 +1492,40 @@ impl WebDataAccess for TestData {
         Err(DataError::NotFound)
     }
 
+    fn cached_page(
+        &self,
+        _id: &str,
+        _index: u32,
+        _width: u32,
+    ) -> Result<Option<ImageAsset>, DataError> {
+        Ok(None)
+    }
+
+    fn cached_tile(
+        &self,
+        _id: &str,
+        _index: u32,
+        _tile: u32,
+        _width: u32,
+    ) -> Result<Option<TileImage>, DataError> {
+        Ok(None)
+    }
+
     fn progress(&self, _id: &str) -> Result<ProgressView, DataError> {
         Err(DataError::NotFound)
     }
 }
 
 /// One-shot `GET /api/books` over a fresh TLS connection, optionally carrying
-/// the `moyus_session` cookie. The connection still targets loopback; only the
-/// TLS SNI uses the configured LAN SAN.
+/// the `moyus_session` cookie and a conditional `If-None-Match` validator. The
+/// connection still targets loopback; only the TLS SNI uses the configured LAN
+/// SAN.
 async fn data_request(
     ca: &TestCa,
     addr: std::net::SocketAddr,
     host: &str,
     cookie: Option<&str>,
+    if_none_match: Option<&str>,
 ) -> String {
     let mut stream = connect_tls(
         addr,
@@ -1516,6 +1537,9 @@ async fn data_request(
     let mut request = format!("GET /api/books HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     if let Some(cookie) = cookie {
         request.push_str(&format!("Cookie: moyus_session={cookie}\r\n"));
+    }
+    if let Some(etag) = if_none_match {
+        request.push_str(&format!("If-None-Match: {etag}\r\n"));
     }
     request.push_str("\r\n");
     stream.write_all(request.as_bytes()).await.unwrap();
@@ -1545,7 +1569,9 @@ async fn for_test_with_data_starts_disabled_without_binding() {
 
 /// Real-TLS proof for the read-only data plane: authenticated with a live
 /// `moyus_session` cookie -> 200 with the book list and no path/CORS leakage;
-/// missing or revoked cookie -> 401 `unauthorized`; explicit stop -> disabled.
+/// missing or revoked cookie -> 401 `unauthorized`; a revoked token replaying
+/// the list ETag via `If-None-Match` still gets 401, never 304; explicit stop
+/// -> disabled.
 #[tokio::test]
 async fn production_router_serves_data_only_with_a_session_cookie() {
     let ca = TestCa::new("data-router");
@@ -1571,7 +1597,7 @@ async fn production_router_serves_data_only_with_a_session_cookie() {
     let issued = service.issue_session_for_test("Pixel 8");
 
     // No cookie: the data gate fails closed before touching the provider.
-    let denied = data_request(&ca, addr, &host, None).await;
+    let denied = data_request(&ca, addr, &host, None, None).await;
     assert!(denied.starts_with("HTTP/1.1 401"), "{denied:?}");
     assert!(
         denied.to_ascii_lowercase().contains("\"unauthorized\""),
@@ -1583,7 +1609,7 @@ async fn production_router_serves_data_only_with_a_session_cookie() {
     );
 
     // A live session cookie returns only the JSON book list.
-    let served = data_request(&ca, addr, &host, Some(issued.token.as_str())).await;
+    let served = data_request(&ca, addr, &host, Some(issued.token.as_str()), None).await;
     assert!(served.starts_with("HTTP/1.1 200"), "{served:?}");
     assert!(served.contains("\"items\""), "{served:?}");
     assert!(served.contains("\"Web Book\""), "{served:?}");
@@ -1596,14 +1622,38 @@ async fn production_router_serves_data_only_with_a_session_cookie() {
             .contains("access-control-allow-origin"),
         "{served:?}"
     );
+    let etag = response_header(&served, "etag")
+        .expect("book list must carry an ETag")
+        .to_owned();
 
     // Revocation invalidates the same token immediately.
     assert!(service.revoke_device(&issued.id));
-    let revoked = data_request(&ca, addr, &host, Some(issued.token.as_str())).await;
+    let revoked = data_request(&ca, addr, &host, Some(issued.token.as_str()), None).await;
     assert!(revoked.starts_with("HTTP/1.1 401"), "{revoked:?}");
     assert!(
         revoked.to_ascii_lowercase().contains("\"unauthorized\""),
         "{revoked:?}"
+    );
+
+    // Revocation wins over a conditional request: replaying the still-valid
+    // validator with the revoked token must fail the auth gate instead of
+    // short-circuiting into a 304.
+    let conditional =
+        data_request(&ca, addr, &host, Some(issued.token.as_str()), Some(&etag)).await;
+    assert!(
+        !conditional.starts_with("HTTP/1.1 304"),
+        "revoked session must never receive a 304: {conditional:?}"
+    );
+    assert!(conditional.starts_with("HTTP/1.1 401"), "{conditional:?}");
+    assert!(
+        conditional
+            .to_ascii_lowercase()
+            .contains("\"unauthorized\""),
+        "{conditional:?}"
+    );
+    assert!(
+        !conditional.to_ascii_lowercase().contains("set-cookie"),
+        "{conditional:?}"
     );
 
     runtime.stop(StopReason::Stopped).await;

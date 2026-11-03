@@ -18,6 +18,8 @@ pub mod pdf;
 pub mod pipeline;
 mod platform;
 #[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod progress_service;
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod read_service;
 pub mod render_cache;
 mod resilience;

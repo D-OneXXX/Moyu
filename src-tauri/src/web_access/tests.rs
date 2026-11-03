@@ -1659,3 +1659,139 @@ async fn production_router_serves_data_only_with_a_session_cookie() {
     runtime.stop(StopReason::Stopped).await;
     assert_eq!(runtime.status().await.phase, "disabled");
 }
+
+/// One-shot raw HTTP request over a fresh TLS connection to the bound host.
+/// The method and path are written verbatim so malformed/encoded targets reach
+/// the server unchanged; the optional cookie and extra headers are appended
+/// before the terminating blank line. The TCP connection stays on loopback and
+/// only the TLS SNI uses the configured LAN SAN.
+async fn data_tls_request(
+    ca: &TestCa,
+    addr: std::net::SocketAddr,
+    host: &str,
+    method: &str,
+    path: &str,
+    cookie: Option<&str>,
+    extra_headers: &[(&str, &str)],
+) -> String {
+    let mut stream = connect_tls(
+        addr,
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if let Some(cookie) = cookie {
+        request.push_str(&format!("Cookie: moyus_session={cookie}\r\n"));
+    }
+    for (name, value) in extra_headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+/// Real-TLS data-plane hardening matrix on the production runtime. Traversal,
+/// double encoding, NUL, trailing/extra segments, wrong ID casing, unknown
+/// paths, and non-GET methods all collapse to the same session-gated `404`
+/// (never 200/500) with no CORS allowance; `Range` on the book list is ignored
+/// (200 + `items`, never 206/`Content-Range`); an oversized header block on a
+/// data path is rejected with `431` `header-too-large`.
+#[tokio::test]
+async fn real_tls_data_routes_reject_traversal_and_unknown_methods() {
+    let ca = TestCa::new("data-matrix");
+    ca.initialize();
+
+    let runtime = WebAccessRuntime::for_test_with_data(ca.root.clone(), Arc::new(TestData));
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+
+    let status = runtime.status().await;
+    let host = status.bind_address.expect("bound");
+    let addr: std::net::SocketAddr = host.parse().unwrap();
+    let service = runtime.service_for_test().await.expect("service");
+    let issued = service.issue_session_for_test("Pixel 8");
+    let token = issued.token.as_str();
+
+    let id = "a".repeat(64);
+    let cases = [
+        ("GET", "/api/books/%2e%2e%2fetc".to_owned()),
+        ("GET", "/api/books/%252e%252e%252fetc".to_owned()),
+        ("GET", "/api/books/%00".to_owned()),
+        ("GET", "/api/books/".to_owned()),
+        ("GET", format!("/api/books/{}", "A".repeat(64))),
+        ("GET", format!("/api/books/{id}/pages/0/tiles/")),
+        ("GET", "/api/nope".to_owned()),
+        ("OPTIONS", "/api/books".to_owned()),
+        ("HEAD", "/api/books".to_owned()),
+    ];
+    for (method, path) in &cases {
+        let response = data_tls_request(&ca, addr, &host, method, path, Some(token), &[]).await;
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "{method} {path} must be 404, got: {response:?}"
+        );
+        assert!(
+            !response
+                .to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
+            "{method} {path} leaked CORS: {response:?}"
+        );
+        assert_request_id(&response);
+    }
+
+    // `Range` is not a representation selector for JSON metadata: the list is
+    // still the full 200 body and never a 206 slice.
+    let ranged = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "GET",
+        "/api/books",
+        Some(token),
+        &[("Range", "bytes=0-1")],
+    )
+    .await;
+    assert!(ranged.starts_with("HTTP/1.1 200"), "{ranged:?}");
+    assert!(ranged.contains("\"items\""), "{ranged:?}");
+    assert!(
+        !ranged.starts_with("HTTP/1.1 206"),
+        "Range must not produce a partial response: {ranged:?}"
+    );
+    assert!(
+        !ranged.to_ascii_lowercase().contains("content-range"),
+        "{ranged:?}"
+    );
+    assert!(
+        !ranged
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin"),
+        "{ranged:?}"
+    );
+
+    // The shared header budget runs before routing, so the data path answers
+    // the same 431 `header-too-large` the health listener does.
+    let oversized_value = "a".repeat(9 * 1024);
+    let oversized = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "GET",
+        "/api/books",
+        Some(token),
+        &[("X-Big", oversized_value.as_str())],
+    )
+    .await;
+    assert!(oversized.starts_with("HTTP/1.1 431"), "{oversized:?}");
+    assert!(oversized.contains("header-too-large"), "{oversized:?}");
+    assert_request_id(&oversized);
+
+    runtime.stop(StopReason::Stopped).await;
+    assert_eq!(runtime.status().await.phase, "disabled");
+}

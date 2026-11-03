@@ -90,3 +90,30 @@
 - 本登记不改变 G3 的 **BLOCKED** 状态。
 - 未合并 `main`、未推送、未创建 Tag/Release、未启用生产监听。
 - 真实手机/LAN/信任库仍属于 G3/D5，未在本阶段验证。
+
+## Task 7 验证记录（2026-11-03）
+
+- 基线：分支 `feat/w7-d2-read-only-data`，HEAD `15dec5c5`；Task 7 只新增测试与文档，
+  **零生产代码改动**，无新依赖/迁移/路由/写路径。
+- 执行级别：L0/L1 + loopback L2 TLS；无 GUI、无生产监听、无 CA 初始化、无配对窗口、
+  无防火墙/信任库变更；仅使用临时目录、内存库与临时端口，结束后无遗留进程/端口。
+- 全量回归：`cargo test --lib` **735 passed / 0 failed**；`cargo fmt --check`、
+  `cargo clippy --all-targets -- -D warnings` 均 PASS。
+- 新增证据（测试）：`web_access::test_http` 8 项凭据/路径/条件请求/Range/431 用例；
+  `web_access::tests::real_tls_data_routes_reject_traversal_and_unknown_methods`（真实 TLS）；
+  新增 `web_access::data_tests` 4 项只读快照用例（8 条 GET 路由前后 `books` 进度列与
+  `reading_log` 计数不变、条件 304 零写入、移除/PDF/缺源零写入、在线 layout 不改
+  `meta_json`）；`read_service::tests` 4 项（移除书、anime、缺源、不安全路径）。
+- 只读完整性：8 条 GET 路由与条件 304 的数据库快照完全一致，无 `Access-Control-Allow-Origin`；
+  会话活动刷新仅驻留内存。
+- 未取得有效证据（**不计 PASS**）：宿主拒绝创建符号链接，`folder_source_skips_symlinked_images`
+  输出 `BLOCKED` 并记 **BLOCKED**；目录联接点未构造，记 **BLOCKED/UNKNOWN**；
+  503/504 仅映射契约 VERIFIED，真实 gate 超时路径未强制触发（**UNKNOWN**）。
+- 整改项状态：**D2-R1 保持已关闭**；**D2-R2 保持未关闭**，责任（Controller Task 8 +
+  Frontend D4）与完成阶段**不变**；`source-unsupported` 仍不在 `WEB_ACCESS_API.md` §6.2
+  冻结码表与六语映射中。
+- 安全分级：P0/P1 均无；P2 仅 D2-R2 与 G3 BLOCKED；P3 为已知传输/证据边界。
+  本轮无需生产修复，无被跳过的失败测试。
+- 完整证据（真实测试名、命令计数、A–F 矩阵、分级）：`docs/dev/W7_D2_TASK7_SECURITY_VERIFICATION.md`
+  （该文件位于 gitignored 的 `docs/dev/`，仅本地留存，不入库）。
+- G3 仍为 **BLOCKED**；未合并、未推送、未创建 Tag/Release、未启用生产监听。

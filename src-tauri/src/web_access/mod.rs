@@ -50,4 +50,6 @@ pub use tls_renewal::{TlsCertificateSnapshot, TlsCertificateState};
 pub(crate) use ca_distribution::CaDistributionRuntime;
 
 #[cfg(test)]
+mod data_tests;
+#[cfg(test)]
 mod tests;

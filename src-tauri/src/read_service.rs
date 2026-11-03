@@ -2260,4 +2260,184 @@ mod tests {
         let after = row_snapshot(&state, &a);
         assert_eq!(after, before);
     }
+
+    fn assert_no_path_in_debug(error: &DataError, path: &str) {
+        let debug = format!("{error:?}");
+        assert!(
+            !debug.contains(path),
+            "error debug leaked the source path: {debug}"
+        );
+        assert!(
+            !debug.contains("C:"),
+            "error debug leaked a Windows drive prefix: {debug}"
+        );
+    }
+
+    #[test]
+    fn removed_book_is_not_served_by_thumb_or_cache_probes() {
+        let tree = TempTree::new("removed-reads");
+        let page = tree.0.join("page.png");
+        std::fs::write(&page, png_bytes(40, 40)).expect("page fixture");
+        // Keep any accidental cache write inside this test's temp tree rather
+        // than the real user render cache.
+        let mut state = state_with_db();
+        state.render = crate::render_cache::RenderCache::new(tree.0.join("render"));
+        let state = Arc::new(state);
+        let id = id_for('r');
+        insert_book(
+            &state,
+            &id,
+            "Removed with real source",
+            "2026-11-03 10:00:00",
+            page.to_string_lossy().as_ref(),
+            1,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+
+        assert_eq!(thumb_asset(&state, &id), Err(DataError::NotFound));
+        assert_eq!(
+            cached_page_asset(&state, &id, 0, 320),
+            Err(DataError::NotFound)
+        );
+        assert_eq!(
+            cached_tile_asset(&state, &id, 0, 0, 320),
+            Err(DataError::NotFound)
+        );
+        // Full render entries share the same active-row guard.
+        assert_eq!(
+            page_asset(&state, &id, 0, 320, false, false),
+            Err(DataError::NotFound)
+        );
+        assert_eq!(tile_asset(&state, &id, 0, 0, 320), Err(DataError::NotFound));
+        assert_eq!(pages_manifest(&state, &id), Err(DataError::NotFound));
+        assert_eq!(layout_read_only(&state, &id), Err(DataError::NotFound));
+
+        // A removed book must not have materialised any render cache entry.
+        assert!(state
+            .render
+            .get(&id, 0, WEB_THUMB_EDGE, WEB_THUMB_EDGE)
+            .is_none());
+        assert!(state.render.get(&id, 0, 320, 0).is_none());
+        assert!(state.render.get_tile(&id, 0, 0, 320).is_none());
+    }
+
+    #[test]
+    fn anime_source_is_rejected_without_path_leak() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("anime");
+        let page = tree.0.join("page.png");
+        std::fs::write(&page, png_bytes(10, 10)).expect("page fixture");
+        let path = page.to_string_lossy().to_string();
+        let id = id_for('n');
+        insert_book(
+            &state,
+            &id,
+            "Anime",
+            "2026-11-03 10:00:00",
+            &path,
+            0,
+            "anime",
+            "image",
+            "{}",
+            1,
+        );
+
+        let errors = [
+            pages_manifest(&state, &id).expect_err("manifest"),
+            page_asset(&state, &id, 0, 320, false, false).expect_err("page"),
+            thumb_asset(&state, &id).expect_err("thumb"),
+            layout_read_only(&state, &id).expect_err("layout"),
+            cached_page_asset(&state, &id, 0, 320).expect_err("cached page"),
+            cached_tile_asset(&state, &id, 0, 0, 320).expect_err("cached tile"),
+        ];
+        for error in errors {
+            assert_eq!(error, DataError::SourceUnsupported);
+            assert_no_path_in_debug(&error, &path);
+        }
+    }
+
+    #[test]
+    fn missing_local_source_is_typed_for_all_read_entries() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("missing-source");
+        let missing = tree.0.join("never-created.png");
+        assert!(!missing.exists(), "fixture path must not exist");
+        let path = missing.to_string_lossy().to_string();
+        let id = id_for('m');
+        insert_book(
+            &state,
+            &id,
+            "Missing",
+            "2026-11-03 10:00:00",
+            &path,
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+
+        let errors = [
+            pages_manifest(&state, &id).expect_err("manifest"),
+            page_asset(&state, &id, 0, 320, false, false).expect_err("page"),
+            thumb_asset(&state, &id).expect_err("thumb"),
+            layout_read_only(&state, &id).expect_err("layout"),
+            cached_page_asset(&state, &id, 0, 320).expect_err("cached page"),
+            cached_tile_asset(&state, &id, 0, 0, 320).expect_err("cached tile"),
+        ];
+        for error in errors {
+            assert_eq!(error, DataError::SourceMissing);
+            assert_no_path_in_debug(&error, &path);
+        }
+    }
+
+    #[test]
+    fn unsafe_local_path_is_rejected_by_the_existing_policy() {
+        // Verified against `commands::is_safe_library_source_path`: the first
+        // check is `!path.is_absolute()`, so any relative path is rejected
+        // before canonicalisation and source opening.
+        let state = state_with_db();
+        let relative = id_for('w');
+        insert_book(
+            &state,
+            &relative,
+            "Relative",
+            "2026-11-03 10:00:00",
+            "relative/library.zip",
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        let error = pages_manifest(&state, &relative).expect_err("relative path rejected");
+        assert_eq!(error, DataError::SourceMissing);
+        assert_no_path_in_debug(&error, "relative/library.zip");
+        assert_eq!(
+            layout_read_only(&state, &relative),
+            Err(DataError::SourceMissing)
+        );
+
+        // Traversal input is rejected as well (`canonical_existing` requires a
+        // real, resolvable target before the protected-directory checks run).
+        let traversal = id_for('v');
+        insert_book(
+            &state,
+            &traversal,
+            "Traversal",
+            "2026-11-03 10:00:00",
+            "C:/library/../secret.zip",
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        let error = pages_manifest(&state, &traversal).expect_err("traversal rejected");
+        assert_eq!(error, DataError::SourceMissing);
+        assert_no_path_in_debug(&error, "C:/library/../secret.zip");
+    }
 }

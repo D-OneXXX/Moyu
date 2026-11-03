@@ -97,7 +97,7 @@ mod tests {
     use base64::Engine;
     use http_body_util::Full;
     use hyper::body::Bytes;
-    use hyper::header::{HeaderMap, HeaderValue, COOKIE, IF_NONE_MATCH, SET_COOKIE};
+    use hyper::header::{HeaderMap, HeaderValue, COOKIE, IF_NONE_MATCH, RANGE, SET_COOKIE};
     use hyper::{Method, Request, Response, StatusCode};
     use serde_json::{json, Value};
 
@@ -2048,6 +2048,292 @@ mod tests {
                 .pointer("/error/requestId")
                 .and_then(Value::as_str),
             missing_cookie.header("x-request-id")
+        );
+    }
+
+    /// The exact eight read-only data route shapes used by the authentication
+    /// matrix; every one must fail closed before the provider runs.
+    fn eight_data_paths() -> Vec<String> {
+        let id = "a".repeat(64);
+        vec![
+            "/api/books".to_owned(),
+            format!("/api/books/{id}"),
+            format!("/api/books/{id}/thumb"),
+            format!("/api/books/{id}/pages"),
+            format!("/api/books/{id}/pages/0"),
+            format!("/api/books/{id}/layout"),
+            format!("/api/books/{id}/progress"),
+            format!("/api/books/{id}/pages/0/tiles/0"),
+        ]
+    }
+
+    #[tokio::test]
+    async fn encoded_absolute_unc_and_uppercase_ids_are_404_without_provider_calls() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let uppercase_path = format!("/api/books/{}", "A".repeat(64));
+        let trailing = format!("/api/books/{}/", "a".repeat(64));
+        let paths = [
+            "/api/books/..",
+            "/api/books/%2e%2e%2fetc",
+            "/api/books/%252e%252e%252fetc",
+            "/api/books/%00",
+            "/api/books/C:%5CWindows%5Csystem32",
+            "/api/books/%5C%5Cserver%5Cshare",
+            uppercase_path.as_str(),
+            trailing.as_str(),
+        ];
+
+        for path in paths {
+            let response = TestResponse::of(fixture.router.handle(data_get(path, None)).await);
+            assert_eq!(response.status, StatusCode::NOT_FOUND, "{path}");
+        }
+        assert_eq!(
+            data.calls(),
+            0,
+            "malformed/absolute/UNC ids must not reach the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_data_route_rejects_malformed_duplicate_and_unissued_tokens() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+        let valid = issued.token.as_str();
+
+        // 1) malformed length, 2) duplicate pairs in one Cookie header,
+        // 3) a well-formed but never-issued token. Each is exercised on all
+        // eight routes in the same fixture; only 24 requests, well below the
+        // per-IP buckets (120 metadata / 120 image / 600 tile per minute).
+        let cases: [(&str, String); 3] = [
+            ("malformed", format!("{SESSION_COOKIE}=short")),
+            (
+                "duplicate-one-header",
+                format!("{SESSION_COOKIE}={valid}; {SESSION_COOKIE}={valid}"),
+            ),
+            (
+                "unissued",
+                format!("{SESSION_COOKIE}=moyus_{}", "A".repeat(43)),
+            ),
+        ];
+
+        for path in eight_data_paths() {
+            for (label, cookie) in &cases {
+                let response =
+                    TestResponse::of(fixture.router.handle(raw_cookie(read(&path), cookie)).await);
+                assert_eq!(
+                    response.status,
+                    StatusCode::UNAUTHORIZED,
+                    "{label} on {path}"
+                );
+                assert_error(&response, StatusCode::UNAUTHORIZED, "unauthorized");
+                assert_eq!(
+                    response.header("x-request-id").map(str::len),
+                    Some(16),
+                    "{label} on {path} is missing its request id"
+                );
+                assert!(
+                    response.cookies_named(SESSION_COOKIE).is_empty(),
+                    "{label} on {path} must not set a session cookie"
+                );
+            }
+        }
+        assert_eq!(data.calls(), 0, "no credential case may reach the provider");
+    }
+
+    #[tokio::test]
+    async fn duplicate_cookie_headers_are_unauthorized_on_data_routes() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+        let cookie = format!("{SESSION_COOKIE}={}", issued.token.as_str());
+
+        for path in ["/api/books".to_owned(), book_path("/pages/0")] {
+            // One Cookie header carrying the same pair twice.
+            let single = format!("{cookie}; {cookie}");
+            let response = TestResponse::of(
+                fixture
+                    .router
+                    .handle(raw_cookie(read(&path), &single))
+                    .await,
+            );
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{path}");
+            assert_error(&response, StatusCode::UNAUTHORIZED, "unauthorized");
+
+            // The same pair split across two Cookie headers.
+            let mut two_headers = raw_cookie(read(&path), &cookie);
+            two_headers.headers_mut().append(
+                COOKIE,
+                HeaderValue::from_str(&cookie).expect("cookie header"),
+            );
+            let response = TestResponse::of(fixture.router.handle(two_headers).await);
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{path}");
+            assert_error(&response, StatusCode::UNAUTHORIZED, "unauthorized");
+            assert!(response.cookies_named(SESSION_COOKIE).is_empty());
+        }
+        assert_eq!(
+            data.calls(),
+            0,
+            "duplicate cookies must not reach the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_session_is_unauthorized_on_every_data_route_before_any_304() {
+        // A dedicated fixture: advancing the shared fake clock past the
+        // 30-day sliding lifetime must not disturb the other credential cases.
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        fixture
+            .clock
+            .advance(Duration::from_secs(31 * 24 * 60 * 60));
+
+        for path in eight_data_paths() {
+            let response =
+                TestResponse::of(fixture.router.handle(data_get(&path, Some(token))).await);
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED, "{path}");
+            assert_error(&response, StatusCode::UNAUTHORIZED, "unauthorized");
+            assert!(response.cookies_named(SESSION_COOKIE).is_empty());
+        }
+
+        // Authentication precedes the ETag/304 path: even a wildcard validator
+        // must not turn an expired session into a 304.
+        let mut conditional = data_get("/api/books", Some(token));
+        conditional
+            .headers_mut()
+            .insert(IF_NONE_MATCH, HeaderValue::from_static("*"));
+        let response = TestResponse::of(fixture.router.handle(conditional).await);
+        assert_error(&response, StatusCode::UNAUTHORIZED, "unauthorized");
+        assert_eq!(
+            data.calls(),
+            0,
+            "an expired session must not reach the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_range_header_is_ignored_and_the_full_image_is_served() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+
+        let mut request = data_get(&book_path("/pages/0"), Some(issued.token.as_str()));
+        request
+            .headers_mut()
+            .insert(RANGE, HeaderValue::from_static("bytes=0-1"));
+        let response = TestResponse::of(fixture.router.handle(request).await);
+
+        // D2 never answers byte ranges: reads are whole-image only.
+        assert_eq!(response.status, StatusCode::OK);
+        assert_ne!(response.status, StatusCode::PARTIAL_CONTENT);
+        assert!(response.header("content-range").is_none());
+        assert_eq!(response.header("content-type"), Some("image/jpeg"));
+        assert_eq!(response.header("x-request-id").map(str::len), Some(16));
+        assert!(response.body.starts_with(&[0xFF, 0xD8]));
+        assert_eq!(data.page_calls(), vec![(0, 1080)]);
+    }
+
+    #[tokio::test]
+    async fn books_json_conditional_get_returns_304_without_refreshing() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+
+        let first = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get("/api/books", Some(token)))
+                .await,
+        );
+        assert_eq!(first.status, StatusCode::OK);
+        let etag = first.header("etag").expect("etag").to_owned();
+        assert!(etag.starts_with("\"j-"), "{etag}");
+        assert_eq!(data.calls(), 1);
+
+        let mut conditional = data_get("/api/books", Some(token));
+        conditional
+            .headers_mut()
+            .insert(IF_NONE_MATCH, HeaderValue::from_str(&etag).expect("etag"));
+        // Past the 60-minute refresh throttle: a metadata 304 still must not
+        // refresh the session, because only page/tile reads are eligible.
+        fixture.clock.advance(Duration::from_secs(61 * 60));
+        let second = TestResponse::of(fixture.router.handle(conditional).await);
+
+        assert_eq!(second.status, StatusCode::NOT_MODIFIED);
+        assert!(second.body.is_empty());
+        assert_eq!(second.header("etag"), Some(etag.as_str()));
+        assert_eq!(second.header("vary"), Some("Cookie"));
+        assert_eq!(second.header("cache-control"), Some("private, no-cache"));
+        assert!(second.header("content-type").is_none());
+        assert!(
+            second.cookies_named(SESSION_COOKIE).is_empty(),
+            "a metadata 304 must not refresh the session cookie"
+        );
+        // JSON metadata has no L2 cache probe, so the provider still runs.
+        assert_eq!(data.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn layout_reads_are_private_and_cacheable_for_five_minutes() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+
+        let response = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&book_path("/layout"), Some(issued.token.as_str())))
+                .await,
+        );
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.header("cache-control"),
+            Some("private, max-age=300")
+        );
+        assert_eq!(response.header("vary"), Some("Cookie"));
+        assert_eq!(
+            response.header("content-type"),
+            Some("application/json; charset=utf-8")
+        );
+        assert_eq!(response.header("x-request-id").map(str::len), Some(16));
+        assert_eq!(
+            response
+                .json()
+                .pointer("/pages/0/width")
+                .and_then(Value::as_u64),
+            Some(800)
+        );
+        assert_eq!(data.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_headers_on_a_data_route_are_431_before_the_provider() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let issued = fixture.issue_session();
+
+        let mut request = data_get("/api/books", Some(issued.token.as_str()));
+        request.headers_mut().insert(
+            "x-big",
+            HeaderValue::from_str(&"a".repeat(9 * 1024)).expect("oversized header"),
+        );
+        let response = TestResponse::of(fixture.router.handle(request).await);
+
+        assert_error(
+            &response,
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            "header-too-large",
+        );
+        assert_eq!(response.header("x-request-id").map(str::len), Some(16));
+        assert!(response.cookies_named(SESSION_COOKIE).is_empty());
+        assert_eq!(
+            data.calls(),
+            0,
+            "an oversized header block must be rejected before the provider runs"
         );
     }
 }

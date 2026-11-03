@@ -150,3 +150,26 @@
   **不得**标记为完全关闭，Task 8 也不声称六语已完成。
 - 事实基线未变：735/735 Rust 测试；G3 BLOCKED；无真机/LAN/信任库证据；
   未合并、未推送、未创建 Tag/Release、未启用生产监听。
+
+## Task 9 记录（2026-11-03，最终验收与独立审查）
+
+- 基线：`feat/w7-d2-read-only-data`，Task 9 起始 HEAD `31fb01b`；Task 9 代码/测试/静态守卫提交 `30876e0`。
+- 独立审查：3 个只读审查代理（安全/认证、只读/数据完整性、文档/静态/仓库卫生）；**无 P0/P1**。
+- P2 修复：
+  - `read_service` 测试改用每线程临时渲染根，避免向用户真实 `render_cache` 写测试书；已清理本轮前遗留的 `a…/b…/d…` 测试目录（派生缓存，删除后可按需重建）。
+  - `data_tests` 快照补齐 `page_count`、`scroll_pct` 与 `reading_log SUM(pages)`。
+  - `cached_tile` 文档更正：只读 L2 图片字节，但仍会读取布局元数据（可能扫描页头/在线尺寸），不渲染图片。
+  - 静态守卫拒绝 `method.as_str()/to_string()` 字符串方法比较，保留显式 `Method::GET` 门。
+  - **勘误**：Task 7 报告中“桌面无行为变更”的表述已被更精确的结论取代。`src-tauri/src/source.rs` 自 D2 起跳过目录源中的符号链接子图片；这是有意的 fail-closed 加固，桌面目录书中使用符号链接页的用户会看到这些页被排除。详情见 `docs/TECHNICAL.md` §16.1；Task 7 报告保留为历史证据，不覆盖。
+- 门禁证据（L0/L1，未运行 L3 GUI/全量 QA）：
+  - `cargo fmt --all -- --check` PASS；
+  - `cargo clippy --all-targets -- -D warnings` PASS；
+  - `cargo test --lib` **735 passed / 0 failed**；
+  - `node tests/qa/run-qa.mjs --suite=static` **28/28 PASS**；
+  - `npx tsc --noEmit` PASS（先执行 `npm ci`，仅安装锁定依赖）；
+  - `npm run build` PASS（Vite production build）；
+  - `npm run test:version` 6/6 PASS；`npm run test:governance` 39/39 PASS。
+- 未执行/不计 PASS：`--suite=architecture` 与全量 QA 属 L3（启动可见应用/窗口），本轮未获单独授权，标 **BLOCKED**；真实手机/LAN/信任库/G3 仍 **BLOCKED**；符号链接/junction 仍 BLOCKED/UNKNOWN；503/504 真实 gate 超时路径仅映射契约 VERIFIED，实际强制触发 UNKNOWN。
+- D2-R2：契约/静态登记仍关闭；六语本地化仍归 D4，整体保持**部分关闭**。
+- G3：**BLOCKED**。
+- 范围：未合并 `main`、未推送、未创建 Tag/Release、未启用生产监听；Task 9 无生产运行时语义变更。

@@ -2896,8 +2896,10 @@ export function checkAntiMockGuards(root, report) {
       ),
     );
 
-    // The production router must mount only health + pair and derive its
-    // authority from the actual bound socket, never from request/setting.
+    // The production router must contain no data-route literals: it mounts
+    // health + pair and delegates the data plane only through the injected
+    // provider. Its authority derives from the actual bound socket, never from
+    // a request or setting.
     for (const forbidden of [
       "/api/books",
       "/api/pages",
@@ -3078,13 +3080,13 @@ export function checkAntiMockGuards(root, report) {
         id: "static:d1b-control-plane",
         suite: "static",
         layer: "static",
-        title: "D1b 只开放 health+pair、默认 Disabled、无秘密/数据路由",
+        title: "D1b 生产 router 无数据路由字面量、默认 Disabled、无秘密",
         severity: "P1",
         details: errors.join(" | "),
         location:
           "src-tauri/src/web_access/{router,runtime,commands,events}.rs + src/features/web-access + PrivacyPanel",
         expected:
-          "生产 router 只挂 health+pair；authority 来自实际绑定地址；默认 Disabled；恢复/安全模式/退出停止；前端不持久化凭据",
+          "生产 router 自身只保留 health+pair 字面量；数据面委派由 static:d2-data-routes 单独约束；authority 来自实际绑定地址；默认 Disabled；恢复/安全模式/退出停止；前端不持久化凭据",
         actual: errors.join(" | "),
         rootCause: "D1b 边界被破坏或控制面被自动启动",
         fix: "恢复 pair-only router、显式启动与无持久化凭据的边界",
@@ -3094,7 +3096,7 @@ export function checkAntiMockGuards(root, report) {
         id: "static:d1b-control-plane",
         suite: "static",
         layer: "static",
-        title: "D1b 只开放 health+pair、默认 Disabled、无秘密/数据路由",
+        title: "D1b 生产 router 无数据路由字面量、默认 Disabled、无秘密",
       });
     }
   } catch (error) {
@@ -3108,6 +3110,315 @@ export function checkAntiMockGuards(root, report) {
       location: "src-tauri/src/web_access + src/features/web-access",
       rootCause: "静态守卫无法读取 D1b 文件",
       fix: "确认 D1b 文件存在且命名稳定",
+    });
+  }
+
+  try {
+    const errors = [];
+    const readSource = (relative) =>
+      fs.readFileSync(path.join(root, relative), "utf8");
+    // Production surface only: cut the `#[cfg(test)] mod tests` block so
+    // test-only URL literals and SQL seeds never satisfy (or trip) the guard.
+    const productionOnly = (source) => {
+      const index = source.indexOf("#[cfg(test)]\nmod tests");
+      return stripRustComments(index >= 0 ? source.slice(0, index) : source);
+    };
+    const readProduction = (name) =>
+      productionOnly(readSource(path.join("src-tauri", "src", "web_access", name)));
+
+    const dataSource = readProduction("data.rs");
+    const dataAppSource = readProduction("data_app.rs");
+    const sessionAuthSource = readProduction("session_auth.rs");
+    const routerSource = readProduction("router.rs");
+    const runtimeSource = readProduction("runtime.rs");
+    const tlsSource = readProduction("tls.rs");
+    const readServiceSource = productionOnly(
+      readSource(path.join("src-tauri", "src", "read_service.rs")),
+    );
+    // The desktop layout command lives in the top-level commands module, not
+    // in web_access/commands.rs.
+    const desktopCommandsSource = stripRustComments(
+      readSource(path.join("src-tauri", "src", "commands.rs")),
+    );
+    const libSource = stripRustComments(
+      readSource(path.join("src-tauri", "src", "lib.rs")),
+    );
+
+    // 1. Only GET reaches the data plane; no verb is matched as a route.
+    if (/Method::(POST|PUT|DELETE|PATCH|HEAD|OPTIONS)/.test(dataSource)) {
+      errors.push("data.rs 解析/接受非 GET 方法");
+    }
+
+    // 2. Exactly the eight frozen GET shapes (Books + seven segment arms).
+    const dataFlat = dataSource.replace(/\s+/g, " ");
+    if (
+      !dataFlat.includes('strip_prefix("/api/books")') ||
+      !dataFlat.includes("if rest.is_empty()")
+    ) {
+      errors.push("data.rs 缺少 /api/books 根路由解析");
+    }
+    for (const arm of [
+      '[id] => Some(Self::Book',
+      '[id, "thumb"] => Some(Self::Thumb',
+      '[id, "pages"] => Some(Self::Pages',
+      '[id, "pages", index] => Some(Self::Page',
+      '[id, "layout"] => Some(Self::Layout',
+      '[id, "progress"] => Some(Self::Progress',
+      '[id, "pages", index, "tiles", tile] => Some(Self::Tile',
+    ]) {
+      if (!dataFlat.includes(arm)) {
+        errors.push(`data.rs 缺少只读路由形状：${arm}`);
+      }
+    }
+    const armStart = dataSource.indexOf("match segments.as_slice()");
+    const armEnd = dataSource.indexOf("_ => None,", armStart);
+    if (armStart < 0 || armEnd < 0) {
+      errors.push("data.rs 缺少 segments 匹配块");
+    } else {
+      const armBlock = dataSource.slice(armStart, armEnd);
+      const armCount = (armBlock.match(/=> Some\(Self::/g) || []).length;
+      if (armCount !== 7) {
+        errors.push(`data.rs 路径分支数量应为 7，实际 ${armCount}`);
+      }
+    }
+
+    // 3. Only /api/books may appear as a data route literal.
+    for (const match of dataSource.matchAll(/"([^"]*\/api\/[^"]*)"/g)) {
+      if (match[1] !== "/api/books") {
+        errors.push(`data.rs 出现未批准路由字面量：${match[1]}`);
+      }
+    }
+    if (routerSource.includes("/api/books")) {
+      errors.push("router.rs 出现 /api/books 字面量（数据面必须经注入委派）");
+    }
+
+    // 4. Filesystem and SQLite access belongs to read_service, never here.
+    for (const token of [
+      "rusqlite",
+      "Connection::",
+      "std::fs",
+      "std::path",
+      "Path::new",
+      "library.db",
+      "render_cache",
+      "online_cache",
+    ]) {
+      for (const [label, source] of [
+        ["data.rs", dataSource],
+        ["data_app.rs", dataAppSource],
+      ]) {
+        if (source.includes(token)) {
+          errors.push(`${label} 直接访问文件系统/SQLite：${token}`);
+        }
+      }
+    }
+
+    // 5. No CORS anywhere on the data/auth surface.
+    for (const [label, source] of [
+      ["data.rs", dataSource],
+      ["data_app.rs", dataAppSource],
+      ["session_auth.rs", sessionAuthSource],
+    ]) {
+      if (/Access-Control-Allow/i.test(source)) {
+        errors.push(`${label} 返回了 CORS 头`);
+      }
+    }
+
+    // 6. No Referer-based auth and no query credential parameters on the
+    //    entire data/auth surface.
+    for (const [label, source] of [
+      ["data.rs", dataSource],
+      ["data_app.rs", dataAppSource],
+      ["session_auth.rs", sessionAuthSource],
+    ]) {
+      if (/\bReferer\b/i.test(source)) {
+        errors.push(`${label} 使用 Referer 鉴权`);
+      }
+      for (const literal of [
+        '"token"',
+        '"secret"',
+        '"access_token"',
+        '"session_token"',
+      ]) {
+        if (source.includes(literal)) {
+          errors.push(`${label} 出现查询凭据字面量：${literal}`);
+        }
+      }
+    }
+
+    // 6b. Range is not implemented: no RFC 7233 response surface may appear.
+    for (const [label, source] of [
+      ["data.rs", dataSource],
+      ["data_app.rs", dataAppSource],
+    ]) {
+      if (/Content-Range|Accept-Ranges|StatusCode::PARTIAL_CONTENT|\bRANGE\b/.test(source)) {
+        errors.push(`${label} 出现了未批准的 Range/206 支持`);
+      }
+    }
+
+    // 6c. Transport hardening must stay wired: no keep-alive and bounded
+    //     global/per-IP connections; excess peers are dropped by TCP.
+    if (!tlsSource.includes(".keep_alive(false)")) {
+      errors.push("tls.rs 未关闭 keep-alive");
+    }
+    for (const constant of [
+      "MAX_ACTIVE_CONNECTIONS: usize = 32",
+      "MAX_ACTIVE_CONNECTIONS_PER_IP: usize = 8",
+    ]) {
+      if (!tlsSource.includes(constant)) {
+        errors.push(`tls.rs 缺少连接上限常量：${constant}`);
+      }
+    }
+    if (!tlsSource.includes("drop(stream)")) {
+      errors.push("tls.rs 未在连接上限超限时丢弃 TCP 连接");
+    }
+
+    // 7. Authentication is the single gate and runs before the conditional
+    //    cache probe; no direct token-store bypass is allowed.
+    if (!dataSource.includes("authenticate_request(request, &self.service)")) {
+      errors.push("data.rs 未在 handler 中调用 authenticate_request");
+    }
+    if (/\bSessionStore\b/.test(dataSource) || dataSource.includes("session_token(")) {
+      errors.push("data.rs 绕过 authenticate_request 直接读会话令牌");
+    }
+    const authIndex = dataSource.indexOf("authenticate_request(request, &self.service)");
+    const conditionalIndex = dataSource.indexOf("contains_key(IF_NONE_MATCH)");
+    if (
+      authIndex < 0 ||
+      conditionalIndex < 0 ||
+      authIndex > conditionalIndex
+    ) {
+      errors.push("data.rs 的 IF_NONE_MATCH 探测未在认证之后");
+    }
+
+    // 8. Web layout is read-only; the desktop command keeps meta persistence.
+    if (!readServiceSource.includes("layout_sync(state, id, false)")) {
+      errors.push("read_service 的 layout_read_only 未以 persist_online=false 调用");
+    }
+    if (/layout_sync\s*\([^;]*?,\s*true\s*\)/.test(readServiceSource)) {
+      errors.push("read_service 出现 layout_sync(..., true) Web 持久化调用");
+    }
+    if (readServiceSource.includes("db::set_progress")) {
+      errors.push("read_service 生产路径调用了 db::set_progress");
+    }
+    if (/\b(?:(?:UPDATE\s+\w+\s+SET)|(?:INSERT\s+INTO)|(?:DELETE\s+FROM))\b/i.test(readServiceSource)) {
+      errors.push("read_service 生产路径出现写 SQL");
+    }
+    if (!desktopCommandsSource.includes("layout_sync(&st, &bid, true)")) {
+      errors.push("桌面 layout 命令未保留 layout_sync(..., true) 持久化");
+    }
+
+    // 9. The runtime stays Disabled and mounts the data plane once, inside the
+    //    explicit start path.
+    if (!/phase:\s*Phase::Disabled/.test(runtimeSource)) {
+      errors.push("WebAccessRuntime 默认阶段不是 Disabled");
+    }
+    const withDataCount = (runtimeSource.match(/PairingHttp::with_data\s*\(/g) || [])
+      .length;
+    if (withDataCount !== 1) {
+      errors.push(`PairingHttp::with_data 应出现 1 次，实际 ${withDataCount}`);
+    }
+    const startIndex = runtimeSource.indexOf("async fn start_inner");
+    const withDataIndex = runtimeSource.indexOf("PairingHttp::with_data");
+    let startBodyEnd = -1;
+    if (startIndex >= 0) {
+      const bodyStart = runtimeSource.indexOf("{", startIndex);
+      let depth = 0;
+      for (let cursor = bodyStart; cursor < runtimeSource.length; cursor += 1) {
+        if (runtimeSource[cursor] === "{") depth += 1;
+        else if (runtimeSource[cursor] === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            startBodyEnd = cursor;
+            break;
+          }
+        }
+      }
+    }
+    if (
+      startIndex < 0 ||
+      withDataIndex < 0 ||
+      startBodyEnd < 0 ||
+      withDataIndex < startIndex ||
+      withDataIndex > startBodyEnd
+    ) {
+      errors.push("PairingHttp::with_data 未唯一挂载在 start_inner 内");
+    }
+    if (!routerSource.includes("self.data.as_ref()")) {
+      errors.push("router.rs 缺少 self.data.as_ref() 受控委派");
+    }
+
+    // 10. No library-side start; the runtime owns the only listener start.
+    if (/\.start\s*\(/.test(libSource)) {
+      errors.push("lib.rs 出现 Web Access 启动调用");
+    }
+    if (/start_tls_server\s*\(/.test(libSource)) {
+      errors.push("lib.rs 启动路径直接启动 TLS");
+    }
+
+    // 11. No write/mutation route literal may reach the data plane.
+    for (const route of [
+      "/api/session",
+      "/api/settings",
+      "/api/scan",
+      "/api/books/import",
+      "/api/backup",
+      "/api/relocate",
+      "/api/delete",
+      "/api/books/{id}/file",
+    ]) {
+      for (const [label, source] of [
+        ["data.rs", dataSource],
+        ["data_app.rs", dataAppSource],
+        ["router.rs", routerSource],
+      ]) {
+        if (source.includes(route)) {
+          errors.push(`${label} 出现写/会话路由字面量：${route}`);
+        }
+      }
+    }
+
+    // 12. The stable error code is mapped exactly once.
+    const unsupportedCount = (dataSource.match(/"source-unsupported"/g) || []).length;
+    if (unsupportedCount !== 1) {
+      errors.push(`data.rs "source-unsupported" 映射应唯一，实际 ${unsupportedCount}`);
+    }
+
+    if (errors.length) {
+      fail(report, {
+        id: "static:d2-data-routes",
+        suite: "static",
+        layer: "static",
+        title: "D2 数据面仅八条只读 GET、会话认证、无文件/SQL/CORS/Range/写路由",
+        severity: "P1",
+        details: errors.join(" | "),
+        location:
+          "src-tauri/src/web_access/{data,data_app,session_auth,router,runtime,tls}.rs + src-tauri/src/{read_service,commands,lib}.rs",
+        expected:
+          "data.rs 只暴露八条 GET 形状且仅在 authenticate_request 之后探测缓存；数据面不触文件/SQL/CORS/Referer/Range/写路由；Web layout 不落盘；tls keep_alive(false) 且连接上限 32/8 以 TCP 断开；runtime 默认 Disabled 且只在 start_inner 挂载一次数据面",
+        actual: errors.join(" | "),
+        rootCause: "D2 只读数据面边界被破坏",
+        fix: "恢复八条只读 GET 路由、认证先于条件探测与 read_service-only 的读写分工",
+      });
+    } else {
+      ok(report, {
+        id: "static:d2-data-routes",
+        suite: "static",
+        layer: "static",
+        title: "D2 数据面仅八条只读 GET、会话认证、无文件/SQL/CORS/Range/写路由",
+      });
+    }
+  } catch (error) {
+    fail(report, {
+      id: "static:d2-data-routes",
+      suite: "static",
+      layer: "static",
+      title: "D2 数据面静态边界检查",
+      severity: "P1",
+      details: error.message,
+      location: "src-tauri/src/web_access/data*.rs；src-tauri/src/read_service.rs",
+      rootCause: "静态守卫无法读取 D2 文件",
+      fix: "确认 D2 文件存在且命名稳定",
     });
   }
 }

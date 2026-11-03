@@ -34,7 +34,9 @@ use super::pairing::{
     ClaimIssued, ClaimState, ClaimStatus, PairingError, PairingStore, PairingWindow,
     PendingClaimView,
 };
-use super::session::{SessionError, SessionIssued, SessionStore, SessionView};
+use super::session::{
+    RefreshOutcome, RefreshTrigger, SessionError, SessionIssued, SessionStore, SessionView,
+};
 
 /// Errors surfaced by [`PairingService`]. Both variants keep the stable
 /// `code()` of the underlying state machine; no variant carries ids, secrets,
@@ -200,6 +202,28 @@ impl PairingService {
             // not resurrected.
             Err(_) => Err(PairingError::Expired.into()),
         }
+    }
+
+    /// Resolve an issued session token without refreshing it. The returned
+    /// view contains no token or hash material. Expired and revoked sessions
+    /// both yield `None`; the HTTP layer maps that to the stable
+    /// `unauthorized` code.
+    pub(crate) fn authenticate(&self, token: &str) -> Option<SessionView> {
+        self.session.authenticate(token)
+    }
+
+    /// Extend a live session only through an explicit whitelisted activity.
+    /// Authentication itself never refreshes; the shared 60-minute throttle
+    /// and 90-day absolute deadline remain owned by `SessionStore`. Callers
+    /// must pass the view returned by authentication, choose the trigger via
+    /// the frozen `refresh_trigger_for` classifier, and only refresh on a
+    /// successful (2xx/304) page/tile response.
+    pub(crate) fn refresh_activity(
+        &self,
+        session: &SessionView,
+        trigger: RefreshTrigger,
+    ) -> Result<RefreshOutcome, SessionError> {
+        self.session.refresh_activity(&session.id, trigger)
     }
 
     pub(crate) fn revoke_device(&self, session_id: &str) -> bool {

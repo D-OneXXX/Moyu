@@ -28,6 +28,8 @@ pub(crate) mod commands;
 pub(crate) mod secret;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod session;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod session_auth;
 #[cfg(test)]
 mod test_http;
 mod tls;

@@ -268,13 +268,13 @@ impl DataHttp {
         };
 
         let session_gate = self.sessions.gate(&session.view.id);
-        let _session_permit =
+        let session_permit =
             match tokio::time::timeout(SESSION_WAIT, session_gate.acquire_owned()).await {
                 Ok(Ok(permit)) => permit,
                 _ => return Some(busy_response(&request_id)),
             };
 
-        let _render_permit: Option<OwnedSemaphorePermit> = if uses_render {
+        let render_permit: Option<OwnedSemaphorePermit> = if uses_render {
             match tokio::time::timeout(SESSION_WAIT, Arc::clone(&self.render_gate).acquire_owned())
                 .await
             {
@@ -286,9 +286,15 @@ impl DataHttp {
         };
 
         let provider = Arc::clone(&self.data);
+        // Move the permits into the blocking task: a handler timeout must not
+        // release the gates while an uncancellable render is still running.
         let outcome = tokio::time::timeout(
             DATA_HANDLER_TIMEOUT,
-            tokio::task::spawn_blocking(move || call.run(provider.as_ref())),
+            tokio::task::spawn_blocking(move || {
+                let _session_permit = session_permit;
+                let _render_permit = render_permit;
+                call.run(provider.as_ref())
+            }),
         )
         .await;
 
@@ -503,7 +509,7 @@ fn json_response<T: Serialize, B>(
     let body = serde_json::to_vec(value).expect("data DTO serializes");
     let etag = json_etag(&body);
     if not_modified(request, &etag) {
-        return not_modified_response(&etag, cache_control, request_id);
+        return not_modified_response(&etag, cache_control, &[], request_id);
     }
     Response::builder()
         .status(StatusCode::OK)
@@ -526,7 +532,7 @@ fn image_response<B>(
     request_id: &str,
 ) -> Response<Full<Bytes>> {
     if not_modified(request, &etag) {
-        return not_modified_response(&etag, cache_control, request_id);
+        return not_modified_response(&etag, cache_control, extras, request_id);
     }
     let mut builder = Response::builder()
         .status(StatusCode::OK)
@@ -548,14 +554,19 @@ fn image_response<B>(
 fn not_modified_response(
     etag: &str,
     cache_control: &'static str,
+    extras: &[(&'static str, String)],
     request_id: &str,
 ) -> Response<Full<Bytes>> {
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::NOT_MODIFIED)
         .header(CACHE_CONTROL, cache_control)
         .header(VARY, "Cookie")
         .header(ETAG, etag)
-        .header(X_REQUEST_ID, request_id)
+        .header(X_REQUEST_ID, request_id);
+    for (name, value) in extras {
+        builder = builder.header(*name, value);
+    }
+    builder
         .body(Full::new(Bytes::new()))
         .expect("static response")
 }
@@ -584,10 +595,17 @@ fn not_modified<B>(request: &Request<B>, etag: &str) -> bool {
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
-        .any(|candidate| {
-            let candidate = candidate.trim();
-            candidate == "*" || candidate == etag
-        })
+        .any(|candidate| etag_matches(candidate, etag))
+}
+
+/// GET uses weak comparison (RFC 7232): `W/"..."` matches the same strong
+/// validator. `*` matches any current representation.
+fn etag_matches(candidate: &str, etag: &str) -> bool {
+    let candidate = candidate.trim();
+    if candidate == "*" {
+        return true;
+    }
+    candidate.strip_prefix("W/").unwrap_or(candidate) == etag
 }
 
 fn data_error_response(error: DataError, request_id: &str) -> Response<Full<Bytes>> {
@@ -626,11 +644,12 @@ fn error_code(error: DataError) -> &'static str {
         DataError::PdfUnsupported => "pdf-source-unsupported",
         DataError::SourceUnsupported => "source-unsupported",
         DataError::SourceMissing => "source-missing",
-        DataError::PageOutOfRange { .. } => "page-out-of-range",
-        DataError::TileOutOfRange { .. } => "tile-out-of-range",
+        // The frozen contract uses one 416 code for page and tile range errors;
+        // `details.maxTile` distinguishes the tile case.
+        DataError::PageOutOfRange { .. } | DataError::TileOutOfRange { .. } => "page-out-of-range",
         DataError::InvalidParameter => "invalid-parameter",
-        DataError::Busy => "busy",
-        DataError::DbUnavailable => "db-unavailable",
+        // `busy` is the frozen 503 code for transient unavailability.
+        DataError::Busy | DataError::DbUnavailable => "busy",
         DataError::Timeout => "render-timeout",
         DataError::Internal => "internal-error",
     }
@@ -655,10 +674,8 @@ fn error_response(
     let mut error = serde_json::Map::new();
     error.insert("code".to_owned(), Value::String(code.to_owned()));
     error.insert("requestId".to_owned(), Value::String(request_id.to_owned()));
-    if let Some(Value::Object(details)) = details {
-        for (key, value) in details {
-            error.insert(key, value);
-        }
+    if let Some(details) = details {
+        error.insert("details".to_owned(), details);
     }
     if retry_after_in_body {
         if let Some(retry_after) = retry_after {
@@ -1041,6 +1058,14 @@ mod tests {
             .body(())
             .unwrap();
         assert!(not_modified(&star, etag));
+
+        let weak = Request::builder()
+            .method(Method::GET)
+            .uri("/api/books")
+            .header(IF_NONE_MATCH, format!("W/{etag}"))
+            .body(())
+            .unwrap();
+        assert!(not_modified(&weak, etag));
 
         let different = Request::builder()
             .method(Method::GET)

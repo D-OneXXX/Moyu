@@ -89,6 +89,8 @@ impl TestRouter {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -343,7 +345,36 @@ mod tests {
         }
     }
 
-    struct FakeData;
+    #[derive(Default)]
+    struct FakeData {
+        calls: Arc<AtomicUsize>,
+        page_calls: Mutex<Vec<(u32, u32)>>,
+        tile_calls: Mutex<Vec<(u32, u32, u32)>>,
+    }
+
+    impl FakeData {
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        fn page_calls(&self) -> Vec<(u32, u32)> {
+            self.page_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
+        fn tile_calls(&self) -> Vec<(u32, u32, u32)> {
+            self.tile_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
+        fn record(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     impl WebDataAccess for FakeData {
         fn list_books(
@@ -352,6 +383,7 @@ mod tests {
             _cursor: Option<&str>,
             _limit: u32,
         ) -> Result<WebBookPage, DataError> {
+            self.record();
             Ok(WebBookPage {
                 items: vec![],
                 next_cursor: None,
@@ -359,6 +391,7 @@ mod tests {
         }
 
         fn book(&self, id: &str) -> Result<WebBookDetail, DataError> {
+            self.record();
             Ok(WebBookDetail {
                 book: WebBook {
                     id: id.to_owned(),
@@ -380,21 +413,29 @@ mod tests {
         }
 
         fn thumb(&self, _id: &str) -> Result<ImageAsset, DataError> {
+            self.record();
             Ok(fake_image())
         }
 
         fn pages(&self, _id: &str) -> Result<PageManifest, DataError> {
+            self.record();
             Ok(PageManifest {
                 page_count: 2,
                 pages: vec![PageIndex { index: 0 }, PageIndex { index: 1 }],
             })
         }
 
-        fn page(&self, _id: &str, _index: u32, _width: u32) -> Result<ImageAsset, DataError> {
+        fn page(&self, _id: &str, index: u32, width: u32) -> Result<ImageAsset, DataError> {
+            self.record();
+            self.page_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((index, width));
             Ok(fake_image())
         }
 
         fn layout(&self, _id: &str) -> Result<Vec<PageDim>, DataError> {
+            self.record();
             Ok(vec![PageDim {
                 index: 0,
                 width: 800,
@@ -405,10 +446,15 @@ mod tests {
         fn tile(
             &self,
             _id: &str,
-            _index: u32,
-            _tile: u32,
-            _width: u32,
+            index: u32,
+            tile: u32,
+            width: u32,
         ) -> Result<TileImage, DataError> {
+            self.record();
+            self.tile_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((index, tile, width));
             Ok(TileImage {
                 image: fake_image(),
                 tile_count: 4,
@@ -417,6 +463,7 @@ mod tests {
         }
 
         fn progress(&self, _id: &str) -> Result<ProgressView, DataError> {
+            self.record();
             Ok(ProgressView {
                 page: 1,
                 page_count: 2,
@@ -505,7 +552,8 @@ mod tests {
 
     #[tokio::test]
     async fn data_requires_a_session_and_unknown_paths_are_404() {
-        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
 
         let no_cookie = TestResponse::of(fixture.router.handle(data_get("/api/books", None)).await);
         assert_error(&no_cookie, StatusCode::UNAUTHORIZED, "unauthorized");
@@ -513,6 +561,11 @@ mod tests {
 
         let unknown = TestResponse::of(fixture.router.handle(data_get("/api/nope", None)).await);
         assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            data.calls(),
+            0,
+            "unauthenticated/unknown requests must not read data"
+        );
 
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
@@ -540,6 +593,7 @@ mod tests {
         );
         assert!(ok.json().pointer("/nextCursor").is_some_and(Value::is_null));
         assert!(!ok.text().contains("path"));
+        assert_eq!(data.calls(), 1);
 
         let post = TestResponse::of(
             fixture
@@ -566,7 +620,8 @@ mod tests {
 
     #[tokio::test]
     async fn all_eight_data_routes_require_a_session_and_serve_with_one() {
-        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
         let id = "a".repeat(64);
         let paths = [
             "/api/books".to_owned(),
@@ -583,6 +638,7 @@ mod tests {
             let response = TestResponse::of(fixture.router.handle(data_get(path, None)).await);
             assert_error(&response, StatusCode::UNAUTHORIZED, "unauthorized");
         }
+        assert_eq!(data.calls(), 0);
 
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
@@ -592,11 +648,12 @@ mod tests {
             assert_eq!(response.status, StatusCode::OK, "{path}");
             assert_eq!(response.header("x-request-id").map(str::len), Some(16));
         }
+        assert_eq!(data.calls(), 8);
     }
 
     #[tokio::test]
     async fn only_successful_page_and_tile_reads_refresh_the_cookie() {
-        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let fixture = Fixture::with_data(Arc::new(FakeData::default()));
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
         let page_path = book_path("/pages/0");
@@ -637,7 +694,8 @@ mod tests {
 
     #[tokio::test]
     async fn page_image_headers_etag_and_conditional_304() {
-        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
         let page_path = book_path("/pages/0");
@@ -685,11 +743,17 @@ mod tests {
             .header("etag")
             .expect("etag")
             .starts_with("\"p-0-320-"));
+        assert_eq!(
+            data.page_calls().last(),
+            Some(&(0, 320)),
+            "HTTP layer must pass the clamped width"
+        );
     }
 
     #[tokio::test]
     async fn tile_headers_use_the_bucketed_width() {
-        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
         let tile_path = book_path("/pages/0/tiles/0");
@@ -712,11 +776,40 @@ mod tests {
             "default 1080 must bucket to 1088: {:?}",
             tile.header("etag")
         );
+        assert_eq!(data.tile_calls(), vec![(0, 0, 1088)]);
+    }
+
+    #[tokio::test]
+    async fn tile_304_keeps_geometry_headers() {
+        let fixture = Fixture::with_data(Arc::new(FakeData::default()));
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        let tile_path = book_path("/pages/0/tiles/0");
+
+        let first = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&tile_path, Some(token)))
+                .await,
+        );
+        assert_eq!(first.status, StatusCode::OK);
+        let etag = first.header("etag").expect("etag").to_owned();
+
+        let mut conditional = data_get(&tile_path, Some(token));
+        conditional
+            .headers_mut()
+            .insert(IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
+        let second = TestResponse::of(fixture.router.handle(conditional).await);
+        assert_eq!(second.status, StatusCode::NOT_MODIFIED);
+        assert_eq!(second.header("etag"), Some(etag.as_str()));
+        assert_eq!(second.header("x-tile-count"), Some("4"));
+        assert_eq!(second.header("x-tile-height"), Some("2048"));
     }
 
     #[tokio::test]
     async fn malformed_queries_are_400_only_after_authentication() {
-        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
 
@@ -760,6 +853,49 @@ mod tests {
                 TestResponse::of(fixture.router.handle(data_get(&path, Some(token))).await);
             assert_error(&response, StatusCode::BAD_REQUEST, "invalid-parameter");
         }
+        assert_eq!(
+            data.calls(),
+            0,
+            "query validation must fail before the provider runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn data_rate_limit_returns_429_before_authentication() {
+        let data = Arc::new(FakeData::default());
+        let fixture = Fixture::with_data(data.clone());
+        let path = book_path("/pages/0/tiles/0");
+
+        for _ in 0..600 {
+            let response = TestResponse::of(fixture.router.handle(data_get(&path, None)).await);
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+        }
+
+        let limited = TestResponse::of(fixture.router.handle(data_get(&path, None)).await);
+        assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(limited.error_code(), "pairing-rate-limited");
+        assert!(
+            limited
+                .header("retry-after")
+                .expect("retry-after")
+                .parse::<u64>()
+                .expect("seconds")
+                >= 1
+        );
+        assert!(
+            limited
+                .json()
+                .pointer("/error/retryAfterMs")
+                .and_then(Value::as_u64)
+                .expect("retryAfterMs")
+                >= 1
+        );
+        assert!(limited.cookies_named(SESSION_COOKIE).is_empty());
+        assert_eq!(
+            data.calls(),
+            0,
+            "rate limiting must happen before any provider read"
+        );
     }
 
     async fn error_response_for(error: DataError, path: &str) -> TestResponse {
@@ -813,39 +949,39 @@ mod tests {
         assert_eq!(
             page_range
                 .json()
-                .pointer("/error/maxPage")
+                .pointer("/error/details/maxPage")
                 .and_then(Value::as_u64),
             Some(4)
         );
+        assert!(page_range.cookies_named(SESSION_COOKIE).is_empty());
 
         let tile_range = error_response_for(
             DataError::TileOutOfRange { max_tile: 3 },
             &format!("{book}/pages/9/tiles/9"),
         )
         .await;
+        // The frozen contract uses page-out-of-range with details.maxTile.
         assert_error(
             &tile_range,
             StatusCode::RANGE_NOT_SATISFIABLE,
-            "tile-out-of-range",
+            "page-out-of-range",
         );
         assert_eq!(
             tile_range
                 .json()
-                .pointer("/error/maxTile")
+                .pointer("/error/details/maxTile")
                 .and_then(Value::as_u64),
             Some(3)
         );
+        assert!(tile_range.cookies_named(SESSION_COOKIE).is_empty());
 
         let busy = error_response_for(DataError::Busy, &book).await;
         assert_error(&busy, StatusCode::SERVICE_UNAVAILABLE, "busy");
         assert_eq!(busy.header("retry-after"), Some("1"));
+        assert!(busy.cookies_named(SESSION_COOKIE).is_empty());
 
         let unavailable = error_response_for(DataError::DbUnavailable, &book).await;
-        assert_error(
-            &unavailable,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "db-unavailable",
-        );
+        assert_error(&unavailable, StatusCode::SERVICE_UNAVAILABLE, "busy");
 
         let timeout = error_response_for(DataError::Timeout, &book).await;
         assert_error(&timeout, StatusCode::GATEWAY_TIMEOUT, "render-timeout");
@@ -860,7 +996,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_session_is_unauthorized_before_any_304() {
-        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let fixture = Fixture::with_data(Arc::new(FakeData::default()));
         let issued = fixture.issue_session();
         let token = issued.token.as_str();
         let page_path = book_path("/pages/0");

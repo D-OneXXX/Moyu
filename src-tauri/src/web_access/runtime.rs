@@ -30,6 +30,7 @@ use super::clock::SystemClock;
 use super::data::WebDataAccess;
 use super::error::WebAccessError;
 use super::pairing::PairingStore;
+use super::progress_write::WebProgressWrite;
 use super::router::PairingHttp;
 use super::session::SessionStore;
 use super::tls::{
@@ -331,6 +332,7 @@ pub(crate) struct WebAccessRuntime {
     events: Option<Arc<dyn WebAccessEventSink>>,
     allow_loopback: bool,
     data: Option<Arc<dyn WebDataAccess>>,
+    progress: Option<Arc<dyn WebProgressWrite>>,
     /// Serializes start/stop/pairing-start. Approval/denial only touch the
     /// in-memory service and may overlap with a snapshot read.
     operation: AsyncMutex<()>,
@@ -344,6 +346,14 @@ impl WebAccessRuntime {
         data: Arc<dyn WebDataAccess>,
     ) -> Self {
         Self::with_events(ca_root, Some(events), false, Some(data))
+    }
+
+    /// Attach the progress write provider. This only stores the provider; it
+    /// never starts the listener. `start_inner` mounts it on the same router
+    /// and authority as the read plane, after the explicit start.
+    pub(crate) fn with_progress(mut self, progress: Arc<dyn WebProgressWrite>) -> Self {
+        self.progress = Some(progress);
+        self
     }
 
     #[cfg(test)]
@@ -367,6 +377,7 @@ impl WebAccessRuntime {
             events,
             allow_loopback,
             data,
+            progress: None,
             operation: AsyncMutex::new(()),
             state: AsyncMutex::new(RunningState::default()),
         }
@@ -544,16 +555,21 @@ impl WebAccessRuntime {
             SessionStore::new(Arc::new(SystemClock)),
         ));
         let factory_data = self.data.clone();
+        let factory_progress = self.progress.clone();
         let factory_service = Arc::clone(&service);
         let factory: HandlerFactory = Arc::new(move |addr| {
-            let router = match factory_data.as_ref() {
-                Some(provider) => Arc::new(PairingHttp::with_data(
+            let mut router = match factory_data.as_ref() {
+                Some(provider) => PairingHttp::with_data(
                     Arc::clone(&factory_service),
                     addr,
                     Arc::clone(provider),
-                )?),
-                None => Arc::new(PairingHttp::new(Arc::clone(&factory_service), addr)?),
+                )?,
+                None => PairingHttp::new(Arc::clone(&factory_service), addr)?,
             };
+            if let Some(progress) = factory_progress.as_ref() {
+                router.with_progress(Arc::clone(progress));
+            }
+            let router = Arc::new(router);
             let handler: RequestHandler = Arc::new(move |request, peer| {
                 let router = Arc::clone(&router);
                 let source_ip = match peer.ip() {

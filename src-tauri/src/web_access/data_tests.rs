@@ -25,6 +25,8 @@ use super::auth::PairingService;
 use super::clock::{Clock, SystemClock};
 use super::data_app::AppData;
 use super::pairing::PairingStore;
+use super::progress_write::WebProgressWrite;
+use super::progress_write_app::AppProgress;
 use super::router::PairingHttp;
 use super::session::SessionStore;
 use crate::db;
@@ -251,6 +253,26 @@ impl Fixture {
             .header("host", HOST)
             .header("cookie", format!("moyus_session={}", self.token))
             .body(Full::new(Bytes::new()))
+            .expect("test request")
+    }
+
+    /// Mount the D3 write plane on the same production router/authority.
+    fn add_progress(&mut self) {
+        let progress: Arc<dyn WebProgressWrite> =
+            Arc::new(AppProgress::new(Arc::clone(&self.state)));
+        self.router.with_progress(progress);
+    }
+
+    fn put(&self, path: &str, body: &str) -> Request<Full<Bytes>> {
+        Request::builder()
+            .method(Method::PUT)
+            .uri(path)
+            .header("host", HOST)
+            .header("origin", format!("https://{HOST}"))
+            .header("x-moyu-request", "1")
+            .header("content-type", "application/json")
+            .header("cookie", format!("moyus_session={}", self.token))
+            .body(Full::new(Bytes::from(body.to_owned())))
             .expect("test request")
     }
 
@@ -531,4 +553,45 @@ async fn online_layout_does_not_rewrite_meta_json() {
         after.meta_json, meta_json,
         "meta_json must stay byte-identical"
     );
+}
+
+/// Without a write provider the production router keeps `PUT` at 404.
+#[tokio::test]
+async fn put_is_404_without_a_progress_provider() {
+    let fixture = Fixture::new();
+    let id = id_for('a');
+    let path = format!("/api/books/{id}/progress");
+    let response = fixture
+        .router
+        .handle(fixture.put(&path, r#"{"page":0,"baseRev":3}"#), SOURCE_IP)
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Mounting the write plane on the same router serves PUT and leaves every
+/// read route working. The fixture book is at page 2, so writing page 0 is a
+/// backward move: rev +1, no `reading_log` increment.
+#[tokio::test]
+async fn put_is_served_when_progress_is_mounted_and_reads_still_work() {
+    let mut fixture = Fixture::new();
+    fixture.add_progress();
+    let id = id_for('a');
+    let path = format!("/api/books/{id}/progress");
+    let before = snapshot(fixture.state.as_ref(), &id).expect("snapshot");
+
+    let response = fixture
+        .router
+        .handle(fixture.put(&path, r#"{"page":0,"baseRev":3}"#), SOURCE_IP)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let after = snapshot(fixture.state.as_ref(), &id).expect("snapshot");
+    assert_eq!(after.current_page, 0);
+    assert_eq!(after.progress_rev, before.progress_rev + 1);
+    assert_eq!(
+        after.reading_log_pages, before.reading_log_pages,
+        "回翻不得增加阅读历史"
+    );
+    assert_eq!(after.reading_log_rows, before.reading_log_rows);
+    assert_eq!(fixture.status("/api/books").await, StatusCode::OK);
 }

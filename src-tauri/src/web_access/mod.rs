@@ -23,14 +23,13 @@ mod events;
 mod http;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod pairing;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod progress_write;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod progress_write_app;
 mod router;
 mod runtime;
 pub(crate) use data_app::AppData;
 pub(crate) use events::TauriEventSink;
+pub(crate) use progress_write_app::AppProgress;
 pub(crate) use runtime::{StopReason, WebAccessRuntime};
 pub(crate) mod commands;
 #[cfg_attr(not(test), allow(dead_code))]

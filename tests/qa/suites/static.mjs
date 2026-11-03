@@ -3450,6 +3450,13 @@ export function checkAntiMockGuards(root, report) {
     const modSource = readSource(
       path.join("src-tauri", "src", "web_access", "mod.rs"),
     );
+    const routerSource = productionOnly(
+      readSource(path.join("src-tauri", "src", "web_access", "router.rs")),
+    );
+    const runtimeSource = productionOnly(
+      readSource(path.join("src-tauri", "src", "web_access", "runtime.rs")),
+    );
+    const libSource = readSource(path.join("src-tauri", "src", "lib.rs"));
     const sessionAuthSource = productionOnly(
       readSource(path.join("src-tauri", "src", "web_access", "session_auth.rs")),
     );
@@ -3606,12 +3613,36 @@ export function checkAntiMockGuards(root, report) {
     }
     if (
       !modSource.includes("progress_write") ||
-      !modSource.includes("progress_write_app")
+      !modSource.includes("progress_write_app") ||
+      !modSource.includes("AppProgress")
     ) {
-      errors.push("mod.rs 未挂载 D3 写面模块");
+      errors.push("mod.rs 未挂载或导出 D3 写面模块");
     }
 
-    // 6. No CORS, Referer fallback, or URL token on the write surface.
+    // 6. Runtime wiring: mount once inside start_inner, never at construction.
+    if (!routerSource.includes("self.progress.as_ref()")) {
+      errors.push("router.rs 未委派写面 provider");
+    }
+    if (!routerSource.includes("progress.handle(request")) {
+      errors.push("router.rs 未在 data 之后调用写面 handler");
+    }
+    if ((runtimeSource.match(/router\.with_progress\s*\(/g) || []).length !== 1) {
+      errors.push("runtime 应恰好挂载写面一次");
+    }
+    if (!runtimeSource.includes("factory_progress")) {
+      errors.push("runtime 未克隆写面 provider 到 factory");
+    }
+    if (!libSource.includes("AppProgress::new")) {
+      errors.push("lib.rs 未构造写面 provider");
+    }
+    if ((libSource.match(/\.with_progress\s*\(/g) || []).length !== 1) {
+      errors.push("lib.rs 应恰好挂载写面一次");
+    }
+    if (/\.start\s*\(/.test(libSource)) {
+      errors.push("lib.rs 不得在初始化阶段启动监听");
+    }
+
+    // 7. No CORS, Referer fallback, or URL token on the write surface.
     for (const [label, source] of [
       ["progress_write.rs", writeSource],
       ["progress_write_app.rs", writeAppSource],

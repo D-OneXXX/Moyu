@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::ca::CaManager;
+use crate::db::ProgressOutcome;
 use crate::read_service::{
     ImageAsset, PageManifest, ProgressView, TileImage, WebBook, WebBookDetail, WebBookPage,
 };
@@ -18,6 +19,7 @@ use super::auth::PairingService;
 use super::clock::SystemClock;
 use super::data::{DataError, WebDataAccess};
 use super::pairing::PairingStore;
+use super::progress_write::WebProgressWrite;
 use super::router::PairingHttp;
 use super::session::SessionStore;
 use super::tls::{
@@ -1431,6 +1433,22 @@ async fn pair_request(
     pair_http_request(&mut stream, method, path, host, origin, cookie, body).await
 }
 
+/// Minimal write provider for the runtime wiring test. It is never called
+/// before an explicit start, so `NotFound` is enough.
+struct TestWrite;
+
+impl WebProgressWrite for TestWrite {
+    fn write_progress(
+        &self,
+        _id: &str,
+        _page: u32,
+        _scroll_pct: Option<f64>,
+        _base_rev: i64,
+    ) -> Result<ProgressOutcome, DataError> {
+        Err(DataError::NotFound)
+    }
+}
+
 /// Minimal read-only provider for the data-plane end-to-end test. It returns a
 /// single book and `NotFound` for every per-book route so the test only needs
 /// the list response.
@@ -1556,6 +1574,26 @@ async fn for_test_with_data_starts_disabled_without_binding() {
     ca.initialize();
 
     let runtime = WebAccessRuntime::for_test_with_data(ca.root.clone(), Arc::new(TestData));
+    let status = runtime.status().await;
+    assert_eq!(status.phase, "disabled");
+    assert!(status.bind_address.is_none());
+    assert!(status.bind_ip.is_none());
+    assert!(status.port.is_none());
+    assert!(!status.pairing_active);
+
+    let stopped = runtime.stop(StopReason::Stopped).await;
+    assert_eq!(stopped.phase, "disabled");
+}
+
+/// Injecting a write provider must not start the listener either. `with_progress`
+/// only stores it; the mount happens inside the explicit `start_inner` path.
+#[tokio::test]
+async fn runtime_with_progress_starts_disabled_without_binding() {
+    let ca = TestCa::new("progress-disabled");
+    ca.initialize();
+
+    let runtime = WebAccessRuntime::for_test_with_data(ca.root.clone(), Arc::new(TestData))
+        .with_progress(Arc::new(TestWrite));
     let status = runtime.status().await;
     assert_eq!(status.phase, "disabled");
     assert!(status.bind_address.is_none());

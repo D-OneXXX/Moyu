@@ -17,7 +17,6 @@ mod paths;
 pub mod pdf;
 pub mod pipeline;
 mod platform;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod progress_service;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod read_service;
@@ -522,14 +521,19 @@ pub fn run() {
                 ca_root.clone(),
             )));
             // D1b：控制面运行时只托管，默认 Disabled；启动不 bind、不建配对窗口。
-            // D2：注入只读数据面 provider，路由只在有 provider 时挂载 /api/books*。
+            // D2：注入只读数据面 provider；D3：注入进度写 provider。
+            // 两者都只在显式 start 后由 start_inner 挂载，库初始化绝不监听。
             let app_state = app.state::<Arc<AppState>>().inner().clone();
-            let web_data = Arc::new(web_access::AppData::new(app_state));
-            app.manage(Arc::new(web_access::WebAccessRuntime::new(
-                ca_root,
-                Arc::new(web_access::TauriEventSink::new(app.handle().clone())),
-                web_data,
-            )));
+            let web_data = Arc::new(web_access::AppData::new(Arc::clone(&app_state)));
+            let web_progress = Arc::new(web_access::AppProgress::new(app_state));
+            app.manage(Arc::new(
+                web_access::WebAccessRuntime::new(
+                    ca_root,
+                    Arc::new(web_access::TauriEventSink::new(app.handle().clone())),
+                    web_data,
+                )
+                .with_progress(web_progress),
+            ));
             cache_health::install(app.handle().clone());
             if init_app(app).is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。

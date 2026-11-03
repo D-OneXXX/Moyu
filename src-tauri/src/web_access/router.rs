@@ -37,6 +37,7 @@ use super::http::{
     DATA_HANDLER_TIMEOUT, PAIR_HANDLER_TIMEOUT, X_REQUEST_ID,
 };
 use super::pairing::{ClaimIssued, ClaimState, PairingError};
+use super::progress_write::{ProgressHttp, WebProgressWrite};
 use super::secret::random_hex;
 use super::session::SessionIssued;
 
@@ -155,6 +156,7 @@ pub(crate) struct PairingHttp {
     poll_interval: Duration,
     limiter: RateLimiter,
     data: Option<Arc<DataHttp>>,
+    progress: Option<Arc<ProgressHttp>>,
 }
 
 #[cfg(test)]
@@ -185,7 +187,19 @@ impl PairingHttp {
             poll_interval: DEFAULT_POLL_INTERVAL,
             limiter: RateLimiter::new(RATE_WINDOW),
             data: None,
+            progress: None,
         })
+    }
+
+    /// Mount the progress write plane. Construction is idempotent from the
+    /// runtime's perspective: only `start_inner` calls it, once per listener.
+    /// The handler shares the exact same authority/guard as the read plane.
+    pub(crate) fn with_progress(&mut self, write: Arc<dyn WebProgressWrite>) {
+        self.progress = Some(Arc::new(ProgressHttp::new(
+            self.guard.clone(),
+            Arc::clone(&self.service),
+            write,
+        )));
     }
 
     /// Add the read-only data plane. The production runtime uses this when it
@@ -301,6 +315,18 @@ impl PairingHttp {
         }
         if let Some(data) = self.data.as_ref() {
             match tokio::time::timeout(DATA_HANDLER_TIMEOUT, data.handle(&request, source_ip)).await
+            {
+                Ok(Some(response)) => return response,
+                Ok(None) => {}
+                Err(_) => return timeout_response(),
+            }
+        }
+        // The write plane is delegated only after the read plane declines the
+        // request. `ProgressHttp` accepts exactly one PUT shape; every other
+        // method/path still falls through to the frozen 404 below.
+        if let Some(progress) = self.progress.as_ref() {
+            match tokio::time::timeout(DATA_HANDLER_TIMEOUT, progress.handle(request, source_ip))
+                .await
             {
                 Ok(Some(response)) => return response,
                 Ok(None) => {}

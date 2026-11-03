@@ -422,7 +422,8 @@ pub(crate) fn tile_asset(
 
 /// Cache-only page probe used before rendering a conditional GET response.
 /// Mirrors the guards of [`page_asset`] but only reads L2: it never renders,
-/// never touches L1 or the database, never prefetches and never notes a write.
+/// never touches L1 or the database, never prefetches and never writes new
+/// cache bytes. A corrupt L2 entry is evicted so the next request re-renders.
 pub(crate) fn cached_page_asset(
     state: &Arc<AppState>,
     id: &str,
@@ -459,7 +460,8 @@ pub(crate) fn cached_page_asset(
 /// Cache-only tile probe used before rendering a conditional GET response.
 /// Mirrors the guards and geometry of [`tile_asset`] but only reads L2: it
 /// never reads the source, never takes the tile materialisation lock, never
-/// renders, and never writes cache or database state.
+/// renders, and never writes new cache or database state. A corrupt L2 tile is
+/// evicted so the next request re-renders.
 pub(crate) fn cached_tile_asset(
     state: &Arc<AppState>,
     id: &str,

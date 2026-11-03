@@ -202,7 +202,8 @@ pub(crate) trait WebDataAccess: Send + Sync {
     /// Cache-only page lookup used to answer a conditional request without
     /// rendering. Implementations must apply the same active/PDF/source/range
     /// guards as [`Self::page`] but return the L2 bytes only: `Ok(None)` on a
-    /// miss, never a render and never a cache write.
+    /// miss, never a render and never a new cache entry. A corrupt cached entry
+    /// may be evicted so the next request re-renders cleanly.
     fn cached_page(
         &self,
         id: &str,

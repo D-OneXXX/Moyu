@@ -1844,4 +1844,78 @@ mod tests {
         // The default source IP has its own bucket.
         let _ = claim_over_http(&fixture, &nonce(5), None).await;
     }
+
+    #[tokio::test]
+    async fn oversized_headers_are_431_header_too_large_with_request_id() {
+        let fixture = Fixture::new();
+        let mut request = read(HEALTH_PATH);
+        request.headers_mut().insert(
+            "x-big",
+            HeaderValue::from_str(&"a".repeat(9 * 1024)).expect("oversized header"),
+        );
+
+        let response = TestResponse::of(fixture.router.handle(request).await);
+        assert_error(
+            &response,
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            "header-too-large",
+        );
+        assert_eq!(response.header("x-request-id").map(str::len), Some(16));
+        assert_eq!(
+            response
+                .json()
+                .pointer("/error/requestId")
+                .and_then(Value::as_str),
+            response.header("x-request-id")
+        );
+    }
+
+    #[tokio::test]
+    async fn every_pair_response_carries_a_request_id() {
+        let fixture = Fixture::new();
+
+        let health = TestResponse::of(fixture.router.handle(read(HEALTH_PATH)).await);
+        assert_eq!(health.status, StatusCode::NO_CONTENT);
+        assert_eq!(health.header("x-request-id").map(str::len), Some(16));
+
+        let unknown = TestResponse::of(fixture.router.handle(read("/api/nope")).await);
+        assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+        assert_eq!(unknown.header("x-request-id").map(str::len), Some(16));
+
+        let empty_claim = TestResponse::of(
+            fixture
+                .router
+                .handle(write(CLAIM_ROUTE, Bytes::new()))
+                .await,
+        );
+        assert_eq!(empty_claim.status, StatusCode::BAD_REQUEST);
+        assert_eq!(empty_claim.error_code(), "invalid-parameter");
+        assert_eq!(empty_claim.header("x-request-id").map(str::len), Some(16));
+        assert_eq!(
+            empty_claim
+                .json()
+                .pointer("/error/requestId")
+                .and_then(Value::as_str),
+            empty_claim.header("x-request-id")
+        );
+
+        let missing_cookie = TestResponse::of(
+            fixture
+                .router
+                .handle(read(&format!("{CLAIM_POLL_PREFIX}claim_x")))
+                .await,
+        );
+        assert_eq!(missing_cookie.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            missing_cookie.header("x-request-id").map(str::len),
+            Some(16)
+        );
+        assert_eq!(
+            missing_cookie
+                .json()
+                .pointer("/error/requestId")
+                .and_then(Value::as_str),
+            missing_cookie.header("x-request-id")
+        );
+    }
 }

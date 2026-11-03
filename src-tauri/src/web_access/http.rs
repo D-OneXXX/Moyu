@@ -7,10 +7,44 @@
 //! environment, or settings. There is no override.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{Method, Request, Response, StatusCode};
+
+/// Hard cap on summed request header bytes (names + values + framing slack).
+/// Enforced for every profile, including the health-only production listener,
+/// so an oversized header block is rejected before any route runs.
+pub(crate) const HEADER_LIMIT: usize = 8 * 1024;
+
+/// Time the peer gets to deliver the request line and all headers.
+pub(crate) const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Outer bound on one HTTP/1.1 connection (headers + response).
+pub(crate) const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(65);
+
+/// Upper bound for a pairing-route handler.
+pub(crate) const PAIR_HANDLER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Upper bound for a data-route handler.
+pub(crate) const DATA_HANDLER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Correlation header returned on every response.
+pub(crate) const X_REQUEST_ID: &str = "x-request-id";
+
+/// Adds a correlation id only when the handler did not already set one. Data
+/// responses carry their own id and must not be overwritten.
+pub(crate) fn with_request_id(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    if !response.headers().contains_key(X_REQUEST_ID) {
+        let request_id = super::secret::random_hex(8);
+        response.headers_mut().insert(
+            X_REQUEST_ID,
+            hyper::header::HeaderValue::from_str(&request_id).expect("request id is ascii hex"),
+        );
+    }
+    response
+}
 
 /// The single exact authority and origin a data-plane request may use.
 /// V1 binds one concrete LAN IPv4; no wildcard, `.local`, or `moyu.local`.
@@ -73,6 +107,18 @@ impl RequestGuard {
     }
 
     pub(crate) fn check<B>(&self, request: &Request<B>) -> Result<(), StatusCode> {
+        // Applies before the authority shortcut so the health-only profile is
+        // bound by the same header budget as the data plane.
+        let header_bytes = request
+            .headers()
+            .iter()
+            .fold(0usize, |total, (name, value)| {
+                total.saturating_add(name.as_str().len() + value.as_bytes().len() + 4)
+            });
+        if header_bytes > HEADER_LIMIT {
+            return Err(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE);
+        }
+
         let Some(authority) = self.authority.as_ref() else {
             return Ok(());
         };
@@ -337,5 +383,69 @@ mod tests {
             .body(())
             .unwrap();
         assert!(RequestGuard::health_only().check(&req).is_ok());
+    }
+
+    #[test]
+    fn oversized_headers_are_rejected_with_431_for_both_profiles() {
+        let oversized = "a".repeat(9 * 1024);
+        let req = request(Method::GET, "/api/health")
+            .header("host", "192.168.1.10:8443")
+            .header("x-pad", oversized)
+            .body(())
+            .unwrap();
+        assert_eq!(
+            guard().check(&req),
+            Err(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE)
+        );
+        assert_eq!(
+            RequestGuard::health_only().check(&req),
+            Err(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE)
+        );
+    }
+
+    #[test]
+    fn normal_headers_are_within_the_limit_for_both_profiles() {
+        let req = request(Method::POST, "/api/pair/claim")
+            .header("host", "192.168.1.10:8443")
+            .header("origin", "https://192.168.1.10:8443")
+            .header("x-moyu-request", "1")
+            .header("user-agent", "Mozilla/5.0 (integration check)")
+            .body(())
+            .unwrap();
+        assert!(guard().check(&req).is_ok());
+        assert!(RequestGuard::health_only().check(&req).is_ok());
+    }
+
+    #[test]
+    fn with_request_id_adds_one_sixteen_hex_id_when_absent() {
+        let response = with_request_id(health_response());
+        let values = response
+            .headers()
+            .get_all(X_REQUEST_ID)
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 1);
+        let value = values[0].to_str().expect("ascii request id");
+        assert_eq!(value.len(), 16);
+        assert!(value.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+    }
+
+    #[test]
+    fn with_request_id_never_duplicates_or_overrides_an_existing_id() {
+        let existing = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(X_REQUEST_ID, "0123456789abcdef")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = with_request_id(existing);
+        assert_eq!(response.headers().get_all(X_REQUEST_ID).iter().count(), 1);
+        assert_eq!(
+            response
+                .headers()
+                .get(X_REQUEST_ID)
+                .expect("request id")
+                .as_bytes(),
+            b"0123456789abcdef"
+        );
     }
 }

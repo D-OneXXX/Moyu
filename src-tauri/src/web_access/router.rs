@@ -32,8 +32,12 @@ use zeroize::Zeroizing;
 use super::auth::{AuthError, PairingService};
 use super::data::{DataHttp, WebDataAccess};
 use super::error::{WebAccessError, WebAccessResult};
-use super::http::{health_response, not_found_response, AllowedAuthority, RequestGuard};
+use super::http::{
+    health_response, not_found_response, with_request_id, AllowedAuthority, RequestGuard,
+    DATA_HANDLER_TIMEOUT, PAIR_HANDLER_TIMEOUT, X_REQUEST_ID,
+};
 use super::pairing::{ClaimIssued, ClaimState, PairingError};
+use super::secret::random_hex;
 use super::session::SessionIssued;
 
 pub(crate) const HEALTH_PATH: &str = "/api/health";
@@ -209,8 +213,23 @@ impl PairingHttp {
     }
 
     /// Handle one request. `source_ip` is the TLS peer address (or a test
-    /// injection); it is never read from a header.
+    /// injection); it is never read from a header. The public entry point
+    /// stamps `X-Request-Id` on every response that does not already carry
+    /// one (data responses generate their own id).
     pub(crate) async fn handle<B>(
+        &self,
+        request: Request<B>,
+        source_ip: Ipv4Addr,
+    ) -> Response<Full<Bytes>>
+    where
+        B: Body<Data = Bytes> + Unpin,
+    {
+        with_request_id(self.handle_inner(request, source_ip).await)
+    }
+
+    /// Guard, route, and dispatch. Callers must go through [`Self::handle`] so
+    /// the request id header is uniform; the body here only builds responses.
+    async fn handle_inner<B>(
         &self,
         request: Request<B>,
         source_ip: Ipv4Addr,
@@ -235,7 +254,12 @@ impl PairingHttp {
             {
                 return rate_limited_response(retry_after);
             }
-            return self.claim(request, source_ip).await;
+            return match tokio::time::timeout(PAIR_HANDLER_TIMEOUT, self.claim(request, source_ip))
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => timeout_response(),
+            };
         }
         if method == Method::GET {
             if let Some(claim_id) = poll_claim_id(&path) {
@@ -245,7 +269,15 @@ impl PairingHttp {
                 {
                     return rate_limited_response(retry_after);
                 }
-                return self.status(request, claim_id).await;
+                return match tokio::time::timeout(
+                    PAIR_HANDLER_TIMEOUT,
+                    self.status(request, claim_id),
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(_) => timeout_response(),
+                };
             }
         }
         if method == Method::POST {
@@ -256,12 +288,23 @@ impl PairingHttp {
                 {
                     return rate_limited_response(retry_after);
                 }
-                return self.consume(request, claim_id).await;
+                return match tokio::time::timeout(
+                    PAIR_HANDLER_TIMEOUT,
+                    self.consume(request, claim_id),
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(_) => timeout_response(),
+                };
             }
         }
         if let Some(data) = self.data.as_ref() {
-            if let Some(response) = data.handle(&request, source_ip).await {
-                return response;
+            match tokio::time::timeout(DATA_HANDLER_TIMEOUT, data.handle(&request, source_ip)).await
+            {
+                Ok(Some(response)) => return response,
+                Ok(None) => {}
+                Err(_) => return timeout_response(),
             }
         }
         not_found_response()
@@ -508,18 +551,27 @@ fn error_response(
     code: &'static str,
     retry_after: Option<Duration>,
 ) -> Response<Full<Bytes>> {
+    // Every error carries the same request id in the JSON envelope and in the
+    // `X-Request-Id` header. The id is generated here (not by the outer
+    // wrapper) so the header and body can never disagree.
+    let request_id = random_hex(8);
     // The unified error body allows `retryAfterMs` only for rate limiting;
     // every other error keeps the bare stable code.
     let body = match retry_after {
         Some(retry_after) => json!({
             "error": {
                 "code": code,
+                "requestId": request_id.clone(),
                 "retryAfterMs": retry_after_millis(retry_after),
             }
         }),
-        None => json!({ "error": { "code": code } }),
+        None => json!({ "error": { "code": code, "requestId": request_id.clone() } }),
     };
     let mut response = json_response(status, body, &[]);
+    response.headers_mut().insert(
+        X_REQUEST_ID,
+        HeaderValue::from_str(&request_id).expect("request id is ascii hex"),
+    );
     if let Some(retry_after) = retry_after {
         let value = HeaderValue::from_str(&retry_after_seconds(retry_after).to_string())
             .expect("retry-after header");
@@ -563,9 +615,22 @@ fn rate_limited_response(retry_after: Duration) -> Response<Full<Bytes>> {
 }
 
 /// Host/Origin/header failures share the frozen public `forbidden` code; the
-/// HTTP status still distinguishes 421 (Host) from 403 (Origin/header).
+/// HTTP status still distinguishes 421 (Host) from 403 (Origin/header). A
+/// request whose header section exceeded the parser limit is not an origin
+/// decision, so it keeps its own stable `header-too-large` code.
 fn guard_error_response(status: StatusCode) -> Response<Full<Bytes>> {
-    error_response(status, "forbidden", None)
+    let code = if status == StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE {
+        "header-too-large"
+    } else {
+        "forbidden"
+    };
+    error_response(status, code, None)
+}
+
+/// A pair or data handler that outlived its budget answers `504` with the same
+/// frozen code the data plane uses for a render timeout.
+fn timeout_response() -> Response<Full<Bytes>> {
+    error_response(StatusCode::GATEWAY_TIMEOUT, "render-timeout", None)
 }
 
 fn body_too_large_response() -> Response<Full<Bytes>> {

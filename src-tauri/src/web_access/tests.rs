@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustls_pki_types::ServerName;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -21,8 +21,8 @@ use super::pairing::PairingStore;
 use super::router::PairingHttp;
 use super::session::SessionStore;
 use super::tls::{
-    start_tls_server_with_clock, start_tls_server_with_clock_and_handler, HandlerFactory,
-    RequestHandler,
+    start_tls_server_with_clock, start_tls_server_with_clock_and_handler,
+    start_tls_server_with_clock_and_header_timeout, HandlerFactory, RequestHandler,
 };
 use super::*;
 
@@ -1120,6 +1120,36 @@ fn response_set_cookie(response: &str, name: &str) -> Option<String> {
     })
 }
 
+/// Reads a raw response header value case-insensitively. Header names are
+/// ASCII case-insensitive over the wire, so the transport spelling of
+/// `x-request-id` must not decide whether the test passes.
+fn response_header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
+    response.lines().find_map(|line| {
+        let line = line.trim_end_matches('\r');
+        let (key, value) = line.split_once(':')?;
+        if key.trim().eq_ignore_ascii_case(name) {
+            Some(value.trim())
+        } else {
+            None
+        }
+    })
+}
+
+/// Asserts the response carries a 16-character lowercase hex `x-request-id`
+/// and returns it.
+fn assert_request_id(response: &str) -> String {
+    let id = response_header(response, "x-request-id")
+        .unwrap_or_else(|| panic!("missing x-request-id: {response:?}"))
+        .to_owned();
+    assert_eq!(id.len(), 16, "request id is not 16 chars: {id:?}");
+    assert!(
+        id.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "request id is not lowercase hex: {id:?}"
+    );
+    id
+}
+
 /// G4: the production handler factory receives the actual bound address, the
 /// real TLS listener serves health + the three pair routes, and every data
 /// path is 404. The claim is approved through the same in-memory service the
@@ -1264,8 +1294,8 @@ async fn production_pair_router_serves_only_health_and_pair_over_real_tls() {
     let health = pair_request(&ca, &handle, "GET", "/api/health", &host, None, None, None).await;
     assert!(health.starts_with("HTTP/1.1 204"), "{health:?}");
 
-    // G5: oversized headers are rejected by hyper before the pair router. The
-    // exact status may be 431 or a closed connection, but never 204/health.
+    // G5: header totals above 8 KiB are rejected by the shared request guard
+    // with 431 before routing, and the listener keeps serving afterwards.
     let mut oversized = connect_tls(
         handle.local_addr(),
         client_config(ca.root_cert_der()),
@@ -1275,16 +1305,107 @@ async fn production_pair_router_serves_only_health_and_pair_over_real_tls() {
     .unwrap();
     let request = format!(
         "GET /api/health HTTP/1.1\r\nHost: {host}\r\nX-Big: {}\r\nConnection: close\r\n\r\n",
-        "a".repeat(20 * 1024)
+        "a".repeat(9 * 1024)
     );
     oversized.write_all(request.as_bytes()).await.unwrap();
     let mut response = Vec::new();
     let _ = oversized.read_to_end(&mut response).await;
     let text = String::from_utf8_lossy(&response);
-    assert!(!text.starts_with("HTTP/1.1 204"), "{text:?}");
+    assert!(text.starts_with("HTTP/1.1 431"), "{text:?}");
+    assert!(text.contains("header-too-large"), "{text:?}");
+    assert_request_id(&text);
     let health = pair_request(&ca, &handle, "GET", "/api/health", &host, None, None, None).await;
     assert!(health.starts_with("HTTP/1.1 204"), "{health:?}");
 
+    handle.shutdown().await.unwrap();
+}
+
+/// A client that sends only part of its request headers must be cut off by the
+/// short header-read timeout, long before the 65 s connection timeout.
+#[tokio::test]
+async fn slow_header_connection_is_closed_within_the_header_timeout() {
+    let ca = TestCa::new("header-timeout");
+    ca.initialize();
+    let handle = start_tls_server_with_clock_and_header_timeout(
+        test_server_config(&ca),
+        ca.clock_handle(),
+        TlsRenewalPolicy::default(),
+        Duration::from_millis(300),
+    )
+    .await
+    .unwrap();
+    let host = handle.local_addr().to_string();
+
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    // No terminating blank line: the server must not wait for the 65 s
+    // connection timeout to give up on the incomplete header block.
+    stream
+        .write_all(format!("GET /api/health HTTP/1.1\r\nHost: {host}\r\nX-Slow: ").as_bytes())
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let mut response = Vec::new();
+    let outcome =
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response)).await;
+    let elapsed = started.elapsed();
+    match outcome {
+        // A clean EOF (Ok) or a reset (Err) both prove the server closed.
+        Ok(read_result) => {
+            let _ = read_result;
+        }
+        Err(_) => panic!("header timeout did not close the connection"),
+    }
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "connection stayed open past the header timeout: {elapsed:?}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+/// The health-only production listener rejects an oversized header total with
+/// 431 + request id and keeps serving normal health requests afterwards.
+#[tokio::test]
+async fn health_only_oversized_headers_are_431_with_request_id() {
+    let ca = TestCa::new("health-oversized");
+    ca.initialize();
+    let handle = start_tls_server(test_server_config(&ca)).await.unwrap();
+    let host = handle.local_addr().to_string();
+
+    let mut oversized = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    let request = format!(
+        "GET /api/health HTTP/1.1\r\nHost: {host}\r\nX-Big: {}\r\nConnection: close\r\n\r\n",
+        "a".repeat(9 * 1024)
+    );
+    oversized.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    let _ = oversized.read_to_end(&mut response).await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.starts_with("HTTP/1.1 431"), "{text:?}");
+    assert_request_id(&text);
+
+    // The rejected request must not take the listener down.
+    let mut stream = connect_tls(
+        handle.local_addr(),
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    let health = http_request(&mut stream, "GET", "/api/health").await;
+    assert!(health.starts_with("HTTP/1.1 204"), "{health:?}");
     handle.shutdown().await.unwrap();
 }
 

@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::auth::PairingService;
+use super::http::{DATA_HANDLER_TIMEOUT, X_REQUEST_ID};
 use super::secret::random_hex;
 use super::session::strict_u32;
 use super::session_auth::{
@@ -54,13 +55,11 @@ const SESSION_IN_FLIGHT: usize = 6;
 const SESSION_WAIT: Duration = Duration::from_secs(5);
 const RENDER_GATE: usize = 2;
 const MAX_SESSION_BUCKETS: usize = 1024;
-const DATA_HANDLER_TIMEOUT: Duration = Duration::from_secs(60);
 
 const PRIVATE_NO_CACHE: &str = "private, no-cache";
 const PRIVATE_MAX_AGE_300: &str = "private, max-age=300";
 const NO_STORE: &str = "no-store";
 
-const X_REQUEST_ID: &str = "x-request-id";
 const X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 const X_TILE_COUNT: &str = "x-tile-count";
 const X_TILE_HEIGHT: &str = "x-tile-height";

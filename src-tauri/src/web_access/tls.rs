@@ -12,7 +12,7 @@ use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
@@ -25,7 +25,10 @@ use crate::ca::{CaError, CaManager};
 
 use super::addrs::select_san_ips;
 use super::error::{WebAccessError, WebAccessResult};
-use super::http::{empty_response, health_response, not_found_response, RequestGuard};
+use super::http::{
+    empty_response, health_response, not_found_response, with_request_id, RequestGuard,
+    HEADER_READ_TIMEOUT, HTTP_CONNECTION_TIMEOUT,
+};
 use super::tls_renewal::{
     certificate_expired, issuer_rotation_required, renewal_due, rollback_available,
     TlsCertificateSnapshot, TlsCertificateState, TlsRenewalPolicy,
@@ -35,7 +38,6 @@ use super::tls_renewal::{
 const LEAF_DNS: &str = "moyu.local";
 const HEALTH_PATH: &str = "/api/health";
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ACTIVE_CONNECTIONS: usize = 32;
 /// One LAN peer must not be able to consume every global connection slot with
 /// slow or half-open TLS handshakes. Normal phones need a handful at most.
@@ -725,6 +727,7 @@ pub async fn start_tls_server(config: TlsServerConfig) -> WebAccessResult<TlsSer
         Arc::new(OffsetDateTime::now_utc),
         TlsRenewalPolicy::default(),
         None,
+        HEADER_READ_TIMEOUT,
     )
     .await
 }
@@ -741,6 +744,7 @@ pub(crate) async fn start_tls_server_with(
         Arc::new(OffsetDateTime::now_utc),
         TlsRenewalPolicy::default(),
         Some(factory),
+        HEADER_READ_TIMEOUT,
     )
     .await
 }
@@ -751,7 +755,7 @@ pub(crate) async fn start_tls_server_with_clock(
     clock: Clock,
     policy: TlsRenewalPolicy,
 ) -> WebAccessResult<TlsServerHandle> {
-    start_tls_server_inner(config, clock, policy, None).await
+    start_tls_server_inner(config, clock, policy, None, HEADER_READ_TIMEOUT).await
 }
 
 #[cfg(test)]
@@ -761,7 +765,17 @@ pub(crate) async fn start_tls_server_with_clock_and_handler(
     policy: TlsRenewalPolicy,
     factory: HandlerFactory,
 ) -> WebAccessResult<TlsServerHandle> {
-    start_tls_server_inner(config, clock, policy, Some(factory)).await
+    start_tls_server_inner(config, clock, policy, Some(factory), HEADER_READ_TIMEOUT).await
+}
+
+#[cfg(test)]
+pub(crate) async fn start_tls_server_with_clock_and_header_timeout(
+    config: TlsServerConfig,
+    clock: Clock,
+    policy: TlsRenewalPolicy,
+    header_read_timeout: Duration,
+) -> WebAccessResult<TlsServerHandle> {
+    start_tls_server_inner(config, clock, policy, None, header_read_timeout).await
 }
 
 fn health_handler() -> RequestHandler {
@@ -773,6 +787,7 @@ async fn start_tls_server_inner(
     clock: Clock,
     policy: TlsRenewalPolicy,
     factory: Option<HandlerFactory>,
+    header_read_timeout: Duration,
 ) -> WebAccessResult<TlsServerHandle> {
     // The CA root must be absolute; never resolve it against the process CWD.
     if !config.ca_root.is_absolute() {
@@ -834,6 +849,7 @@ async fn start_tls_server_inner(
         connections,
         per_ip_connections,
         shutdown_rx.clone(),
+        header_read_timeout,
     ));
     let renewal_task = tokio::spawn(renewal_loop(runtime.clone(), shutdown_rx));
     Ok(TlsServerHandle {
@@ -913,6 +929,7 @@ async fn accept_loop(
     connections: Arc<Semaphore>,
     per_ip_connections: Arc<ConnectionLimiter>,
     mut shutdown: watch::Receiver<bool>,
+    header_read_timeout: Duration,
 ) {
     let mut tasks = JoinSet::new();
     loop {
@@ -967,9 +984,13 @@ async fn accept_loop(
                                 let _ = tokio::time::timeout(
                                     HTTP_CONNECTION_TIMEOUT,
                                     http1::Builder::new()
+                                        // `header_read_timeout` requires an explicit
+                                        // hyper timer; without it hyper panics.
+                                        .timer(TokioTimer::new())
                                         // Bound the request line + headers before
                                         // any route runs (G5 header limit).
                                         .max_buf_size(16 * 1024)
+                                        .header_read_timeout(Some(header_read_timeout))
                                         .keep_alive(false)
                                         .serve_connection(io, service),
                                 )
@@ -999,14 +1020,14 @@ async fn handle_request(
     // validation code used by the test-only pairing router and fails closed if
     // that invariant ever changes.
     if let Err(status) = RequestGuard::health_only().check(&request) {
-        return Ok(empty_response(status));
+        return Ok(with_request_id(empty_response(status)));
     }
     let response = if request.method() == Method::GET && request.uri().path() == HEALTH_PATH {
         health_response()
     } else {
         not_found_response()
     };
-    Ok(response)
+    Ok(with_request_id(response))
 }
 
 #[cfg(test)]

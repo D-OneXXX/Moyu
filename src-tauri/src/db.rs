@@ -687,6 +687,17 @@ pub fn get_book(conn: &Connection, id: &str) -> Result<Option<BookRow>, BackendE
     }
 }
 
+/// Read-only lookup for the Web data plane. Removed books are treated as
+/// nonexistent so every `{id}` route can return the same `book-not-found`.
+pub fn get_active_book(conn: &Connection, id: &str) -> Result<Option<BookRow>, BackendError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+         FROM books WHERE id=?1 AND removed=0",
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    Ok(rows.next()?.map(row_to_book).transpose()?)
+}
+
 /// 压缩包源文件的增量扫描指纹（修改时间秒 + 字节数）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceStamp {
@@ -737,6 +748,39 @@ pub fn book_is_removed(conn: &Connection, id: &str) -> Result<bool, BackendError
         })
         .ok();
     Ok(removed.unwrap_or(0) != 0)
+}
+
+/// Web 只读分页：按 `(updated_at, id)` 稳定游标，只搜索标题。
+///
+/// Path 不参与搜索，避免把本地目录布局变成可探测的 oracle；调用方传入
+/// `limit + 1` 行用于判断 `nextCursor`。桌面 `list_books` 行为不变。
+pub fn list_books_page(
+    conn: &Connection,
+    query: Option<&str>,
+    cursor_updated: Option<&str>,
+    cursor_id: Option<&str>,
+    limit: u32,
+) -> Result<Vec<BookRow>, BackendError> {
+    let like = query.map(|q| format!("%{}%", q.trim()));
+    let mut stmt = conn.prepare(
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+         FROM books
+         WHERE removed=0
+           AND (?1 IS NULL OR title LIKE ?1)
+           AND (
+             ?2 IS NULL
+             OR (?2 = '' AND updated_at = '' AND id > ?3)
+             OR updated_at < ?2
+             OR (updated_at = ?2 AND id > ?3)
+           )
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ?4",
+    )?;
+    let rows = stmt.query_map(
+        params![like, cursor_updated, cursor_id, i64::from(limit) + 1],
+        row_to_book,
+    )?;
+    rows.map(|row| row.map_err(BackendError::from)).collect()
 }
 
 /// 书库列表（不含已移除的软删书）。

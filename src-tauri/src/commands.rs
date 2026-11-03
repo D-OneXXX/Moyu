@@ -72,7 +72,7 @@ fn local_source_missing(r: &db::BookRow) -> bool {
     }
 }
 
-fn to_book_info(r: db::BookRow) -> BookInfo {
+pub(crate) fn to_book_info(r: db::BookRow) -> BookInfo {
     // meta_json 每次列表都会解析：只解析一次，供条漫能力与系列字段共用。
     let stored = serde_json::from_str::<crate::online::StoredMeta>(&r.meta_json).ok();
     let webtoon_ready = webtoon_ready(&r, stored.as_ref());
@@ -275,7 +275,7 @@ fn pick_next(current: &db::BookRow, candidates: Vec<db::BookRow>) -> Option<db::
         })
 }
 
-fn get_next_book_impl(
+pub(crate) fn get_next_book_impl(
     conn: &rusqlite::Connection,
     book_id: &str,
 ) -> Result<Option<BookInfo>, BackendError> {

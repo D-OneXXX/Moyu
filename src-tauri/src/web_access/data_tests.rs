@@ -87,10 +87,12 @@ fn png_bytes(width: u32, height: u32) -> Vec<u8> {
 
 /// The exact state a data request may never change. Paths are intentionally
 /// absent so a failing assertion never prints the temp tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Snapshot {
+    page_count: u32,
     current_page: u32,
     progress_rev: i64,
+    scroll_pct: f64,
     updated_at: String,
     last_opened_at: String,
     meta_json: String,
@@ -102,16 +104,18 @@ fn snapshot(state: &AppState, book_id: &str) -> Result<Snapshot, String> {
     state.db.with(|conn| {
         let mut row = conn
             .query_row(
-                "SELECT current_page, progress_rev, updated_at, last_opened_at, meta_json \
-                 FROM books WHERE id=?1",
+                "SELECT page_count, current_page, progress_rev, scroll_pct, updated_at, \
+                 last_opened_at, meta_json FROM books WHERE id=?1",
                 params![book_id],
                 |row| {
                     Ok(Snapshot {
-                        current_page: row.get(0)?,
-                        progress_rev: row.get(1)?,
-                        updated_at: row.get(2)?,
-                        last_opened_at: row.get(3)?,
-                        meta_json: row.get(4)?,
+                        page_count: row.get(0)?,
+                        current_page: row.get(1)?,
+                        progress_rev: row.get(2)?,
+                        scroll_pct: row.get(3)?,
+                        updated_at: row.get(4)?,
+                        last_opened_at: row.get(5)?,
+                        meta_json: row.get(6)?,
                         reading_log_rows: 0,
                         reading_log_pages: 0,
                     })

@@ -3148,6 +3148,12 @@ export function checkAntiMockGuards(root, report) {
     if (/Method::(POST|PUT|DELETE|PATCH|HEAD|OPTIONS)/.test(dataSource)) {
       errors.push("data.rs 解析/接受非 GET 方法");
     }
+    if (!/if\s+method\s*!=\s*Method::GET/.test(dataSource)) {
+      errors.push("data.rs 缺少显式 Method::GET 门");
+    }
+    if (/method\.as_str\(\)|method\.to_string\(\)/.test(dataSource)) {
+      errors.push("data.rs 使用字符串方法比较，可能绕过 GET 门");
+    }
 
     // 2. Exactly the eight frozen GET shapes (Books + seven segment arms).
     const dataFlat = dataSource.replace(/\s+/g, " ");

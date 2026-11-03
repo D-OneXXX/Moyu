@@ -458,10 +458,12 @@ pub(crate) fn cached_page_asset(
 }
 
 /// Cache-only tile probe used before rendering a conditional GET response.
-/// Mirrors the guards and geometry of [`tile_asset`] but only reads L2: it
-/// never reads the source, never takes the tile materialisation lock, never
-/// renders, and never writes new cache or database state. A corrupt L2 tile is
-/// evicted so the next request re-renders.
+/// Mirrors the guards and geometry of [`tile_asset`] but only reads L2 for the
+/// image bytes: it never takes the tile materialisation lock, never renders,
+/// and never writes new cache or database state. A corrupt L2 tile is evicted
+/// so the next request re-renders. It still reads the layout (local page
+/// headers or cached online dimensions), which can scan the source without
+/// producing image bytes.
 pub(crate) fn cached_tile_asset(
     state: &Arc<AppState>,
     id: &str,
@@ -841,8 +843,17 @@ mod tests {
         seed.to_string().repeat(64)
     }
 
+    thread_local! {
+        /// Per-test-thread render root. `TempTree` removes it when the test
+        /// thread exits, so L2 renders never touch the real user cache.
+        static TEST_RENDER_TREE: TempTree = TempTree::new("read-service-render");
+    }
+
     fn state_with_db() -> AppState {
-        let state = AppState::new();
+        let mut state = AppState::new();
+        TEST_RENDER_TREE.with(|tree| {
+            state.render = crate::render_cache::RenderCache::new(tree.0.join("render"));
+        });
         let conn = rusqlite::Connection::open_in_memory().expect("memory db");
         db::init_schema(&conn).expect("schema");
         state.db.set(conn);

@@ -210,7 +210,9 @@ pub(crate) trait WebDataAccess: Send + Sync {
         index: u32,
         width: u32,
     ) -> Result<Option<ImageAsset>, DataError>;
-    /// Cache-only tile lookup; same contract as [`Self::cached_page`].
+    /// Cache-only tile image lookup; same contract as [`Self::cached_page`]
+    /// for the returned bytes. Implementations may still read layout metadata
+    /// to validate the tile index, but must not render image bytes.
     fn cached_tile(
         &self,
         id: &str,

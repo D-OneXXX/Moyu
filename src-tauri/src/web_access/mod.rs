@@ -16,8 +16,8 @@ mod ca_distribution;
 pub(crate) mod ca_distribution_commands;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod clock;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod data;
+pub(crate) mod data_app;
 mod error;
 mod events;
 mod http;
@@ -25,6 +25,7 @@ mod http;
 pub(crate) mod pairing;
 mod router;
 mod runtime;
+pub(crate) use data_app::AppData;
 pub(crate) use events::TauriEventSink;
 pub(crate) use runtime::{StopReason, WebAccessRuntime};
 pub(crate) mod commands;

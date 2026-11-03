@@ -9,9 +9,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::ca::CaManager;
+use crate::read_service::{
+    ImageAsset, PageManifest, ProgressView, TileImage, WebBook, WebBookDetail, WebBookPage,
+};
+use crate::PageDim;
 
 use super::auth::PairingService;
 use super::clock::SystemClock;
+use super::data::{DataError, WebDataAccess};
 use super::pairing::PairingStore;
 use super::router::PairingHttp;
 use super::session::SessionStore;
@@ -1303,4 +1308,183 @@ async fn pair_request(
     .await
     .unwrap();
     pair_http_request(&mut stream, method, path, host, origin, cookie, body).await
+}
+
+/// Minimal read-only provider for the data-plane end-to-end test. It returns a
+/// single book and `NotFound` for every per-book route so the test only needs
+/// the list response.
+struct TestData;
+
+impl WebDataAccess for TestData {
+    fn list_books(
+        &self,
+        _q: Option<&str>,
+        _cursor: Option<&str>,
+        _limit: u32,
+    ) -> Result<WebBookPage, DataError> {
+        let id = "b".repeat(64);
+        Ok(WebBookPage {
+            items: vec![WebBook {
+                id: id.clone(),
+                title: "Web Book".into(),
+                page_count: 3,
+                current_page: 1,
+                progress_rev: 2,
+                scroll_pct: -1.0,
+                format: "image".into(),
+                source_type: "local".into(),
+                missing: false,
+                updated_at: "2026-11-03T10:00:00+08:00".into(),
+                thumb_url: Some(format!("/api/books/{id}/thumb?v=2")),
+            }],
+            next_cursor: None,
+        })
+    }
+
+    fn book(&self, _id: &str) -> Result<WebBookDetail, DataError> {
+        Err(DataError::NotFound)
+    }
+
+    fn thumb(&self, _id: &str) -> Result<ImageAsset, DataError> {
+        Err(DataError::NotFound)
+    }
+
+    fn pages(&self, _id: &str) -> Result<PageManifest, DataError> {
+        Err(DataError::NotFound)
+    }
+
+    fn page(&self, _id: &str, _index: u32, _width: u32) -> Result<ImageAsset, DataError> {
+        Err(DataError::NotFound)
+    }
+
+    fn layout(&self, _id: &str) -> Result<Vec<PageDim>, DataError> {
+        Err(DataError::NotFound)
+    }
+
+    fn tile(
+        &self,
+        _id: &str,
+        _index: u32,
+        _tile: u32,
+        _width: u32,
+    ) -> Result<TileImage, DataError> {
+        Err(DataError::NotFound)
+    }
+
+    fn progress(&self, _id: &str) -> Result<ProgressView, DataError> {
+        Err(DataError::NotFound)
+    }
+}
+
+/// One-shot `GET /api/books` over a fresh TLS connection, optionally carrying
+/// the `moyus_session` cookie. The connection still targets loopback; only the
+/// TLS SNI uses the configured LAN SAN.
+async fn data_request(
+    ca: &TestCa,
+    addr: std::net::SocketAddr,
+    host: &str,
+    cookie: Option<&str>,
+) -> String {
+    let mut stream = connect_tls(
+        addr,
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    let mut request = format!("GET /api/books HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if let Some(cookie) = cookie {
+        request.push_str(&format!("Cookie: moyus_session={cookie}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+/// Injecting a data provider into the production runtime must not start the
+/// listener: the phase stays `disabled` and nothing is bound.
+#[tokio::test]
+async fn for_test_with_data_starts_disabled_without_binding() {
+    let ca = TestCa::new("data-disabled");
+    ca.initialize();
+
+    let runtime = WebAccessRuntime::for_test_with_data(ca.root.clone(), Arc::new(TestData));
+    let status = runtime.status().await;
+    assert_eq!(status.phase, "disabled");
+    assert!(status.bind_address.is_none());
+    assert!(status.bind_ip.is_none());
+    assert!(status.port.is_none());
+    assert!(!status.pairing_active);
+
+    let stopped = runtime.stop(StopReason::Stopped).await;
+    assert_eq!(stopped.phase, "disabled");
+}
+
+/// Real-TLS proof for the read-only data plane: authenticated with a live
+/// `moyus_session` cookie -> 200 with the book list and no path/CORS leakage;
+/// missing or revoked cookie -> 401 `unauthorized`; explicit stop -> disabled.
+#[tokio::test]
+async fn production_router_serves_data_only_with_a_session_cookie() {
+    let ca = TestCa::new("data-router");
+    ca.initialize();
+
+    let runtime = WebAccessRuntime::for_test_with_data(ca.root.clone(), Arc::new(TestData));
+
+    // No auto-start: the runtime is `disabled` and owns no listener before the
+    // explicit start, even with a data provider injected.
+    let status = runtime.status().await;
+    assert_eq!(status.phase, "disabled");
+    assert!(status.bind_address.is_none());
+
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+
+    let status = runtime.status().await;
+    let host = status.bind_address.expect("bound");
+    let addr: std::net::SocketAddr = host.parse().unwrap();
+    let service = runtime.service_for_test().await.expect("service");
+    let issued = service.issue_session_for_test("Pixel 8");
+
+    // No cookie: the data gate fails closed before touching the provider.
+    let denied = data_request(&ca, addr, &host, None).await;
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied:?}");
+    assert!(
+        denied.to_ascii_lowercase().contains("\"unauthorized\""),
+        "{denied:?}"
+    );
+    assert!(
+        !denied.to_ascii_lowercase().contains("set-cookie"),
+        "{denied:?}"
+    );
+
+    // A live session cookie returns only the JSON book list.
+    let served = data_request(&ca, addr, &host, Some(issued.token.as_str())).await;
+    assert!(served.starts_with("HTTP/1.1 200"), "{served:?}");
+    assert!(served.contains("\"items\""), "{served:?}");
+    assert!(served.contains("\"Web Book\""), "{served:?}");
+    assert!(!served.contains("\"path\""), "{served:?}");
+    assert!(!served.contains("C:/"), "{served:?}");
+    assert!(!served.contains('\\'), "{served:?}");
+    assert!(
+        !served
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin"),
+        "{served:?}"
+    );
+
+    // Revocation invalidates the same token immediately.
+    assert!(service.revoke_device(&issued.id));
+    let revoked = data_request(&ca, addr, &host, Some(issued.token.as_str())).await;
+    assert!(revoked.starts_with("HTTP/1.1 401"), "{revoked:?}");
+    assert!(
+        revoked.to_ascii_lowercase().contains("\"unauthorized\""),
+        "{revoked:?}"
+    );
+
+    runtime.stop(StopReason::Stopped).await;
+    assert_eq!(runtime.status().await.phase, "disabled");
 }

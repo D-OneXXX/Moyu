@@ -520,9 +520,13 @@ pub fn run() {
                 ca_root.clone(),
             )));
             // D1b：控制面运行时只托管，默认 Disabled；启动不 bind、不建配对窗口。
+            // D2：注入只读数据面 provider，路由只在有 provider 时挂载 /api/books*。
+            let app_state = app.state::<Arc<AppState>>().inner().clone();
+            let web_data = Arc::new(web_access::AppData::new(app_state));
             app.manage(Arc::new(web_access::WebAccessRuntime::new(
                 ca_root,
                 Arc::new(web_access::TauriEventSink::new(app.handle().clone())),
+                web_data,
             )));
             cache_health::install(app.handle().clone());
             if init_app(app).is_err() {

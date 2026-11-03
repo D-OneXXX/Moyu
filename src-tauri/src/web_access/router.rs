@@ -184,9 +184,8 @@ impl PairingHttp {
         })
     }
 
-    /// Add the read-only data plane. Until Task 5 injects `AppData`, the
-    /// production runtime keeps constructing the pair-only router above.
-    #[allow(dead_code)]
+    /// Add the read-only data plane. The production runtime uses this when it
+    /// has an `AppData` provider; tests inject a synthetic provider.
     pub(crate) fn with_data(
         service: Arc<PairingService>,
         local_addr: SocketAddr,

@@ -27,6 +27,7 @@ use crate::ca::{CaError, CaManager};
 use super::addrs::{is_private_lan_ipv4, local_lan_addresses, LanAddress};
 use super::auth::{AuthError, PairingService};
 use super::clock::SystemClock;
+use super::data::WebDataAccess;
 use super::error::WebAccessError;
 use super::pairing::PairingStore;
 use super::router::PairingHttp;
@@ -322,11 +323,14 @@ impl Default for RunningState {
     }
 }
 
-/// Process-wide D1b runtime. Managed by Tauri; never starts at setup.
+/// Process-wide D1b runtime. Managed by Tauri; never starts at setup. The
+/// read-only data plane is mounted only when a [`WebDataAccess`] provider is
+/// injected; without one every data path stays 404 (pair-only).
 pub(crate) struct WebAccessRuntime {
     ca_root: PathBuf,
     events: Option<Arc<dyn WebAccessEventSink>>,
     allow_loopback: bool,
+    data: Option<Arc<dyn WebDataAccess>>,
     /// Serializes start/stop/pairing-start. Approval/denial only touch the
     /// in-memory service and may overlap with a snapshot read.
     operation: AsyncMutex<()>,
@@ -334,24 +338,35 @@ pub(crate) struct WebAccessRuntime {
 }
 
 impl WebAccessRuntime {
-    pub(crate) fn new(ca_root: PathBuf, events: Arc<dyn WebAccessEventSink>) -> Self {
-        Self::with_events(ca_root, Some(events), false)
+    pub(crate) fn new(
+        ca_root: PathBuf,
+        events: Arc<dyn WebAccessEventSink>,
+        data: Arc<dyn WebDataAccess>,
+    ) -> Self {
+        Self::with_events(ca_root, Some(events), false, Some(data))
     }
 
     #[cfg(test)]
     pub(crate) fn for_test(ca_root: PathBuf) -> Self {
-        Self::with_events(ca_root, None, true)
+        Self::with_events(ca_root, None, true, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_data(ca_root: PathBuf, data: Arc<dyn WebDataAccess>) -> Self {
+        Self::with_events(ca_root, None, true, Some(data))
     }
 
     fn with_events(
         ca_root: PathBuf,
         events: Option<Arc<dyn WebAccessEventSink>>,
         allow_loopback: bool,
+        data: Option<Arc<dyn WebDataAccess>>,
     ) -> Self {
         Self {
             ca_root,
             events,
             allow_loopback,
+            data,
             operation: AsyncMutex::new(()),
             state: AsyncMutex::new(RunningState::default()),
         }
@@ -528,9 +543,17 @@ impl WebAccessRuntime {
             PairingStore::new(Arc::new(SystemClock)),
             SessionStore::new(Arc::new(SystemClock)),
         ));
+        let factory_data = self.data.clone();
         let factory_service = Arc::clone(&service);
         let factory: HandlerFactory = Arc::new(move |addr| {
-            let router = Arc::new(PairingHttp::new(Arc::clone(&factory_service), addr)?);
+            let router = match factory_data.as_ref() {
+                Some(provider) => Arc::new(PairingHttp::with_data(
+                    Arc::clone(&factory_service),
+                    addr,
+                    Arc::clone(provider),
+                )?),
+                None => Arc::new(PairingHttp::new(Arc::clone(&factory_service), addr)?),
+            };
             let handler: RequestHandler = Arc::new(move |request, peer| {
                 let router = Arc::clone(&router);
                 let source_ip = match peer.ip() {

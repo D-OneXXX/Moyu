@@ -15,8 +15,7 @@ use std::time::{Duration, Instant};
 use http_body_util::Full;
 use hyper::body::{Body, Bytes};
 use hyper::header::{
-    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, ETAG, IF_NONE_MATCH, RETRY_AFTER, SET_COOKIE,
-    VARY,
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, ETAG, IF_NONE_MATCH, RETRY_AFTER, VARY,
 };
 use hyper::{Method, Request, Response, StatusCode};
 use serde::Serialize;
@@ -28,9 +27,7 @@ use super::auth::PairingService;
 use super::http::{DATA_HANDLER_TIMEOUT, X_REQUEST_ID};
 use super::secret::random_hex;
 use super::session::strict_u32;
-use super::session_auth::{
-    authenticate_request, refresh_for_request, session_cookie, AuthenticatedSession,
-};
+use super::session_auth::{apply_refresh_cookie, authenticate_request, AuthenticatedSession};
 pub(crate) use crate::read_service::DataError;
 use crate::read_service::{
     bucket_tile_width, ImageAsset, PageManifest, ProgressView, TileImage, WebBookDetail,
@@ -171,7 +168,7 @@ impl DataRoute {
     }
 }
 
-fn parse_book_id(value: &str) -> Option<String> {
+pub(crate) fn parse_book_id(value: &str) -> Option<String> {
     if value.len() != 64
         || !value
             .bytes()
@@ -341,24 +338,16 @@ impl DataHttp {
     }
 
     /// Extend the session only for a successful page/tile read. Throttle and
-    /// the 90-day absolute deadline stay owned by `SessionStore`.
+    /// the 90-day absolute deadline stay owned by `SessionStore`. The shared
+    /// helper receives the actual method/path/changed so the write plane can
+    /// reuse it without inheriting this read-only `GET` assumption.
     fn apply_refresh(
         &self,
         session: &AuthenticatedSession,
         path: &str,
         response: &mut Response<Full<Bytes>>,
     ) {
-        let Ok(Some(super::session::RefreshOutcome::Refreshed { expires_at, .. })) =
-            refresh_for_request(&self.service, &session.view, "GET", path, false)
-        else {
-            return;
-        };
-        let max_age = expires_at
-            .saturating_duration_since(Instant::now())
-            .as_secs();
-        if let Some(cookie) = session_cookie(session.token.as_str(), max_age) {
-            response.headers_mut().append(SET_COOKIE, cookie);
-        }
+        apply_refresh_cookie(&self.service, session, "GET", path, false, response);
     }
 }
 
@@ -692,7 +681,7 @@ fn etag_matches(candidate: &str, etag: &str) -> bool {
     candidate.strip_prefix("W/").unwrap_or(candidate) == etag
 }
 
-fn data_error_response(error: DataError, request_id: &str) -> Response<Full<Bytes>> {
+pub(crate) fn data_error_response(error: DataError, request_id: &str) -> Response<Full<Bytes>> {
     // Both transient 503 classes carry the same retry hint.
     let retry_after =
         matches!(error, DataError::Busy | DataError::DbUnavailable).then(|| Duration::from_secs(1));
@@ -749,7 +738,7 @@ fn error_details(error: DataError) -> Option<Value> {
     }
 }
 
-fn error_response(
+pub(crate) fn error_response(
     status: StatusCode,
     code: &'static str,
     request_id: &str,

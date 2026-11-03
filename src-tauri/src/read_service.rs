@@ -757,7 +757,7 @@ fn web_book(info: crate::BookInfo) -> WebBook {
     }
 }
 
-fn iso_local(raw: &str) -> String {
+pub(crate) fn iso_local(raw: &str) -> String {
     NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
         .ok()
         .and_then(|naive| Local.from_local_datetime(&naive).earliest())

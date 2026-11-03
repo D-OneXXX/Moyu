@@ -3427,4 +3427,251 @@ export function checkAntiMockGuards(root, report) {
       fix: "确认 D2 文件存在且命名稳定",
     });
   }
+
+  try {
+    const errors = [];
+    const readSource = (relative) =>
+      fs.readFileSync(path.join(root, relative), "utf8");
+    const productionOnly = (source) => {
+      const index = source.indexOf("#[cfg(test)]\nmod tests");
+      return stripRustComments(index >= 0 ? source.slice(0, index) : source);
+    };
+    const writeSource = productionOnly(
+      readSource(path.join("src-tauri", "src", "web_access", "progress_write.rs")),
+    );
+    const writeAppSource = productionOnly(
+      readSource(
+        path.join("src-tauri", "src", "web_access", "progress_write_app.rs"),
+      ),
+    );
+    const serviceSource = productionOnly(
+      readSource(path.join("src-tauri", "src", "progress_service.rs")),
+    );
+    const modSource = readSource(
+      path.join("src-tauri", "src", "web_access", "mod.rs"),
+    );
+    const sessionAuthSource = productionOnly(
+      readSource(path.join("src-tauri", "src", "web_access", "session_auth.rs")),
+    );
+
+    // 1. Exactly one write route, and it is PUT.
+    const routeLiterals = [
+      ...writeSource.matchAll(/"([^"]*\/api\/[^"]*)"/g),
+    ].map((match) => match[1]);
+    if (
+      routeLiterals.length !== 1 ||
+      routeLiterals[0] !== "/api/books/"
+    ) {
+      errors.push(
+        `写路由字面量应唯一为 /api/books/，实际 ${JSON.stringify(routeLiterals)}`,
+      );
+    }
+    const putCount = (writeSource.match(/Method::PUT/g) || []).length;
+    if (putCount !== 1) {
+      errors.push(`Method::PUT 应出现 1 次，实际 ${putCount}`);
+    }
+    for (const method of ["POST", "DELETE", "PATCH", "HEAD", "OPTIONS"]) {
+      if (writeSource.includes(`Method::${method}`)) {
+        errors.push(`写面出现未批准方法 Method::${method}`);
+      }
+    }
+    for (const token of [
+      'strip_prefix("/api/books/")',
+      "split_once('/')",
+      'suffix != "progress"',
+      "parse_book_id",
+      "request.uri().query().is_some()",
+    ]) {
+      if (!writeSource.includes(token)) {
+        errors.push(`写路由缺少形状守卫：${token}`);
+      }
+    }
+
+    // 2. The handler must use the shared contract and provider, never SQL/FS.
+    for (const token of [
+      "progress_response(",
+      "next_action(",
+      ".write_progress(",
+    ]) {
+      if (!writeSource.includes(token)) {
+        errors.push(`写面缺少契约调用：${token}`);
+      }
+    }
+    if ((writeSource.match(/progress_response\(/g) || []).length !== 1) {
+      errors.push("progress_response 必须恰好调用一次");
+    }
+    if ((writeSource.match(/next_action\(/g) || []).length !== 1) {
+      errors.push("next_action 必须恰好调用一次");
+    }
+    if (
+      writeSource.includes("set_progress_cas") ||
+      writeSource.includes("db::set_progress")
+    ) {
+      errors.push("HTTP 写面不得直接调用数据库进度函数");
+    }
+    for (const token of [
+      "rusqlite",
+      "Connection::",
+      "std::fs",
+      "std::path",
+      "library.db",
+      "render_cache",
+      "online_cache",
+    ]) {
+      if (writeSource.includes(token)) {
+        errors.push(`HTTP 写面直接访问文件系统/SQLite：${token}`);
+      }
+    }
+
+    // 3. Authentication must precede body reading; body is capped and timed out.
+    const authCall = writeSource.indexOf("authenticate_request(&request");
+    const bodyCall = writeSource.indexOf("read_limited_body(request");
+    if (authCall < 0 || bodyCall < 0 || authCall > bodyCall) {
+      errors.push("写面未在读取 body 之前完成认证");
+    }
+    if (
+      !writeSource.includes("MAX_PROGRESS_BODY_BYTES: usize = 4 * 1024")
+    ) {
+      errors.push("写面缺少 4 KiB body 上限");
+    }
+    if (!writeSource.includes("BODY_READ_TIMEOUT")) {
+      errors.push("写面缺少 body 读取超时");
+    }
+    if (!writeSource.includes("spawn_blocking")) {
+      errors.push("写面未在 spawn_blocking 中调用 provider");
+    }
+    if (
+      !writeSource.includes("application/json") ||
+      !writeSource.includes("is_json_content_type")
+    ) {
+      errors.push("写面缺少 application/json Content-Type 校验");
+    }
+    if (!writeSource.includes("deny_unknown_fields")) {
+      errors.push("写 DTO 未拒绝未知字段");
+    }
+
+    // 4. Refresh only after a successful, actually-changed CAS.
+    if (
+      !writeSource.includes(
+        "if status == ProgressStatus::Ok && progress_changed",
+      )
+    ) {
+      errors.push("写面未把刷新限制为成功且进度实际变化");
+    }
+    if (
+      !writeSource.includes(
+        "NextAction::Continue { next_base_rev } if next_base_rev != base_rev",
+      )
+    ) {
+      errors.push("刷新条件未由 next_action 的 rev 差推导");
+    }
+    if ((writeSource.match(/apply_refresh_cookie\(/g) || []).length !== 1) {
+      errors.push("apply_refresh_cookie 必须恰好调用一次");
+    }
+    if (!/apply_refresh_cookie\([^;]*"PUT"[^;]*true/s.test(writeSource)) {
+      errors.push("写面刷新未传 PUT/true");
+    }
+    if (!writeSource.includes("self.guard.check(&request)")) {
+      errors.push("写面缺少 Host/Origin/Sec-Fetch/X-Moyu 守卫");
+    }
+    if (!writeSource.includes("SessionWriteGate")) {
+      errors.push("写面缺少每会话并发门");
+    }
+    if (!writeSource.includes("MAX_RATE_BUCKETS")) {
+      errors.push("写面限流桶缺少上界");
+    }
+
+    // 5. Service owns DB rules; the app adapter only forwards.
+    if ((serviceSource.match(/set_progress_cas\(/g) || []).length !== 1) {
+      errors.push("写服务必须恰好调用一次 set_progress_cas");
+    }
+    if (!serviceSource.includes("get_active_book")) {
+      errors.push("写服务未校验 active 书");
+    }
+    if (
+      !serviceSource.includes("BOOK_FORMAT_PDF") ||
+      !serviceSource.includes("row.page_count == 0") ||
+      !serviceSource.includes("page >= row.page_count")
+    ) {
+      errors.push("写服务缺少 PDF/页数上界校验");
+    }
+    if (
+      !serviceSource.includes("pct.is_finite()") ||
+      !serviceSource.includes("(0.0..=1.0).contains(&pct)")
+    ) {
+      errors.push("写服务缺少 scrollPct 有限性与范围校验");
+    }
+    if (!writeAppSource.includes("progress_service::write_progress")) {
+      errors.push("AppProgress 未转发到写服务");
+    }
+    if (
+      !modSource.includes("progress_write") ||
+      !modSource.includes("progress_write_app")
+    ) {
+      errors.push("mod.rs 未挂载 D3 写面模块");
+    }
+
+    // 6. No CORS, Referer fallback, or URL token on the write surface.
+    for (const [label, source] of [
+      ["progress_write.rs", writeSource],
+      ["progress_write_app.rs", writeAppSource],
+      ["progress_service.rs", serviceSource],
+      ["session_auth.rs", sessionAuthSource],
+    ]) {
+      if (/Access-Control-Allow/i.test(source)) {
+        errors.push(`${label} 返回了 CORS 头`);
+      }
+      if (/\bReferer\b/i.test(source)) {
+        errors.push(`${label} 使用 Referer`);
+      }
+      for (const literal of [
+        '"token"',
+        '"secret"',
+        '"access_token"',
+        '"session_token"',
+      ]) {
+        if (source.includes(literal)) {
+          errors.push(`${label} 出现查询凭据字面量：${literal}`);
+        }
+      }
+    }
+
+    if (errors.length) {
+      fail(report, {
+        id: "static:d3-progress-route",
+        suite: "static",
+        layer: "static",
+        title: "D3 写面仅一条 PUT 进度路由、认证先行、body 有界、刷新受控",
+        severity: "P1",
+        details: errors.join(" | "),
+        location:
+          "src-tauri/src/web_access/{progress_write,progress_write_app,mod,session_auth}.rs + src-tauri/src/progress_service.rs",
+        expected:
+          "唯一 PUT /api/books/{id}/progress；先认证再读 body；4 KiB 上限与 5 s 超时；只调用 WebProgressWrite；使用 progress_response/next_action；仅 200 且进度实际变化才刷新；无 SQL/FS/CORS/Referer/URL token",
+        actual: errors.join(" | "),
+        rootCause: "D3 写面安全边界被破坏",
+        fix: "恢复唯一 PUT 路由、认证先行、body 上限/超时、共享契约与受控刷新",
+      });
+    } else {
+      ok(report, {
+        id: "static:d3-progress-route",
+        suite: "static",
+        layer: "static",
+        title: "D3 写面仅一条 PUT 进度路由、认证先行、body 有界、刷新受控",
+      });
+    }
+  } catch (error) {
+    fail(report, {
+      id: "static:d3-progress-route",
+      suite: "static",
+      layer: "static",
+      title: "D3 写面静态边界检查",
+      severity: "P1",
+      details: error.message,
+      location:
+        "src-tauri/src/web_access/progress_write*.rs + src-tauri/src/progress_service.rs",
+      rootCause: "静态守卫无法读取 D3 文件",
+      fix: "确认 D3 文件存在且命名稳定",
+    });
+  }
 }

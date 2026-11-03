@@ -314,7 +314,7 @@ impl PairingHttp {
     where
         B: Body<Data = Bytes> + Unpin,
     {
-        let bytes = match read_limited_body(request).await {
+        let bytes = match read_limited_body(request, MAX_CLAIM_BODY_BYTES).await {
             Ok(bytes) => bytes,
             Err(BodyReadError::TooLarge) => return body_too_large_response(),
             Err(BodyReadError::Invalid) => return invalid_parameter_response(),
@@ -396,17 +396,20 @@ impl PairingHttp {
     }
 }
 
-/// Why a claim body was rejected. Keeping this small avoids a large
+/// Why a claim/progress body was rejected. Keeping this small avoids a large
 /// `Response` in the error position.
-enum BodyReadError {
+pub(crate) enum BodyReadError {
     TooLarge,
     Invalid,
 }
 
-/// Read at most [`MAX_CLAIM_BODY_BYTES`] without trusting a size hint. A body
-/// that exceeds the cap is rejected before JSON parsing, and a body read error
-/// is a client error rather than a 500.
-async fn read_limited_body<B>(request: Request<B>) -> Result<Bytes, BodyReadError>
+/// Read at most `limit` bytes without trusting a size hint. A body that
+/// exceeds the cap is rejected before parsing, and a body read error is a
+/// client error rather than a 500.
+pub(crate) async fn read_limited_body<B>(
+    request: Request<B>,
+    limit: usize,
+) -> Result<Bytes, BodyReadError>
 where
     B: Body<Data = Bytes> + Unpin,
 {
@@ -421,7 +424,7 @@ where
         let Some(data) = frame.data_ref() else {
             continue;
         };
-        if bytes.len().saturating_add(data.len()) > MAX_CLAIM_BODY_BYTES {
+        if bytes.len().saturating_add(data.len()) > limit {
             return Err(BodyReadError::TooLarge);
         }
         bytes.extend_from_slice(data);

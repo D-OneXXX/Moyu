@@ -6,9 +6,12 @@
 //! authentication path never calls `refresh_activity`.
 
 use std::fmt;
+use std::time::Instant;
 
-use hyper::header::{HeaderValue, COOKIE};
-use hyper::Request;
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::header::{HeaderValue, COOKIE, SET_COOKIE};
+use hyper::{Request, Response};
 use zeroize::Zeroizing;
 
 use super::auth::PairingService;
@@ -136,6 +139,33 @@ pub(crate) fn refresh_for_request(
     match refresh_trigger_for(method, path, progress_changed) {
         Some(trigger) => service.refresh_activity(session, trigger).map(Some),
         None => Ok(None),
+    }
+}
+
+/// Append the refresh `Set-Cookie` when the shared classifier allows it.
+///
+/// `method` and `progress_changed` are explicit arguments so the same helper
+/// can serve the read plane (`GET`, false) and the progress write plane
+/// (`PUT`, CAS-changed). A hardcoded `GET`/`false` would silently suppress
+/// write refreshes if the helper were reused.
+pub(crate) fn apply_refresh_cookie(
+    service: &PairingService,
+    session: &AuthenticatedSession,
+    method: &str,
+    path: &str,
+    progress_changed: bool,
+    response: &mut Response<Full<Bytes>>,
+) {
+    let Ok(Some(RefreshOutcome::Refreshed { expires_at, .. })) =
+        refresh_for_request(service, &session.view, method, path, progress_changed)
+    else {
+        return;
+    };
+    let max_age = expires_at
+        .saturating_duration_since(Instant::now())
+        .as_secs();
+    if let Some(cookie) = session_cookie(session.token.as_str(), max_age) {
+        response.headers_mut().append(SET_COOKIE, cookie);
     }
 }
 

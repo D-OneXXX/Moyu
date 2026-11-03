@@ -424,7 +424,7 @@ pub(crate) fn refresh_trigger_for(
     }
 }
 
-fn strict_u32(segment: &str) -> Option<u32> {
+pub(crate) fn strict_u32(segment: &str) -> Option<u32> {
     if segment.is_empty() || !segment.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }

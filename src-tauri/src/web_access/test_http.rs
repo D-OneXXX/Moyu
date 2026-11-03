@@ -16,6 +16,7 @@ use hyper::body::Bytes;
 use hyper::{Request, Response};
 
 use super::auth::PairingService;
+use super::data::WebDataAccess;
 use super::router::{
     PairingHttp, CLAIM_COOKIE, CLAIM_POLL_PREFIX, CLAIM_ROUTE, CONSUME_SUFFIX, HEALTH_PATH,
     MAX_CLAIM_BODY_BYTES, SESSION_COOKIE,
@@ -59,6 +60,16 @@ impl TestRouter {
         Self { inner }
     }
 
+    fn with_data(
+        service: Arc<PairingService>,
+        addr: SocketAddr,
+        data: Arc<dyn WebDataAccess>,
+    ) -> Self {
+        Self {
+            inner: PairingHttp::with_data(service, addr, data).expect("IPv4 test authority"),
+        }
+    }
+
     async fn handle(&self, request: Request<Full<Bytes>>) -> Response<Full<Bytes>> {
         let source_ip = request
             .extensions()
@@ -84,14 +95,19 @@ mod tests {
     use base64::Engine;
     use http_body_util::Full;
     use hyper::body::Bytes;
-    use hyper::header::{HeaderMap, HeaderValue, COOKIE, SET_COOKIE};
+    use hyper::header::{HeaderMap, HeaderValue, COOKIE, IF_NONE_MATCH, SET_COOKIE};
     use hyper::{Method, Request, Response, StatusCode};
     use serde_json::{json, Value};
 
     use super::*;
+    use crate::read_service::{
+        DataError, ImageAsset, PageIndex, PageManifest, ProgressView, TileImage, WebBook,
+        WebBookDetail, WebBookPage,
+    };
     use crate::web_access::clock::test_support::FakeClock;
     use crate::web_access::pairing::{PairingStore, PairingWindow, PICKUP_TIMEOUT};
     use crate::web_access::session::SessionStore;
+    use crate::PageDim;
 
     const HOST: &str = "192.168.1.10:8443";
     const ORIGIN: &str = "https://192.168.1.10:8443";
@@ -140,6 +156,29 @@ mod tests {
                 window,
                 clock,
             }
+        }
+
+        fn with_data(data: Arc<dyn WebDataAccess>) -> Self {
+            let clock = FakeClock::shared();
+            let pairing = PairingStore::new(clock.clone());
+            let session = SessionStore::new(clock.clone());
+            let service = Arc::new(PairingService::new(pairing, session));
+            let window = service.start_window();
+            let router = TestRouter::with_data(
+                Arc::clone(&service),
+                SocketAddr::from(([192, 168, 1, 10], 8443)),
+                data,
+            );
+            Self {
+                router,
+                service,
+                window,
+                clock,
+            }
+        }
+
+        fn issue_session(&self) -> crate::web_access::session::SessionIssued {
+            self.service.issue_session_for_test("Pixel 8")
         }
     }
 
@@ -290,6 +329,559 @@ mod tests {
             .expect("claimId")
             .to_owned();
         (claim_id, secret)
+    }
+
+    fn fake_image() -> ImageAsset {
+        ImageAsset {
+            bytes: vec![0xFF, 0xD8, 0xFF, 0xE0],
+            mime: "image/jpeg",
+            width: 100,
+            height: 100,
+            orig_width: 100,
+            orig_height: 100,
+            data_url: None,
+        }
+    }
+
+    struct FakeData;
+
+    impl WebDataAccess for FakeData {
+        fn list_books(
+            &self,
+            _q: Option<&str>,
+            _cursor: Option<&str>,
+            _limit: u32,
+        ) -> Result<WebBookPage, DataError> {
+            Ok(WebBookPage {
+                items: vec![],
+                next_cursor: None,
+            })
+        }
+
+        fn book(&self, id: &str) -> Result<WebBookDetail, DataError> {
+            Ok(WebBookDetail {
+                book: WebBook {
+                    id: id.to_owned(),
+                    title: "Book".to_owned(),
+                    page_count: 2,
+                    current_page: 0,
+                    progress_rev: 0,
+                    scroll_pct: -1.0,
+                    format: "image".to_owned(),
+                    source_type: "local".to_owned(),
+                    missing: false,
+                    updated_at: "2026-11-03T10:00:00+08:00".to_owned(),
+                    thumb_url: Some(format!("/api/books/{id}/thumb?v=0")),
+                },
+                series_title: None,
+                chapter_index: None,
+                next_book_id: None,
+            })
+        }
+
+        fn thumb(&self, _id: &str) -> Result<ImageAsset, DataError> {
+            Ok(fake_image())
+        }
+
+        fn pages(&self, _id: &str) -> Result<PageManifest, DataError> {
+            Ok(PageManifest {
+                page_count: 2,
+                pages: vec![PageIndex { index: 0 }, PageIndex { index: 1 }],
+            })
+        }
+
+        fn page(&self, _id: &str, _index: u32, _width: u32) -> Result<ImageAsset, DataError> {
+            Ok(fake_image())
+        }
+
+        fn layout(&self, _id: &str) -> Result<Vec<PageDim>, DataError> {
+            Ok(vec![PageDim {
+                index: 0,
+                width: 800,
+                height: 600,
+            }])
+        }
+
+        fn tile(
+            &self,
+            _id: &str,
+            _index: u32,
+            _tile: u32,
+            _width: u32,
+        ) -> Result<TileImage, DataError> {
+            Ok(TileImage {
+                image: fake_image(),
+                tile_count: 4,
+                tile_height: 2048,
+            })
+        }
+
+        fn progress(&self, _id: &str) -> Result<ProgressView, DataError> {
+            Ok(ProgressView {
+                page: 1,
+                page_count: 2,
+                scroll_pct: -1.0,
+                rev: 7,
+                updated_at: "2026-11-03T10:00:00+08:00".to_owned(),
+            })
+        }
+    }
+
+    struct ErrorData(DataError);
+
+    impl WebDataAccess for ErrorData {
+        fn list_books(
+            &self,
+            _q: Option<&str>,
+            _cursor: Option<&str>,
+            _limit: u32,
+        ) -> Result<WebBookPage, DataError> {
+            Err(self.0)
+        }
+        fn book(&self, _id: &str) -> Result<WebBookDetail, DataError> {
+            Err(self.0)
+        }
+        fn thumb(&self, _id: &str) -> Result<ImageAsset, DataError> {
+            Err(self.0)
+        }
+        fn pages(&self, _id: &str) -> Result<PageManifest, DataError> {
+            Err(self.0)
+        }
+        fn page(&self, _id: &str, _index: u32, _width: u32) -> Result<ImageAsset, DataError> {
+            Err(self.0)
+        }
+        fn layout(&self, _id: &str) -> Result<Vec<PageDim>, DataError> {
+            Err(self.0)
+        }
+        fn tile(
+            &self,
+            _id: &str,
+            _index: u32,
+            _tile: u32,
+            _width: u32,
+        ) -> Result<TileImage, DataError> {
+            Err(self.0)
+        }
+        fn progress(&self, _id: &str) -> Result<ProgressView, DataError> {
+            Err(self.0)
+        }
+    }
+
+    fn data_get(path: &str, token: Option<&str>) -> Request<Full<Bytes>> {
+        let request = read(path);
+        match token {
+            Some(token) => raw_cookie(request, &format!("{SESSION_COOKIE}={token}")),
+            None => request,
+        }
+    }
+
+    fn book_path(suffix: &str) -> String {
+        format!("/api/books/{}{suffix}", "a".repeat(64))
+    }
+
+    fn assert_error(response: &TestResponse, status: StatusCode, code: &str) {
+        assert_eq!(response.status, status);
+        assert_eq!(response.error_code(), code);
+        assert_eq!(response.header("cache-control"), Some("no-store"));
+        assert!(response.header("www-authenticate").is_none());
+        assert_eq!(
+            response.header("x-request-id").map(str::len),
+            Some(16),
+            "missing request id"
+        );
+        let body = response.json();
+        assert_eq!(
+            body.pointer("/error/requestId").and_then(Value::as_str),
+            response.header("x-request-id")
+        );
+        let text = response.text();
+        assert!(!text.contains("path"), "error body leaked a path: {text}");
+        assert!(!text.contains("C:"), "error body leaked a drive: {text}");
+        assert!(
+            !text.contains("moyus_"),
+            "error body leaked a token: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn data_requires_a_session_and_unknown_paths_are_404() {
+        let fixture = Fixture::with_data(Arc::new(FakeData));
+
+        let no_cookie = TestResponse::of(fixture.router.handle(data_get("/api/books", None)).await);
+        assert_error(&no_cookie, StatusCode::UNAUTHORIZED, "unauthorized");
+        assert!(no_cookie.cookies_named(SESSION_COOKIE).is_empty());
+
+        let unknown = TestResponse::of(fixture.router.handle(data_get("/api/nope", None)).await);
+        assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        let ok = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get("/api/books", Some(token)))
+                .await,
+        );
+        assert_eq!(ok.status, StatusCode::OK);
+        assert_eq!(
+            ok.header("content-type"),
+            Some("application/json; charset=utf-8")
+        );
+        assert_eq!(ok.header("cache-control"), Some("private, no-cache"));
+        assert_eq!(ok.header("vary"), Some("Cookie"));
+        assert_eq!(ok.header("x-request-id").map(str::len), Some(16));
+        assert!(ok.header("access-control-allow-origin").is_none());
+        assert_eq!(
+            ok.json()
+                .pointer("/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+        assert!(ok.json().pointer("/nextCursor").is_some_and(Value::is_null));
+        assert!(!ok.text().contains("path"));
+
+        let post = TestResponse::of(
+            fixture
+                .router
+                .handle(write("/api/books", Bytes::new()))
+                .await,
+        );
+        assert_eq!(post.status, StatusCode::NOT_FOUND);
+        let head = TestResponse::of(
+            fixture
+                .router
+                .handle(request(Method::HEAD, "/api/books", Bytes::new()))
+                .await,
+        );
+        assert_eq!(head.status, StatusCode::NOT_FOUND);
+        let options = TestResponse::of(
+            fixture
+                .router
+                .handle(request(Method::OPTIONS, "/api/books", Bytes::new()))
+                .await,
+        );
+        assert_eq!(options.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn all_eight_data_routes_require_a_session_and_serve_with_one() {
+        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let id = "a".repeat(64);
+        let paths = [
+            "/api/books".to_owned(),
+            format!("/api/books/{id}"),
+            format!("/api/books/{id}/thumb"),
+            format!("/api/books/{id}/pages"),
+            format!("/api/books/{id}/pages/0"),
+            format!("/api/books/{id}/layout"),
+            format!("/api/books/{id}/progress"),
+            format!("/api/books/{id}/pages/0/tiles/0"),
+        ];
+
+        for path in &paths {
+            let response = TestResponse::of(fixture.router.handle(data_get(path, None)).await);
+            assert_error(&response, StatusCode::UNAUTHORIZED, "unauthorized");
+        }
+
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        for path in &paths {
+            let response =
+                TestResponse::of(fixture.router.handle(data_get(path, Some(token))).await);
+            assert_eq!(response.status, StatusCode::OK, "{path}");
+            assert_eq!(response.header("x-request-id").map(str::len), Some(16));
+        }
+    }
+
+    #[tokio::test]
+    async fn only_successful_page_and_tile_reads_refresh_the_cookie() {
+        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        let page_path = book_path("/pages/0");
+
+        // The first 60-minute window after issuance is deliberately throttled;
+        // a refresh only becomes eligible after the shared interval elapses.
+        fixture.clock.advance(Duration::from_secs(61 * 60));
+        let page = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&page_path, Some(token)))
+                .await,
+        );
+        assert_eq!(page.status, StatusCode::OK);
+        assert_eq!(page.cookies_named(SESSION_COOKIE).len(), 1);
+
+        let books = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get("/api/books", Some(token)))
+                .await,
+        );
+        assert_eq!(books.status, StatusCode::OK);
+        assert!(books.cookies_named(SESSION_COOKIE).is_empty());
+
+        // The shared 60-minute throttle applies across page and tile reads.
+        fixture.clock.advance(Duration::from_secs(61 * 60));
+        let tile_path = book_path("/pages/0/tiles/0");
+        let tile = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&tile_path, Some(token)))
+                .await,
+        );
+        assert_eq!(tile.status, StatusCode::OK);
+        assert_eq!(tile.cookies_named(SESSION_COOKIE).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn page_image_headers_etag_and_conditional_304() {
+        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        let page_path = book_path("/pages/0");
+
+        let first = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&page_path, Some(token)))
+                .await,
+        );
+        assert_eq!(first.status, StatusCode::OK);
+        assert_eq!(first.header("content-type"), Some("image/jpeg"));
+        assert_eq!(first.header("cache-control"), Some("private, no-cache"));
+        assert_eq!(first.header("vary"), Some("Cookie"));
+        assert_eq!(first.header("content-disposition"), Some("inline"));
+        assert_eq!(first.header("x-content-type-options"), Some("nosniff"));
+        assert_eq!(first.header("x-request-id").map(str::len), Some(16));
+        assert!(first.body.starts_with(&[0xFF, 0xD8]));
+        let etag = first.header("etag").expect("etag").to_owned();
+        assert!(etag.starts_with("\"p-0-1080-"), "{etag}");
+
+        let mut conditional = data_get(&page_path, Some(token));
+        conditional
+            .headers_mut()
+            .insert(IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
+        fixture.clock.advance(Duration::from_secs(61 * 60));
+        let second = TestResponse::of(fixture.router.handle(conditional).await);
+        assert_eq!(second.status, StatusCode::NOT_MODIFIED);
+        assert!(second.body.is_empty());
+        assert_eq!(second.header("etag"), Some(etag.as_str()));
+        assert_eq!(second.header("vary"), Some("Cookie"));
+        assert_eq!(second.header("cache-control"), Some("private, no-cache"));
+        assert!(second.header("content-type").is_none());
+        // A 304 on a page read still refreshes the session.
+        assert_eq!(second.cookies_named(SESSION_COOKIE).len(), 1);
+
+        let clamped = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&format!("{page_path}?w=1"), Some(token)))
+                .await,
+        );
+        assert_eq!(clamped.status, StatusCode::OK);
+        assert!(clamped
+            .header("etag")
+            .expect("etag")
+            .starts_with("\"p-0-320-"));
+    }
+
+    #[tokio::test]
+    async fn tile_headers_use_the_bucketed_width() {
+        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        let tile_path = book_path("/pages/0/tiles/0");
+
+        let tile = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&tile_path, Some(token)))
+                .await,
+        );
+        assert_eq!(tile.status, StatusCode::OK);
+        assert_eq!(tile.header("content-type"), Some("image/jpeg"));
+        assert_eq!(tile.header("x-tile-count"), Some("4"));
+        assert_eq!(tile.header("x-tile-height"), Some("2048"));
+        assert_eq!(tile.header("x-request-id").map(str::len), Some(16));
+        assert!(
+            tile.header("etag")
+                .expect("etag")
+                .starts_with("\"t-0-0-1088-"),
+            "default 1080 must bucket to 1088: {:?}",
+            tile.header("etag")
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_queries_are_400_only_after_authentication() {
+        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+
+        let no_cookie = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get("/api/books?limit=0", None))
+                .await,
+        );
+        assert_error(&no_cookie, StatusCode::UNAUTHORIZED, "unauthorized");
+
+        for path in [
+            "/api/books?limit=0",
+            "/api/books?limit=101",
+            "/api/books?limit=x",
+            "/api/books?limit=1&limit=2",
+            "/api/books?q=a&q=b",
+        ] {
+            let response =
+                TestResponse::of(fixture.router.handle(data_get(path, Some(token))).await);
+            assert_error(&response, StatusCode::BAD_REQUEST, "invalid-parameter");
+        }
+
+        let long_q = format!("/api/books?q={}", "a".repeat(129));
+        let response =
+            TestResponse::of(fixture.router.handle(data_get(&long_q, Some(token))).await);
+        assert_error(&response, StatusCode::BAD_REQUEST, "invalid-parameter");
+
+        let long_cursor = format!("/api/books?cursor={}", "a".repeat(65));
+        let response = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&long_cursor, Some(token)))
+                .await,
+        );
+        assert_error(&response, StatusCode::BAD_REQUEST, "invalid-parameter");
+
+        for suffix in ["?w=abc", "?w=1.5", "?w=1&w=2", "?w="] {
+            let path = book_path(&format!("/pages/0{suffix}"));
+            let response =
+                TestResponse::of(fixture.router.handle(data_get(&path, Some(token))).await);
+            assert_error(&response, StatusCode::BAD_REQUEST, "invalid-parameter");
+        }
+    }
+
+    async fn error_response_for(error: DataError, path: &str) -> TestResponse {
+        let fixture = Fixture::with_data(Arc::new(ErrorData(error)));
+        let issued = fixture.issue_session();
+        TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(path, Some(issued.token.as_str())))
+                .await,
+        )
+    }
+
+    #[tokio::test]
+    async fn data_errors_map_to_stable_status_codes_and_details() {
+        let book = format!("/api/books/{}", "a".repeat(64));
+
+        let not_found = error_response_for(DataError::NotFound, &book).await;
+        assert_error(&not_found, StatusCode::NOT_FOUND, "book-not-found");
+
+        let thumb = error_response_for(DataError::ThumbMissing, &format!("{book}/thumb")).await;
+        assert_error(&thumb, StatusCode::NOT_FOUND, "thumbnail-missing");
+
+        let pdf = error_response_for(DataError::PdfUnsupported, &format!("{book}/pages")).await;
+        assert_error(
+            &pdf,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "pdf-source-unsupported",
+        );
+
+        let source_unsupported = error_response_for(DataError::SourceUnsupported, &book).await;
+        assert_error(
+            &source_unsupported,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "source-unsupported",
+        );
+
+        let missing = error_response_for(DataError::SourceMissing, &format!("{book}/layout")).await;
+        assert_error(&missing, StatusCode::CONFLICT, "source-missing");
+
+        let page_range = error_response_for(
+            DataError::PageOutOfRange { max_page: 4 },
+            &format!("{book}/pages/9"),
+        )
+        .await;
+        assert_error(
+            &page_range,
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "page-out-of-range",
+        );
+        assert_eq!(
+            page_range
+                .json()
+                .pointer("/error/maxPage")
+                .and_then(Value::as_u64),
+            Some(4)
+        );
+
+        let tile_range = error_response_for(
+            DataError::TileOutOfRange { max_tile: 3 },
+            &format!("{book}/pages/9/tiles/9"),
+        )
+        .await;
+        assert_error(
+            &tile_range,
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "tile-out-of-range",
+        );
+        assert_eq!(
+            tile_range
+                .json()
+                .pointer("/error/maxTile")
+                .and_then(Value::as_u64),
+            Some(3)
+        );
+
+        let busy = error_response_for(DataError::Busy, &book).await;
+        assert_error(&busy, StatusCode::SERVICE_UNAVAILABLE, "busy");
+        assert_eq!(busy.header("retry-after"), Some("1"));
+
+        let unavailable = error_response_for(DataError::DbUnavailable, &book).await;
+        assert_error(
+            &unavailable,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "db-unavailable",
+        );
+
+        let timeout = error_response_for(DataError::Timeout, &book).await;
+        assert_error(&timeout, StatusCode::GATEWAY_TIMEOUT, "render-timeout");
+
+        let internal = error_response_for(DataError::Internal, &book).await;
+        assert_error(
+            &internal,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal-error",
+        );
+    }
+
+    #[tokio::test]
+    async fn revoked_session_is_unauthorized_before_any_304() {
+        let fixture = Fixture::with_data(Arc::new(FakeData));
+        let issued = fixture.issue_session();
+        let token = issued.token.as_str();
+        let page_path = book_path("/pages/0");
+
+        let first = TestResponse::of(
+            fixture
+                .router
+                .handle(data_get(&page_path, Some(token)))
+                .await,
+        );
+        assert_eq!(first.status, StatusCode::OK);
+        let etag = first.header("etag").expect("etag").to_owned();
+
+        assert!(fixture.service.revoke_device(&issued.id));
+
+        let mut conditional = data_get(&page_path, Some(token));
+        conditional
+            .headers_mut()
+            .insert(IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
+        let revoked = TestResponse::of(fixture.router.handle(conditional).await);
+        assert_error(&revoked, StatusCode::UNAUTHORIZED, "unauthorized");
     }
 
     #[tokio::test]

@@ -8,8 +8,11 @@
 //! - `GET /api/pair/claim/{id}` (read-only status / long-poll)
 //! - `POST /api/pair/claim/{id}/consume` (one-time pickup + session cookie)
 //!
-//! Every other path, including all data-plane and device-management paths, is
-//! 404. There is no CORS, no Referer authentication, and no token in JSON.
+//! When a [`WebDataAccess`] provider is injected with
+//! [`PairingHttp::with_data`], the same router also delegates the eight
+//! read-only data routes to [`DataHttp`]; without a provider every data path
+//! remains 404. There is no CORS, no Referer authentication, and no token in
+//! JSON.
 //! The authority is constructed from the listener's actual bound IPv4 address
 //! by [`PairingHttp::new`], never from a request header or setting.
 
@@ -27,6 +30,7 @@ use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
 use super::auth::{AuthError, PairingService};
+use super::data::{DataHttp, WebDataAccess};
 use super::error::{WebAccessError, WebAccessResult};
 use super::http::{health_response, not_found_response, AllowedAuthority, RequestGuard};
 use super::pairing::{ClaimIssued, ClaimState, PairingError};
@@ -146,6 +150,7 @@ pub(crate) struct PairingHttp {
     poll_window: Duration,
     poll_interval: Duration,
     limiter: RateLimiter,
+    data: Option<Arc<DataHttp>>,
 }
 
 #[cfg(test)]
@@ -175,7 +180,22 @@ impl PairingHttp {
             poll_window: DEFAULT_POLL_WINDOW,
             poll_interval: DEFAULT_POLL_INTERVAL,
             limiter: RateLimiter::new(RATE_WINDOW),
+            data: None,
         })
+    }
+
+    /// Add the read-only data plane. Until Task 5 injects `AppData`, the
+    /// production runtime keeps constructing the pair-only router above.
+    #[allow(dead_code)]
+    pub(crate) fn with_data(
+        service: Arc<PairingService>,
+        local_addr: SocketAddr,
+        data: Arc<dyn WebDataAccess>,
+    ) -> WebAccessResult<Self> {
+        let data_http = Arc::new(DataHttp::new(Arc::clone(&service), data));
+        let mut router = Self::new(service, local_addr)?;
+        router.data = Some(data_http);
+        Ok(router)
     }
 
     #[cfg(test)]
@@ -238,6 +258,11 @@ impl PairingHttp {
                     return rate_limited_response(retry_after);
                 }
                 return self.consume(request, claim_id).await;
+            }
+        }
+        if let Some(data) = self.data.as_ref() {
+            if let Some(response) = data.handle(&request, source_ip).await {
+                return response;
             }
         }
         not_found_response()

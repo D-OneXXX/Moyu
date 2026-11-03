@@ -2,10 +2,12 @@
 //!
 //! This module provides the local CA/leaf TLS listener, G1 root-CA
 //! distribution, the in-memory pairing/session state machines, and the D1b
-//! control plane. The production pair-only router is mounted only by
+//! control plane. The production router is mounted only by
 //! [`WebAccessRuntime`], which starts `Disabled` and listens only after an
-//! explicit Tauri command. There are no data routes. Callers that still use
-//! [`start_tls_server`] directly get the health-only listener.
+//! explicit Tauri command. The router stays pair-only until a
+//! [`data::WebDataAccess`] provider is injected; until then every data path is
+//! 404. Callers that still use [`start_tls_server`] directly get the
+//! health-only listener.
 
 mod addrs;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -14,6 +16,8 @@ mod ca_distribution;
 pub(crate) mod ca_distribution_commands;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod clock;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod data;
 mod error;
 mod events;
 mod http;

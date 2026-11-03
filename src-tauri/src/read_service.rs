@@ -538,7 +538,7 @@ pub(crate) fn layout_sync(
     Ok(page_dims(&dims))
 }
 
-fn bucket_tile_width(width: u32) -> u32 {
+pub(crate) fn bucket_tile_width(width: u32) -> u32 {
     let clamped = width.clamp(320, 2160);
     (((clamped + 32) / 64) * 64).clamp(320, 2160)
 }

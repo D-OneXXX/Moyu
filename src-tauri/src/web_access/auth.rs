@@ -230,6 +230,13 @@ impl PairingService {
         self.session.revoke(session_id)
     }
 
+    /// Issue a live session without the pairing flow. Test-only; the data
+    /// route tests need a real token whose revocation/expiry stay authentic.
+    #[cfg(test)]
+    pub(crate) fn issue_session_for_test(&self, name: &str) -> SessionIssued {
+        self.session.create_for_test(name)
+    }
+
     /// Desktop device list; no token or token hash is present.
     pub(crate) fn devices(&self) -> Vec<SessionView> {
         self.session.device_views()

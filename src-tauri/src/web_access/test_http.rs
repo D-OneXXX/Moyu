@@ -982,6 +982,7 @@ mod tests {
 
         let unavailable = error_response_for(DataError::DbUnavailable, &book).await;
         assert_error(&unavailable, StatusCode::SERVICE_UNAVAILABLE, "busy");
+        assert_eq!(unavailable.header("retry-after"), Some("1"));
 
         let timeout = error_response_for(DataError::Timeout, &book).await;
         assert_error(&timeout, StatusCode::GATEWAY_TIMEOUT, "render-timeout");

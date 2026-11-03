@@ -609,7 +609,9 @@ fn etag_matches(candidate: &str, etag: &str) -> bool {
 }
 
 fn data_error_response(error: DataError, request_id: &str) -> Response<Full<Bytes>> {
-    let retry_after = matches!(error, DataError::Busy).then(|| Duration::from_secs(1));
+    // Both transient 503 classes carry the same retry hint.
+    let retry_after =
+        matches!(error, DataError::Busy | DataError::DbUnavailable).then(|| Duration::from_secs(1));
     error_response(
         error_status(error),
         error_code(error),
@@ -1033,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn if_none_match_accepts_exact_comma_list_and_star_only() {
+    fn if_none_match_accepts_exact_list_weak_and_star() {
         let etag = "\"p-0-1080-deadbeefdeadbeef\"";
         let exact = Request::builder()
             .method(Method::GET)

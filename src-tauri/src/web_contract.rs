@@ -46,32 +46,49 @@ pub const ERROR_BOOK_NOT_FOUND: &str = "book-not-found";
 pub enum ProgressBody {
     /// 已写入：`rev` 是**操作后**的版本号。
     /// 客户端下一次写入必须用它当 `baseRev`（不是 `baseRev + 1` 的猜测）。
-    Applied { rev: i64 },
+    /// `page` / `updated_at` 与 `rev` 来自同一个 CAS 事务，禁止二次读。
+    Applied {
+        rev: i64,
+        page: u32,
+        updated_at: String,
+    },
     /// 版本过期：客户端必须 GET 重新读取后再决定，**不得自动重试**。
     Conflict {
         code: &'static str,
         current_page: u32,
         current_rev: i64,
+        updated_at: String,
     },
-    /// 书不存在。
+    /// 书不存在或已软删。
     NotFound { code: &'static str },
 }
 
 /// 把数据层结果映射成接口响应。
 pub fn progress_response(outcome: &ProgressOutcome) -> (ProgressStatus, ProgressBody) {
     match outcome {
-        ProgressOutcome::Applied { rev } => {
-            (ProgressStatus::Ok, ProgressBody::Applied { rev: *rev })
-        }
+        ProgressOutcome::Applied {
+            rev,
+            page,
+            updated_at,
+        } => (
+            ProgressStatus::Ok,
+            ProgressBody::Applied {
+                rev: *rev,
+                page: *page,
+                updated_at: updated_at.clone(),
+            },
+        ),
         ProgressOutcome::Conflict {
             current_page,
             current_rev,
+            updated_at,
         } => (
             ProgressStatus::Conflict,
             ProgressBody::Conflict {
                 code: ERROR_PROGRESS_CONFLICT,
                 current_page: *current_page,
                 current_rev: *current_rev,
+                updated_at: updated_at.clone(),
             },
         ),
         ProgressOutcome::NotFound => (
@@ -98,7 +115,7 @@ pub enum NextAction {
 /// 客户端在收到某个响应后应当采取的动作。
 pub fn next_action(body: &ProgressBody) -> NextAction {
     match body {
-        ProgressBody::Applied { rev } => NextAction::Continue {
+        ProgressBody::Applied { rev, .. } => NextAction::Continue {
             next_base_rev: *rev,
         },
         ProgressBody::Conflict { .. } => NextAction::RefetchThenDecide,
@@ -204,14 +221,26 @@ mod tests {
     /// 映射必须是全的且稳定的：每个数据层结果都有唯一确定的响应。
     #[test]
     fn mapping_is_total_and_stable() {
-        let applied = progress_response(&ProgressOutcome::Applied { rev: 7 });
+        let applied = progress_response(&ProgressOutcome::Applied {
+            rev: 7,
+            page: 12,
+            updated_at: "2026-11-03 21:00:00".into(),
+        });
         assert_eq!(applied.0, ProgressStatus::Ok);
         assert_eq!(applied.0.http_status(), 200);
-        assert_eq!(applied.1, ProgressBody::Applied { rev: 7 });
+        assert_eq!(
+            applied.1,
+            ProgressBody::Applied {
+                rev: 7,
+                page: 12,
+                updated_at: "2026-11-03 21:00:00".into(),
+            }
+        );
 
         let conflict = progress_response(&ProgressOutcome::Conflict {
             current_page: 12,
             current_rev: 9,
+            updated_at: "2026-11-03 20:59:00".into(),
         });
         assert_eq!(conflict.0, ProgressStatus::Conflict);
         assert_eq!(conflict.0.http_status(), 409);
@@ -221,6 +250,7 @@ mod tests {
                 code: ERROR_PROGRESS_CONFLICT,
                 current_page: 12,
                 current_rev: 9,
+                updated_at: "2026-11-03 20:59:00".into(),
             }
         );
 

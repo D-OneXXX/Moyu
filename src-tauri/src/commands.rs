@@ -1689,147 +1689,15 @@ pub async fn clear_pages(state: State<'_, Arc<AppState>>) -> Result<(), String> 
 
 /// 条漫布局：逐页源图尺寸（本地 header 解析，不解码全图；在线直接读清单尺寸）。
 /// 结果按书缓存（切换条漫免重新读全部页头）；删除书籍时级联清缓存。
+/// 桌面保留在线尺寸回写；Web 只读路径使用 `persist_online=false`。
 #[tauri::command]
 pub async fn get_webtoon_layout(
     state: State<'_, Arc<AppState>>,
     book_id: String,
 ) -> Result<Vec<PageDim>, String> {
-    if let Some(cached) = state.webtoon_layouts.lock().get(&book_id) {
-        return Ok(cached
-            .iter()
-            .enumerate()
-            .map(|(i, (w, h))| PageDim {
-                index: i as u32,
-                width: *w,
-                height: *h,
-            })
-            .collect());
-    }
-    let row = state
-        .db
-        .with(|conn| db::get_book(conn, &book_id).map_err(err))?
-        .ok_or_else(|| "书籍不存在".to_string())?;
-    if row.source_type != "local" {
-        let mut meta: crate::online::StoredMeta =
-            serde_json::from_str(&row.meta_json).map_err(|e| format!("在线书元数据损坏：{e}"))?;
-        if meta.pages.is_empty() {
-            return Err("该在线书籍没有可阅读页面".into());
-        }
-        let mut dims: Vec<(u32, u32)> = meta
-            .pages
-            .iter()
-            .map(|p| (p.width.unwrap_or(0), p.height.unwrap_or(0)))
-            .collect();
-        // Telegram 相册等来源可能只有 CDN URL，没有 width/height。
-        // 用户显式进入条漫时按页读取（走在线 L2 / 网络）并探测尺寸，
-        // 只探测缺失页；结果回写 meta_json，后续布局/启动不再重复下载。
-        let missing: Vec<usize> = dims
-            .iter()
-            .enumerate()
-            .filter(|(_, (w, h))| *w == 0 || *h == 0)
-            .map(|(index, _)| index)
-            .collect();
-        if !missing.is_empty() {
-            let st = state.inner().clone();
-            let bid = book_id.clone();
-            let probed = blocking(move || {
-                let handle = st.source_handle_for_book(&bid)?;
-                let mut out: Vec<(usize, u32, u32)> = Vec::with_capacity(missing.len());
-                for index in missing {
-                    let raw = handle.read_raw(index)?;
-                    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&raw.bytes))
-                        .with_guessed_format()?
-                        .into_dimensions()?;
-                    if width == 0 || height == 0 {
-                        return Err(BackendError::Msg(format!("第 {} 页尺寸无效", index + 1)));
-                    }
-                    out.push((index, width, height));
-                }
-                Ok(out)
-            })
-            .await?;
-            for (index, width, height) in probed {
-                dims[index] = (width, height);
-                if let Some(page) = meta.pages.get_mut(index) {
-                    page.width = Some(width);
-                    page.height = Some(height);
-                }
-            }
-            // best-effort 持久化：失败不影响本次布局，下次最多再探测一次。
-            if let Ok(json) = serde_json::to_string(&meta) {
-                let _ = state.db.with(|conn| {
-                    db::upsert_online_book(
-                        conn,
-                        &row.id,
-                        &row.path,
-                        &row.title,
-                        row.page_count,
-                        &row.source_type,
-                        &json,
-                    )
-                    .map_err(err)
-                });
-            }
-        }
-        // 与本地分支一致写入布局缓存；清单变化/删书时由命令层失效。
-        state
-            .webtoon_layouts
-            .lock()
-            .insert(book_id.clone(), Arc::new(dims.clone()));
-        return Ok(dims
-            .iter()
-            .enumerate()
-            .map(|(i, (w, h))| PageDim {
-                index: i as u32,
-                width: *w,
-                height: *h,
-            })
-            .collect());
-    }
-    // 句柄打开（SQLite 查询 / zip 或目录打开）必须在 blocking 内，避免占住 async worker。
     let st = state.inner().clone();
     let bid = book_id.clone();
-    let dims = blocking(move || {
-        let handle = st.source_handle_for_book(&bid)?;
-        let count = handle.page_count()?;
-        let mut out: Vec<(u32, u32)> = Vec::with_capacity(count);
-        for i in 0..count {
-            // 先读 header（256KB 内通常含 SOF）；失败回退全读。
-            let dims: Option<(u32, u32)> =
-                handle.read_partial(i, 256 * 1024).ok().and_then(|partial| {
-                    image::ImageReader::new(std::io::Cursor::new(&partial.bytes))
-                        .with_guessed_format()
-                        .ok()
-                        .and_then(|r| r.into_dimensions().ok())
-                        .filter(|d| d.0 > 0 && d.1 > 0)
-                });
-            let (w, h) = match dims {
-                Some(d) => d,
-                None => {
-                    let raw = handle.read_raw(i)?;
-                    image::ImageReader::new(std::io::Cursor::new(&raw.bytes))
-                        .with_guessed_format()?
-                        .into_dimensions()?
-                }
-            };
-            out.push((w, h));
-        }
-        Ok(out)
-    })
-    .await?;
-    state
-        .webtoon_layouts
-        .lock()
-        .insert(book_id.clone(), Arc::new(dims.clone()));
-    Ok(dims
-        .iter()
-        .enumerate()
-        .map(|(i, (w, h))| PageDim {
-            index: i as u32,
-            width: *w,
-            height: *h,
-        })
-        .collect())
+    blocking(move || crate::read_service::layout_sync(&st, &bid, true)).await
 }
 
 /// 条漫切片：第 index 页的第 tile 片（0 起）。

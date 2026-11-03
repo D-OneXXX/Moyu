@@ -202,12 +202,32 @@ pub fn render_raw(
     max_w: Option<u32>,
     max_h: Option<u32>,
 ) -> Result<RenderedPage, BackendError> {
+    render_raw_with(raw, max_w, max_h, true)
+}
+
+/// Bytes-only variant for the Web data plane. Desktop keeps `render_raw` and
+/// its base64 `data_url`; this path avoids the extra 4/3 memory copy.
+pub(crate) fn render_raw_asset(
+    raw: &RawPage,
+    max_w: Option<u32>,
+    max_h: Option<u32>,
+    encode_data_url: bool,
+) -> Result<RenderedPage, BackendError> {
+    render_raw_with(raw, max_w, max_h, encode_data_url)
+}
+
+fn render_raw_with(
+    raw: &RawPage,
+    max_w: Option<u32>,
+    max_h: Option<u32>,
+    encode_data_url: bool,
+) -> Result<RenderedPage, BackendError> {
     let fmt = decoded_format(raw)?;
     let (sw, sh) = source_dimensions(raw)?;
 
     let tall_jpeg = sh > TALL_IMAGE_H && fmt == ImageFormat::Jpeg && max_w.unwrap_or(0) > 0;
     if tall_jpeg {
-        return render_tall_jpeg(raw, sw, sh, max_w, max_h);
+        return render_tall_jpeg_with(raw, sw, sh, max_w, max_h, encode_data_url);
     }
 
     let img = image::load_from_memory_with_format(&raw.bytes, fmt)?;
@@ -219,7 +239,7 @@ pub fn render_raw(
     } else {
         img.resize_exact(fw, fh, image::imageops::FilterType::Triangle)
     };
-    finish_render(into_rgb(img), sw, sh)
+    finish_render_with(into_rgb(img), sw, sh, encode_data_url)
 }
 
 /// 长图专用：IDCT 缩放解码到不超过目标宽的最大 1/2^k 档，再精确缩放到目标尺寸。
@@ -229,6 +249,17 @@ pub fn render_tall_jpeg(
     sh: u32,
     max_w: Option<u32>,
     max_h: Option<u32>,
+) -> Result<RenderedPage, BackendError> {
+    render_tall_jpeg_with(raw, sw, sh, max_w, max_h, true)
+}
+
+fn render_tall_jpeg_with(
+    raw: &RawPage,
+    sw: u32,
+    sh: u32,
+    max_w: Option<u32>,
+    max_h: Option<u32>,
+    encode_data_url: bool,
 ) -> Result<RenderedPage, BackendError> {
     let (tw, th) = fit_size(sw, sh, max_w, max_h);
     // 纹理安全兜底先算目标尺寸：直接缩到安全尺寸，不生成整高副本。
@@ -240,7 +271,7 @@ pub fn render_tall_jpeg(
     } else {
         image::imageops::resize(&raster, fw, fh, image::imageops::FilterType::Triangle)
     };
-    finish_render(rgb, sw, sh)
+    finish_render_with(rgb, sw, sh, encode_data_url)
 }
 
 /// 长图请求给 IDCT 解码器的高度（u16 上限内的源都成立）。
@@ -302,8 +333,13 @@ fn decode_tall_jpeg_raster(
     }
 }
 
-/// 统一收尾：纹理安全兜底 + JPEG 编码 + dataURL。
-fn finish_render(rgb: image::RgbImage, sw: u32, sh: u32) -> Result<RenderedPage, BackendError> {
+/// 统一收尾：纹理安全兜底 + JPEG 编码 + 可选 dataURL。
+fn finish_render_with(
+    rgb: image::RgbImage,
+    sw: u32,
+    sh: u32,
+    encode_data_url: bool,
+) -> Result<RenderedPage, BackendError> {
     let rgb = clamp_texture_safe(rgb)?;
     let (w, h) = (rgb.width(), rgb.height());
     let mut buf: Vec<u8> = Vec::new();
@@ -312,7 +348,11 @@ fn finish_render(rgb: image::RgbImage, sw: u32, sh: u32) -> Result<RenderedPage,
         enc.encode_image(&rgb)?;
     }
     // 内存缓冲即走即用，不落盘（磁盘渲染缓存由调用方决定）。
-    let data_url = format!("data:image/jpeg;base64,{}", B64.encode(&buf));
+    let data_url = if encode_data_url {
+        format!("data:image/jpeg;base64,{}", B64.encode(&buf))
+    } else {
+        String::new()
+    };
     Ok(RenderedPage {
         width: w,
         height: h,
@@ -390,6 +430,23 @@ pub fn render_webtoon_tiles(
     raw: &RawPage,
     max_w: u32,
 ) -> Result<(u32, Vec<RenderedPage>), BackendError> {
+    render_webtoon_tiles_with(raw, max_w, true)
+}
+
+/// Bytes-only tile variant for the Web data plane.
+pub(crate) fn render_webtoon_tiles_asset(
+    raw: &RawPage,
+    max_w: u32,
+    encode_data_url: bool,
+) -> Result<(u32, Vec<RenderedPage>), BackendError> {
+    render_webtoon_tiles_with(raw, max_w, encode_data_url)
+}
+
+fn render_webtoon_tiles_with(
+    raw: &RawPage,
+    max_w: u32,
+    encode_data_url: bool,
+) -> Result<(u32, Vec<RenderedPage>), BackendError> {
     let fmt = decoded_format(raw)?;
     let (sw, sh) = source_dimensions(raw)?;
     if max_w == 0 {
@@ -439,7 +496,11 @@ pub fn render_webtoon_tiles(
             orig_width: sw,
             orig_height: sh,
             mime: "image/jpeg".to_string(),
-            data_url: format!("data:image/jpeg;base64,{}", B64.encode(&buf)),
+            data_url: if encode_data_url {
+                format!("data:image/jpeg;base64,{}", B64.encode(&buf))
+            } else {
+                String::new()
+            },
             bytes: buf,
         });
     }
@@ -595,6 +656,25 @@ mod tests {
         assert!(pages
             .iter()
             .all(|p| p.data_url.starts_with("data:image/jpeg;base64,")));
+    }
+
+    #[test]
+    fn asset_renders_skip_base64_but_keep_jpeg_bytes() {
+        let raw = ultra_tall_page(100, 300);
+        let page = render_raw_asset(&raw, Some(50), None, false).unwrap();
+        assert!(page.data_url.is_empty());
+        assert!(page.bytes.starts_with(&[0xFF, 0xD8]));
+        assert!(page.width > 0 && page.height > 0);
+
+        let (tiles, pages) = render_webtoon_tiles_asset(&raw, 50, false).unwrap();
+        assert_eq!(pages.len() as u32, tiles);
+        assert!(pages.iter().all(|page| page.data_url.is_empty()));
+        assert!(pages
+            .iter()
+            .all(|page| page.bytes.starts_with(&[0xFF, 0xD8])));
+
+        let desktop = render_raw(&raw, Some(50), None).unwrap();
+        assert!(desktop.data_url.starts_with("data:image/jpeg;base64,"));
     }
 
     /* ---------------- 超高分辨率条漫（>20000px）防线 ---------------- */

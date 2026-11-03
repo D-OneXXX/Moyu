@@ -5,18 +5,26 @@
 //! and source handles; it never writes the database or reading progress.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde::Serialize;
 
 use crate::commands::{get_next_book_impl, is_safe_library_source_path, to_book_info};
 use crate::db::{self, BookRow};
+use crate::pdf;
+use crate::pipeline;
+use crate::source::BackendError;
 use crate::state::AppState;
+use crate::PageDim;
 
 /// Bound the Web page manifest independently of any source-reported count.
 const MAX_WEB_PAGES: u32 = 10_000;
+/// Frozen cover edge; the Web contract does not accept a size parameter.
+pub(crate) const WEB_THUMB_EDGE: u32 = 256;
 
 /// Stable data-plane failure classes; HTTP mapping is added by the route layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +103,24 @@ pub(crate) struct ProgressView {
     pub scroll_pct: f64,
     pub rev: i64,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ImageAsset {
+    pub bytes: Vec<u8>,
+    pub mime: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub orig_width: u32,
+    pub orig_height: u32,
+    pub data_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TileImage {
+    pub image: ImageAsset,
+    pub tile_count: u32,
+    pub tile_height: u32,
 }
 
 /// Read a stable `(updated_at, id)` page, newest first. Search is title-only;
@@ -212,6 +238,391 @@ pub(crate) fn progress(state: &AppState, id: &str) -> Result<ProgressView, DataE
     })
 }
 
+/// Bytes-only page image. The Web path never populates L1 and never triggers
+/// neighbour prefetch; it reuses L2 and the existing render pipeline.
+pub(crate) fn page_asset(
+    state: &Arc<AppState>,
+    id: &str,
+    index: u32,
+    width: u32,
+    encode_data_url: bool,
+    use_l1: bool,
+) -> Result<ImageAsset, DataError> {
+    let row = active_row(state, id)?;
+    if row.format == db::BOOK_FORMAT_PDF {
+        return Err(DataError::PdfUnsupported);
+    }
+    ensure_source_allowed(&row)?;
+    let handle = state
+        .source_handle_for_book(id)
+        .map_err(|_| DataError::SourceMissing)?;
+    let count = handle.page_count().map_err(|_| DataError::SourceMissing)?;
+    if index as usize >= count {
+        return Err(DataError::PageOutOfRange {
+            max_page: count.saturating_sub(1) as u32,
+        });
+    }
+    let width = width.clamp(320, 2160);
+
+    if use_l1 && encode_data_url {
+        if let Some(hit) = state.cache.get_page(id, index, width, 0) {
+            return Ok(asset_from_rendered(hit, true));
+        }
+    }
+    if let Some(bytes) = state.render.get(id, index, width, 0) {
+        match assembled_asset(bytes, 0, 0, encode_data_url) {
+            Ok(asset) => return Ok(asset),
+            Err(_) => state.render.remove_page(id, index, width, 0),
+        }
+    }
+
+    let raw = handle
+        .read_raw(index as usize)
+        .map_err(|_| DataError::SourceMissing)?;
+    let rendered = if encode_data_url {
+        pipeline::render_raw(&raw, Some(width), None)
+    } else {
+        pipeline::render_raw_asset(&raw, Some(width), None, false)
+    }
+    .map_err(|_| DataError::SourceMissing)?;
+    state.render.put(id, index, width, 0, &rendered.bytes);
+    state.note_cache_write(raw.bytes.len().saturating_add(rendered.bytes.len()));
+    if use_l1 && encode_data_url {
+        state.cache.put_page(id, index, width, 0, rendered.clone());
+    }
+    Ok(asset_from_rendered(rendered, encode_data_url))
+}
+
+/// First-page cover. Image books use the existing render cache; PDF covers use
+/// the cache written by the desktop PDF.js path. No database write.
+pub(crate) fn thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataError> {
+    let row = active_row(state, id)?;
+    if row.format == db::BOOK_FORMAT_PDF {
+        return pdf_thumb_asset(state, id);
+    }
+    ensure_source_allowed(&row)?;
+    let handle = state
+        .source_handle_for_book(id)
+        .map_err(|_| DataError::SourceMissing)?;
+    let count = handle.page_count().map_err(|_| DataError::SourceMissing)?;
+    if count == 0 {
+        return Err(DataError::ThumbMissing);
+    }
+    let edge = WEB_THUMB_EDGE;
+    if let Some(bytes) = state.render.get(id, 0, edge, edge) {
+        match assembled_asset(bytes, 0, 0, false) {
+            Ok(asset) => return Ok(asset),
+            Err(_) => state.render.remove_page(id, 0, edge, edge),
+        }
+    }
+
+    let raw = handle.read_raw(0).map_err(|_| DataError::SourceMissing)?;
+    let rendered = pipeline::render_raw_asset(&raw, Some(edge), Some(edge), false)
+        .map_err(|_| DataError::SourceMissing)?;
+    state.render.put(id, 0, edge, edge, &rendered.bytes);
+    state.note_cache_write(raw.bytes.len().saturating_add(rendered.bytes.len()));
+    Ok(asset_from_rendered(rendered, false))
+}
+
+/// One webtoon tile. Layout must exist first (usually requested before tiles);
+/// the 800 ms materialisation lock wait maps to `busy`, never an infinite wait.
+pub(crate) fn tile_asset(
+    state: &Arc<AppState>,
+    id: &str,
+    index: u32,
+    tile: u32,
+    width: u32,
+) -> Result<TileImage, DataError> {
+    let row = active_row(state, id)?;
+    if row.format == db::BOOK_FORMAT_PDF {
+        return Err(DataError::PdfUnsupported);
+    }
+    ensure_source_allowed(&row)?;
+    let handle = state
+        .source_handle_for_book(id)
+        .map_err(|_| DataError::SourceMissing)?;
+    let count = handle.page_count().map_err(|_| DataError::SourceMissing)?;
+    if index as usize >= count {
+        return Err(DataError::PageOutOfRange {
+            max_page: count.saturating_sub(1) as u32,
+        });
+    }
+    let dims = layout_read_only(state, id)?;
+    let orig = dims
+        .get(index as usize)
+        .map(|dim| (dim.width, dim.height))
+        .unwrap_or((0, 0));
+    let width = bucket_tile_width(width);
+    let display_height = pipeline::fit_size(orig.0, orig.1, Some(width), None).1;
+    let expected_tiles =
+        pipeline::webtoon_tile_count(orig.0, orig.1, width).min(display_height.max(1));
+    if tile >= expected_tiles {
+        return Err(DataError::TileOutOfRange {
+            max_tile: expected_tiles.saturating_sub(1),
+        });
+    }
+
+    if let Some(bytes) = state.render.get_tile(id, index, tile, width) {
+        match assembled_asset(bytes, orig.0, orig.1, false) {
+            Ok(image) => {
+                return Ok(TileImage {
+                    image,
+                    tile_count: expected_tiles,
+                    tile_height: pipeline::WEBTOON_TILE_H,
+                });
+            }
+            Err(_) => state.render.remove_tile(id, index, tile, width),
+        }
+    }
+
+    let raw = handle
+        .read_raw(index as usize)
+        .map_err(|_| DataError::SourceMissing)?;
+    let _guard = state
+        .tile_lock
+        .try_lock_for(Duration::from_millis(800))
+        .ok_or(DataError::Busy)?;
+
+    if let Some(bytes) = state.render.get_tile(id, index, tile, width) {
+        let image = assembled_asset(bytes, orig.0, orig.1, false)?;
+        return Ok(TileImage {
+            image,
+            tile_count: expected_tiles,
+            tile_height: pipeline::WEBTOON_TILE_H,
+        });
+    }
+
+    let (tiles, pages) = pipeline::render_webtoon_tiles_asset(&raw, width, false)
+        .map_err(|_| DataError::Internal)?;
+    if tile >= tiles {
+        return Err(DataError::TileOutOfRange {
+            max_tile: tiles.saturating_sub(1),
+        });
+    }
+    let mut written = raw.bytes.len();
+    for (tile_index, page) in pages.iter().enumerate() {
+        written = written.saturating_add(page.bytes.len());
+        state
+            .render
+            .put_tile(id, index, tile_index as u32, width, &page.bytes);
+    }
+    state.note_cache_write(written);
+    let page = pages
+        .into_iter()
+        .nth(tile as usize)
+        .ok_or(DataError::TileOutOfRange {
+            max_tile: tiles.saturating_sub(1),
+        })?;
+    Ok(TileImage {
+        image: asset_from_rendered(page, false),
+        tile_count: tiles,
+        tile_height: pipeline::WEBTOON_TILE_H,
+    })
+}
+
+/// Read-only layout. Online missing dimensions are probed into memory only;
+/// `persist_online` is false, so `meta_json` is never rewritten.
+pub(crate) fn layout_read_only(state: &AppState, id: &str) -> Result<Vec<PageDim>, DataError> {
+    let row = active_row(state, id)?;
+    if row.format == db::BOOK_FORMAT_PDF {
+        return Err(DataError::PdfUnsupported);
+    }
+    ensure_source_allowed(&row)?;
+    layout_sync(state, id, false).map_err(|_| DataError::SourceMissing)
+}
+
+/// Shared layout scanner used by the desktop command and the Web read path.
+/// `persist_online` preserves the desktop behaviour of writing probed online
+/// dimensions back to `meta_json`; the Web path always passes false.
+pub(crate) fn layout_sync(
+    state: &AppState,
+    book_id: &str,
+    persist_online: bool,
+) -> Result<Vec<PageDim>, BackendError> {
+    if let Some(cached) = state.webtoon_layouts.lock().get(book_id).cloned() {
+        return Ok(page_dims(&cached));
+    }
+    let row = state
+        .db
+        .with(|conn| db::get_book(conn, book_id).map_err(|e| e.to_string()))
+        .map_err(BackendError::Msg)?
+        .ok_or_else(|| BackendError::Msg("书籍不存在".into()))?;
+
+    if row.source_type != "local" {
+        let mut meta: crate::online::StoredMeta = serde_json::from_str(&row.meta_json)
+            .map_err(|e| BackendError::Msg(format!("在线书元数据损坏：{e}")))?;
+        if meta.pages.is_empty() {
+            return Err(BackendError::Msg("该在线书籍没有可阅读页面".into()));
+        }
+        let mut dims: Vec<(u32, u32)> = meta
+            .pages
+            .iter()
+            .map(|page| (page.width.unwrap_or(0), page.height.unwrap_or(0)))
+            .collect();
+        let missing: Vec<usize> = dims
+            .iter()
+            .enumerate()
+            .filter(|(_, (width, height))| *width == 0 || *height == 0)
+            .map(|(index, _)| index)
+            .collect();
+        if !missing.is_empty() {
+            let handle = state.source_handle_for_book(book_id)?;
+            for index in missing {
+                let raw = handle.read_raw(index)?;
+                let (width, height) = image::ImageReader::new(std::io::Cursor::new(&raw.bytes))
+                    .with_guessed_format()?
+                    .into_dimensions()?;
+                if width == 0 || height == 0 {
+                    return Err(BackendError::Msg(format!("第 {} 页尺寸无效", index + 1)));
+                }
+                dims[index] = (width, height);
+                if let Some(page) = meta.pages.get_mut(index) {
+                    page.width = Some(width);
+                    page.height = Some(height);
+                }
+            }
+            if persist_online {
+                if let Ok(json) = serde_json::to_string(&meta) {
+                    let _ = state.db.with(|conn| {
+                        db::upsert_online_book(
+                            conn,
+                            &row.id,
+                            &row.path,
+                            &row.title,
+                            row.page_count,
+                            &row.source_type,
+                            &json,
+                        )
+                        .map_err(|e| e.to_string())
+                    });
+                }
+            }
+        }
+        state
+            .webtoon_layouts
+            .lock()
+            .insert(book_id.to_string(), Arc::new(dims.clone()));
+        return Ok(page_dims(&dims));
+    }
+
+    let handle = state.source_handle_for_book(book_id)?;
+    let count = handle.page_count()?;
+    let mut dims: Vec<(u32, u32)> = Vec::with_capacity(count);
+    for index in 0..count {
+        let header: Option<(u32, u32)> =
+            handle
+                .read_partial(index, 256 * 1024)
+                .ok()
+                .and_then(|partial| {
+                    image::ImageReader::new(std::io::Cursor::new(&partial.bytes))
+                        .with_guessed_format()
+                        .ok()
+                        .and_then(|reader| reader.into_dimensions().ok())
+                        .filter(|(width, height)| *width > 0 && *height > 0)
+                });
+        let (width, height) = match header {
+            Some(dimensions) => dimensions,
+            None => {
+                let raw = handle.read_raw(index)?;
+                image::ImageReader::new(std::io::Cursor::new(&raw.bytes))
+                    .with_guessed_format()?
+                    .into_dimensions()?
+            }
+        };
+        dims.push((width, height));
+    }
+    state
+        .webtoon_layouts
+        .lock()
+        .insert(book_id.to_string(), Arc::new(dims.clone()));
+    Ok(page_dims(&dims))
+}
+
+fn bucket_tile_width(width: u32) -> u32 {
+    let clamped = width.clamp(320, 2160);
+    (((clamped + 32) / 64) * 64).clamp(320, 2160)
+}
+
+fn page_dims(dims: &[(u32, u32)]) -> Vec<PageDim> {
+    dims.iter()
+        .enumerate()
+        .map(|(index, (width, height))| PageDim {
+            index: index as u32,
+            width: *width,
+            height: *height,
+        })
+        .collect()
+}
+
+fn asset_from_rendered(page: pipeline::RenderedPage, encode_data_url: bool) -> ImageAsset {
+    ImageAsset {
+        bytes: page.bytes,
+        mime: "image/jpeg",
+        width: page.width,
+        height: page.height,
+        orig_width: page.orig_width,
+        orig_height: page.orig_height,
+        data_url: if encode_data_url {
+            Some(page.data_url)
+        } else {
+            None
+        },
+    }
+}
+
+fn assembled_asset(
+    bytes: Vec<u8>,
+    orig_width: u32,
+    orig_height: u32,
+    encode_data_url: bool,
+) -> Result<ImageAsset, DataError> {
+    let (width, height) = pdf::jpeg_dims(&bytes).map_err(|_| DataError::Internal)?;
+    let data_url =
+        encode_data_url.then(|| format!("data:image/jpeg;base64,{}", B64.encode(&bytes)));
+    Ok(ImageAsset {
+        bytes,
+        mime: "image/jpeg",
+        width,
+        height,
+        orig_width: if orig_width > 0 { orig_width } else { width },
+        orig_height: if orig_height > 0 { orig_height } else { height },
+        data_url,
+    })
+}
+
+fn pdf_thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataError> {
+    let Some(bytes) = state
+        .render
+        .get_raw(id, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE)
+    else {
+        return Err(DataError::ThumbMissing);
+    };
+    match pdf::validate_pdf_cover_read(&bytes) {
+        Ok((width, height)) => {
+            let mime = if pdf::is_jpeg(&bytes) {
+                "image/jpeg"
+            } else {
+                "image/png"
+            };
+            Ok(ImageAsset {
+                bytes,
+                mime,
+                width,
+                height,
+                orig_width: width,
+                orig_height: height,
+                data_url: None,
+            })
+        }
+        Err(_) => {
+            state
+                .render
+                .remove_page(id, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE);
+            Err(DataError::ThumbMissing)
+        }
+    }
+}
+
 fn active_row(state: &AppState, id: &str) -> Result<BookRow, DataError> {
     state
         .db
@@ -323,7 +734,8 @@ fn decode_cursor(raw: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use rusqlite::params;
     use serde_json::json;
@@ -413,6 +825,38 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        use image::ImageEncoder as _;
+        let image = image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 96])
+        });
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(
+                image.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgb8,
+            )
+            .expect("png encode");
+        bytes
+    }
+
+    fn jpeg_bytes(width: u32, height: u32) -> Vec<u8> {
+        use image::ImageEncoder as _;
+        let image = image::RgbImage::from_fn(width, height, |_x, _y| image::Rgb([32, 64, 96]));
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 80)
+            .write_image(
+                image.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgb8,
+            )
+            .expect("jpeg encode");
+        bytes
     }
 
     #[test]
@@ -1007,6 +1451,464 @@ mod tests {
             1,
         );
         assert_eq!(pages_manifest(&state, &a), Err(DataError::SourceMissing));
+    }
+
+    #[test]
+    fn page_asset_is_bytes_only_and_skips_l1_and_prefetch() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("page-asset");
+        std::fs::write(tree.0.join("page.png"), png_bytes(40, 300)).expect("page");
+        let a = id_for('a');
+        insert_book(
+            &state,
+            &a,
+            "Page",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        state.render.remove_page(&a, 0, 320, 0);
+
+        let asset = page_asset(&state, &a, 0, 20, false, false).expect("page asset");
+        assert!(asset.data_url.is_none());
+        assert_eq!(asset.mime, "image/jpeg");
+        assert!(asset.bytes.starts_with(&[0xFF, 0xD8]));
+        assert_eq!((asset.width, asset.height), (40, 300));
+        assert_eq!((asset.orig_width, asset.orig_height), (40, 300));
+        assert!(state.cache.get_page(&a, 0, 320, 0).is_none());
+        assert!(state.prefetching.lock().is_empty());
+        assert!(state.render.get(&a, 0, 320, 0).is_some());
+
+        let again = page_asset(&state, &a, 0, 20, false, false).expect("L2 page");
+        assert_eq!(again.bytes, asset.bytes);
+
+        // use_l1 without base64 must never return the empty L1 bytes body.
+        let bytes_only = page_asset(&state, &a, 0, 320, false, true).expect("bytes-only L2");
+        assert!(bytes_only.data_url.is_none());
+        assert!(!bytes_only.bytes.is_empty());
+        let desktop_shape = page_asset(&state, &a, 0, 320, true, true).expect("data-url L2");
+        assert!(desktop_shape
+            .data_url
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("data:image/jpeg;base64,"));
+        assert!(!desktop_shape.bytes.is_empty());
+    }
+
+    #[test]
+    fn page_asset_maps_pdf_range_and_missing_source() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("page-errors");
+        std::fs::write(tree.0.join("page.png"), png_bytes(20, 20)).expect("page");
+        let image = id_for('a');
+        let pdf = id_for('b');
+        let missing = id_for('c');
+        insert_book(
+            &state,
+            &image,
+            "Image",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        insert_book(
+            &state,
+            &pdf,
+            "PDF",
+            "2026-11-03 10:00:00",
+            "C:/library/a.pdf",
+            0,
+            "local",
+            BOOK_FORMAT_PDF,
+            "{}",
+            0,
+        );
+        insert_book(
+            &state,
+            &missing,
+            "Missing",
+            "2026-11-03 10:00:00",
+            "C:/library/missing.cbz",
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+
+        assert_eq!(
+            page_asset(&state, &pdf, 0, 320, false, false),
+            Err(DataError::PdfUnsupported)
+        );
+        assert_eq!(
+            page_asset(&state, &image, 5, 320, false, false),
+            Err(DataError::PageOutOfRange { max_page: 0 })
+        );
+        assert_eq!(
+            page_asset(&state, &missing, 0, 320, false, false),
+            Err(DataError::SourceMissing)
+        );
+    }
+
+    #[test]
+    fn thumb_asset_reads_first_page_and_pdf_cover() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("thumb-asset");
+        std::fs::write(tree.0.join("page.png"), png_bytes(40, 40)).expect("page");
+        let image = id_for('a');
+        let pdf = id_for('b');
+        insert_book(
+            &state,
+            &image,
+            "Image",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        insert_book(
+            &state,
+            &pdf,
+            "PDF",
+            "2026-11-03 10:00:00",
+            "C:/library/a.pdf",
+            0,
+            "local",
+            BOOK_FORMAT_PDF,
+            "{}",
+            0,
+        );
+
+        state.render.remove_page(&image, 0, 256, 256);
+        let thumb = thumb_asset(&state, &image).expect("image thumb");
+        assert!(thumb.data_url.is_none());
+        assert!(thumb.bytes.starts_with(&[0xFF, 0xD8]));
+        assert_eq!(thumb.width, 40);
+
+        state.render.put(
+            &pdf,
+            0,
+            crate::pdf::PDF_COVER_EDGE,
+            crate::pdf::PDF_COVER_EDGE,
+            &jpeg_bytes(crate::pdf::PDF_COVER_EDGE, crate::pdf::PDF_COVER_EDGE),
+        );
+        let cover = thumb_asset(&state, &pdf).expect("pdf jpeg cover");
+        assert!(cover.data_url.is_none());
+        assert_eq!(cover.mime, "image/jpeg");
+        assert!(cover.bytes.starts_with(&[0xFF, 0xD8]));
+        state.render.remove_page(
+            &pdf,
+            0,
+            crate::pdf::PDF_COVER_EDGE,
+            crate::pdf::PDF_COVER_EDGE,
+        );
+
+        // Legacy PNG covers are readable and must not be deleted as "corrupt".
+        state.render.put(
+            &pdf,
+            0,
+            crate::pdf::PDF_COVER_EDGE,
+            crate::pdf::PDF_COVER_EDGE,
+            &png_bytes(256, 256),
+        );
+        let png_cover = thumb_asset(&state, &pdf).expect("pdf png cover");
+        assert_eq!(png_cover.mime, "image/png");
+        assert!(state
+            .render
+            .get_raw(
+                &pdf,
+                0,
+                crate::pdf::PDF_COVER_EDGE,
+                crate::pdf::PDF_COVER_EDGE
+            )
+            .is_some());
+        state.render.remove_page(
+            &pdf,
+            0,
+            crate::pdf::PDF_COVER_EDGE,
+            crate::pdf::PDF_COVER_EDGE,
+        );
+
+        state.render.put(
+            &pdf,
+            0,
+            crate::pdf::PDF_COVER_EDGE,
+            crate::pdf::PDF_COVER_EDGE,
+            b"not an image",
+        );
+        assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
+        assert!(state
+            .render
+            .get_raw(
+                &pdf,
+                0,
+                crate::pdf::PDF_COVER_EDGE,
+                crate::pdf::PDF_COVER_EDGE
+            )
+            .is_none());
+
+        state.render.put(
+            &pdf,
+            0,
+            crate::pdf::PDF_COVER_EDGE,
+            crate::pdf::PDF_COVER_EDGE,
+            &crate::pdf::fixtures::png_header(5000, 5000),
+        );
+        assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
+        assert!(state
+            .render
+            .get_raw(
+                &pdf,
+                0,
+                crate::pdf::PDF_COVER_EDGE,
+                crate::pdf::PDF_COVER_EDGE
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn tile_asset_returns_geometry_and_rejects_range() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("tile-asset");
+        std::fs::write(tree.0.join("page.png"), png_bytes(400, 6000)).expect("page");
+        let a = id_for('d');
+        insert_book(
+            &state,
+            &a,
+            "Tall",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        state.render.remove_tile(&a, 0, 0, 320);
+
+        let tile = tile_asset(&state, &a, 0, 0, 320).expect("tile");
+        assert!(tile.image.data_url.is_none());
+        assert!(tile.image.bytes.starts_with(&[0xFF, 0xD8]));
+        assert_eq!(tile.image.width, 320);
+        assert_eq!(tile.tile_count, 3);
+        assert_eq!(tile.tile_height, crate::pipeline::WEBTOON_TILE_H);
+        assert_eq!(tile.image.orig_width, 400);
+        assert_eq!(tile.image.orig_height, 6000);
+        assert_eq!(
+            tile_asset(&state, &a, 0, 3, 320),
+            Err(DataError::TileOutOfRange { max_tile: 2 })
+        );
+    }
+
+    #[test]
+    fn tile_width_bucket_and_tile_count_match_renderer() {
+        assert_eq!(bucket_tile_width(320), 320);
+        assert_eq!(bucket_tile_width(1080), 1088);
+        assert_eq!(bucket_tile_width(2160), 2160);
+
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("tile-clamp");
+        std::fs::write(tree.0.join("page.png"), png_bytes(1, 300)).expect("page");
+        let a = id_for('f');
+        insert_book(
+            &state,
+            &a,
+            "Clamp",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        // Source width < requested: renderer uses display height 300, so the
+        // actual tile count is 300 rather than the 317 from the raw formula.
+        assert_eq!(
+            tile_asset(&state, &a, 0, 300, 2112),
+            Err(DataError::TileOutOfRange { max_tile: 299 })
+        );
+    }
+
+    #[test]
+    fn tile_asset_returns_busy_when_materialization_lock_is_held() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("tile-busy");
+        std::fs::write(tree.0.join("page.png"), png_bytes(20, 5000)).expect("page");
+        let a = id_for('e');
+        insert_book(
+            &state,
+            &a,
+            "Busy",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        state.render.remove_tile(&a, 0, 0, 320);
+
+        let _guard = state.tile_lock.lock();
+        let started = std::time::Instant::now();
+        assert_eq!(tile_asset(&state, &a, 0, 0, 320), Err(DataError::Busy));
+        assert!(started.elapsed() >= Duration::from_millis(700));
+    }
+
+    #[test]
+    fn layout_read_only_reads_local_and_online_without_meta_write() {
+        let state = state_with_db();
+        let tree = TempTree::new("layout-readonly");
+        std::fs::write(tree.0.join("1.png"), png_bytes(10, 20)).expect("page 1");
+        std::fs::write(tree.0.join("2.png"), png_bytes(10, 30)).expect("page 2");
+        let local = id_for('a');
+        insert_book(
+            &state,
+            &local,
+            "Local layout",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            2,
+        );
+        let dims = layout_read_only(&state, &local).expect("local layout");
+        assert_eq!(
+            dims.iter()
+                .map(|dim| (dim.width, dim.height))
+                .collect::<Vec<_>>(),
+            vec![(10, 20), (10, 30)]
+        );
+
+        let online = id_for('b');
+        let meta = json!({
+            "schema": 1,
+            "manifestHash": "",
+            "fetchedAt": "",
+            "pages": [
+                {"url": "https://example.com/1.png", "width": 10, "height": 20},
+                {"url": "https://example.com/2.png", "width": 10, "height": 30}
+            ]
+        })
+        .to_string();
+        insert_book(
+            &state,
+            &online,
+            "Online layout",
+            "2026-11-03 10:00:00",
+            "https://example.com/gallery",
+            0,
+            "generic_manga",
+            "image",
+            &meta,
+            2,
+        );
+        let before = state
+            .db
+            .with(|conn| db::get_book(conn, &online).map_err(|e| e.to_string()))
+            .expect("before")
+            .expect("row")
+            .meta_json;
+        let dims = layout_read_only(&state, &online).expect("online layout");
+        assert_eq!(
+            dims.iter()
+                .map(|dim| (dim.width, dim.height))
+                .collect::<Vec<_>>(),
+            vec![(10, 20), (10, 30)]
+        );
+        let after = state
+            .db
+            .with(|conn| db::get_book(conn, &online).map_err(|e| e.to_string()))
+            .expect("after")
+            .expect("row")
+            .meta_json;
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn layout_read_only_probes_online_missing_dims_without_meta_write() {
+        let state = state_with_db();
+        let tree = TempTree::new("layout-probe");
+        std::fs::write(tree.0.join("1.png"), png_bytes(10, 20)).expect("page 1");
+        std::fs::write(tree.0.join("2.png"), png_bytes(10, 30)).expect("page 2");
+        let online = id_for('c');
+        let meta = json!({
+            "schema": 1,
+            "manifestHash": "",
+            "fetchedAt": "",
+            "pages": [
+                {"url": "https://example.com/1.png"},
+                {"url": "https://example.com/2.png"}
+            ]
+        })
+        .to_string();
+        insert_book(
+            &state,
+            &online,
+            "Probe",
+            "2026-11-03 10:00:00",
+            "https://example.com/gallery",
+            0,
+            "generic_manga",
+            "image",
+            &meta,
+            2,
+        );
+        state.sources.lock().insert(
+            online.clone(),
+            Arc::new(crate::source::SourceHandle::open(&tree.0).expect("local probe source")),
+        );
+
+        let dims = layout_read_only(&state, &online).expect("probed layout");
+        assert_eq!(
+            dims.iter()
+                .map(|dim| (dim.width, dim.height))
+                .collect::<Vec<_>>(),
+            vec![(10, 20), (10, 30)]
+        );
+        let after = state
+            .db
+            .with(|conn| db::get_book(conn, &online).map_err(|e| e.to_string()))
+            .expect("after")
+            .expect("row")
+            .meta_json;
+        assert_eq!(after, meta, "Web layout must not rewrite meta_json");
+    }
+
+    #[test]
+    fn layout_read_only_rejects_pdf() {
+        let state = state_with_db();
+        let pdf = id_for('a');
+        insert_book(
+            &state,
+            &pdf,
+            "PDF",
+            "2026-11-03 10:00:00",
+            "C:/library/a.pdf",
+            0,
+            "local",
+            BOOK_FORMAT_PDF,
+            "{}",
+            0,
+        );
+        assert_eq!(
+            layout_read_only(&state, &pdf),
+            Err(DataError::PdfUnsupported)
+        );
     }
 
     #[test]

@@ -125,7 +125,7 @@ pub struct MemoryStats {
 }
 
 /// 条漫布局数据：单页源图尺寸（header 解析，不解码）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageDim {
     pub index: u32,

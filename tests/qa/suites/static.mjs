@@ -3705,4 +3705,522 @@ export function checkAntiMockGuards(root, report) {
       fix: "确认 D3 文件存在且命名稳定",
     });
   }
+
+  // Cross-plane invariants: control-flow order, resource ceilings, route
+  // allowlists, refresh containment, runtime injection and test registration.
+  // The guard fails closed if any relationship is missing or reordered.
+  try {
+    const errors = [];
+    const read = (relative) =>
+      fs.readFileSync(path.join(root, relative), "utf8");
+    const productionOnly = (source) => {
+      const index = source.indexOf("#[cfg(test)]\nmod tests");
+      return stripRustComments(index >= 0 ? source.slice(0, index) : source);
+    };
+    const webFile = (name) =>
+      productionOnly(read(path.join("src-tauri", "src", "web_access", name)));
+
+    const data = webFile("data.rs");
+    const dataApp = webFile("data_app.rs");
+    const sessionAuth = webFile("session_auth.rs");
+    const write = webFile("progress_write.rs");
+    const writeApp = webFile("progress_write_app.rs");
+    const service = productionOnly(
+      read(path.join("src-tauri", "src", "progress_service.rs")),
+    );
+    const readService = productionOnly(
+      read(path.join("src-tauri", "src", "read_service.rs")),
+    );
+    const webContract = productionOnly(
+      read(path.join("src-tauri", "src", "web_contract.rs")),
+    );
+    const router = webFile("router.rs");
+    const runtime = webFile("runtime.rs");
+    const httpSource = webFile("http.rs");
+    const tlsSource = webFile("tls.rs");
+    const libSource = read(path.join("src-tauri", "src", "lib.rs"));
+    const modSource = read(
+      path.join("src-tauri", "src", "web_access", "mod.rs"),
+    );
+    const writeRaw = read(
+      path.join("src-tauri", "src", "web_access", "progress_write.rs"),
+    );
+    const testsRaw = read(
+      path.join("src-tauri", "src", "web_access", "tests.rs"),
+    );
+    const dataTestsRaw = read(
+      path.join("src-tauri", "src", "web_access", "data_tests.rs"),
+    );
+
+    const order = (source, tokens, label) => {
+      let last = -1;
+      for (const token of tokens) {
+        const index = source.indexOf(token);
+        if (index < 0) {
+          errors.push(`${label}：缺少 ${token}`);
+          return;
+        }
+        if (index < last) {
+          errors.push(`${label}：${token} 顺序错误`);
+          return;
+        }
+        last = index;
+      }
+    };
+    const matchingBrace = (source, open) => {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = open; i < source.length; i += 1) {
+        const c = source[i];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (c === "\\") escaped = true;
+          else if (c === '"') inString = false;
+          continue;
+        }
+        if (c === '"') {
+          inString = true;
+        } else if (c === "{") {
+          depth += 1;
+        } else if (c === "}") {
+          depth -= 1;
+          if (depth === 0) return i;
+        }
+      }
+      return -1;
+    };
+    const insideBlock = (source, ifToken, callToken, message) => {
+      const ifIndex = source.indexOf(ifToken);
+      if (ifIndex < 0) {
+        errors.push(`${message}：缺少条件块`);
+        return;
+      }
+      const open = source.indexOf("{", ifIndex);
+      const end = open < 0 ? -1 : matchingBrace(source, open);
+      const call = source.indexOf(callToken);
+      if (open < 0 || end < 0 || call < 0 || call <= open || call >= end) {
+        errors.push(`${message}：调用不在条件块内`);
+      }
+    };
+    const functionEnd = (source, token) => {
+      const start = source.indexOf(token);
+      if (start < 0) return -1;
+      const open = source.indexOf("{", start);
+      return open < 0 ? -1 : matchingBrace(source, open);
+    };
+    const inFunction = (source, fnToken, token) => {
+      const start = source.indexOf(fnToken);
+      const end = functionEnd(source, fnToken);
+      const index = source.indexOf(token);
+      return start >= 0 && end > start && index > start && index < end;
+    };
+
+    // D2: parse -> per-IP limit -> authentication -> query parse -> blocking
+    // provider. Authentication must also precede the conditional cache probe.
+    order(
+      data,
+      [
+        "DataRoute::parse(",
+        "self.limiter.check(",
+        "authenticate_request(request",
+        "route.into_call(",
+        "spawn_blocking",
+        "call.execute(",
+      ],
+      "D2 读面调用顺序",
+    );
+    if (
+      data.indexOf("authenticate_request(request") >
+      data.indexOf("contains_key(IF_NONE_MATCH)")
+    ) {
+      errors.push("D2 条件探测未在认证之后");
+    }
+    insideBlock(
+      data,
+      "if response.status() == StatusCode::OK || response.status() == StatusCode::NOT_MODIFIED",
+      "self.apply_refresh(",
+      "D2 会话刷新必须在成功/304 分支",
+    );
+    for (const token of [
+      "VARY",
+      "PRIVATE_NO_CACHE",
+      "PRIVATE_MAX_AGE_300",
+      "NO_STORE",
+      "ETAG",
+      "not_modified",
+      "etag_matches",
+    ]) {
+      if (!data.includes(token)) {
+        errors.push(`D2 缺少缓存/验证器不变量：${token}`);
+      }
+    }
+    if (/\bpublic\b/.test(data)) {
+      errors.push("D2 出现 public 缓存");
+    }
+    for (const [label, source] of [
+      ["data.rs", data],
+      ["data_app.rs", dataApp],
+    ]) {
+      for (const token of [
+        "rusqlite",
+        "Connection::",
+        "std::fs",
+        "std::path",
+        "library.db",
+        "render_cache",
+        "online_cache",
+        "db::set_progress",
+        "set_progress_cas",
+      ]) {
+        if (source.includes(token)) {
+          errors.push(`${label} 触碰写/SQL/文件系统：${token}`);
+        }
+      }
+    }
+    if (readService.includes("db::set_progress")) {
+      errors.push("read_service 生产路径调用桌面 set_progress");
+    }
+    if (
+      /\b(?:(?:UPDATE\s+\w+\s+SET)|(?:INSERT\s+INTO)|(?:DELETE\s+FROM))\b/i.test(
+        readService,
+      )
+    ) {
+      errors.push("read_service 生产路径出现写 SQL");
+    }
+    if (data.includes("Method::PUT")) {
+      errors.push("D2 data.rs 出现 Method::PUT");
+    }
+    if (router.includes("/api/books")) {
+      errors.push("router.rs 出现 /api/books 字面量");
+    }
+
+    // D2 resource ceilings.
+    for (const [label, source, tokens] of [
+      [
+        "http.rs",
+        httpSource,
+        [
+          "HEADER_LIMIT: usize = 8 * 1024",
+          "HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10)",
+          "HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(65)",
+          "PAIR_HANDLER_TIMEOUT: Duration = Duration::from_secs(10)",
+          "DATA_HANDLER_TIMEOUT: Duration = Duration::from_secs(60)",
+        ],
+      ],
+      [
+        "data.rs",
+        data,
+        [
+          "RENDER_GATE: usize = 2",
+          "SESSION_IN_FLIGHT: usize = 6",
+          "METADATA_PER_WINDOW: u32 = 120",
+          "IMAGE_PER_WINDOW: u32 = 120",
+          "TILE_PER_WINDOW: u32 = 600",
+          "MAX_RATE_BUCKETS: usize = 1024",
+        ],
+      ],
+      [
+        "tls.rs",
+        tlsSource,
+        [
+          "MAX_ACTIVE_CONNECTIONS: usize = 32",
+          "MAX_ACTIVE_CONNECTIONS_PER_IP: usize = 8",
+          ".keep_alive(false)",
+          "drop(stream)",
+        ],
+      ],
+    ]) {
+      for (const token of tokens) {
+        if (!source.includes(token)) {
+          errors.push(`${label} 缺少资源上限：${token}`);
+        }
+      }
+    }
+    if (!httpSource.includes("SocketAddr::V4(addr) = addr")) {
+      errors.push("authority 未显式拒绝 IPv6");
+    }
+
+    // D3: guard -> exact route -> per-IP limit -> authentication -> media type
+    // -> bounded body -> session gate -> blocking CAS -> contract -> refresh.
+    order(
+      write,
+      [
+        "self.guard.check(&request)",
+        "ProgressWriteRoute::parse(",
+        "self.limiter.check(",
+        "authenticate_request(&request",
+        "is_json_content_type(&request)",
+        "read_limited_body(request",
+        "self.sessions.gate(",
+        "spawn_blocking",
+        "progress_response(",
+        "next_action(",
+        "progress_http_response(",
+        "apply_refresh_cookie(&self.service",
+      ],
+      "D3 写面调用顺序",
+    );
+    insideBlock(
+      write,
+      "if status == ProgressStatus::Ok && progress_changed",
+      "apply_refresh_cookie(",
+      "D3 会话刷新必须在成功且 changed 分支",
+    );
+    if (
+      !write.includes(
+        "NextAction::Continue { next_base_rev } if next_base_rev != base_rev",
+      )
+    ) {
+      errors.push("D3 刷新条件未由 next_action 的 rev 差推导");
+    }
+    if ((write.match(/apply_refresh_cookie\(/g) || []).length !== 1) {
+      errors.push("D3 apply_refresh_cookie 必须恰好调用一次");
+    }
+    if (!/apply_refresh_cookie\([^;]*"PUT"[^;]*true/s.test(write)) {
+      errors.push("D3 刷新未传 PUT/true");
+    }
+    if (write.includes("SET_COOKIE")) {
+      errors.push("D3 写面直接操作 Set-Cookie");
+    }
+
+    // D3 route allowlist and body constraints.
+    const routeLiterals = [...write.matchAll(/"([^"]*\/api\/[^"]*)"/g)].map(
+      (match) => match[1],
+    );
+    if (
+      routeLiterals.length !== 1 ||
+      routeLiterals[0] !== "/api/books/"
+    ) {
+      errors.push(
+        `D3 写路由字面量应唯一为 /api/books/，实际 ${JSON.stringify(routeLiterals)}`,
+      );
+    }
+    if ((write.match(/Method::PUT/g) || []).length !== 1) {
+      errors.push("D3 Method::PUT 应出现 1 次");
+    }
+    for (const method of ["POST", "DELETE", "PATCH", "HEAD", "OPTIONS"]) {
+      if (write.includes(`Method::${method}`)) {
+        errors.push(`D3 写面出现未批准方法 Method::${method}`);
+      }
+    }
+    for (const token of [
+      'strip_prefix("/api/books/")',
+      "split_once('/')",
+      'suffix != "progress"',
+      "parse_book_id",
+      "request.uri().query().is_some()",
+      "MAX_PROGRESS_BODY_BYTES: usize = 4 * 1024",
+      "read_limited_body(request, MAX_PROGRESS_BODY_BYTES)",
+      "BODY_READ_TIMEOUT: Duration = Duration::from_secs(5)",
+      "WRITE_HANDLER_TIMEOUT: Duration = Duration::from_secs(10)",
+      "WRITE_PER_WINDOW: u32 = 120",
+      "SESSION_IN_FLIGHT: usize = 2",
+      "MAX_RATE_BUCKETS: usize = 1024",
+      "is_json_content_type",
+      "application/json",
+      "deny_unknown_fields",
+      "base_rev",
+      "scroll_pct",
+    ]) {
+      if (!write.includes(token)) {
+        errors.push(`D3 写面缺少不变量：${token}`);
+      }
+    }
+    if (write.includes("rusqlite") || write.includes("Connection::")) {
+      errors.push("D3 HTTP 写面直接访问 SQLite");
+    }
+    if (write.includes("set_progress_cas") || write.includes("db::set_progress")) {
+      errors.push("D3 HTTP 写面直接调用数据库进度函数");
+    }
+    for (const token of ["std::fs", "std::path", "library.db", "render_cache", "online_cache"]) {
+      if (write.includes(token) || writeApp.includes(token)) {
+        errors.push(`D3 写面直接访问文件系统：${token}`);
+      }
+    }
+
+    // D3 service owns the database rules; the adapter only forwards.
+    if ((service.match(/set_progress_cas\(/g) || []).length !== 1) {
+      errors.push("D3 写服务必须恰好调用一次 set_progress_cas");
+    }
+    for (const token of [
+      "get_active_book",
+      "BOOK_FORMAT_PDF",
+      "row.page_count == 0",
+      "page >= row.page_count",
+      "pct.is_finite()",
+      "(0.0..=1.0).contains(&pct)",
+    ]) {
+      if (!service.includes(token)) {
+        errors.push(`D3 写服务缺少校验：${token}`);
+      }
+    }
+    if (!writeApp.includes("progress_service::write_progress")) {
+      errors.push("D3 AppProgress 未转发到写服务");
+    }
+    if (
+      !webContract.includes("ERROR_PROGRESS_CONFLICT") ||
+      !webContract.includes("ERROR_BOOK_NOT_FOUND") ||
+      !webContract.includes("progress_response") ||
+      !webContract.includes("next_action")
+    ) {
+      errors.push("D3 共享契约缺少进度映射/错误码");
+    }
+    for (const token of [
+      '"rev"',
+      '"page"',
+      '"updatedAt"',
+      '"currentPage"',
+      '"currentRev"',
+      "no-store",
+    ]) {
+      if (!write.includes(token)) {
+        errors.push(`D3 响应契约缺少字段/缓存头：${token}`);
+      }
+    }
+
+    // D3 surface must not add CORS, Referer fallback or URL credentials.
+    for (const [label, source] of [
+      ["progress_write.rs", write],
+      ["progress_write_app.rs", writeApp],
+      ["progress_service.rs", service],
+      ["session_auth.rs", sessionAuth],
+    ]) {
+      if (/Access-Control-Allow/i.test(source)) {
+        errors.push(`${label} 返回了 CORS 头`);
+      }
+      if (/\bReferer\b/i.test(source)) {
+        errors.push(`${label} 使用 Referer`);
+      }
+      for (const literal of [
+        '"token"',
+        '"secret"',
+        '"access_token"',
+        '"session_token"',
+      ]) {
+        if (source.includes(literal)) {
+          errors.push(`${label} 出现查询凭据字面量：${literal}`);
+        }
+      }
+    }
+
+    // Runtime and library boundaries: default Disabled, mount once inside
+    // start_inner, never start during app initialization.
+    if (!/phase:\s*Phase::Disabled/.test(runtime)) {
+      errors.push("Runtime 默认阶段不是 Disabled");
+    }
+    if ((runtime.match(/PairingHttp::with_data\s*\(/g) || []).length !== 1) {
+      errors.push("Runtime 的 with_data 应恰好出现一次");
+    }
+    if ((runtime.match(/router\.with_progress\s*\(/g) || []).length !== 1) {
+      errors.push("Runtime 的 with_progress 应恰好挂载一次");
+    }
+    if (!inFunction(runtime, "async fn start_inner", "PairingHttp::with_data")) {
+      errors.push("with_data 未在 start_inner 内挂载");
+    }
+    if (!inFunction(runtime, "async fn start_inner", "router.with_progress")) {
+      errors.push("with_progress 未在 start_inner 内挂载");
+    }
+    if (!router.includes("self.progress.as_ref()")) {
+      errors.push("router.rs 未委派写面 provider");
+    }
+    if (!router.includes("progress.handle(request")) {
+      errors.push("router.rs 未在 data 之后调用写面 handler");
+    }
+    if (!libSource.includes("AppProgress::new")) {
+      errors.push("lib.rs 未构造写面 provider");
+    }
+    if ((libSource.match(/\.with_progress\s*\(/g) || []).length !== 1) {
+      errors.push("lib.rs 应恰好挂载写面一次");
+    }
+    if (/\.start\s*\(/.test(libSource) || /start_tls_server\s*\(/.test(libSource)) {
+      errors.push("lib.rs 在初始化阶段启动监听");
+    }
+
+    // Test registration: the named D2/D3 regression suites must exist and
+    // must not be silently skipped.
+    if (
+      !modSource.includes("#[cfg(test)]\nmod data_tests;") ||
+      !modSource.includes("#[cfg(test)]\nmod tests;")
+    ) {
+      errors.push("web_access 测试模块未注册");
+    }
+    for (const name of [
+      "real_tls_progress_write_cas_auth_and_guards",
+      "real_tls_progress_body_limit_transaction_failure_and_removed",
+      "real_tls_progress_pdf_is_415",
+    ]) {
+      if (!testsRaw.includes(`async fn ${name}`)) {
+        errors.push(`缺少真实 TLS 回归测试：${name}`);
+      }
+    }
+    for (const name of [
+      "all_read_routes_leave_book_progress_and_log_unchanged",
+      "conditional_page_304_does_not_write_any_state",
+      "put_is_404_without_a_progress_provider",
+      "put_is_served_when_progress_is_mounted_and_reads_still_work",
+    ]) {
+      if (!dataTestsRaw.includes(`async fn ${name}`)) {
+        errors.push(`缺少 D2/D3 路由回归测试：${name}`);
+      }
+    }
+    for (const name of [
+      "put_writes_and_rev_handoff",
+      "stale_base_rev_is_409_and_changes_nothing",
+      "noop_does_not_refresh_session_or_touch_updated_at",
+      "changed_write_refreshes_session",
+      "second_changed_write_within_hour_does_not_refresh_again",
+    ]) {
+      if (!writeRaw.includes(`async fn ${name}`)) {
+        errors.push(`缺少 D3 写面回归测试：${name}`);
+      }
+    }
+    for (const [label, source] of [
+      ["progress_write.rs", writeRaw],
+      ["tests.rs", testsRaw],
+      ["data_tests.rs", dataTestsRaw],
+    ]) {
+      if (source.includes("#[ignore]")) {
+        errors.push(`${label} 含被忽略的测试`);
+      }
+    }
+
+    if (errors.length) {
+      fail(report, {
+        id: "static:d2-d3-security-invariants",
+        suite: "static",
+        layer: "static",
+        title: "D2/D3 控制流顺序、资源上限、刷新门、接线与测试注册",
+        severity: "P1",
+        details: errors.join(" | "),
+        location:
+          "src-tauri/src/web_access/{data,progress_write,router,runtime,http,tls,session_auth,data_tests}.rs + src-tauri/src/{progress_service,read_service,web_contract,lib}.rs",
+        expected:
+          "D2：parse→限流→认证→query→blocking provider，认证先于条件探测，刷新仅在成功/304；D3：guard→路由→限流→认证→Content-Type→有界 body→会话门→blocking CAS→progress_response→next_action→受控刷新；资源上限、无 SQL/FS/CORS/Referer/token、默认 Disabled、start_inner 单次挂载、测试已注册且未 ignore",
+        actual: errors.join(" | "),
+        rootCause: "D2/D3 安全控制流或治理边界被破坏",
+        fix: "恢复调用顺序、资源上限、刷新门、runtime 注入与测试注册",
+      });
+    } else {
+      ok(report, {
+        id: "static:d2-d3-security-invariants",
+        suite: "static",
+        layer: "static",
+        title: "D2/D3 控制流顺序、资源上限、刷新门、接线与测试注册",
+      });
+    }
+  } catch (error) {
+    fail(report, {
+      id: "static:d2-d3-security-invariants",
+      suite: "static",
+      layer: "static",
+      title: "D2/D3 跨面安全不变量检查",
+      severity: "P1",
+      details: error.message,
+      location:
+        "src-tauri/src/web_access + src-tauri/src/{progress_service,read_service,web_contract,lib}.rs",
+      rootCause: "静态守卫无法读取 D2/D3 文件",
+      fix: "确认 D2/D3 文件存在且命名稳定",
+    });
+  }
 }

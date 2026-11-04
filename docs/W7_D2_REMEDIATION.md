@@ -173,3 +173,45 @@
 - D2-R2：契约/静态登记仍关闭；六语本地化仍归 D4，整体保持**部分关闭**。
 - G3：**BLOCKED**。
 - 范围：未合并 `main`、未推送、未创建 Tag/Release、未启用生产监听；Task 9 无生产运行时语义变更。
+
+## Task 6 记录（2026-11-04，D2/D3 静态守卫加固与独立审查）
+
+- 基线：`feat/w7-d3-progress-write` @ `9e2a32a`；Task 6 只做验证/治理，无生产 Rust、无 Rust 测试改动。
+- 静态守卫：新增 `static:d2-d3-security-invariants`，校验 D2/D3 调用顺序、资源上限、
+  路由白名单、刷新条件块包含关系、Runtime 单次挂载、测试注册与 `#[ignore]`；
+  原有 `static:d2-data-routes` 与 `static:d3-progress-route` 保留，未降强度。
+  最终 static **30/30**。首次运行时守卫 token `Vary` 与实际 `VARY` 不匹配而报 P1，
+  修正守卫 token 后通过；不是产品回归。
+- 独立审查：4 个只读代理（认证/路由、数据库/资源、生命周期/刷新、桌面/治理）；
+  **无 P0/P1**。完整证据：`docs/dev/W7_D2_D3_TASK6_SECURITY_REVIEW.md`。
+- P2（accepted risks，需在最终生产验收前处置）：
+  - 撤销与在途请求 TOCTOU（body/会话门/DB 窗口内撤销仍可能完成写）；
+  - 条漫切片物化无片数硬上限；
+  - 重导入页数缩小不钳 `current_page`/不 bump rev；
+  - Runtime 无 Drop 兜底（正常 stop 路径完整）；
+  - D2 读面刷新缺少 `Set-Cookie` 端到端断言；
+  - 文档漂移（关键契约/状态已在 Task 6 回写，剩余行号与细节归 Task 7）。
+- P3：body 超时 400 语义、头预算不含 request-target、刷新 `Max-Age=0` 丢弃、
+  过期 cookie 未清除、IPv6 限流桶前提、桌面 DEFERRED/BUSY_SNAPSHOT、目录源页数上限、
+  重定位/重导入 rev 一致性、`set_progress` 吞错、桌面 2Hz 空转、剩余测试缺口。
+- 已关闭/已回写：`WEB_ACCESS_API.md` 的 D3 状态、`scrollPct:-1` 示例、413/429、
+  TECHNICAL/TESTING/GATES 的 D3 状态；Task 6 静态守卫的顺序/包含/注册检查。
+- 保留未决：TLS session refresh **UNKNOWN**；HTTP concurrent multi-writer **UNKNOWN**；
+  G3 **BLOCKED**；IPv6 限流桶为双栈前置条件；symlink/junction **BLOCKED/UNKNOWN**；
+  D2 conditional GET 性能 **UNKNOWN**（code-level 不渲染已由独立审查确认）；
+  D2-R2 仍 **PARTIAL**（六语归 D4）。
+- 判定：**PASS WITH ACCEPTED RISKS**；未提交、未合并、未推送、未启用生产。
+
+## Task 7A 记录（2026-11-04，文档同步）
+
+- 基线：`feat/w7-d3-progress-write` @ `9e2a32a`；仅文档同步，无代码/测试/路由/依赖改动。
+- 回写：`WEB_ACCESS_API.md`（D3 状态、示例省略 `scrollPct`、413/429、session 端点归 D4、
+  路由表/映射表）、`TECHNICAL.md`（D3 模块/写路径/测试计数）、`TESTING.md`
+  （D3 测试/三层静态守卫/计数）、`W7_PRODUCTION_GATES.md`（D3 `PARTIAL`、D2/D3 测试证据、
+  §12 标题与基线）、本整改登记的 Task 6/7A 记录。
+- 保持原样：`W7_D2_TASK7_SECURITY_VERIFICATION.md`、`W7_D2_TASK8_DOCUMENTATION_ACCEPTANCE.md`、
+  `W7_D2_ACCEPTANCE.md` 等历史验收快照不改写；Task 9 的 735 计数保留为历史时点。
+- 保留未决不变：TLS session refresh **UNKNOWN**；HTTP concurrent multi-writer **UNKNOWN**；
+  G3 **BLOCKED**；IPv6 限流桶为双栈前置条件；symlink/junction **BLOCKED/UNKNOWN**；
+  D2 conditional GET 性能 **UNKNOWN**；D2-R2 **PARTIAL**（六语归 D4）。
+- 未提交、未合并、未推送、未启用生产；等待后续授权。

@@ -11,9 +11,8 @@
 //! - `scrollPct` is either omitted (`None` → -1 sentinel) or a finite value in
 //!   `0.0..=1.0`; `-1` is not a valid way to say "no webtoon record";
 //! - `baseRev` is non-negative;
-//! - the active check and the CAS run inside one `db.with` closure, so the
-//!   single-connection mutex makes them atomic relative to every other DB
-//!   operation in the process.
+//! - active state, format, and page bounds are checked under the same
+//!   `BEGIN IMMEDIATE` transaction as the CAS, including against other connections.
 //!
 //! DB failures are surfaced as `DataError::Busy` (503, retryable) and never
 //! include a path, SQL text, or book title.
@@ -39,27 +38,22 @@ pub(crate) fn write_progress(
         }
     }
 
-    // The active check and the CAS share one `db.with` closure. `DbSlot` holds
-    // a single connection behind a mutex, so no other DB operation can run
-    // between the existence/page checks and the conditional update.
+    // The independent scan connection is serialized by SQLite's write lock,
+    // not by DbSlot's process-local connection mutex.
     let result: Result<Result<ProgressOutcome, DataError>, String> = state.db.with(|conn| {
-        let row = db::get_active_book(conn, id).map_err(|error| error.to_string())?;
-        let Some(row) = row else {
-            return Ok(Err(DataError::NotFound));
-        };
-        // Q1: PDF is an independent source format and is not writable through
-        // the Web API, even after PDF.js has filled in `page_count`.
-        if row.format == db::BOOK_FORMAT_PDF {
-            return Ok(Err(DataError::PdfUnsupported));
-        }
-        // Q2: an unknown page count has no valid page. Never fall back to the
-        // desktop clamp: it would silently rewrite the page and inflate history.
-        if row.page_count == 0 || page >= row.page_count {
-            return Ok(Err(DataError::InvalidParameter));
-        }
-        db::set_progress_cas(conn, id, page, scroll_pct, base_rev)
-            .map(Ok)
-            .map_err(|error| error.to_string())
+        db::set_progress_cas_checked(conn, id, page, scroll_pct, base_rev, |conn| {
+            let Some(row) = db::get_active_book(conn, id)? else {
+                return Ok(Some(DataError::NotFound));
+            };
+            if row.format == db::BOOK_FORMAT_PDF {
+                return Ok(Some(DataError::PdfUnsupported));
+            }
+            if row.page_count == 0 || page >= row.page_count {
+                return Ok(Some(DataError::InvalidParameter));
+            }
+            Ok(None)
+        })
+        .map_err(|error| error.to_string())
     });
 
     match result {
@@ -317,6 +311,56 @@ mod tests {
         assert_eq!(after.progress_rev, before.progress_rev);
         assert_eq!(after.updated_at, before.updated_at);
         assert_eq!(log_total(&state), log_before);
+    }
+
+    #[test]
+    fn concurrent_rescan_revalidates_under_database_write_lock() {
+        use std::sync::mpsc;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("mr-progress-race-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.db");
+        let scan_conn = db::open(&path).unwrap();
+        db::init_schema(&scan_conn).unwrap();
+        seed_image(&scan_conn, 10);
+        let state = Arc::new(AppState::new());
+        state.db.set(db::open(&path).unwrap());
+        scan_conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        db::upsert_book(&scan_conn, ID, "C:/library/book.zip", "书", 2).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_state = Arc::clone(&state);
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx
+                .send(write_progress(&worker_state, ID, 8, None, 0))
+                .unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        scan_conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err(),
+            DataError::InvalidParameter
+        );
+        worker.join().unwrap();
+        let after = row(&state);
+        assert_eq!(
+            (after.page_count, after.current_page, after.progress_rev),
+            (2, 0, 0)
+        );
+        assert_eq!(log_total(&state), 0);
+        drop(state);
+        drop(scan_conn);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// An unavailable DB must be retryable (503), not a 500 or a panic.

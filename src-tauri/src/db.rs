@@ -868,7 +868,18 @@ pub fn set_progress(
     page: u32,
     pct: Option<f64>,
 ) -> Result<(), BackendError> {
-    let tx = conn.unchecked_transaction()?;
+    set_progress_resolved(conn, id, pct, |_| Ok(page))
+}
+
+/// Resolve the target page after acquiring the SQLite write lock.
+pub(crate) fn set_progress_resolved(
+    conn: &Connection,
+    id: &str,
+    pct: Option<f64>,
+    resolve: impl FnOnce(&Connection) -> Result<u32, BackendError>,
+) -> Result<(), BackendError> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let page = resolve(&tx)?;
     let pct_val = pct.unwrap_or(-1.0).clamp(-1.0, 1.0);
     // 一次性读出两个被持久化的进度字段；行不存在时为 None。
     let prev: Option<(i64, f64)> = tx
@@ -930,83 +941,107 @@ pub fn set_progress_cas(
     pct: Option<f64>,
     base_rev: i64,
 ) -> Result<ProgressOutcome, BackendError> {
+    let result = set_progress_cas_checked(conn, id, page, pct, base_rev, |_| {
+        Ok::<_, BackendError>(None::<std::convert::Infallible>)
+    })?;
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(never) => match never {},
+    }
+}
+
+/// Run a caller's validation under the same SQLite write lock as CAS.
+pub(crate) fn set_progress_cas_checked<E>(
+    conn: &Connection,
+    id: &str,
+    page: u32,
+    pct: Option<f64>,
+    base_rev: i64,
+    validate: impl FnOnce(&Connection) -> Result<Option<E>, BackendError>,
+) -> Result<Result<ProgressOutcome, E>, BackendError> {
     let pct_val = pct.unwrap_or(-1.0).clamp(-1.0, 1.0);
     conn.execute_batch("BEGIN IMMEDIATE")?;
-    let outcome = (|| -> Result<ProgressOutcome, BackendError> {
-        // 在写锁内读出被确认的那一行：版本、页码、条漫百分比、时间戳、软删标记。
-        // `removed=1` 与「行不存在」对 Web 必须是同一个结果——读取面
-        // `get_active_book` 已经这样过滤；写入面若不一致，同一 id 会出现
-        // 「GET 404 / PUT 200」的矛盾。
-        let current: Option<(i64, f64, i64, String, i64)> = conn
-            .query_row(
-                "SELECT current_page, scroll_pct, progress_rev, updated_at, removed
+    let outcome = (|| -> Result<Result<ProgressOutcome, E>, BackendError> {
+        if let Some(error) = validate(conn)? {
+            return Ok(Err(error));
+        }
+        let result = (|| -> Result<ProgressOutcome, BackendError> {
+            // 在写锁内读出被确认的那一行：版本、页码、条漫百分比、时间戳、软删标记。
+            // `removed=1` 与「行不存在」对 Web 必须是同一个结果——读取面
+            // `get_active_book` 已经这样过滤；写入面若不一致，同一 id 会出现
+            // 「GET 404 / PUT 200」的矛盾。
+            let current: Option<(i64, f64, i64, String, i64)> = conn
+                .query_row(
+                    "SELECT current_page, scroll_pct, progress_rev, updated_at, removed
                  FROM books WHERE id=?1",
-                params![id],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, f64>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, i64>(4)?,
-                    ))
-                },
-            )
-            .ok();
-        let Some((cur_page, cur_pct, cur_rev, cur_updated_at, removed)) = current else {
-            return Ok(ProgressOutcome::NotFound);
-        };
-        if removed != 0 {
-            return Ok(ProgressOutcome::NotFound);
-        }
-        if cur_rev != base_rev {
-            return Ok(ProgressOutcome::Conflict {
-                current_page: cur_page.max(0) as u32,
-                current_rev: cur_rev,
-                updated_at: cur_updated_at,
-            });
-        }
-        let cur_page = cur_page.max(0) as u32;
-        // 已经是目标状态：不写、不 bump rev，返回**库里现有的**权威值（幂等）。
-        if !progress_changed(cur_page, cur_pct, page, pct_val) {
-            return Ok(ProgressOutcome::Applied {
-                rev: cur_rev,
-                page: cur_page,
-                updated_at: cur_updated_at,
-            });
-        }
-        // 条件更新：版本必须仍等于 base_rev。写锁在手，这一步在理论上必然命中；
-        // `changes() == 0` 作为第二道防线，绝不静默覆盖。
-        // 同一个 `now` 既写库也返回给 HTTP 层，避免响应与落库值不一致。
-        let now = now_str();
-        let updated = conn.execute(
-            "UPDATE books SET current_page=?1, scroll_pct=?2, updated_at=?3,
+                    params![id],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, f64>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .ok();
+            let Some((cur_page, cur_pct, cur_rev, cur_updated_at, removed)) = current else {
+                return Ok(ProgressOutcome::NotFound);
+            };
+            if removed != 0 {
+                return Ok(ProgressOutcome::NotFound);
+            }
+            if cur_rev != base_rev {
+                return Ok(ProgressOutcome::Conflict {
+                    current_page: cur_page.max(0) as u32,
+                    current_rev: cur_rev,
+                    updated_at: cur_updated_at,
+                });
+            }
+            let cur_page = cur_page.max(0) as u32;
+            // 已经是目标状态：不写、不 bump rev，返回**库里现有的**权威值（幂等）。
+            if !progress_changed(cur_page, cur_pct, page, pct_val) {
+                return Ok(ProgressOutcome::Applied {
+                    rev: cur_rev,
+                    page: cur_page,
+                    updated_at: cur_updated_at,
+                });
+            }
+            // 条件更新：版本必须仍等于 base_rev。写锁在手，这一步在理论上必然命中；
+            // `changes() == 0` 作为第二道防线，绝不静默覆盖。
+            // 同一个 `now` 既写库也返回给 HTTP 层，避免响应与落库值不一致。
+            let now = now_str();
+            let updated = conn.execute(
+                "UPDATE books SET current_page=?1, scroll_pct=?2, updated_at=?3,
                 progress_rev=progress_rev+1
              WHERE id=?4 AND progress_rev=?5",
-            params![page as i64, pct_val, now, id, base_rev],
-        )?;
-        if updated == 0 {
-            return Ok(ProgressOutcome::Conflict {
-                current_page: cur_page,
-                current_rev: cur_rev,
-                updated_at: cur_updated_at,
-            });
-        }
-        // reading_log 的增量必须由**被确认的那一行**算出来——
-        // 不是客户端记忆，也不是另一次读。多端并发时算错就会重复计数。
-        if page > cur_page {
-            let delta = (page - cur_page) as i64;
-            conn.execute(
-                "INSERT INTO reading_log(date, book_id, pages) VALUES (?1, ?2, ?3)
-                 ON CONFLICT DO UPDATE SET pages = reading_log.pages + excluded.pages",
-                params![today_str(), id, delta],
+                params![page as i64, pct_val, now, id, base_rev],
             )?;
-        }
-        Ok(ProgressOutcome::Applied {
-            rev: cur_rev + 1,
-            page,
-            updated_at: now,
-        })
+            if updated == 0 {
+                return Ok(ProgressOutcome::Conflict {
+                    current_page: cur_page,
+                    current_rev: cur_rev,
+                    updated_at: cur_updated_at,
+                });
+            }
+            // reading_log 的增量必须由**被确认的那一行**算出来——
+            // 不是客户端记忆，也不是另一次读。多端并发时算错就会重复计数。
+            if page > cur_page {
+                let delta = (page - cur_page) as i64;
+                conn.execute(
+                    "INSERT INTO reading_log(date, book_id, pages) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO UPDATE SET pages = reading_log.pages + excluded.pages",
+                    params![today_str(), id, delta],
+                )?;
+            }
+            Ok(ProgressOutcome::Applied {
+                rev: cur_rev + 1,
+                page,
+                updated_at: now,
+            })
+        })()?;
+        Ok(Ok(result))
     })();
     match outcome {
         Ok(result) => match conn.execute_batch("COMMIT") {

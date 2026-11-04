@@ -3589,11 +3589,20 @@ export function checkAntiMockGuards(root, report) {
     }
 
     // 5. Service owns DB rules; the app adapter only forwards.
-    if ((serviceSource.match(/set_progress_cas\(/g) || []).length !== 1) {
-      errors.push("写服务必须恰好调用一次 set_progress_cas");
+    if ((serviceSource.match(/set_progress_cas_checked\(/g) || []).length !== 1) {
+      errors.push("写服务必须恰好调用一次事务内校验的 set_progress_cas_checked");
     }
     if (!serviceSource.includes("get_active_book")) {
       errors.push("写服务未校验 active 书");
+    }
+    const dbSource = productionOnly(readSource(path.join("src-tauri", "src", "db.rs")));
+    const checked = dbSource.slice(dbSource.indexOf("fn set_progress_cas_checked"));
+    const begin = checked.indexOf('BEGIN IMMEDIATE');
+    const validate = checked.indexOf('validate(conn)');
+    const update = checked.indexOf('UPDATE books SET current_page');
+    if (begin < 0 || validate <= begin || update <= validate ||
+        !/set_progress_cas_checked\([\s\S]*?\|conn\|[\s\S]*?get_active_book/.test(serviceSource)) {
+      errors.push("进度页数与状态校验必须位于 CAS 写事务中");
     }
     if (
       !serviceSource.includes("BOOK_FORMAT_PDF") ||
@@ -3845,7 +3854,6 @@ export function checkAntiMockGuards(root, report) {
     for (const token of [
       "VARY",
       "PRIVATE_NO_CACHE",
-      "PRIVATE_MAX_AGE_300",
       "NO_STORE",
       "ETAG",
       "not_modified",
@@ -3857,6 +3865,9 @@ export function checkAntiMockGuards(root, report) {
     }
     if (/\bpublic\b/.test(data)) {
       errors.push("D2 出现 public 缓存");
+    }
+    if (!/Self::Layout\(dims\)\s*=>\s*json_response\([\s\S]*?PRIVATE_NO_CACHE/.test(data)) {
+      errors.push("布局缓存必须重新验证，避免重扫后继续使用旧布局");
     }
     for (const [label, source] of [
       ["data.rs", data],
@@ -4040,8 +4051,8 @@ export function checkAntiMockGuards(root, report) {
     }
 
     // D3 service owns the database rules; the adapter only forwards.
-    if ((service.match(/set_progress_cas\(/g) || []).length !== 1) {
-      errors.push("D3 写服务必须恰好调用一次 set_progress_cas");
+    if ((service.match(/set_progress_cas_checked\(/g) || []).length !== 1) {
+      errors.push("D3 写服务必须恰好调用一次事务内校验的 set_progress_cas_checked");
     }
     for (const token of [
       "get_active_book",

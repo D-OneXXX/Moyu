@@ -38,6 +38,8 @@ try {
   await wait("[...document.querySelectorAll('.book')].some(x=>x.textContent.includes('Synthetic Book'))");
   await page.eval("document.querySelector('.book').click()");
   await wait("document.querySelector('.tiles img')?.complete && document.querySelector('.tiles img')?.naturalWidth > 0 && document.querySelector('#tools')");
+  assert.equal(await page.eval("document.querySelectorAll('.tiles > *').length"), 5, "1x10000 image must create five actual tiles");
+  assert.equal(await page.eval("!!document.querySelector('.tiles .error')"), false);
   await page.eval("document.querySelector('#tools button.primary').click()");
   await wait("document.querySelector('#tools span')?.textContent.includes('2 / 2') && document.querySelector('.tiles img')?.naturalWidth > 0");
   console.log(`Browser PID ${child.pid}; CDP loopback port ${cdpPort}; real HTTPS pairing, image and progress flow passed.`);

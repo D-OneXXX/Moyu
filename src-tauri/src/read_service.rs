@@ -249,6 +249,7 @@ pub(crate) fn page_asset(
     encode_data_url: bool,
     use_l1: bool,
 ) -> Result<ImageAsset, DataError> {
+    let cache_epoch = state.refresh_epoch();
     let row = active_row(state, id)?;
     if row.format == db::BOOK_FORMAT_PDF {
         return Err(DataError::PdfUnsupported);
@@ -286,10 +287,14 @@ pub(crate) fn page_asset(
         pipeline::render_raw_asset(&raw, Some(width), None, false)
     }
     .map_err(|_| DataError::SourceMissing)?;
-    state.render.put(id, index, width, 0, &rendered.bytes);
+    state.cache_if_current(cache_epoch, || {
+        state.render.put(id, index, width, 0, &rendered.bytes)
+    });
     state.note_cache_write(raw.bytes.len().saturating_add(rendered.bytes.len()));
     if use_l1 && encode_data_url {
-        state.cache.put_page(id, index, width, 0, rendered.clone());
+        state.cache_if_current(cache_epoch, || {
+            state.cache.put_page(id, index, width, 0, rendered.clone())
+        });
     }
     Ok(asset_from_rendered(rendered, encode_data_url))
 }
@@ -297,6 +302,7 @@ pub(crate) fn page_asset(
 /// First-page cover. Image books use the existing render cache; PDF covers use
 /// the cache written by the desktop PDF.js path. No database write.
 pub(crate) fn thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataError> {
+    let cache_epoch = state.refresh_epoch();
     let row = active_row(state, id)?;
     if row.format == db::BOOK_FORMAT_PDF {
         return pdf_thumb_asset(state, id);
@@ -320,7 +326,9 @@ pub(crate) fn thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset,
     let raw = handle.read_raw(0).map_err(|_| DataError::SourceMissing)?;
     let rendered = pipeline::render_raw_asset(&raw, Some(edge), Some(edge), false)
         .map_err(|_| DataError::SourceMissing)?;
-    state.render.put(id, 0, edge, edge, &rendered.bytes);
+    state.cache_if_current(cache_epoch, || {
+        state.render.put(id, 0, edge, edge, &rendered.bytes)
+    });
     state.note_cache_write(raw.bytes.len().saturating_add(rendered.bytes.len()));
     Ok(asset_from_rendered(rendered, false))
 }
@@ -334,6 +342,7 @@ pub(crate) fn tile_asset(
     tile: u32,
     width: u32,
 ) -> Result<TileImage, DataError> {
+    let cache_epoch = state.refresh_epoch();
     let row = active_row(state, id)?;
     if row.format == db::BOOK_FORMAT_PDF {
         return Err(DataError::PdfUnsupported);
@@ -409,9 +418,11 @@ pub(crate) fn tile_asset(
     let mut written = raw.bytes.len();
     for (tile_index, page) in pages.iter().enumerate() {
         written = written.saturating_add(page.bytes.len());
-        state
-            .render
-            .put_tile(id, index, tile_index as u32, width, &page.bytes);
+        state.cache_if_current(cache_epoch, || {
+            state
+                .render
+                .put_tile(id, index, tile_index as u32, width, &page.bytes);
+        });
     }
     state.note_cache_write(written);
     let page = pages
@@ -544,6 +555,7 @@ pub(crate) fn layout_sync(
     book_id: &str,
     persist_online: bool,
 ) -> Result<Vec<PageDim>, BackendError> {
+    let cache_epoch = state.refresh_epoch();
     if let Some(cached) = state.webtoon_layouts.lock().get(book_id).cloned() {
         return Ok(page_dims(&cached));
     }
@@ -603,10 +615,12 @@ pub(crate) fn layout_sync(
                 }
             }
         }
-        state
-            .webtoon_layouts
-            .lock()
-            .insert(book_id.to_string(), Arc::new(dims.clone()));
+        state.cache_if_current(cache_epoch, || {
+            state
+                .webtoon_layouts
+                .lock()
+                .insert(book_id.to_string(), Arc::new(dims.clone()));
+        });
         return Ok(page_dims(&dims));
     }
 
@@ -636,10 +650,12 @@ pub(crate) fn layout_sync(
         };
         dims.push((width, height));
     }
-    state
-        .webtoon_layouts
-        .lock()
-        .insert(book_id.to_string(), Arc::new(dims.clone()));
+    state.cache_if_current(cache_epoch, || {
+        state
+            .webtoon_layouts
+            .lock()
+            .insert(book_id.to_string(), Arc::new(dims.clone()));
+    });
     Ok(page_dims(&dims))
 }
 
@@ -1826,10 +1842,38 @@ mod tests {
     }
 
     #[test]
+    fn narrow_web_image_uses_real_output_height_for_tile_count() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("web-tile-narrow");
+        std::fs::write(tree.0.join("page.png"), png_bytes(1, 10_000)).unwrap();
+        let id = id_for('8');
+        insert_book(
+            &state,
+            &id,
+            "Narrow",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        let first = tile_asset(&state, &id, 0, 0, 320).unwrap();
+        assert_eq!(first.tile_count, 5);
+        let last = tile_asset(&state, &id, 0, 4, 320).unwrap();
+        assert_eq!(last.tile_count, 5);
+        assert_eq!(
+            tile_asset(&state, &id, 0, 5, 320),
+            Err(DataError::TileOutOfRange { max_tile: 4 })
+        );
+    }
+
+    #[test]
     fn web_tile_rejects_excessive_tile_count_before_cache_or_decode() {
         let state = Arc::new(state_with_db());
         let tree = TempTree::new("web-tile-budget");
-        std::fs::write(tree.0.join("page.png"), png_bytes(1, 10_000)).unwrap();
+        std::fs::write(tree.0.join("page.png"), png_bytes(1, 2_100_000)).unwrap();
         let id = id_for('9');
         insert_book(
             &state,

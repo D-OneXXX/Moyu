@@ -15,6 +15,7 @@ import {
   type BookInfo,
   type PageDim,
 } from "../../lib/tauri";
+import { webtoonTileCount } from "../../lib/webtoonGeometry";
 import ErrorState from "../ErrorState";
 import PixelPet from "../PixelPet";
 import { useI18n } from "@/i18n";
@@ -110,47 +111,6 @@ function pageIndexAt(pages: readonly PageLayout[], y: number): number {
     }
   }
   return ans;
-}
-
-/**
- * 逻辑页内的切片数：**必须与后端实际物化片数逐位一致**。
- *
- * 后端两步（src-tauri/src/pipeline.rs）：
- * 1. `webtoon_tile_count`（:52）：
- *      dispH  = ceil(origH * renderW / origW)
- *      tiles  = max(1, ceil(dispH / WEBTOON_TILE_H))
- * 2. `render_webtoon_tiles`（:391）再收一道：
- *      tiles  = tiles.min(displayH.max(1))
- *    其中 displayH 是 `fit_size(orig, renderW)` 的显示高（**只缩不放**）。
- *
- * 这里用与 Rust 相同的 IEEE-754 运算顺序（先乘后除、`Math.round` 对正数
- * 等价于 f64 `round`），保证边界（恰好 2048 的整数倍）不因浮点漂移差 1 片。
- *
- * 宽/高/渲染宽任一为 0（后端布局不会产出，但脏头可能）→ 1 片，与后端
- * `webtoon_tile_count` 的零值兜底一致。
- *
- * 渲染宽 `renderW`（设备像素）由容器宽度推出，可能与源宽不同：
- * - 源宽 > renderW：先缩到 renderW 再估高；
- * - 源宽 < renderW：后端不放大（`fit_size` 只缩不放），但片数仍按
- *   `origH * renderW / origW` 计算——两端同公式，片数仍一致，只是每片更矮。
- *
- * 注意：这里刻意不复用 `dispH/contentWidth` 的 CSS 几何，避免 CSS 取整
- * 让片数与后端漂移；切片数只影响取图，不影响页码/进度。
- */
-function webtoonTileCount(
-  origW: number,
-  origH: number,
-  renderW: number,
-): number {
-  if (!(origW > 0) || !(origH > 0) || !(renderW > 0)) return 1;
-  const wanted = Math.ceil((origH * renderW) / origW);
-  const tiles = Math.max(1, Math.ceil(wanted / WEBTOON_TILE_H));
-  // 与后端 min(th) 兜底一致（`fit_size` 不放大：源宽 ≤ 渲染宽时显示高 = 源高）。
-  const displayH =
-    origW > renderW
-      ? Math.max(1, Math.round(origH * (renderW / origW)))
-      : origH;
-  return Math.max(1, Math.min(tiles, displayH));
 }
 
 /**
@@ -370,7 +330,7 @@ const WebtoonView = memo(function WebtoonView({
       const dispH = Math.max(1, Math.round(ratio * contentWidth));
       // 片数只看「源尺寸 + 渲染宽」，与后端同公式；脏尺寸回落 1 片
       // （后端 webtoon_tile_count 对 0 宽/0 高同样返回 1）。
-      const tiles = valid ? webtoonTileCount(d.width, d.height, W) : 1;
+      const tiles = valid ? webtoonTileCount(d.width, d.height, W, WEBTOON_TILE_H) : 1;
       pages.push({ dispH, tiles, start: acc });
       acc += dispH;
     }

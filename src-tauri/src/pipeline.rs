@@ -52,22 +52,13 @@ const MAX_SOURCE_PIXELS: u64 = 160_000_000;
 pub(crate) const MAX_WEBTOON_WEB_TILES: u32 = 1024;
 pub(crate) const MAX_WEBTOON_WEB_ENCODED_BYTES: usize = 128 * 1024 * 1024;
 
-/// 条漫切片数：把**单个逻辑页**（源尺寸 `orig_w × orig_h`）在显示宽度
-/// `render_w` 下的显示高度均分为 ≤`WEBTOON_TILE_H` 的片。
-///
-/// 语义边界（页/片解耦）：
-/// - 返回值只描述「逻辑页 P 内部切几片」，**不是页码**；上层进度/SQLite 一律用
-///   逻辑页下标 P（`get_webtoon_layout` 的数组下标 / `book.pageCount`）。
-/// - 前端 `Webtoon.tsx::webtoonTileCount` 必须用同一运算顺序
-///   （`ceil(ceil(orig_h * render_w / orig_w) / TILE_H)`，至少 1，任一为 0 → 1）。
-/// - 实际物化片数还会 `.min(display_h)`（见 `render_webtoon_tiles`），
-///   保证极端长宽比下每片至少 1 显示行；前端镜像同一兜底。
+/// 条漫切片数按实际输出高度计算；只缩小、不放大，与前端一致。
 pub fn webtoon_tile_count(orig_w: u32, orig_h: u32, render_w: u32) -> u32 {
     if orig_w == 0 || orig_h == 0 || render_w == 0 {
         return 1;
     }
-    let disp_h = (orig_h as f64 * render_w as f64 / orig_w as f64).ceil() as u64;
-    disp_h.div_ceil(WEBTOON_TILE_H as u64).max(1) as u32
+    let (_, height) = fit_size(orig_w, orig_h, Some(render_w), None);
+    height.div_ceil(WEBTOON_TILE_H).max(1)
 }
 
 /// 解码后待缓存/待返回的成品图（已是最终输出尺寸）。
@@ -470,7 +461,7 @@ fn render_webtoon_tiles_with(
             "条漫显示尺寸非法（{tw}×{th}）"
         )));
     }
-    // 片数与前端 `webtoon_tile_count` 公式一致（前端 Webtoon.tsx 同公式）。
+    // 片数与前端 webtoonGeometry.ts 按实际输出尺寸的公式一致。
     // 上限再收一道：每片至少 1 显示行（极端比例下不会产生 0 高切片）。
     let tiles = webtoon_tile_count(sw, sh, max_w).min(th.max(1));
     if web_limits.is_some_and(|(max_tiles, _)| tiles > max_tiles) {
@@ -680,7 +671,7 @@ mod tests {
 
     #[test]
     fn web_tile_budget_rejects_extreme_geometry_before_materialization() {
-        let raw = ultra_tall_page(1, 10_000);
+        let raw = ultra_tall_page(1, 2_100_000);
         assert!(matches!(
             render_webtoon_tiles_asset(&raw, 320, false),
             Err(BackendError::WebtoonTooLarge)
@@ -938,10 +929,8 @@ mod tests {
             (400u32, 10000u32, 800u32, "源宽 < 请求宽（不放大）"),
             (60u32, 6000u32, 320u32, "极端竖长条 100:1"),
             (6000u32, 120u32, 320u32, "极端横长条 50:1"),
-            // 2048 整数倍边界：928 × 448 / 7 = 59392 = 2048 × 29。
-            // 前端若先算 ratio 再乘 W，浮点会得到 59392.00000000001 → 30 片，
-            // 而去请求第 30 片（后端只物化 29 片）会直接越界报错。
-            (7u32, 928u32, 448u32, "2048 整数倍边界"),
+            // 请求宽大于源宽：即使按请求宽会落在整数倍边界，也不应放大。
+            (7u32, 928u32, 448u32, "窄图不放大"),
         ];
         for (sw, sh, rw, why) in cases {
             let raw = ultra_tall_page(sw, sh);
@@ -972,9 +961,7 @@ mod tests {
         }
     }
 
-    /// 计数公式的零值 / ceil 边界兜底，以及「极端 1px 宽」时按显示高收敛：
-    /// `webtoon_tile_count` 可能大于显示行数，`render_webtoon_tiles` 用
-    /// `.min(display_h)` 保证每片 ≥1 显示行；前端 `webtoonTileCount` 镜像同一顺序。
+    /// 计数公式的零值、边界和窄图不放大行为。
     #[test]
     fn webtoon_tile_count_guards_and_extreme_narrow() {
         // 宽/高/渲染宽任一为 0 → 1（与前端 0 宽兜底一致）。
@@ -984,20 +971,20 @@ mod tests {
         // ceil 边界：正好一片 / 多一行即两片。
         assert_eq!(webtoon_tile_count(100, 2048, 100), 1);
         assert_eq!(webtoon_tile_count(100, 2049, 100), 2);
-        // 源宽 < 请求宽：仍按请求宽估高（两端同公式），后端渲染不放大。
-        assert_eq!(webtoon_tile_count(400, 10000, 800), 10);
-        // 2048 整数倍边界（928 × 448 / 7 = 59392 = 2048 × 29）：必须恰好 29 片。
-        assert_eq!(webtoon_tile_count(7, 928, 448), 29);
+        // 源宽 < 请求宽：按未放大的实际高度计算。
+        assert_eq!(webtoon_tile_count(400, 10000, 800), 5);
+        // 窄图不会放大：928 高只需 1 片。
+        assert_eq!(webtoon_tile_count(7, 928, 448), 1);
 
-        // 1px 宽 + 2160 渲染宽：ceil(300 * 2160 / 2048) = 317 > 显示高 300。
+        // 1px 宽 + 2160 请求宽仍只需 1 片。
         let raw = ultra_tall_page(1, 300);
-        assert_eq!(webtoon_tile_count(1, 300, 2160), 317);
+        assert_eq!(webtoon_tile_count(1, 300, 2160), 1);
         let (tiles, pages) = render_webtoon_tiles(&raw, 2160).unwrap();
-        assert_eq!(tiles, 300, "实际片数受显示高兜底，每片 ≥1 行");
-        assert_eq!(pages.len() as u32, 300);
+        assert_eq!(tiles, 1, "不放大时按源高计算");
+        assert_eq!(pages.len() as u32, 1);
         let total: u32 = pages.iter().map(|p| p.height).sum();
         assert_eq!(total, 300);
-        assert!(pages.iter().all(|p| p.height == 1));
+        assert!(pages.iter().all(|p| p.height == 300));
         assert!(pages.iter().all(|p| p.orig_height == 300));
     }
 

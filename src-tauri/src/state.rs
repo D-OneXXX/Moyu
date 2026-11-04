@@ -339,6 +339,9 @@ pub struct AppState {
     pub sources: Mutex<HashMap<String, Arc<SourceHandle>>>,
     /// 源句柄代际：清单/设置/删除变化时递增，防止旧数据打开的新句柄插回池中。
     source_epoch: AtomicU64,
+    // Serialize refresh invalidation with conditional cache writes by old tasks.
+    refresh_epoch: AtomicU64,
+    refresh_cache_gate: Mutex<()>,
     /// 邻页预取在途标记，防止快速翻页时重复渲染同一页。
     pub prefetching: Mutex<HashSet<(String, u32, u32, u32)>>,
     /// 条漫切片"整页物化"全局锁：一次只解码一张长图到显示宽度，
@@ -383,6 +386,8 @@ impl AppState {
             http: reqwest::Client::new(),
             sources: Mutex::new(HashMap::new()),
             source_epoch: AtomicU64::new(0),
+            refresh_epoch: AtomicU64::new(0),
+            refresh_cache_gate: Mutex::new(()),
             prefetching: Mutex::new(HashSet::new()),
             tile_lock: Mutex::new(()),
             webtoon_layouts: Mutex::new(HashMap::new()),
@@ -623,6 +628,35 @@ impl AppState {
         let mut pool = self.sources.lock();
         self.source_epoch.fetch_add(1, Ordering::SeqCst);
         pool.clear();
+    }
+
+    /// Snapshot before reading a source; stale work may finish but cannot refill caches.
+    pub(crate) fn refresh_epoch(&self) -> u64 {
+        self.refresh_epoch.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn cache_if_current(&self, epoch: u64, write: impl FnOnce()) -> bool {
+        let _guard = self.refresh_cache_gate.lock();
+        if self.refresh_epoch.load(Ordering::SeqCst) != epoch {
+            return false;
+        }
+        write();
+        true
+    }
+
+    /// Run after successful local scans, including repeated imports. Serializes
+    /// invalidation with in-flight cache writes and invalidates source handles.
+    pub(crate) fn invalidate_refreshed_books(&self, book_ids: &[String]) {
+        if book_ids.is_empty() {
+            return;
+        }
+        let _guard = self.refresh_cache_gate.lock();
+        self.refresh_epoch.fetch_add(1, Ordering::SeqCst);
+        self.invalidate_sources();
+        for id in book_ids {
+            self.remove_book_caches(id);
+            self.webtoon_layouts.lock().remove(id);
+        }
     }
 
     /// 当前磁盘缓存软上限（字节）。内存设置只做展示，真正淘汰在空闲/启动时执行。

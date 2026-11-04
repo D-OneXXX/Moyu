@@ -392,8 +392,7 @@ fn archive_stamp(path: &Path) -> Option<db::SourceStamp> {
 
 /// 扫描一本书：打开源 → 取页数 → upsert。
 ///
-/// 已入库的压缩包若 mtime/字节数都未变，直接复用页数，不再解包；
-/// 目录始终全量扫描（嵌套文件变化不会可靠地反映在目录 mtime 上）。
+/// 显式扫描总是重新读取源目录；文件时间和字节数相同也可能换了内容。
 fn scan_single_book(conn: &rusqlite::Connection, path: &Path) -> Result<BookInfo, BackendError> {
     // 书库 id = sha256(path)，path 会落 SQLite/JSON；非 UTF-8 必须显式拒绝，
     // 否则 lossy 转换可能让两本不同的书落到同一个 id。
@@ -432,17 +431,6 @@ fn scan_single_book(conn: &rusqlite::Connection, path: &Path) -> Result<BookInfo
             .map(to_book_info);
     }
     let stamp = archive_stamp(path);
-    if let (Some(stamp), Ok(Some(row))) = (stamp, db::get_book(conn, &id)) {
-        if row.source_type == "local"
-            && row.page_count > 0
-            && db::source_stamp(conn, &id)? == Some(stamp)
-        {
-            let title = title_for(path);
-            // 仍然 upsert：重复导入会刷新 updated_at 并恢复软删，只是跳过解包。
-            db::upsert_book(conn, &id, &path_str, &title, row.page_count)?;
-            return Ok(to_book_info(row));
-        }
-    }
     let result = (|| {
         let src = source::open_source(path)?;
         let count = src.page_count()? as u32;
@@ -557,13 +545,29 @@ where
         .map_err(err)
 }
 
+fn scan_and_invalidate(
+    state: &AppState,
+    db_path: PathBuf,
+    path: &str,
+) -> Result<(Vec<BookInfo>, Vec<String>), BackendError> {
+    let result = blocking_scan(db_path, path)?;
+    let ids = result
+        .0
+        .iter()
+        .map(|book| book.id.clone())
+        .collect::<Vec<_>>();
+    state.invalidate_refreshed_books(&ids);
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn scan_library(
     state: State<'_, Arc<AppState>>,
     path: String,
 ) -> Result<ScanResult, String> {
     let db_path = state.db_path();
-    let (books, errors) = blocking(move || blocking_scan(db_path, &path)).await?;
+    let st = state.inner().clone();
+    let (books, errors) = blocking(move || scan_and_invalidate(&st, db_path, &path)).await?;
     // 刷新后全量回读；文件 stat / meta_json 解析放在 DB 锁外，避免阻塞阅读进度写入。
     let rows = state
         .db
@@ -695,6 +699,20 @@ pub(crate) fn import_blocking(
     Ok(out)
 }
 
+fn import_and_invalidate(
+    state: &AppState,
+    db_path: PathBuf,
+    paths: Vec<String>,
+) -> Result<Vec<ImportItemResult>, BackendError> {
+    let items = import_blocking(db_path, paths)?;
+    let ids = items
+        .iter()
+        .filter_map(|item| item.book.as_ref().map(|book| book.id.clone()))
+        .collect::<Vec<_>>();
+    state.invalidate_refreshed_books(&ids);
+    Ok(items)
+}
+
 /// 导入书籍（文件/文件夹路径数组；同路径去重，重复导入不入库）。
 #[tauri::command]
 pub async fn import_books(
@@ -702,7 +720,8 @@ pub async fn import_books(
     paths: Vec<String>,
 ) -> Result<ImportResult, String> {
     let db_path = state.db_path();
-    let items = blocking(move || import_blocking(db_path, paths)).await?;
+    let st = state.inner().clone();
+    let items = blocking(move || import_and_invalidate(&st, db_path, paths)).await?;
     let (mut added, mut restored, mut skipped, mut failed) = (0usize, 0, 0, 0);
     for it in &items {
         match it.status.as_str() {
@@ -1065,6 +1084,7 @@ pub async fn get_page(
     max_width: Option<u32>,
     max_height: Option<u32>,
 ) -> Result<PageImage, String> {
+    let cache_epoch = state.refresh_epoch();
     let w = max_width.unwrap_or(0);
     let h = max_height.unwrap_or(0);
     // 1) L1 内存。
@@ -1106,7 +1126,9 @@ pub async fn get_page(
         let raw = handle.read_raw(index as usize)?;
         let raw_bytes = raw.bytes.len();
         let page = pipeline::render_raw(&raw, max_width, max_height)?;
-        st.render.put(&book, index, w, h, &page.bytes);
+        st.cache_if_current(cache_epoch, || {
+            st.render.put(&book, index, w, h, &page.bytes)
+        });
         st.note_cache_write(raw_bytes.saturating_add(page.bytes.len()));
         Ok(page)
     })
@@ -1127,9 +1149,11 @@ pub async fn get_page(
             return Err(e);
         }
     };
-    state
-        .cache
-        .put_page(&book_id, index, w, h, rendered.clone());
+    state.cache_if_current(cache_epoch, || {
+        state
+            .cache
+            .put_page(&book_id, index, w, h, rendered.clone());
+    });
     prefetch_neighbors(&state, &book_id, is_online, index, w, h);
     Ok(to_page_image(index, rendered))
 }
@@ -1148,6 +1172,7 @@ fn prefetch_neighbors(
     let st = state.inner().clone();
     let book = book_id.to_string();
     tauri::async_runtime::spawn_blocking(move || {
+        let cache_epoch = st.refresh_epoch();
         let handle = match st.source_handle_for_book(&book) {
             Ok(h) => h,
             Err(_) => return,
@@ -1177,13 +1202,15 @@ fn prefetch_neighbors(
                 .unwrap_or_else(|| {
                     handle.read_raw(t as usize).and_then(|raw| {
                         let p = pipeline::render_raw(&raw, mw, mh)?;
-                        st.render.put(&book, t, w, h, &p.bytes);
+                        st.cache_if_current(cache_epoch, || {
+                            st.render.put(&book, t, w, h, &p.bytes)
+                        });
                         Ok(p)
                     })
                 });
             if let Ok(p) = page {
                 let written = p.bytes.len();
-                st.cache.put_page(&book, t, w, h, p);
+                st.cache_if_current(cache_epoch, || st.cache.put_page(&book, t, w, h, p));
                 st.note_cache_write(written);
             }
             st.prefetching.lock().remove(&key);
@@ -1197,6 +1224,7 @@ pub async fn get_thumbnail(
     book_id: String,
     max_size: Option<u32>,
 ) -> Result<PageImage, String> {
+    let cache_epoch = state.refresh_epoch();
     if let Some(hit) = state.cache.get_thumb(&book_id) {
         return Ok(to_page_image(0, hit));
     }
@@ -1232,7 +1260,9 @@ pub async fn get_thumbnail(
         let raw = handle.read_raw(0)?;
         let raw_bytes = raw.bytes.len();
         let page = pipeline::render_raw(&raw, Some(edge), Some(edge))?;
-        st.render.put(&book, 0, edge, edge, &page.bytes);
+        st.cache_if_current(cache_epoch, || {
+            st.render.put(&book, 0, edge, edge, &page.bytes)
+        });
         st.note_cache_write(raw_bytes.saturating_add(page.bytes.len()));
         Ok(page)
     })
@@ -1251,7 +1281,9 @@ pub async fn get_thumbnail(
             return Err(e);
         }
     };
-    state.cache.put_thumb(&book_id, rendered.clone());
+    state.cache_if_current(cache_epoch, || {
+        state.cache.put_thumb(&book_id, rendered.clone())
+    });
     Ok(to_page_image(0, rendered))
 }
 
@@ -1647,6 +1679,19 @@ fn clamp_reading_page(row: &db::BookRow, page: u32) -> u32 {
     page.min(row.page_count.saturating_sub(1))
 }
 
+fn set_progress_desktop(
+    conn: &rusqlite::Connection,
+    book_id: &str,
+    page: u32,
+    pct: Option<f64>,
+) -> Result<(), BackendError> {
+    db::set_progress_resolved(conn, book_id, pct, |tx| {
+        let row =
+            db::get_book(tx, book_id)?.ok_or_else(|| BackendError::Msg("书籍不存在".into()))?;
+        Ok(clamp_reading_page(&row, page))
+    })
+}
+
 #[tauri::command]
 pub async fn set_progress(
     state: State<'_, Arc<AppState>>,
@@ -1654,16 +1699,11 @@ pub async fn set_progress(
     page: u32,
     scroll_pct: Option<f64>,
 ) -> Result<(), String> {
-    // 页码钳制与写入必须在同一 DB 锁内完成，避免两次 db.with 之间
-    // 书籍被删除/页数变化导致写入越界。
+    // 重扫使用另一连接，必须在同一个 SQLite 写事务内读取页数并钳制。
     let pct = scroll_pct.map(|p| p.clamp(0.0, 1.0));
-    state.db.with(|conn| {
-        let row = db::get_book(conn, &book_id)
-            .map_err(err)?
-            .ok_or_else(|| "书籍不存在".to_string())?;
-        let clamped = clamp_reading_page(&row, page);
-        db::set_progress(conn, &book_id, clamped, pct).map_err(err)
-    })
+    state
+        .db
+        .with(|conn| set_progress_desktop(conn, &book_id, page, pct).map_err(err))
 }
 
 /// 记录「最近打开」（方案 C）：**只**写 `last_opened_at`。
@@ -1712,6 +1752,7 @@ pub async fn get_webtoon_tile(
     tile: u32,
     max_width: u32,
 ) -> Result<PageImage, String> {
+    let cache_epoch = state.refresh_epoch();
     let w = max_width.clamp(320, 2160);
     // 1) L1。
     if let Some(hit) = state.cache.get_tile(&book_id, index, tile, w) {
@@ -1771,7 +1812,9 @@ pub async fn get_webtoon_tile(
         let mut written = raw.bytes.len();
         for (t, p) in pages.iter().enumerate() {
             written = written.saturating_add(p.bytes.len());
-            st.render.put_tile(&book, index, t as u32, w, &p.bytes);
+            st.cache_if_current(cache_epoch, || {
+                st.render.put_tile(&book, index, t as u32, w, &p.bytes)
+            });
         }
         st.note_cache_write(written);
         Ok(pages.into_iter().nth(tile as usize).expect("切片在界内"))
@@ -1792,9 +1835,11 @@ pub async fn get_webtoon_tile(
             return Err(e);
         }
     };
-    state
-        .cache
-        .put_tile(&book_id, index, tile, w, rendered.clone());
+    state.cache_if_current(cache_epoch, || {
+        state
+            .cache
+            .put_tile(&book_id, index, tile, w, rendered.clone());
+    });
     Ok(to_page_image(index, rendered))
 }
 
@@ -3361,6 +3406,145 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn desktop_progress_clamps_after_concurrent_rescan() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = test_temp_dir("desktop-progress-race");
+        let path = dir.join("library.db");
+        let scan = db::open(&path).unwrap();
+        db::init_schema(&scan).unwrap();
+        db::upsert_book(&scan, "book", "book", "Book", 10).unwrap();
+        scan.execute_batch("BEGIN IMMEDIATE").unwrap();
+        db::upsert_book(&scan, "book", "book", "Book", 2).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            let conn = db::open(worker_path).unwrap();
+            started_tx.send(()).unwrap();
+            done_tx
+                .send(set_progress_desktop(&conn, "book", 8, None).is_ok())
+                .unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        scan.execute_batch("COMMIT").unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
+        let book = db::get_book(&scan, "book").unwrap().unwrap();
+        assert_eq!((book.page_count, book.current_page), (2, 1));
+        let pages: i64 = scan
+            .query_row(
+                "SELECT COALESCE(SUM(pages),0) FROM reading_log WHERE book_id='book'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pages, 1);
+        drop(scan);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn refresh_invalidates_source_layout_and_caches_and_rejects_old_writes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = test_temp_dir("scan-cache-race");
+        let book_dir = dir.join("book");
+        std::fs::create_dir_all(&book_dir).unwrap();
+        image::RgbImage::from_pixel(20, 30, image::Rgb([255, 0, 0]))
+            .save(book_dir.join("1.png"))
+            .unwrap();
+        image::RgbImage::from_pixel(20, 40, image::Rgb([0, 255, 0]))
+            .save(book_dir.join("2.png"))
+            .unwrap();
+        let db_path = dir.join("library.db");
+        let conn = db::open(&db_path).unwrap();
+        db::init_schema(&conn).unwrap();
+        let mut app = AppState::new();
+        app.render = crate::render_cache::RenderCache::new(dir.join("render"));
+        app.online_cache = Arc::new(crate::disk_cache::OnlinePageCache::new(dir.join("online")));
+        app.db.set(conn);
+        let state = Arc::new(app);
+        let path = book_dir.to_string_lossy().to_string();
+        let initial = import_and_invalidate(&state, db_path.clone(), vec![path.clone()]).unwrap();
+        let id = initial[0].book.as_ref().unwrap().id.clone();
+        assert_eq!(
+            state
+                .source_handle_for_book(&id)
+                .unwrap()
+                .page_count()
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            crate::read_service::layout_sync(&state, &id, false)
+                .unwrap()
+                .len(),
+            2
+        );
+        let old_image = crate::read_service::page_asset(&state, &id, 0, 320, false, false)
+            .unwrap()
+            .bytes;
+        assert!(state.render.get(&id, 0, 320, 0).is_some());
+
+        let old_epoch = state.refresh_epoch();
+        let (go_tx, go_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let old_state = Arc::clone(&state);
+        let old_id = id.clone();
+        let stale_bytes = old_image.clone();
+        let worker = std::thread::spawn(move || {
+            go_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let stored = old_state.cache_if_current(old_epoch, || {
+                old_state.render.put(&old_id, 0, 320, 0, &stale_bytes);
+                old_state
+                    .webtoon_layouts
+                    .lock()
+                    .insert(old_id.clone(), Arc::new(vec![(20, 30), (20, 40)]));
+            });
+            done_tx.send(stored).unwrap();
+        });
+        std::fs::remove_file(book_dir.join("2.png")).unwrap();
+        image::RgbImage::from_pixel(25, 35, image::Rgb([0, 0, 255]))
+            .save(book_dir.join("1.png"))
+            .unwrap();
+        let (books, errors) = scan_and_invalidate(&state, db_path.clone(), &path).unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(books[0].page_count, 1);
+        go_tx.send(()).unwrap();
+        assert!(!done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
+        assert!(state.render.get(&id, 0, 320, 0).is_none());
+        assert!(state.webtoon_layouts.lock().get(&id).is_none());
+        assert_eq!(
+            state
+                .source_handle_for_book(&id)
+                .unwrap()
+                .page_count()
+                .unwrap(),
+            1
+        );
+        let layout = crate::read_service::layout_sync(&state, &id, false).unwrap();
+        assert_eq!(
+            (layout.len(), layout[0].width, layout[0].height),
+            (1, 25, 35)
+        );
+        let new_image = crate::read_service::page_asset(&state, &id, 0, 320, false, false)
+            .unwrap()
+            .bytes;
+        assert_ne!(new_image, old_image);
+        image::RgbImage::from_pixel(30, 45, image::Rgb([255, 255, 0]))
+            .save(book_dir.join("1.png"))
+            .unwrap();
+        import_and_invalidate(&state, db_path, vec![path]).unwrap();
+        let layout = crate::read_service::layout_sync(&state, &id, false).unwrap();
+        assert_eq!((layout[0].width, layout[0].height), (30, 45));
+        drop(state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// PDF-1：合法 PDF 应被识别并入库，format='pdf'，页数 0（PDF-1 无渲染器）。
     #[test]
     fn import_pdf_document_is_recognized_and_stored_with_pdf_format() {
@@ -3694,7 +3878,60 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_archive_skips_rescan_and_changed_file_reopens() {
+    fn archive_rescan_reopens_source_handle() {
+        use std::io::Write as _;
+        use zip::write::SimpleFileOptions;
+        let dir = test_temp_dir("scan-archive-cache");
+        let path = dir.join("book.cbz");
+        build_zip(&path);
+        let db_path = dir.join("library.db");
+        let conn = db::open(&db_path).unwrap();
+        db::init_schema(&conn).unwrap();
+        let mut app = AppState::new();
+        app.render = crate::render_cache::RenderCache::new(dir.join("render"));
+        app.online_cache = Arc::new(crate::disk_cache::OnlinePageCache::new(dir.join("online")));
+        app.db.set(conn);
+        let state = Arc::new(app);
+        let file_path = path.to_string_lossy().to_string();
+        let items =
+            import_and_invalidate(&state, db_path.clone(), vec![file_path.clone()]).unwrap();
+        let id = items[0].book.as_ref().unwrap().id.clone();
+        assert_eq!(
+            state
+                .source_handle_for_book(&id)
+                .unwrap()
+                .page_count()
+                .unwrap(),
+            1
+        );
+        {
+            let file = std::fs::File::create(&path).unwrap();
+            let mut archive = zip::ZipWriter::new(file);
+            for name in ["p0.png", "p1.png"] {
+                archive
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
+                archive.write_all(b"image").unwrap();
+            }
+            archive.finish().unwrap();
+        }
+        let (books, errors) = scan_and_invalidate(&state, db_path, &file_path).unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(books[0].page_count, 2);
+        assert_eq!(
+            state
+                .source_handle_for_book(&id)
+                .unwrap()
+                .page_count()
+                .unwrap(),
+            2
+        );
+        drop(state);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn same_stamp_archive_replacement_is_rescanned() {
         use std::io::Write as _;
 
         let dir = test_temp_dir("stamp");
@@ -3709,7 +3946,7 @@ mod tests {
         let meta = std::fs::symlink_metadata(&path).unwrap();
         let original_modified = meta.modified().unwrap();
         let len = meta.len() as usize;
-        // 同长度垃圾字节 + 恢复原 mtime：指纹不变，扫描必须跳过解包。
+        // 同长度垃圾字节 + 恢复原 mtime：显式重扫仍必须读取源并发现损坏。
         {
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
@@ -3718,16 +3955,6 @@ mod tests {
                 .unwrap();
             file.write_all(&vec![b'x'; len]).unwrap();
             file.set_modified(original_modified).unwrap();
-        }
-        let second = scan_single_book(&conn, &path).expect("指纹未变时不得重新解包");
-        assert_eq!(second.page_count, 1);
-        assert_eq!(second.id, first.id);
-
-        // mtime 变化后必须重新打开；此时文件已是垃圾，应失败并清掉指纹。
-        {
-            let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-            file.set_modified(original_modified + std::time::Duration::from_secs(5))
-                .unwrap();
         }
         assert!(scan_single_book(&conn, &path).is_err());
         assert_eq!(db::source_stamp(&conn, &first.id).unwrap(), None);

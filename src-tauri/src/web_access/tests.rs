@@ -2335,7 +2335,12 @@ async fn d4_headless_browser_uses_real_tls_and_database() {
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(image.as_raw(), 64, 96, image::ExtendedColorType::Rgb8)
         .unwrap();
-    std::fs::write(book_dir.join("1.png"), &png).unwrap();
+    let narrow = image::RgbImage::from_pixel(1, 10_000, image::Rgb([100, 140, 220]));
+    let mut narrow_png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut narrow_png)
+        .write_image(narrow.as_raw(), 1, 10_000, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    std::fs::write(book_dir.join("1.png"), &narrow_png).unwrap();
     std::fs::write(book_dir.join("2.png"), &png).unwrap();
     let id = "d".repeat(64);
     let mut state = AppState::new();

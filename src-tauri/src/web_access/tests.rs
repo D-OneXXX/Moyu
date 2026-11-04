@@ -9,17 +9,22 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::ca::CaManager;
+use crate::db;
 use crate::db::ProgressOutcome;
 use crate::read_service::{
     ImageAsset, PageManifest, ProgressView, TileImage, WebBook, WebBookDetail, WebBookPage,
 };
+use crate::render_cache::RenderCache;
+use crate::state::AppState;
 use crate::PageDim;
 
 use super::auth::PairingService;
 use super::clock::SystemClock;
 use super::data::{DataError, WebDataAccess};
+use super::data_app::AppData;
 use super::pairing::PairingStore;
 use super::progress_write::WebProgressWrite;
+use super::progress_write_app::AppProgress;
 use super::router::PairingHttp;
 use super::session::SessionStore;
 use super::tls::{
@@ -1566,6 +1571,84 @@ async fn data_request(
     String::from_utf8_lossy(&response).into_owned()
 }
 
+/// One-shot `PUT /api/books/{id}/progress` over a fresh TLS connection. The
+/// connection targets loopback; only the TLS SNI uses the configured LAN SAN.
+async fn progress_request(
+    ca: &TestCa,
+    addr: std::net::SocketAddr,
+    host: &str,
+    path: &str,
+    cookie: Option<&str>,
+    origin: Option<&str>,
+    body: Option<&str>,
+) -> String {
+    let mut stream = connect_tls(
+        addr,
+        client_config(ca.root_cert_der()),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)).into()),
+    )
+    .await
+    .unwrap();
+    pair_http_request(&mut stream, "PUT", path, host, origin, cookie, body).await
+}
+
+fn seeded_progress_state(id: &str, page_count: u32, render_root: PathBuf) -> Arc<AppState> {
+    let mut state = AppState::new();
+    // Keep any accidental render isolated from the real user cache.
+    state.render = RenderCache::new(render_root);
+    let conn = rusqlite::Connection::open_in_memory().expect("memory db");
+    db::init_schema(&conn).expect("schema");
+    db::upsert_book(&conn, id, "C:/library/progress.zip", "Progress", page_count).expect("seed");
+    state.db.set(conn);
+    Arc::new(state)
+}
+
+fn seeded_pdf_state(id: &str, page_count: u32, render_root: PathBuf) -> Arc<AppState> {
+    let mut state = AppState::new();
+    state.render = RenderCache::new(render_root);
+    let conn = rusqlite::Connection::open_in_memory().expect("memory db");
+    db::init_schema(&conn).expect("schema");
+    db::upsert_book_with_format(
+        &conn,
+        id,
+        "C:/library/progress.pdf",
+        "Progress PDF",
+        page_count,
+        db::BOOK_FORMAT_PDF,
+    )
+    .expect("seed");
+    state.db.set(conn);
+    Arc::new(state)
+}
+
+fn progress_row(state: &AppState, id: &str) -> (u32, i64) {
+    state
+        .db
+        .with(|conn| {
+            conn.query_row(
+                "SELECT current_page, progress_rev FROM books WHERE id=?1",
+                rusqlite::params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .expect("db")
+}
+
+fn progress_log(state: &AppState, id: &str) -> i64 {
+    state
+        .db
+        .with(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(SUM(pages),0) FROM reading_log WHERE book_id=?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .expect("db")
+}
+
 /// Injecting a data provider into the production runtime must not start the
 /// listener: the phase stays `disabled` and nothing is bound.
 #[tokio::test]
@@ -1832,4 +1915,321 @@ async fn real_tls_data_routes_reject_traversal_and_unknown_methods() {
 
     runtime.stop(StopReason::Stopped).await;
     assert_eq!(runtime.status().await.phase, "disabled");
+}
+
+/// Real-TLS D3 write proof: authenticated PUT succeeds and writes the CAS
+/// columns/history; a stale base is 409 with the current values and zero
+/// writes; auth/Origin/Host guards fail closed; revocation is immediate; the
+/// same connection still serves a desktop `set_progress`.
+#[tokio::test]
+async fn real_tls_progress_write_cas_auth_and_guards() {
+    let ca = TestCa::new("progress-tls");
+    ca.initialize();
+    let id = "c".repeat(64);
+    let state = seeded_progress_state(&id, 10, ca.root.join("render"));
+    let runtime = WebAccessRuntime::for_test_with_data(
+        ca.root.clone(),
+        Arc::new(AppData::new(Arc::clone(&state))),
+    )
+    .with_progress(Arc::new(AppProgress::new(Arc::clone(&state))));
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+
+    let status = runtime.status().await;
+    let host = status.bind_address.expect("bound");
+    let addr: std::net::SocketAddr = host.parse().unwrap();
+    let service = runtime.service_for_test().await.expect("service");
+    let issued = service.issue_session_for_test("Pixel 8");
+    let cookie = format!("moyus_session={}", issued.token.as_str());
+    let path = format!("/api/books/{id}/progress");
+    let origin = format!("https://{host}");
+
+    let ok = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":3,"baseRev":0}"#),
+    )
+    .await;
+    assert!(ok.starts_with("HTTP/1.1 200"), "{ok:?}");
+    assert!(ok.contains("\"page\":3"), "{ok:?}");
+    assert!(ok.contains("\"rev\":1"), "{ok:?}");
+    assert!(
+        ok.to_ascii_lowercase().contains("cache-control: no-store"),
+        "{ok:?}"
+    );
+    assert!(
+        !ok.to_ascii_lowercase()
+            .contains("access-control-allow-origin"),
+        "{ok:?}"
+    );
+    assert_eq!(progress_row(&state, &id), (3, 1));
+    assert_eq!(progress_log(&state, &id), 3);
+
+    let conflict = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":5,"baseRev":0}"#),
+    )
+    .await;
+    assert!(conflict.starts_with("HTTP/1.1 409"), "{conflict:?}");
+    assert!(conflict.contains("progress-conflict"), "{conflict:?}");
+    assert!(conflict.contains("\"currentPage\":3"), "{conflict:?}");
+    assert!(conflict.contains("\"currentRev\":1"), "{conflict:?}");
+    assert_eq!(progress_row(&state, &id), (3, 1));
+    assert_eq!(progress_log(&state, &id), 3);
+
+    let denied = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        None,
+        Some(&origin),
+        Some(r#"{"page":4,"baseRev":1}"#),
+    )
+    .await;
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied:?}");
+    assert!(
+        denied.to_ascii_lowercase().contains("\"unauthorized\""),
+        "{denied:?}"
+    );
+
+    let missing_origin = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        None,
+        Some(r#"{"page":4,"baseRev":1}"#),
+    )
+    .await;
+    assert!(
+        missing_origin.starts_with("HTTP/1.1 403"),
+        "{missing_origin:?}"
+    );
+
+    let wrong_origin = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some("https://evil.example"),
+        Some(r#"{"page":4,"baseRev":1}"#),
+    )
+    .await;
+    assert!(wrong_origin.starts_with("HTTP/1.1 403"), "{wrong_origin:?}");
+
+    let bad_host = progress_request(
+        &ca,
+        addr,
+        "127.0.0.1:1",
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":4,"baseRev":1}"#),
+    )
+    .await;
+    assert!(bad_host.starts_with("HTTP/1.1 421"), "{bad_host:?}");
+
+    // The Web writes/conflicts must not leave the single DB connection locked.
+    state
+        .db
+        .with(|conn| db::set_progress(conn, &id, 4, None).map_err(|error| error.to_string()))
+        .expect("desktop write");
+    assert_eq!(progress_row(&state, &id), (4, 2));
+    assert_eq!(progress_log(&state, &id), 4);
+
+    assert!(service.revoke_device(&issued.id));
+    let revoked = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":5,"baseRev":2}"#),
+    )
+    .await;
+    assert!(revoked.starts_with("HTTP/1.1 401"), "{revoked:?}");
+
+    runtime.stop(StopReason::Stopped).await;
+    assert_eq!(runtime.status().await.phase, "disabled");
+}
+
+/// Real-TLS body limit, mid-transaction failure/retry, and removed-book 404.
+#[tokio::test]
+async fn real_tls_progress_body_limit_transaction_failure_and_removed() {
+    let ca = TestCa::new("progress-tls-limits");
+    ca.initialize();
+    let id = "d".repeat(64);
+    let state = seeded_progress_state(&id, 10, ca.root.join("render"));
+    let runtime = WebAccessRuntime::for_test_with_data(
+        ca.root.clone(),
+        Arc::new(AppData::new(Arc::clone(&state))),
+    )
+    .with_progress(Arc::new(AppProgress::new(Arc::clone(&state))));
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+
+    let status = runtime.status().await;
+    let host = status.bind_address.expect("bound");
+    let addr: std::net::SocketAddr = host.parse().unwrap();
+    let service = runtime.service_for_test().await.expect("service");
+    let issued = service.issue_session_for_test("Pixel 8");
+    let cookie = format!("moyus_session={}", issued.token.as_str());
+    let path = format!("/api/books/{id}/progress");
+    let origin = format!("https://{host}");
+
+    let oversized_body = format!(r#"{{"page":1,"baseRev":0,"pad":"{}"}}"#, "a".repeat(5000));
+    let oversized = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(&oversized_body),
+    )
+    .await;
+    assert!(oversized.starts_with("HTTP/1.1 413"), "{oversized:?}");
+    assert!(oversized.contains("body-too-large"), "{oversized:?}");
+    assert_eq!(progress_row(&state, &id), (0, 0));
+    assert_eq!(progress_log(&state, &id), 0);
+
+    state
+        .db
+        .with(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE fk_parent(id INTEGER PRIMARY KEY);
+                 CREATE TABLE fk_child(
+                     id INTEGER PRIMARY KEY,
+                     parent_id INTEGER REFERENCES fk_parent(id) DEFERRABLE INITIALLY DEFERRED
+                 );
+                 CREATE TRIGGER fail_reading_log AFTER INSERT ON reading_log
+                 BEGIN
+                     INSERT INTO fk_child(parent_id) VALUES (999);
+                 END;",
+            )
+            .map_err(|error| error.to_string())
+        })
+        .expect("trigger");
+    let failed = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":3,"baseRev":0}"#),
+    )
+    .await;
+    assert!(failed.starts_with("HTTP/1.1 503"), "{failed:?}");
+    assert!(failed.contains("\"busy\""), "{failed:?}");
+    assert!(failed.to_ascii_lowercase().contains("retry-after: 1"));
+    assert_eq!(progress_row(&state, &id), (0, 0));
+    assert_eq!(progress_log(&state, &id), 0);
+
+    state
+        .db
+        .with(|conn| {
+            conn.execute_batch("DROP TRIGGER fail_reading_log")
+                .map_err(|error| error.to_string())
+        })
+        .expect("drop trigger");
+    let retry = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":3,"baseRev":0}"#),
+    )
+    .await;
+    assert!(retry.starts_with("HTTP/1.1 200"), "{retry:?}");
+    assert_eq!(progress_row(&state, &id), (3, 1));
+    assert_eq!(progress_log(&state, &id), 3);
+
+    state
+        .db
+        .with(|conn| {
+            db::soft_remove_books(conn, std::slice::from_ref(&id))
+                .map_err(|error| error.to_string())
+        })
+        .expect("remove");
+    let removed = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":4,"baseRev":1}"#),
+    )
+    .await;
+    assert!(removed.starts_with("HTTP/1.1 404"), "{removed:?}");
+    assert!(removed.contains("book-not-found"), "{removed:?}");
+    assert_eq!(progress_row(&state, &id), (3, 1));
+    assert_eq!(progress_log(&state, &id), 3);
+
+    runtime.stop(StopReason::Stopped).await;
+    assert_eq!(runtime.status().await.phase, "disabled");
+}
+
+/// Real-TLS PDF rejection: the write plane returns 415 and leaves the row alone.
+#[tokio::test]
+async fn real_tls_progress_pdf_is_415() {
+    let ca = TestCa::new("progress-tls-pdf");
+    ca.initialize();
+    let id = "e".repeat(64);
+    let state = seeded_pdf_state(&id, 5, ca.root.join("render"));
+    let runtime = WebAccessRuntime::for_test_with_data(
+        ca.root.clone(),
+        Arc::new(AppData::new(Arc::clone(&state))),
+    )
+    .with_progress(Arc::new(AppProgress::new(Arc::clone(&state))));
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+
+    let status = runtime.status().await;
+    let host = status.bind_address.expect("bound");
+    let addr: std::net::SocketAddr = host.parse().unwrap();
+    let service = runtime.service_for_test().await.expect("service");
+    let issued = service.issue_session_for_test("Pixel 8");
+    let cookie = format!("moyus_session={}", issued.token.as_str());
+    let path = format!("/api/books/{id}/progress");
+    let origin = format!("https://{host}");
+
+    let rejected = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":1,"baseRev":0}"#),
+    )
+    .await;
+    assert!(rejected.starts_with("HTTP/1.1 415"), "{rejected:?}");
+    assert!(rejected.contains("pdf-source-unsupported"), "{rejected:?}");
+    assert_eq!(progress_row(&state, &id), (0, 0));
+    assert_eq!(progress_log(&state, &id), 0);
+
+    runtime.stop(StopReason::Stopped).await;
 }

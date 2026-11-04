@@ -317,7 +317,7 @@ impl PairingHttp {
             }
         }
         if let Some(response) = super::session_http::handle(&request, &self.service) {
-            return response;
+            return response.await;
         }
         if let Some(data) = self.data.as_ref() {
             match tokio::time::timeout(DATA_HANDLER_TIMEOUT, data.handle(&request, source_ip)).await

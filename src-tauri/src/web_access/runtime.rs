@@ -643,14 +643,21 @@ impl WebAccessRuntime {
         if let Some(bridge) = bridge {
             bridge.abort();
         }
-        if let Some(service) = service {
-            service.stop_all();
-        }
         let mut failure = None;
+        // Close the listener first so no additional request can enter while
+        // we wait for any already-admitted progress transaction to finish.
         if let Some(listener) = listener {
             match tokio::time::timeout(SHUTDOWN_TIMEOUT, listener.shutdown()).await {
                 Ok(Ok(())) => {}
                 _ => failure = Some("web-access-server-join"),
+            }
+        }
+        if let Some(service) = service {
+            if tokio::task::spawn_blocking(move || service.stop_all())
+                .await
+                .is_err()
+            {
+                failure = Some("web-access-server-join");
             }
         }
 
@@ -821,7 +828,10 @@ impl WebAccessRuntime {
         let Some(service) = service else {
             return Ok(false);
         };
-        let revoked = service.revoke_device(device_id);
+        let device_id = device_id.to_owned();
+        let revoked = tokio::task::spawn_blocking(move || service.revoke_device(&device_id))
+            .await
+            .map_err(|_| RuntimeError::Tls(WebAccessError::ServerJoin))?;
         if revoked {
             self.emit_state().await;
         }

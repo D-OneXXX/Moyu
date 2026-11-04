@@ -706,6 +706,7 @@ fn error_status(error: DataError) -> StatusCode {
             StatusCode::RANGE_NOT_SATISFIABLE
         }
         DataError::InvalidParameter => StatusCode::BAD_REQUEST,
+        DataError::WebtoonTooLarge => StatusCode::UNPROCESSABLE_ENTITY,
         DataError::Busy | DataError::DbUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         DataError::Timeout => StatusCode::GATEWAY_TIMEOUT,
         DataError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -718,6 +719,7 @@ fn error_code(error: DataError) -> &'static str {
         DataError::ThumbMissing => "thumbnail-missing",
         DataError::PdfUnsupported => "pdf-source-unsupported",
         DataError::SourceUnsupported => "source-unsupported",
+        DataError::WebtoonTooLarge => "webtoon-too-large",
         DataError::SourceMissing => "source-missing",
         // The frozen contract uses one 416 code for page and tile range errors;
         // `details.maxTile` distinguishes the tile case.
@@ -1061,6 +1063,16 @@ mod tests {
         for bad in ["w=", "w=abc", "w=1.5", "w=-1", "w=1&w=2"] {
             assert!(parse_width(Some(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn excessive_webtoon_is_a_localizable_non_retry_error() {
+        assert_eq!(
+            error_status(DataError::WebtoonTooLarge),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(error_code(DataError::WebtoonTooLarge), "webtoon-too-large");
+        assert!(error_details(DataError::WebtoonTooLarge).is_none());
     }
 
     #[test]

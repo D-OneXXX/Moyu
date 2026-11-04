@@ -47,6 +47,10 @@ pub const MAX_SLICE_H: u32 = 4096;
 
 /// 源图像素数上限：防御畸形/恶意头部导致的巨额分配（返回错误而不是 OOM 崩溃）。
 const MAX_SOURCE_PIXELS: u64 = 160_000_000;
+/// Web requests materialize a complete logical page at once. Bound both the
+/// tile plan and the accumulated encoded output before caching any of it.
+pub(crate) const MAX_WEBTOON_WEB_TILES: u32 = 1024;
+pub(crate) const MAX_WEBTOON_WEB_ENCODED_BYTES: usize = 128 * 1024 * 1024;
 
 /// 条漫切片数：把**单个逻辑页**（源尺寸 `orig_w × orig_h`）在显示宽度
 /// `render_w` 下的显示高度均分为 ≤`WEBTOON_TILE_H` 的片。
@@ -430,7 +434,7 @@ pub fn render_webtoon_tiles(
     raw: &RawPage,
     max_w: u32,
 ) -> Result<(u32, Vec<RenderedPage>), BackendError> {
-    render_webtoon_tiles_with(raw, max_w, true)
+    render_webtoon_tiles_with(raw, max_w, true, None)
 }
 
 /// Bytes-only tile variant for the Web data plane.
@@ -439,13 +443,19 @@ pub(crate) fn render_webtoon_tiles_asset(
     max_w: u32,
     encode_data_url: bool,
 ) -> Result<(u32, Vec<RenderedPage>), BackendError> {
-    render_webtoon_tiles_with(raw, max_w, encode_data_url)
+    render_webtoon_tiles_with(
+        raw,
+        max_w,
+        encode_data_url,
+        Some((MAX_WEBTOON_WEB_TILES, MAX_WEBTOON_WEB_ENCODED_BYTES)),
+    )
 }
 
 fn render_webtoon_tiles_with(
     raw: &RawPage,
     max_w: u32,
     encode_data_url: bool,
+    web_limits: Option<(u32, usize)>,
 ) -> Result<(u32, Vec<RenderedPage>), BackendError> {
     let fmt = decoded_format(raw)?;
     let (sw, sh) = source_dimensions(raw)?;
@@ -463,6 +473,9 @@ fn render_webtoon_tiles_with(
     // 片数与前端 `webtoon_tile_count` 公式一致（前端 Webtoon.tsx 同公式）。
     // 上限再收一道：每片至少 1 显示行（极端比例下不会产生 0 高切片）。
     let tiles = webtoon_tile_count(sw, sh, max_w).min(th.max(1));
+    if web_limits.is_some_and(|(max_tiles, _)| tiles > max_tiles) {
+        return Err(BackendError::WebtoonTooLarge);
+    }
     let plan = TilePlan::build(th, tiles);
 
     // 工作栅格（只解码一次）：长图 JPEG 走 IDCT 缩放解码；其余格式整图解码。
@@ -475,6 +488,7 @@ fn render_webtoon_tiles_with(
     let rh = work.height();
 
     let mut out: Vec<RenderedPage> = Vec::with_capacity(tiles as usize);
+    let mut encoded_bytes = 0usize;
     for j in 0..tiles as usize {
         let d0 = plan.bounds[j];
         let d1 = plan.bounds[j + 1];
@@ -488,6 +502,12 @@ fn render_webtoon_tiles_with(
         {
             let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
             enc.encode_image(&tile)?;
+        }
+        encoded_bytes = encoded_bytes
+            .checked_add(buf.len())
+            .ok_or(BackendError::WebtoonTooLarge)?;
+        if web_limits.is_some_and(|(_, max_bytes)| encoded_bytes > max_bytes) {
+            return Err(BackendError::WebtoonTooLarge);
         }
         out.push(RenderedPage {
             width: tw,
@@ -656,6 +676,32 @@ mod tests {
         assert!(pages
             .iter()
             .all(|p| p.data_url.starts_with("data:image/jpeg;base64,")));
+    }
+
+    #[test]
+    fn web_tile_budget_rejects_extreme_geometry_before_materialization() {
+        let raw = ultra_tall_page(1, 10_000);
+        assert!(matches!(
+            render_webtoon_tiles_asset(&raw, 320, false),
+            Err(BackendError::WebtoonTooLarge)
+        ));
+        assert!(
+            webtoon_tile_count(800, 65_000, 2160) <= MAX_WEBTOON_WEB_TILES,
+            "typical 65k-height source remains within the tile-count budget"
+        );
+    }
+
+    #[test]
+    fn web_tile_budget_bounds_accumulated_encoded_bytes() {
+        let raw = ultra_tall_page(20, 100);
+        assert!(matches!(
+            render_webtoon_tiles_with(&raw, 20, false, Some((1024, 1))),
+            Err(BackendError::WebtoonTooLarge)
+        ));
+        assert!(
+            render_webtoon_tiles(&raw, 20).is_ok(),
+            "web limit must not change desktop rendering"
+        );
     }
 
     #[test]

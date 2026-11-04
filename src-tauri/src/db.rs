@@ -498,7 +498,7 @@ fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookRow> {
     })
 }
 
-/// 入库/刷新：重导入（同路径）把软删的书恢复（removed=0），进度字段不动（续读）。
+/// 入库/刷新：重导入恢复软删书；仅当已知新页数更短时修正越界进度。
 pub fn upsert_book(
     conn: &Connection,
     id: &str,
@@ -513,7 +513,8 @@ pub fn upsert_book(
 ///
 /// - `format` 在插入与冲突更新时都会落库（`format=excluded.format`），
 ///   重导入同一路径不会把 PDF 静默降级回 `image`；
-/// - 进度字段（`current_page` / `scroll_pct`）不参与更新，续读不受影响。
+/// - 页数未知或进度仍有效时保留进度；已知页数缩短导致越界时原子钳制、
+///   清除旧页的滚动偏移并递增版本，不修改阅读统计。
 pub fn upsert_book_with_format(
     conn: &Connection,
     id: &str,
@@ -529,6 +530,14 @@ pub fn upsert_book_with_format(
          ON CONFLICT(id) DO UPDATE SET
             path=excluded.path, title=excluded.title,
             page_count=excluded.page_count,
+            current_page=CASE WHEN excluded.page_count > 0 AND books.current_page >= excluded.page_count
+                              THEN excluded.page_count - 1 ELSE books.current_page END,
+            scroll_pct=CASE WHEN excluded.page_count > 0 AND books.current_page >= excluded.page_count
+                            THEN -1.0 ELSE books.scroll_pct END,
+            progress_rev=books.progress_rev + CASE WHEN excluded.page_count > 0 AND books.current_page >= excluded.page_count
+                                                   THEN 1 ELSE 0 END,
+            updated_at=CASE WHEN excluded.page_count > 0 AND books.current_page >= excluded.page_count
+                            THEN ?5 ELSE books.updated_at END,
             removed=0, source_type='local', meta_json='{}',
             format=excluded.format",
         params![id, path, title, page_count as i64, now, format],
@@ -1685,6 +1694,42 @@ mod tests {
         let b = get_book(&conn, "b1").unwrap().unwrap();
         assert_eq!(b.current_page, 12);
         assert_eq!(list_books(&conn, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reimport_shorter_local_book_clamps_progress_atomically_without_changing_history() {
+        let conn = mem();
+        upsert_book(&conn, "short", "p/book", "Book", 10).unwrap();
+        set_progress(&conn, "short", 8, Some(0.75)).unwrap();
+        let before = get_book(&conn, "short").unwrap().unwrap();
+        let history = reading_log_days(&conn, Some("short"), 3650).unwrap();
+        upsert_book(&conn, "short", "p/book", "Book", 2).unwrap();
+        let after = get_book(&conn, "short").unwrap().unwrap();
+        assert_eq!(after.current_page, 1);
+        assert_eq!(after.scroll_pct, -1.0);
+        assert_eq!(after.progress_rev, before.progress_rev + 1);
+        assert_eq!(
+            reading_log_days(&conn, Some("short"), 3650).unwrap(),
+            history
+        );
+        assert!(matches!(
+            set_progress_cas(&conn, "short", 0, None, before.progress_rev).unwrap(),
+            ProgressOutcome::Conflict {
+                current_page: 1,
+                ..
+            }
+        ));
+        upsert_book(&conn, "short", "p/book", "Book", 2).unwrap();
+        assert_eq!(
+            get_book(&conn, "short").unwrap().unwrap().progress_rev,
+            after.progress_rev
+        );
+        upsert_book(&conn, "short", "p/book", "Book", 0).unwrap();
+        let unknown = get_book(&conn, "short").unwrap().unwrap();
+        assert_eq!(
+            (unknown.current_page, unknown.progress_rev),
+            (1, after.progress_rev)
+        );
     }
 
     #[test]

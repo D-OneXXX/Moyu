@@ -3116,7 +3116,7 @@ export function checkAntiMockGuards(root, report) {
   try {
     const errors = [];
     const readSource = (relative) =>
-      fs.readFileSync(path.join(root, relative), "utf8");
+      fs.readFileSync(path.join(root, relative), "utf8").replace(/\r\n/g, "\n");
     // Production surface only: cut the `#[cfg(test)] mod tests` block so
     // test-only URL literals and SQL seeds never satisfy (or trip) the guard.
     const productionOnly = (source) => {
@@ -3431,7 +3431,7 @@ export function checkAntiMockGuards(root, report) {
   try {
     const errors = [];
     const readSource = (relative) =>
-      fs.readFileSync(path.join(root, relative), "utf8");
+      fs.readFileSync(path.join(root, relative), "utf8").replace(/\r\n/g, "\n");
     const productionOnly = (source) => {
       const index = source.indexOf("#[cfg(test)]\nmod tests");
       return stripRustComments(index >= 0 ? source.slice(0, index) : source);

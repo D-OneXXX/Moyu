@@ -5,6 +5,7 @@ const t = (n) => messages[locale][n];
 const app = document.getElementById("app");
 const actions = document.getElementById("header-actions");
 let pairingContext = null;
+let clampedProgressNotice = false;
 let generation = 0, activeBook = null, revision = 0, page = 0, pageCount = 0, busy = false, conflict = null;
 const breadcrumbs = [];
 function recordBreadcrumb(kind) {
@@ -38,7 +39,7 @@ function clearReader() {
 }
 function showError(container, err, retry) {
   const code = err && err.code;
-  const message = code === "pdf-source-unsupported" ? t(23) : code === "source-unsupported" ? t(18) : code === "unauthorized" ? t(22) : code === "image-failed" ? t(24) : t(16);
+  const message = code === "pdf-source-unsupported" ? t(23) : code === "source-unsupported" ? t(18) : code === "unauthorized" ? t(22) : code === "image-failed" ? t(24) : code === "webtoon-too-large" ? t(27) : t(16);
   const box = node("div", message, "panel error");
   if (retry) box.append(" ", button(t(17), retry));
   container.append(box);
@@ -216,7 +217,9 @@ async function openBook(book) {
       e.code = "source-unsupported";
       throw e;
     }
-    page = progress.page;
+    if (!Number.isInteger(progress.page) || progress.page < 0) throw new Error("invalid page");
+    clampedProgressNotice = progress.page >= progress.pageCount;
+    page = Math.min(progress.page, progress.pageCount - 1);
     pageCount = progress.pageCount;
     revision = progress.rev;
     conflict = null;
@@ -237,6 +240,7 @@ async function changePage(next, base = revision) {
     const result = await api("/api/books/" + activeBook.id + "/progress", { method: "PUT", body: JSON.stringify({ page: next, baseRev: base }) });
     if (token !== generation) return;
     page = result.page;
+    clampedProgressNotice = false;
     revision = result.rev;
     conflict = null;
     renderReader();
@@ -271,7 +275,8 @@ function renderTools() {
   if (conflict) {
     const box = node("div", t(19), "panel error");
     box.append(button(t(20), () => {
-      page = conflict.currentPage;
+      page = Math.min(conflict.currentPage, pageCount - 1);
+      clampedProgressNotice = conflict.currentPage >= pageCount;
       revision = conflict.currentRev;
       conflict = null;
       renderReader();
@@ -290,7 +295,9 @@ async function renderReader() {
   const tiles = node("div", null, "tiles");
   const tools = node("nav", null, "reader-tools");
   tools.id = "tools";
-  area.append(title, tiles, tools);
+  area.append(title);
+  if (clampedProgressNotice) area.append(node("p", t(26), "panel"));
+  area.append(tiles, tools);
   app.append(area);
   renderTools();
   const width = Math.max(320, Math.min(2160, Math.round((window.innerWidth || 1080) * (window.devicePixelRatio || 1))));

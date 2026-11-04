@@ -63,7 +63,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname === "/api/books") {
-    json(200, { items: [{ id, title: "Demo", thumbUrl: `/api/books/${id}/thumb`, format: "image" }, { id: "c".repeat(64), title: "PDF demo", format: "pdf" }, { id: "e".repeat(64), title: "Faulty", format: "image" }], nextCursor: null });
+    json(200, { items: [{ id, title: "Demo", thumbUrl: `/api/books/${id}/thumb`, format: "image" }, { id: "c".repeat(64), title: "PDF demo", format: "pdf" }, { id: "e".repeat(64), title: "Faulty", format: "image" }, { id: "f".repeat(64), title: "Shorter", format: "image" }, { id: "b".repeat(64), title: "Large", format: "image" }], nextCursor: null });
     return;
   }
   if (url.pathname.endsWith("/thumb")) {
@@ -72,7 +72,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname.endsWith("/progress") && req.method === "GET") {
-    json(200, { page: 0, pageCount: 3, rev: 4 });
+    json(200, url.pathname.includes("f".repeat(64)) ? { page: 5, pageCount: 2, rev: 4 } : { page: 0, pageCount: 3, rev: 4 });
     return;
   }
   if (url.pathname.endsWith("/progress") && req.method === "PUT") {
@@ -86,6 +86,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname.includes("/tiles/")) {
+    if (url.pathname.includes("b".repeat(64))) { json(422, {error: {code: "webtoon-too-large"}}); return; }
     const faulty = url.pathname.includes("e".repeat(64));
     if (faulty && url.pathname.endsWith("/tiles/1")) { json(500, {error: {code: "internal"}}); return; }
     res.writeHead(200, { "content-type": "image/png", "x-tile-count": faulty ? "2" : "1", "x-tile-height": "2048" });
@@ -148,6 +149,15 @@ try {
   await wait("[...document.querySelectorAll('.book')].some(x=>x.textContent.includes('Faulty'))");
   await page.eval("[...document.querySelectorAll('.book')].find(x=>x.textContent.includes('Faulty')).click()");
   await wait("document.querySelector('.tiles > div .error button') !== null");
+  await page.eval("document.querySelector('#tools button').click()");
+  await wait("[...document.querySelectorAll('.book')].some(x=>x.textContent.includes('Shorter'))");
+  await page.eval("[...document.querySelectorAll('.book')].find(x=>x.textContent.includes('Shorter')).click()");
+  await wait("document.querySelector('#tools span')?.textContent.includes('2 / 2') && document.querySelector('.reader .panel')?.textContent.includes('beyond the end')");
+  assert.equal(writes, 2, "opening a shortened book must not silently write progress");
+  await page.eval("document.querySelector('#tools button').click()");
+  await wait("[...document.querySelectorAll('.book')].some(x=>x.textContent.includes('Large'))");
+  await page.eval("[...document.querySelectorAll('.book')].find(x=>x.textContent.includes('Large')).click()");
+  await wait("document.querySelector('.tiles .error')?.textContent.includes('too large to process safely')");
   console.log(`VERIFIED simulated browser flow; mock HTTP port ${port}; headless Chrome PID ${child.pid}; CDP port ${cdpPort}`);
 } finally {
   if (page?.socket) page.socket.close();

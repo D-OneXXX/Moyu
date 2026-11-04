@@ -35,6 +35,7 @@ pub(crate) enum DataError {
     ThumbMissing,
     PdfUnsupported,
     SourceUnsupported,
+    WebtoonTooLarge,
     SourceMissing,
     InvalidParameter,
     PageOutOfRange { max_page: u32 },
@@ -356,6 +357,9 @@ pub(crate) fn tile_asset(
     let display_height = pipeline::fit_size(orig.0, orig.1, Some(width), None).1;
     let expected_tiles =
         pipeline::webtoon_tile_count(orig.0, orig.1, width).min(display_height.max(1));
+    if expected_tiles > pipeline::MAX_WEBTOON_WEB_TILES {
+        return Err(DataError::WebtoonTooLarge);
+    }
     if tile >= expected_tiles {
         return Err(DataError::TileOutOfRange {
             max_tile: expected_tiles.saturating_sub(1),
@@ -392,8 +396,11 @@ pub(crate) fn tile_asset(
         });
     }
 
-    let (tiles, pages) = pipeline::render_webtoon_tiles_asset(&raw, width, false)
-        .map_err(|_| DataError::Internal)?;
+    let (tiles, pages) =
+        pipeline::render_webtoon_tiles_asset(&raw, width, false).map_err(|error| match error {
+            BackendError::WebtoonTooLarge => DataError::WebtoonTooLarge,
+            _ => DataError::Internal,
+        })?;
     if tile >= tiles {
         return Err(DataError::TileOutOfRange {
             max_tile: tiles.saturating_sub(1),
@@ -494,6 +501,9 @@ pub(crate) fn cached_tile_asset(
     let display_height = pipeline::fit_size(orig.0, orig.1, Some(width), None).1;
     let expected_tiles =
         pipeline::webtoon_tile_count(orig.0, orig.1, width).min(display_height.max(1));
+    if expected_tiles > pipeline::MAX_WEBTOON_WEB_TILES {
+        return Err(DataError::WebtoonTooLarge);
+    }
     if tile >= expected_tiles {
         return Err(DataError::TileOutOfRange {
             max_tile: expected_tiles.saturating_sub(1),
@@ -1813,6 +1823,35 @@ mod tests {
             tile_asset(&state, &a, 0, 3, 320),
             Err(DataError::TileOutOfRange { max_tile: 2 })
         );
+    }
+
+    #[test]
+    fn web_tile_rejects_excessive_tile_count_before_cache_or_decode() {
+        let state = Arc::new(state_with_db());
+        let tree = TempTree::new("web-tile-budget");
+        std::fs::write(tree.0.join("page.png"), png_bytes(1, 10_000)).unwrap();
+        let id = id_for('9');
+        insert_book(
+            &state,
+            &id,
+            "Extreme",
+            "2026-11-03 10:00:00",
+            tree.0.to_string_lossy().as_ref(),
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        assert_eq!(
+            tile_asset(&state, &id, 0, 0, 320),
+            Err(DataError::WebtoonTooLarge)
+        );
+        assert_eq!(
+            cached_tile_asset(&state, &id, 0, 0, 320),
+            Err(DataError::WebtoonTooLarge)
+        );
+        assert!(state.render.get_tile(&id, 0, 0, 320).is_none());
     }
 
     #[test]

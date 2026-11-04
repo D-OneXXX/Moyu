@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MangaReader",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "identifier": "com.local.manga-reader",
   "mainBinaryName": "manga-reader-tauri",
   "build": {
@@ -75,7 +75,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY3Q0IzMDQ0NjBFMDhFNEEKUldSS2p1QmdSRERMWjBNTEpWb2E3N1l6MFFJYzRVMHl6L3BEZWM3NUNKOGcxY2hoNHVYZDVRdnEK",
       "endpoints": [
-        "https://github.com/D-OneXXX/MR/releases/latest/download/latest.json"
+        "https://github.com/D-OneXXX/Moyu/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

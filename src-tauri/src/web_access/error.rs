@@ -22,6 +22,14 @@ pub enum WebAccessError {
     Io(#[from] std::io::Error),
     #[error("TLS server task failed")]
     ServerJoin,
+    #[error("TLS serving certificate requires an explicit root-rotation reload")]
+    RootChangePending,
+    #[error("TLS root-rotation reload fingerprint does not match the active root")]
+    RootChangeMismatch,
+    #[error("TLS previous certificate is not available for rollback")]
+    RollbackUnavailable,
+    #[error("TLS listener has stopped after certificate expiry")]
+    CertificateExpired,
 }
 
 impl WebAccessError {
@@ -37,6 +45,10 @@ impl WebAccessError {
             Self::TlsConfig(_) => "web-access-tls-config",
             Self::Io(_) => "web-access-io",
             Self::ServerJoin => "web-access-server-join",
+            Self::RootChangePending => "web-access-root-change-pending",
+            Self::RootChangeMismatch => "web-access-root-change-mismatch",
+            Self::RollbackUnavailable => "web-access-rollback-unavailable",
+            Self::CertificateExpired => "web-access-certificate-expired",
         }
     }
 }

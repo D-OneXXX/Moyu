@@ -110,14 +110,16 @@ jobs:
           tool: cargo-audit
 
       # 直接 zip 已升级 9.1.1；Tauri updater 2.14.0 仍带 zip 4.6.1，
-      # 其 extract 仅用于 .zip 更新包，当前 NSIS 通道不触发。
+      # 其 extract 仅用于 .zip 更新包，当前 NSIS 通道不触发，且 updater 在
+      # 解压前先完成 minisign 验签。RUSTSEC-2026-0429 属于同一间接依赖路径。
       # 例外必须在内部技术文档（维护者本地维护）记录，不得无理由新增。
       - name: Cargo audit (blocking with documented updater zip exceptions)
         run: |
           cargo audit --file src-tauri/Cargo.lock \
             --ignore RUSTSEC-2026-0367 \
             --ignore RUSTSEC-2026-0368 \
-            --ignore RUSTSEC-2026-0369
+            --ignore RUSTSEC-2026-0369 \
+            --ignore RUSTSEC-2026-0429
 
       # 生产依赖漏洞阻断；例外需书面记录。
       - name: NPM audit (production dependencies)

@@ -138,6 +138,42 @@ const zhCN = {
   "error.pdfCoverTooLarge": "该 PDF 的封面数据超过体积上限",
   "error.pdfCoverDimensions": "该 PDF 的封面尺寸超过上限",
   "error.onlinePageCountDrop": "在线清单页数少于现有记录，已保留当前进度；如网页确实变短，请先删除该书再重新导入",
+  "error.caNotInitialized": "本地 CA 尚未初始化。",
+  "error.caStateCorrupt": "本地 CA 状态损坏，请从备份恢复。",
+  "error.caPartialInitialization": "本地 CA 存在不完整的初始化残留，请检查 CA 目录。",
+  "error.caAclVerification": "本地 CA 私钥目录权限异常，已拒绝操作。",
+  "error.caIo": "本地 CA 文件操作失败。",
+  "error.caInsufficientValidity":
+    "本地 CA 的剩余有效期不足，需要轮换根/中间 CA。",
+  "error.caExportPath": "导出路径必须是绝对路径。",
+  "error.caDistributionRunning": "CA 分发服务已在运行，请先停止。",
+  "error.caDistributionNoLan": "未找到可用的私有局域网 IPv4 地址。",
+  "error.caDistributionInvalidIp": "只能选择当前设备的私有局域网 IPv4 地址。",
+  "error.caDistributionIo": "CA 分发服务启动或停止失败。",
+  "error.webAccessAlreadyEnabled": "Web Access 已在运行或正在启动。",
+  "error.webAccessNotEnabled": "Web Access 尚未启用。",
+  "error.webAccessInvalidState": "当前 Web Access 状态不允许该操作。",
+  "error.webAccessInvalidIp": "只能选择当前设备的私有局域网 IPv4 地址。",
+  "error.webAccessNoLan": "未找到可用的私有局域网 IPv4 地址。",
+  "error.webAccessInvalidBind": "TLS 绑定地址无效。",
+  "error.webAccessTlsConfig": "TLS 证书配置失败。",
+  "error.webAccessIo": "TLS 监听启动失败（端口可能被占用）。",
+  "error.webAccessServerJoin": "TLS 监听停止失败。",
+  "error.webAccessCertificateExpired": "证书已过期，Web Access 已停止。",
+  "error.webAccessRootChangePending":
+    "CA 根已轮换，需要重新配对并分发新根证书。",
+  "error.webAccessRootChangeMismatch": "CA 根指纹与预期不一致。",
+  "error.webAccessRollbackUnavailable": "证书回滚不可用。",
+  "error.webAccessDeviceNotFound": "设备不存在或已失效。",
+  "error.webAccessPairingNotFound": "配对请求不存在或已过期。",
+  "error.webAccessPairingClaimed": "该配对请求已被处理。",
+  "error.webAccessPairingConsumed": "该配对请求已领取。",
+  "error.webAccessPairingExpired": "配对已过期，请重新开始配对。",
+  "error.webAccessPairingDenied": "配对已被拒绝。",
+  "error.webAccessPairingCancelled": "配对已取消。",
+  "error.webAccessDeviceLimit": "设备数量已达上限（8 台）。",
+  "error.webAccessRateLimited": "请求过于频繁，请稍后再试。",
+  "error.webAccessInvalidParameter": "请求参数无效。",
 } as const;
 
 type CommonMessages = { [K in keyof typeof zhCN]: string };
@@ -282,6 +318,43 @@ const zhTW: CommonMessages = {
   "error.pdfCoverTooLarge": "該 PDF 的封面資料超過體積上限",
   "error.pdfCoverDimensions": "該 PDF 的封面尺寸超過上限",
   "error.onlinePageCountDrop": "線上清單頁數少於現有紀錄，已保留目前進度；若網頁確實變短，請先刪除該書再重新匯入",
+  "error.caNotInitialized": "本機 CA 尚未初始化。",
+  "error.caStateCorrupt": "本機 CA 狀態損壞，請從備份還原。",
+  "error.caPartialInitialization": "本機 CA 存在不完整的初始化殘留，請檢查 CA 目錄。",
+  "error.caAclVerification": "本機 CA 私鑰目錄權限異常，已拒絕操作。",
+  "error.caIo": "本機 CA 檔案操作失敗。",
+  "error.caInsufficientValidity":
+    "本地 CA 的剩餘有效期限不足，需要輪換根/中間 CA。",
+  "error.caExportPath": "匯出路徑必須是絕對路徑。",
+  "error.caDistributionRunning": "CA 分發服務已在執行，請先停止。",
+  "error.caDistributionNoLan": "找不到可用的私有區域網路 IPv4 位址。",
+  "error.caDistributionInvalidIp": "只能選擇目前裝置的私有區域網路 IPv4 位址。",
+  "error.caDistributionIo": "CA 分發服務啟動或停止失敗。",
+  "error.webAccessAlreadyEnabled": "Web Access 已在執行或正在啟動。",
+  "error.webAccessNotEnabled": "Web Access 尚未啟用。",
+  "error.webAccessInvalidState": "目前 Web Access 狀態不允許此操作。",
+  "error.webAccessInvalidIp":
+    "只能選擇目前裝置的私有區域網路 IPv4 位址。",
+  "error.webAccessNoLan": "找不到可用的私有區域網路 IPv4 位址。",
+  "error.webAccessInvalidBind": "TLS 綁定位址無效。",
+  "error.webAccessTlsConfig": "TLS 憑證設定失敗。",
+  "error.webAccessIo": "TLS 監聽啟動失敗（連接埠可能被占用）。",
+  "error.webAccessServerJoin": "TLS 監聽停止失敗。",
+  "error.webAccessCertificateExpired": "憑證已過期，Web Access 已停止。",
+  "error.webAccessRootChangePending":
+    "CA 根已輪換，需要重新配對並分發新根憑證。",
+  "error.webAccessRootChangeMismatch": "CA 根指紋與預期不一致。",
+  "error.webAccessRollbackUnavailable": "憑證回復不可用。",
+  "error.webAccessDeviceNotFound": "裝置不存在或已失效。",
+  "error.webAccessPairingNotFound": "配對請求不存在或已過期。",
+  "error.webAccessPairingClaimed": "該配對請求已被處理。",
+  "error.webAccessPairingConsumed": "該配對請求已領取。",
+  "error.webAccessPairingExpired": "配對已過期，請重新開始配對。",
+  "error.webAccessPairingDenied": "配對已被拒絕。",
+  "error.webAccessPairingCancelled": "配對已取消。",
+  "error.webAccessDeviceLimit": "裝置數量已達上限（8 台）。",
+  "error.webAccessRateLimited": "請求過於頻繁，請稍後再試。",
+  "error.webAccessInvalidParameter": "請求參數無效。",
 };
 
 const en: CommonMessages = {
@@ -431,6 +504,50 @@ const en: CommonMessages = {
   "error.pdfCoverDimensions":
     "The cover dimensions of this PDF exceed the limit.",
   "error.onlinePageCountDrop": "The online manifest has fewer pages than the existing record, so your progress was kept. If the page really got shorter, delete the book and import it again.",
+  "error.caNotInitialized": "The local CA is not initialized.",
+  "error.caStateCorrupt": "The local CA state is corrupt. Restore it from a backup.",
+  "error.caPartialInitialization": "The local CA has an incomplete initialization. Check the CA directory.",
+  "error.caAclVerification": "The local CA private-key directory has invalid permissions; the operation was refused.",
+  "error.caIo": "A local CA file operation failed.",
+  "error.caInsufficientValidity":
+    "The local CA does not have enough remaining validity; rotate the root/intermediate CA.",
+  "error.caExportPath": "The export path must be absolute.",
+  "error.caDistributionRunning": "The CA distribution service is already running. Stop it first.",
+  "error.caDistributionNoLan": "No private LAN IPv4 address is available.",
+  "error.caDistributionInvalidIp": "Choose a private LAN IPv4 address of this device.",
+  "error.caDistributionIo": "The CA distribution service failed to start or stop.",
+  "error.webAccessAlreadyEnabled": "Web Access is already running or starting.",
+  "error.webAccessNotEnabled": "Web Access is not enabled.",
+  "error.webAccessInvalidState":
+    "The current Web Access state does not allow this action.",
+  "error.webAccessInvalidIp":
+    "Select a private LAN IPv4 address of this device.",
+  "error.webAccessNoLan": "No private LAN IPv4 address is available.",
+  "error.webAccessInvalidBind": "The TLS bind address is invalid.",
+  "error.webAccessTlsConfig": "TLS certificate configuration failed.",
+  "error.webAccessIo":
+    "The TLS listener could not start (the port may be in use).",
+  "error.webAccessServerJoin": "The TLS listener could not stop cleanly.",
+  "error.webAccessCertificateExpired":
+    "The certificate has expired; Web Access has stopped.",
+  "error.webAccessRootChangePending":
+    "The CA root rotated; re-pair devices and distribute the new root certificate.",
+  "error.webAccessRootChangeMismatch":
+    "The CA root fingerprint does not match the expected value.",
+  "error.webAccessRollbackUnavailable":
+    "Certificate rollback is unavailable.",
+  "error.webAccessDeviceNotFound":
+    "The device does not exist or is no longer valid.",
+  "error.webAccessPairingNotFound":
+    "The pairing request does not exist or has expired.",
+  "error.webAccessPairingClaimed": "This pairing request was already handled.",
+  "error.webAccessPairingConsumed": "This pairing request was already claimed.",
+  "error.webAccessPairingExpired": "Pairing expired. Start pairing again.",
+  "error.webAccessPairingDenied": "Pairing was denied.",
+  "error.webAccessPairingCancelled": "Pairing was cancelled.",
+  "error.webAccessDeviceLimit": "The device limit of 8 has been reached.",
+  "error.webAccessRateLimited": "Too many requests. Try again later.",
+  "error.webAccessInvalidParameter": "The request parameters are invalid.",
 };
 
 const es: CommonMessages = {
@@ -589,6 +706,61 @@ const es: CommonMessages = {
   "error.pdfCoverDimensions":
     "Las dimensiones de la portada de este PDF superan el límite.",
   "error.onlinePageCountDrop": "El manifiesto en línea tiene menos páginas que el registro actual, así que se conservó tu progreso. Si la página realmente se acortó, elimina el libro y vuelve a importarlo.",
+  "error.caNotInitialized": "La CA local no está inicializada.",
+  "error.caStateCorrupt": "El estado de la CA local está dañado. Restáuralo desde una copia de seguridad.",
+  "error.caPartialInitialization": "La CA local tiene una inicialización incompleta. Revisa el directorio de la CA.",
+  "error.caAclVerification": "Los permisos del directorio de la clave privada de la CA no son válidos; la operación se rechazó.",
+  "error.caIo": "Falló una operación de archivo de la CA local.",
+  "error.caInsufficientValidity":
+    "La CA local no tiene suficiente validez restante; rota la CA raíz/intermedia.",
+  "error.caExportPath": "La ruta de exportación debe ser absoluta.",
+  "error.caDistributionRunning": "El servicio de distribución de la CA ya está en ejecución. Deténlo primero.",
+  "error.caDistributionNoLan": "No hay ninguna dirección IPv4 privada de LAN disponible.",
+  "error.caDistributionInvalidIp": "Elige una dirección IPv4 privada de LAN de este dispositivo.",
+  "error.caDistributionIo": "El servicio de distribución de la CA no pudo iniciarse o detenerse.",
+  "error.webAccessAlreadyEnabled":
+    "Web Access ya está activo o iniciándose.",
+  "error.webAccessNotEnabled": "Web Access no está activado.",
+  "error.webAccessInvalidState":
+    "El estado actual de Web Access no permite esta acción.",
+  "error.webAccessInvalidIp":
+    "Selecciona una dirección IPv4 privada de red local de este equipo.",
+  "error.webAccessNoLan":
+    "No hay ninguna dirección IPv4 privada de red local disponible.",
+  "error.webAccessInvalidBind":
+    "La dirección de enlace TLS no es válida.",
+  "error.webAccessTlsConfig":
+    "La configuración del certificado TLS ha fallado.",
+  "error.webAccessIo":
+    "El listener TLS no pudo iniciarse (el puerto puede estar en uso).",
+  "error.webAccessServerJoin":
+    "El listener TLS no pudo detenerse correctamente.",
+  "error.webAccessCertificateExpired":
+    "El certificado ha caducado; Web Access se ha detenido.",
+  "error.webAccessRootChangePending":
+    "La raíz de la CA ha rotado; vuelve a vincular los dispositivos y distribuye el nuevo certificado raíz.",
+  "error.webAccessRootChangeMismatch":
+    "La huella de la CA raíz no coincide con la esperada.",
+  "error.webAccessRollbackUnavailable":
+    "La reversión del certificado no está disponible.",
+  "error.webAccessDeviceNotFound":
+    "El dispositivo no existe o ya no es válido.",
+  "error.webAccessPairingNotFound":
+    "La solicitud de vinculación no existe o ha caducado.",
+  "error.webAccessPairingClaimed":
+    "Esta solicitud de vinculación ya se ha procesado.",
+  "error.webAccessPairingConsumed":
+    "Esta solicitud de vinculación ya se ha reclamado.",
+  "error.webAccessPairingExpired":
+    "La vinculación ha caducado. Iníciala de nuevo.",
+  "error.webAccessPairingDenied": "La vinculación fue rechazada.",
+  "error.webAccessPairingCancelled": "La vinculación fue cancelada.",
+  "error.webAccessDeviceLimit":
+    "Se ha alcanzado el límite de 8 dispositivos.",
+  "error.webAccessRateLimited":
+    "Demasiadas solicitudes. Inténtalo de nuevo más tarde.",
+  "error.webAccessInvalidParameter":
+    "Los parámetros de la solicitud no son válidos.",
 };
 
 const ja: CommonMessages = {
@@ -744,6 +916,58 @@ const ja: CommonMessages = {
     "この PDF の表紙のサイズ（寸法）が上限を超えています。",
   "error.pdfCoverMissing": "この PDF の表紙はまだ生成されていません。",
   "error.onlinePageCountDrop": "オンラインリストのページ数が既存の記録より少ないため、現在の進捗を保持しました。実際にページが減った場合は、この本を削除して再読み込みしてください。",
+  "error.caNotInitialized": "ローカル CA は未初期化です。",
+  "error.caStateCorrupt": "ローカル CA の状態が破損しています。バックアップから復元してください。",
+  "error.caPartialInitialization": "ローカル CA の初期化が不完全です。CA ディレクトリを確認してください。",
+  "error.caAclVerification": "ローカル CA の秘密鍵ディレクトリの権限が不正なため、操作を拒否しました。",
+  "error.caIo": "ローカル CA のファイル操作に失敗しました。",
+  "error.caInsufficientValidity":
+    "ローカル CA の残存有効期間が不足しています。ルート/中間 CA をローテーションしてください。",
+  "error.caExportPath": "エクスポート先は絶対パスで指定してください。",
+  "error.caDistributionRunning": "CA 配布サービスは既に実行中です。先に停止してください。",
+  "error.caDistributionNoLan": "利用可能なプライベート LAN IPv4 アドレスがありません。",
+  "error.caDistributionInvalidIp": "このデバイスのプライベート LAN IPv4 アドレスを選択してください。",
+  "error.caDistributionIo": "CA 配布サービスの開始または停止に失敗しました。",
+  "error.webAccessAlreadyEnabled":
+    "Web Access はすでに実行中または起動中です。",
+  "error.webAccessNotEnabled": "Web Access は有効になっていません。",
+  "error.webAccessInvalidState":
+    "現在の Web Access の状態ではこの操作を実行できません。",
+  "error.webAccessInvalidIp":
+    "この端末のプライベート IPv4 アドレスを選択してください。",
+  "error.webAccessNoLan":
+    "利用可能なプライベート IPv4 アドレスが見つかりません。",
+  "error.webAccessInvalidBind": "TLS のバインドアドレスが無効です。",
+  "error.webAccessTlsConfig": "TLS 証明書の設定に失敗しました。",
+  "error.webAccessIo":
+    "TLS リスナーを開始できませんでした（ポートが使用中の可能性があります）。",
+  "error.webAccessServerJoin":
+    "TLS リスナーを正常に停止できませんでした。",
+  "error.webAccessCertificateExpired":
+    "証明書の有効期限が切れたため、Web Access を停止しました。",
+  "error.webAccessRootChangePending":
+    "CA ルートが更新されました。再ペアリングと新しいルート証明書の配布が必要です。",
+  "error.webAccessRootChangeMismatch":
+    "CA ルートのフィンガープリントが想定と一致しません。",
+  "error.webAccessRollbackUnavailable":
+    "証明書のロールバックは利用できません。",
+  "error.webAccessDeviceNotFound":
+    "端末が存在しないか、すでに無効です。",
+  "error.webAccessPairingNotFound":
+    "ペアリング要求が存在しないか、期限切れです。",
+  "error.webAccessPairingClaimed":
+    "このペアリング要求はすでに処理されています。",
+  "error.webAccessPairingConsumed":
+    "このペアリング要求はすでに取得されています。",
+  "error.webAccessPairingExpired":
+    "ペアリングの期限が切れました。もう一度開始してください。",
+  "error.webAccessPairingDenied": "ペアリングは拒否されました。",
+  "error.webAccessPairingCancelled": "ペアリングは中止されました。",
+  "error.webAccessDeviceLimit": "端末の上限（8 台）に達しています。",
+  "error.webAccessRateLimited":
+    "リクエストが多すぎます。しばらくしてから再試行してください。",
+  "error.webAccessInvalidParameter":
+    "リクエストのパラメータが無効です。",
 };
 
 const ko: CommonMessages = {
@@ -897,6 +1121,58 @@ const ko: CommonMessages = {
   "error.pdfCoverTooLarge": "이 PDF의 표지 데이터가 크기 한도를 초과합니다.",
   "error.pdfCoverDimensions": "이 PDF의 표지 크기가 한도를 초과합니다.",
   "error.onlinePageCountDrop": "온라인 목록의 페이지 수가 기존 기록보다 적어 현재 진행 상황을 유지했습니다. 페이지가 실제로 줄었다면 이 책을 삭제한 뒤 다시 가져오세요.",
+  "error.caNotInitialized": "로컬 CA가 초기화되지 않았습니다.",
+  "error.caStateCorrupt": "로컬 CA 상태가 손상되었습니다. 백업에서 복원하세요.",
+  "error.caPartialInitialization": "로컬 CA 초기화가 불완전합니다. CA 디렉터리를 확인하세요.",
+  "error.caAclVerification": "로컬 CA 개인 키 디렉터리 권한이 올바르지 않아 작업을 거부했습니다.",
+  "error.caIo": "로컬 CA 파일 작업에 실패했습니다.",
+  "error.caInsufficientValidity":
+    "로컬 CA의 남은 유효 기간이 부족합니다. 루트/중간 CA를 교체하세요.",
+  "error.caExportPath": "내보내기 경로는 절대 경로여야 합니다.",
+  "error.caDistributionRunning": "CA 배포 서비스가 이미 실행 중입니다. 먼저 중지하세요.",
+  "error.caDistributionNoLan": "사용 가능한 사설 LAN IPv4 주소가 없습니다.",
+  "error.caDistributionInvalidIp": "이 기기의 사설 LAN IPv4 주소를 선택하세요.",
+  "error.caDistributionIo": "CA 배포 서비스를 시작하거나 중지하지 못했습니다.",
+  "error.webAccessAlreadyEnabled":
+    "Web Access가 이미 실행 중이거나 시작 중입니다.",
+  "error.webAccessNotEnabled": "Web Access가 활성화되어 있지 않습니다.",
+  "error.webAccessInvalidState":
+    "현재 Web Access 상태에서는 이 작업을 할 수 없습니다.",
+  "error.webAccessInvalidIp":
+    "이 기기의 사설 LAN IPv4 주소를 선택하세요.",
+  "error.webAccessNoLan":
+    "사용 가능한 사설 LAN IPv4 주소가 없습니다.",
+  "error.webAccessInvalidBind": "TLS 바인드 주소가 올바르지 않습니다.",
+  "error.webAccessTlsConfig": "TLS 인증서 설정에 실패했습니다.",
+  "error.webAccessIo":
+    "TLS 리스너를 시작하지 못했습니다(포트가 사용 중일 수 있습니다).",
+  "error.webAccessServerJoin":
+    "TLS 리스너를 정상적으로 중지하지 못했습니다.",
+  "error.webAccessCertificateExpired":
+    "인증서가 만료되어 Web Access가 중지되었습니다.",
+  "error.webAccessRootChangePending":
+    "CA 루트가 교체되었습니다. 기기를 다시 페어링하고 새 루트 인증서를 배포하세요.",
+  "error.webAccessRootChangeMismatch":
+    "CA 루트 지문이 예상 값과 일치하지 않습니다.",
+  "error.webAccessRollbackUnavailable":
+    "인증서 롤백을 사용할 수 없습니다.",
+  "error.webAccessDeviceNotFound":
+    "기기가 없거나 더 이상 유효하지 않습니다.",
+  "error.webAccessPairingNotFound":
+    "페어링 요청이 없거나 만료되었습니다.",
+  "error.webAccessPairingClaimed":
+    "이 페어링 요청은 이미 처리되었습니다.",
+  "error.webAccessPairingConsumed":
+    "이 페어링 요청은 이미 사용되었습니다.",
+  "error.webAccessPairingExpired":
+    "페어링이 만료되었습니다. 다시 시작하세요.",
+  "error.webAccessPairingDenied": "페어링이 거부되었습니다.",
+  "error.webAccessPairingCancelled": "페어링이 취소되었습니다.",
+  "error.webAccessDeviceLimit": "기기 한도(8대)에 도달했습니다.",
+  "error.webAccessRateLimited":
+    "요청이 너무 많습니다. 잠시 후 다시 시도하세요.",
+  "error.webAccessInvalidParameter":
+    "요청 매개변수가 올바르지 않습니다.",
 };
 
 export const commonMessages = {

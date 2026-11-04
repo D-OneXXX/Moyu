@@ -687,6 +687,17 @@ pub fn get_book(conn: &Connection, id: &str) -> Result<Option<BookRow>, BackendE
     }
 }
 
+/// Read-only lookup for the Web data plane. Removed books are treated as
+/// nonexistent so every `{id}` route can return the same `book-not-found`.
+pub fn get_active_book(conn: &Connection, id: &str) -> Result<Option<BookRow>, BackendError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+         FROM books WHERE id=?1 AND removed=0",
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    Ok(rows.next()?.map(row_to_book).transpose()?)
+}
+
 /// 压缩包源文件的增量扫描指纹（修改时间秒 + 字节数）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceStamp {
@@ -739,6 +750,39 @@ pub fn book_is_removed(conn: &Connection, id: &str) -> Result<bool, BackendError
     Ok(removed.unwrap_or(0) != 0)
 }
 
+/// Web 只读分页：按 `(updated_at, id)` 稳定游标，只搜索标题。
+///
+/// Path 不参与搜索，避免把本地目录布局变成可探测的 oracle；调用方传入
+/// `limit + 1` 行用于判断 `nextCursor`。桌面 `list_books` 行为不变。
+pub fn list_books_page(
+    conn: &Connection,
+    query: Option<&str>,
+    cursor_updated: Option<&str>,
+    cursor_id: Option<&str>,
+    limit: u32,
+) -> Result<Vec<BookRow>, BackendError> {
+    let like = query.map(|q| format!("%{}%", q.trim()));
+    let mut stmt = conn.prepare(
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+         FROM books
+         WHERE removed=0
+           AND (?1 IS NULL OR title LIKE ?1)
+           AND (
+             ?2 IS NULL
+             OR (?2 = '' AND updated_at = '' AND id > ?3)
+             OR updated_at < ?2
+             OR (updated_at = ?2 AND id > ?3)
+           )
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ?4",
+    )?;
+    let rows = stmt.query_map(
+        params![like, cursor_updated, cursor_id, i64::from(limit) + 1],
+        row_to_book,
+    )?;
+    rows.map(|row| row.map_err(BackendError::from)).collect()
+}
+
 /// 书库列表（不含已移除的软删书）。
 pub fn list_books(conn: &Connection, query: Option<&str>) -> Result<Vec<BookRow>, BackendError> {
     let (sql, param): (&str, Option<String>) = match query {
@@ -782,11 +826,21 @@ pub fn progress_changed(current_page: u32, current_pct: f64, new_page: u32, new_
 pub enum ProgressOutcome {
     /// 已达到目标状态（可能写了一行，也可能本来就是这个状态）。
     /// `rev` 是**操作后**的版本号：真实写入时 +1；本来就是目标状态时不变。
-    Applied { rev: i64 },
+    /// `page` / `updated_at` 是同一事务内读到的权威值，HTTP 层必须原样使用，
+    /// **不得**在 CAS 之后二次读（中间可能有其它写者）。
+    Applied {
+        rev: i64,
+        page: u32,
+        updated_at: String,
+    },
     /// 版本过期：`base_rev` 与库中当前版本不一致，**未写入任何东西**
-    /// （含 `books` 与 `reading_log`）。
-    Conflict { current_page: u32, current_rev: i64 },
-    /// 书不存在。
+    /// （含 `books` 与 `reading_log`）。三个字段都是冲突时库里的权威值。
+    Conflict {
+        current_page: u32,
+        current_rev: i64,
+        updated_at: String,
+    },
+    /// 书不存在**或已软删**（`removed=1`）。
     NotFound,
 }
 
@@ -870,46 +924,63 @@ pub fn set_progress_cas(
     let pct_val = pct.unwrap_or(-1.0).clamp(-1.0, 1.0);
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let outcome = (|| -> Result<ProgressOutcome, BackendError> {
-        // 在写锁内读出被确认的那一行：版本、页码、条漫百分比。
-        let current: Option<(i64, f64, i64)> = conn
+        // 在写锁内读出被确认的那一行：版本、页码、条漫百分比、时间戳、软删标记。
+        // `removed=1` 与「行不存在」对 Web 必须是同一个结果——读取面
+        // `get_active_book` 已经这样过滤；写入面若不一致，同一 id 会出现
+        // 「GET 404 / PUT 200」的矛盾。
+        let current: Option<(i64, f64, i64, String, i64)> = conn
             .query_row(
-                "SELECT current_page, scroll_pct, progress_rev FROM books WHERE id=?1",
+                "SELECT current_page, scroll_pct, progress_rev, updated_at, removed
+                 FROM books WHERE id=?1",
                 params![id],
                 |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
                         r.get::<_, f64>(1)?,
                         r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
                     ))
                 },
             )
             .ok();
-        let Some((cur_page, cur_pct, cur_rev)) = current else {
+        let Some((cur_page, cur_pct, cur_rev, cur_updated_at, removed)) = current else {
             return Ok(ProgressOutcome::NotFound);
         };
+        if removed != 0 {
+            return Ok(ProgressOutcome::NotFound);
+        }
         if cur_rev != base_rev {
             return Ok(ProgressOutcome::Conflict {
                 current_page: cur_page.max(0) as u32,
                 current_rev: cur_rev,
+                updated_at: cur_updated_at,
             });
         }
         let cur_page = cur_page.max(0) as u32;
-        // 已经是目标状态：不写、不 bump rev，返回当前版本（幂等）。
+        // 已经是目标状态：不写、不 bump rev，返回**库里现有的**权威值（幂等）。
         if !progress_changed(cur_page, cur_pct, page, pct_val) {
-            return Ok(ProgressOutcome::Applied { rev: cur_rev });
+            return Ok(ProgressOutcome::Applied {
+                rev: cur_rev,
+                page: cur_page,
+                updated_at: cur_updated_at,
+            });
         }
         // 条件更新：版本必须仍等于 base_rev。写锁在手，这一步在理论上必然命中；
         // `changes() == 0` 作为第二道防线，绝不静默覆盖。
+        // 同一个 `now` 既写库也返回给 HTTP 层，避免响应与落库值不一致。
+        let now = now_str();
         let updated = conn.execute(
             "UPDATE books SET current_page=?1, scroll_pct=?2, updated_at=?3,
                 progress_rev=progress_rev+1
              WHERE id=?4 AND progress_rev=?5",
-            params![page as i64, pct_val, now_str(), id, base_rev],
+            params![page as i64, pct_val, now, id, base_rev],
         )?;
         if updated == 0 {
             return Ok(ProgressOutcome::Conflict {
                 current_page: cur_page,
                 current_rev: cur_rev,
+                updated_at: cur_updated_at,
             });
         }
         // reading_log 的增量必须由**被确认的那一行**算出来——
@@ -922,13 +993,23 @@ pub fn set_progress_cas(
                 params![today_str(), id, delta],
             )?;
         }
-        Ok(ProgressOutcome::Applied { rev: cur_rev + 1 })
+        Ok(ProgressOutcome::Applied {
+            rev: cur_rev + 1,
+            page,
+            updated_at: now,
+        })
     })();
     match outcome {
-        Ok(result) => {
-            conn.execute_batch("COMMIT")?;
-            Ok(result)
-        }
+        Ok(result) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(result),
+            Err(error) => {
+                // COMMIT 失败（例如延迟外键约束）后事务仍可能处于活动状态；
+                // 必须显式回滚，否则同一连接后续的 `BEGIN IMMEDIATE` 会一直失败。
+                // 若事务其实已经结束，ROLLBACK 会返回「无活动事务」，这里忽略即可。
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error.into())
+            }
+        },
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
             Err(error)
@@ -2822,9 +2903,16 @@ mod tests {
         let base = get_book(&conn, "b1").unwrap().unwrap().progress_rev;
 
         let outcome = set_progress_cas(&conn, "b1", 5, None, base).unwrap();
-        assert_eq!(outcome, ProgressOutcome::Applied { rev: base + 1 });
-
         let row = get_book(&conn, "b1").unwrap().unwrap();
+        assert_eq!(
+            outcome,
+            ProgressOutcome::Applied {
+                rev: base + 1,
+                page: 5,
+                updated_at: row.updated_at.clone(),
+            }
+        );
+
         assert_eq!(row.current_page, 5, "页码必须落库");
         assert_eq!(row.progress_rev, base + 1, "进度变化必须 bump rev");
         assert_eq!(reading_log_total(&conn, "b1"), 5, "前进 5 页必须记 5");
@@ -2847,7 +2935,8 @@ mod tests {
             outcome,
             ProgressOutcome::Conflict {
                 current_page: 4,
-                current_rev: base + 1
+                current_rev: base + 1,
+                updated_at: "1999-01-01 00:00:00".into(),
             }
         );
 
@@ -2886,18 +2975,23 @@ mod tests {
         upsert_book(&conn, "b1", "p/b1", "书", 30).unwrap();
         let base = get_book(&conn, "b1").unwrap().unwrap().progress_rev;
 
-        assert_eq!(
-            set_progress_cas(&conn, "b1", 3, None, base).unwrap(),
-            ProgressOutcome::Applied { rev: base + 1 }
+        let applied = set_progress_cas(&conn, "b1", 3, None, base).unwrap();
+        assert!(
+            matches!(applied, ProgressOutcome::Applied { rev, page: 3, .. } if rev == base + 1),
+            "第一次写入必须成功：{applied:?}"
         );
-        assert_eq!(
-            set_progress_cas(&conn, "b1", 9, None, base).unwrap(),
-            ProgressOutcome::Conflict {
-                current_page: 3,
-                current_rev: base + 1
-            },
-            "过期 base 必须冲突，绝不静默覆盖"
-        );
+        let conflict = set_progress_cas(&conn, "b1", 9, None, base).unwrap();
+        let ProgressOutcome::Conflict {
+            current_page,
+            current_rev,
+            updated_at,
+        } = conflict
+        else {
+            panic!("过期 base 必须冲突，绝不静默覆盖：{conflict:?}");
+        };
+        assert_eq!(current_page, 3);
+        assert_eq!(current_rev, base + 1);
+        assert!(!updated_at.is_empty());
         assert_eq!(get_book(&conn, "b1").unwrap().unwrap().current_page, 3);
     }
 
@@ -2909,9 +3003,10 @@ mod tests {
         let base = get_book(&conn, "b1").unwrap().unwrap().progress_rev;
 
         // A 前进到 5。
-        assert_eq!(
-            set_progress_cas(&conn, "b1", 5, None, base).unwrap(),
-            ProgressOutcome::Applied { rev: base + 1 }
+        let applied = set_progress_cas(&conn, "b1", 5, None, base).unwrap();
+        assert!(
+            matches!(applied, ProgressOutcome::Applied { rev, page: 5, .. } if rev == base + 1),
+            "A 必须成功：{applied:?}"
         );
         // B 拿着同一个 base 写 3 ⇒ 冲突，不写历史。
         assert!(matches!(
@@ -2920,9 +3015,10 @@ mod tests {
         ));
         // B 重新取版本后前进到 7 ⇒ 增量按**被确认的那一行**算：7 - 5 = 2。
         let b_base = get_book(&conn, "b1").unwrap().unwrap().progress_rev;
-        assert_eq!(
-            set_progress_cas(&conn, "b1", 7, None, b_base).unwrap(),
-            ProgressOutcome::Applied { rev: b_base + 1 }
+        let applied = set_progress_cas(&conn, "b1", 7, None, b_base).unwrap();
+        assert!(
+            matches!(applied, ProgressOutcome::Applied { rev, page: 7, .. } if rev == b_base + 1),
+            "B 重新取版本后必须成功：{applied:?}"
         );
         assert_eq!(
             reading_log_total(&conn, "b1"),
@@ -2941,11 +3037,17 @@ mod tests {
         pin_updated_at(&conn, "b1");
 
         let outcome = set_progress_cas(&conn, "b1", 4, None, rev).unwrap();
-        assert_eq!(
-            outcome,
-            ProgressOutcome::Applied { rev },
-            "已是目标状态必须幂等返回当前版本"
-        );
+        let ProgressOutcome::Applied {
+            rev: noop_rev,
+            page: noop_page,
+            updated_at: noop_at,
+        } = outcome
+        else {
+            panic!("已是目标状态必须幂等返回当前版本：{outcome:?}");
+        };
+        assert_eq!(noop_rev, rev, "no-op 必须返回当前版本");
+        assert_eq!(noop_page, 4);
+        assert_eq!(noop_at, "1999-01-01 00:00:00", "no-op 不得刷新 updated_at");
         let after = get_book(&conn, "b1").unwrap().unwrap();
         assert_eq!(after.updated_at, "1999-01-01 00:00:00", "no-op 不得写库");
         assert_eq!(after.progress_rev, rev, "no-op 不得 bump rev");
@@ -3014,5 +3116,141 @@ mod tests {
             );
         }
         cleanup_db_files(&path);
+    }
+
+    /// D3：软删书对 Web CAS 必须表现为「不存在」，且零写入。
+    ///
+    /// 读取面 `get_active_book` 过滤 `removed=0`；写入面若不过滤，
+    /// 同一个书 id 会出现「GET 404 / PUT 200」的矛盾。
+    #[test]
+    fn cas_removed_book_is_not_found_and_writes_nothing() {
+        let conn = mem();
+        upsert_book(&conn, "b1", "p/b1", "书", 30).unwrap();
+        soft_remove_books(&conn, &["b1".to_string()]).unwrap();
+        pin_updated_at(&conn, "b1");
+        let before = get_book(&conn, "b1").unwrap().unwrap();
+        let log_before = reading_log_total(&conn, "b1");
+
+        let outcome = set_progress_cas(&conn, "b1", 5, None, before.progress_rev).unwrap();
+        assert_eq!(
+            outcome,
+            ProgressOutcome::NotFound,
+            "软删书不得通过 CAS 写入"
+        );
+
+        let after = get_book(&conn, "b1").unwrap().unwrap();
+        assert_eq!(after.current_page, before.current_page, "软删书不得改进度");
+        assert_eq!(
+            after.progress_rev, before.progress_rev,
+            "软删书不得 bump rev"
+        );
+        assert_eq!(
+            after.updated_at, "1999-01-01 00:00:00",
+            "软删书不得刷新 updated_at"
+        );
+        assert_eq!(
+            reading_log_total(&conn, "b1"),
+            log_before,
+            "软删书不得写阅读历史"
+        );
+    }
+
+    /// D3：`COMMIT` 失败必须回滚并释放事务；否则后续 `BEGIN IMMEDIATE` 永远失败。
+    ///
+    /// 用延迟外键 + `reading_log` 触发器在 COMMIT 阶段制造约束失败，
+    /// 这是 SQLite 中少数能让 COMMIT 本身报错、但语句阶段不报错的确定性方法。
+    #[test]
+    fn cas_commit_failure_rolls_back_and_releases_lock() {
+        let conn = mem();
+        upsert_book(&conn, "b1", "p/b1", "书", 30).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE fk_parent(id INTEGER PRIMARY KEY);
+             CREATE TABLE fk_child(
+                 id INTEGER PRIMARY KEY,
+                 parent_id INTEGER REFERENCES fk_parent(id) DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER fail_reading_log AFTER INSERT ON reading_log
+             BEGIN
+                 INSERT INTO fk_child(parent_id) VALUES (999);
+             END;",
+        )
+        .unwrap();
+
+        let base = get_book(&conn, "b1").unwrap().unwrap().progress_rev;
+        let failed = set_progress_cas(&conn, "b1", 5, None, base);
+        assert!(failed.is_err(), "COMMIT 失败必须返回错误：{failed:?}");
+
+        // 事务必须已回滚：books 与 reading_log 都不留半成品。
+        let row = get_book(&conn, "b1").unwrap().unwrap();
+        assert_eq!(row.current_page, 0, "失败写入必须回滚页码");
+        assert_eq!(row.progress_rev, base, "失败写入不得 bump rev");
+        assert_eq!(
+            reading_log_total(&conn, "b1"),
+            0,
+            "失败写入不得留下阅读历史"
+        );
+
+        // 同一连接必须还能开始新事务（证明没有悬挂的 BEGIN IMMEDIATE）。
+        conn.execute_batch("DROP TRIGGER fail_reading_log").unwrap();
+        let retry = set_progress_cas(&conn, "b1", 7, None, base).unwrap();
+        assert!(
+            matches!(retry, ProgressOutcome::Applied { .. }),
+            "回滚后同一连接必须还能写入：{retry:?}"
+        );
+        assert_eq!(reading_log_total(&conn, "b1"), 7);
+    }
+
+    /// D3：CAS 必须一次返回**权威**的页码与 `updated_at`，供 200/409 响应直接使用。
+    ///
+    /// 若 HTTP 层在 CAS 之后二次读，中间插入的桌面写入会让
+    /// `{rev: 8, page: 9, updatedAt: ...}` 自相矛盾；这里把返回值钉死。
+    #[test]
+    fn cas_returns_authoritative_page_and_updated_at() {
+        let conn = mem();
+        upsert_book(&conn, "b1", "p/b1", "书", 30).unwrap();
+        let base = get_book(&conn, "b1").unwrap().unwrap().progress_rev;
+
+        let outcome = set_progress_cas(&conn, "b1", 5, None, base).unwrap();
+        let ProgressOutcome::Applied {
+            rev,
+            page,
+            updated_at,
+        } = outcome
+        else {
+            panic!("expected applied, got {outcome:?}");
+        };
+        assert_eq!(rev, base + 1);
+        assert_eq!(page, 5);
+        let row = get_book(&conn, "b1").unwrap().unwrap();
+        assert_eq!(updated_at, row.updated_at, "返回的时间戳必须就是落库值");
+        assert!(!updated_at.is_empty());
+
+        // no-op：返回库里现有的权威值，不得伪造 base+1，也不得刷新时间戳。
+        let noop = set_progress_cas(&conn, "b1", 5, None, rev).unwrap();
+        let ProgressOutcome::Applied {
+            rev: noop_rev,
+            page: noop_page,
+            updated_at: noop_at,
+        } = noop
+        else {
+            panic!("expected noop applied, got {noop:?}");
+        };
+        assert_eq!(noop_rev, rev, "no-op 必须返回当前版本");
+        assert_eq!(noop_page, 5);
+        assert_eq!(noop_at, row.updated_at, "no-op 不得刷新 updated_at");
+
+        // 冲突：返回冲突时库里的页码、版本与时间戳。
+        let conflict = set_progress_cas(&conn, "b1", 9, None, base).unwrap();
+        let ProgressOutcome::Conflict {
+            current_page,
+            current_rev,
+            updated_at: conflict_at,
+        } = conflict
+        else {
+            panic!("expected conflict, got {conflict:?}");
+        };
+        assert_eq!(current_page, 5);
+        assert_eq!(current_rev, rev);
+        assert_eq!(conflict_at, row.updated_at);
     }
 }

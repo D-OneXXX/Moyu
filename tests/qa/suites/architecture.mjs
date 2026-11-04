@@ -1053,8 +1053,14 @@ const SETTINGS_TABS_PROBE = `(() => {
   const visible = ${VISIBLE_FN};
   const triggers = [...document.querySelectorAll('[role="tab"]')].filter(visible);
   const list = document.querySelector('[data-slot="tabs-list"]');
-  const panels = [...document.querySelectorAll('[role="tabpanel"]')].filter(visible);
-  const panel = panels[0] || null;
+  const allPanels = [...document.querySelectorAll('[role="tabpanel"]')];
+  const panels = allPanels.filter(visible);
+  const active = triggers.find((el) => el.getAttribute("aria-selected") === "true");
+  const controls = active ? (active.getAttribute("aria-controls") || "") : "";
+  // Read the panel owned by the selected trigger. Falling back to the first
+  // visible panel can report the previous tab's content while Base UI swaps
+  // panels, which turns a slow render into a false "tab content missing".
+  const panel = (controls ? allPanels.find((el) => el.id === controls) : null) || panels[0] || null;
   const panelText = panel ? (panel.innerText || "") : "";
   return {
     count: triggers.length,
@@ -1069,11 +1075,13 @@ const SETTINGS_TABS_PROBE = `(() => {
         id: el.getAttribute("id") || "",
         testid: el.getAttribute("data-testid") || "",
         dataValue: el.getAttribute("data-value") || el.getAttribute("value") || "",
+        controls: el.getAttribute("aria-controls") || "",
       };
     }),
     list: list ? { scrollWidth: list.scrollWidth, clientWidth: list.clientWidth } : null,
     innerWidth: window.innerWidth,
     panelCount: panels.length,
+    panelAllCount: allPanels.length,
     panel: panel ? {
       textLength: panelText.trim().length,
       hasLanguage: !!panel.querySelector("#ui-language"),
@@ -1083,6 +1091,7 @@ const SETTINGS_TABS_PROBE = `(() => {
       hasOnlineHeaders: !!panel.querySelector("#online-headers"),
       hasStorage: !!panel.querySelector('[data-testid="disk-cache-usage"]') && !!panel.querySelector("#disk-cache-budget"),
       hasPrivacyVersion: /\\b20\\d\\d-\\d\\d\\b/.test(panelText),
+      hasWebAccess: !!panel.querySelector('[data-testid="settings-web-access"]'),
       hasDiagnostics: !!panel.querySelector("#diagnostics-description"),
       hasUpdate: !!panel.querySelector("#update-check"),
     } : null,
@@ -1131,7 +1140,7 @@ function settingsMarker(id, panel) {
     case "storage":
       return panel.hasStorage;
     case "privacy":
-      return panel.hasPrivacyVersion;
+      return panel.hasPrivacyVersion && panel.hasWebAccess;
     case "about":
       return panel.hasDiagnostics;
     default:
@@ -1154,19 +1163,27 @@ async function gotoAndReadSettings(ctx, hash) {
   return { page, probe: await page.eval(SETTINGS_TABS_PROBE) };
 }
 
-async function clickSettingsTab(ctx, index) {
+async function clickSettingsTab(ctx, index, expectedId) {
   const page = ctx.page;
   await page.eval(
-    `(() => { const tabs = [...document.querySelectorAll('[role="tab"]')]; if (!tabs[${index}]) return false; tabs[${index}].click(); return true; })()`,
+    `(() => { const visible = ${VISIBLE_FN}; const tabs = [...document.querySelectorAll('[role="tab"]')].filter(visible); if (!tabs[${index}]) return false; tabs[${index}].click(); return true; })()`,
   );
   await page
     .waitFor(
-      `(() => { const tabs = [...document.querySelectorAll('[role="tab"]')]; return tabs[${index}]?.getAttribute("aria-selected") === "true"; })()`,
+      `(() => { const visible = ${VISIBLE_FN}; const tabs = [...document.querySelectorAll('[role="tab"]')].filter(visible); return tabs[${index}]?.getAttribute("aria-selected") === "true"; })()`,
       { timeout: 5000, label: `settings tab ${index} selected` },
     )
     .catch(() => {});
   await sleep(300);
-  return page.eval(SETTINGS_TABS_PROBE);
+  let probe = await page.eval(SETTINGS_TABS_PROBE);
+  // The panel swap can trail the selected state on a loaded WebView. Poll for
+  // the expected marker instead of treating one fixed 300 ms sample as truth.
+  const deadline = Date.now() + 5000;
+  while (!settingsMarker(expectedId, probe.panel) && Date.now() < deadline) {
+    await sleep(200);
+    probe = await page.eval(SETTINGS_TABS_PROBE);
+  }
+  return probe;
 }
 
 async function checkSettingsTabs(ctx, report) {
@@ -1219,7 +1236,7 @@ async function checkSettingsTabs(ctx, report) {
         localeProblems.push(`${id}: 找不到可点击 trigger`);
         continue;
       }
-      const clicked = await clickSettingsTab(ctx, index);
+      const clicked = await clickSettingsTab(ctx, index, id);
       const tab = clicked.tabs[index];
       if (!tab?.selected) {
         localeProblems.push(`${id}: 点击后未选中（aria-selected=${tab?.selected}）`);

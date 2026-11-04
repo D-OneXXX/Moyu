@@ -6,7 +6,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/D-OneXXX/MR/releases/latest/download/latest-linux-critical.json"
+        "https://github.com/D-OneXXX/Moyu/releases/latest/download/latest-linux-critical.json"
       ]
     }
   }

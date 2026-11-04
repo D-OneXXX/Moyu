@@ -294,7 +294,9 @@ impl FolderSource {
             .map_err(|e| BackendError::Io(format!("读取目录失败 {}：{e}", dir.display())))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| {
-                p.is_file()
+                p.symlink_metadata()
+                    .map(|metadata| metadata.file_type().is_file())
+                    .unwrap_or(false)
                     && p.file_name()
                         .and_then(|n| n.to_str())
                         .map(is_image_name)
@@ -1463,5 +1465,32 @@ mod tests {
         assert!(is_archive_path(Path::new("book.cbz")));
         assert!(is_archive_path(Path::new("book.zip")));
         assert!(is_archive_path(Path::new("book.ZIP")));
+    }
+
+    #[test]
+    fn folder_source_skips_symlinked_images() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("mr-folder-symlink-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("real.png"), tiny_png()).expect("real page");
+        let link = dir.join("link.png");
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(dir.join("real.png"), &link).is_ok();
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(dir.join("real.png"), &link).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let created = false;
+
+        if created {
+            let source = super::FolderSource::open(&dir).expect("folder source");
+            assert_eq!(source.entry_names().expect("names"), vec!["real.png"]);
+        } else {
+            eprintln!("BLOCKED: host denied symlink creation; folder source guard not exercised");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

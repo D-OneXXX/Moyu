@@ -17,6 +17,9 @@ mod paths;
 pub mod pdf;
 pub mod pipeline;
 mod platform;
+pub(crate) mod progress_service;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod read_service;
 pub mod render_cache;
 mod resilience;
 mod security;
@@ -123,7 +126,7 @@ pub struct MemoryStats {
 }
 
 /// 条漫布局数据：单页源图尺寸（header 解析，不解码）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageDim {
     pub index: u32,
@@ -511,6 +514,26 @@ pub fn run() {
             migrate_legacy_into(&data_dir, isolated);
             // 3) AppState 的渲染/在线缓存根依赖已安装的 cache_dir，必须最后创建。
             app.manage(Arc::new(AppState::new()));
+            // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
+            let ca_root = ca::resolve_ca_root(None, Some(data_dir.as_path()))
+                .unwrap_or_else(|_| data_dir.join("security").join("ca"));
+            app.manage(Arc::new(web_access::CaDistributionRuntime::new(
+                ca_root.clone(),
+            )));
+            // D1b：控制面运行时只托管，默认 Disabled；启动不 bind、不建配对窗口。
+            // D2：注入只读数据面 provider；D3：注入进度写 provider。
+            // 两者都只在显式 start 后由 start_inner 挂载，库初始化绝不监听。
+            let app_state = app.state::<Arc<AppState>>().inner().clone();
+            let web_data = Arc::new(web_access::AppData::new(Arc::clone(&app_state)));
+            let web_progress = Arc::new(web_access::AppProgress::new(app_state));
+            app.manage(Arc::new(
+                web_access::WebAccessRuntime::new(
+                    ca_root,
+                    Arc::new(web_access::TauriEventSink::new(app.handle().clone())),
+                    web_data,
+                )
+                .with_progress(web_progress),
+            ));
             cache_health::install(app.handle().clone());
             if init_app(app).is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。
@@ -619,6 +642,26 @@ pub fn run() {
             update::restart_app,
             security::security_audit,
             security::clear_online_traces,
+            // G1：仅根 CA 初始化/导出/短时分发；不含 D1b 配对或数据路由。
+            web_access::ca_distribution_commands::web_access_ca_status,
+            web_access::ca_distribution_commands::web_access_ca_initialize,
+            web_access::ca_distribution_commands::web_access_ca_export_root,
+            web_access::ca_distribution_commands::web_access_ca_distribution_addresses,
+            web_access::ca_distribution_commands::web_access_ca_distribution_start,
+            web_access::ca_distribution_commands::web_access_ca_distribution_stop,
+            web_access::ca_distribution_commands::web_access_ca_distribution_status,
+            // D1b：控制面命令。默认 Disabled；只有显式 start 才 bind；无数据路由。
+            web_access::commands::web_access_status,
+            web_access::commands::web_access_addresses,
+            web_access::commands::web_access_start,
+            web_access::commands::web_access_stop,
+            web_access::commands::web_access_pairing_start,
+            web_access::commands::web_access_pairing_state,
+            web_access::commands::web_access_pairing_approve,
+            web_access::commands::web_access_pairing_deny,
+            web_access::commands::web_access_pairing_cancel,
+            web_access::commands::web_access_devices_list,
+            web_access::commands::web_access_device_revoke,
             diagnostics::diagnostics_record_frontend_error,
             diagnostics::diagnostics_record_breadcrumb,
             diagnostics::diagnostics_update_context,
@@ -639,6 +682,10 @@ pub fn run() {
         .expect("error while building tauri application");
     app.run(|app_handle, event| {
         if let tauri::RunEvent::ExitRequested { .. } = event {
+            // D1b：退出前先关闭控制面监听、配对窗口与全部会话。失败只记录
+            // 稳定码，不自动重试/重启；随后再做缓存在退出路径上的收尾。
+            let web_access = app_handle.state::<Arc<web_access::WebAccessRuntime>>();
+            let _ = tauri::async_runtime::block_on(web_access.stop(web_access::StopReason::Exit));
             let state = app_handle.state::<Arc<AppState>>();
             state.cancel_handoff();
             // 退出前做最后一次统一淘汰；只动派生缓存。

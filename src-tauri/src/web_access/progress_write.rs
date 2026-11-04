@@ -194,21 +194,27 @@ impl ProgressHttp {
         let scroll_pct = payload.scroll_pct;
         let base_rev = payload.base_rev;
         let write = Arc::clone(&self.write);
+        let service = Arc::clone(&self.service);
+        let session_id = session.view.id.clone();
+        let token = session.token.clone();
         // Permits move into the blocking task: a handler timeout must not
         // release the gate while an uncancellable DB write is still running.
         let outcome = tokio::time::timeout(
             WRITE_HANDLER_TIMEOUT,
             tokio::task::spawn_blocking(move || {
                 let _session_permit = session_permit;
-                write.write_progress(&id, page, scroll_pct, base_rev)
+                service.with_live_progress(&session_id, token.as_str(), || {
+                    write.write_progress(&id, page, scroll_pct, base_rev)
+                })
             }),
         )
         .await;
         let outcome = match outcome {
             Err(_) => return Some(busy_response(&request_id)),
             Ok(Err(_)) => return Some(internal_error_response(&request_id)),
-            Ok(Ok(Err(error))) => return Some(data_error_response(error, &request_id)),
-            Ok(Ok(Ok(outcome))) => outcome,
+            Ok(Ok(Err(_))) => return Some(unauthorized_response(&request_id)),
+            Ok(Ok(Ok(Err(error)))) => return Some(data_error_response(error, &request_id)),
+            Ok(Ok(Ok(Ok(outcome)))) => outcome,
         };
 
         let (status, body) = progress_response(&outcome);
@@ -1149,6 +1155,61 @@ mod tests {
         assert_eq!(row(&state).current_page, 0);
         assert_eq!(row(&state).progress_rev, 0);
         assert_eq!(log_total(&state), 0);
+    }
+
+    /// Hold the body after authentication, revoke the device, then resume it.
+    /// The provider must not receive a write from the revoked request.
+    #[tokio::test]
+    async fn revoked_while_reading_body_cannot_reach_progress_provider() {
+        use std::future::Future;
+        struct PausedBody {
+            entered: Option<tokio::sync::oneshot::Sender<()>>,
+            release: tokio::sync::oneshot::Receiver<()>,
+            body: Option<Bytes>,
+        }
+        impl Body for PausedBody {
+            type Data = Bytes;
+            type Error = Infallible;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+                if self.body.is_none() {
+                    return Poll::Ready(None);
+                }
+                if let Some(entered) = self.entered.take() {
+                    let _ = entered.send(());
+                }
+                match Pin::new(&mut self.release).poll(cx) {
+                    Poll::Pending => Poll::Pending,
+                    Poll::Ready(_) => Poll::Ready(self.body.take().map(|b| Ok(Frame::data(b)))),
+                }
+            }
+        }
+        let (http, write) = fake_http(Ok(ProgressOutcome::Applied {
+            rev: 1,
+            page: 1,
+            updated_at: "2026-11-03 21:00:00".into(),
+        }));
+        let http = Arc::new(http);
+        let issued = http.service.issue_session_for_test("Device");
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let body = PausedBody {
+            entered: Some(entered_tx),
+            release: release_rx,
+            body: Some(Bytes::from_static(br#"{"page":1,"baseRev":0}"#)),
+        };
+        let req = request(&path(), Some(issued.token.as_str()), body);
+        let task_http = Arc::clone(&http);
+        let pending = tokio::spawn(async move { task_http.handle(req, SOURCE_IP).await.unwrap() });
+        entered_rx.await.unwrap();
+        assert!(http.service.revoke_device(&issued.id));
+        release_tx.send(()).unwrap();
+        let (status, payload) = status_and_json(pending.await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(error_code(&payload), "unauthorized");
+        assert_eq!(write.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

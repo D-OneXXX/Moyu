@@ -2401,6 +2401,57 @@ mod tests {
         assert_error(&after, StatusCode::UNAUTHORIZED, "unauthorized");
     }
     #[tokio::test]
+    async fn logout_waits_for_progress_without_blocking_async_runtime() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let fixture = Fixture::new();
+        let issued = fixture.issue_session();
+        let service = Arc::clone(&fixture.service);
+        let id = issued.id.clone();
+        let token = issued.token.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            service.with_live_progress(&id, token.as_str(), || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (allow_tx, allow_rx) = mpsc::channel();
+        let release = std::thread::spawn(move || {
+            // A bounded fallback avoids hanging the suite if the async
+            // executor is accidentally blocked by the logout handler.
+            let _ = allow_rx.recv_timeout(Duration::from_secs(3));
+            release_tx.send(()).unwrap();
+        });
+        let router = Arc::new(fixture.router);
+        let cookie = format!("{SESSION_COOKIE}={}", issued.token.as_str());
+        let req = raw_cookie(
+            request(Method::DELETE, "/api/session", Bytes::new()),
+            &cookie,
+        );
+        let pending = tokio::spawn(async move { router.handle(req).await });
+        let responsive = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::task::yield_now().await;
+            let _ = allow_tx.send(());
+        })
+        .await;
+        let result = pending.await.unwrap();
+        assert_eq!(result.status(), StatusCode::NO_CONTENT);
+        writer.join().unwrap().unwrap();
+        release.join().unwrap();
+        assert!(
+            responsive.is_ok(),
+            "logout must not block the async executor"
+        );
+        assert!(fixture
+            .service
+            .authenticate(issued.token.as_str())
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn browser_assets_are_same_origin_guarded_and_restrictive() {
         let fixture = Fixture::new();
         for path in [

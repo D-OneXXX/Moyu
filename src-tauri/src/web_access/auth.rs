@@ -26,7 +26,7 @@
 
 use std::fmt;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use thiserror::Error;
 
@@ -68,11 +68,20 @@ impl AuthError {
 pub(crate) struct PairingService {
     pairing: PairingStore,
     session: SessionStore,
+    // Progress writes take a shared guard; revoke/stop take an exclusive guard.
+    // Revalidate after acquiring it so a request waiting on body/gates cannot
+    // commit after revocation returns. This lock is never acquired while
+    // holding either the pairing or session state mutex.
+    progress_barrier: RwLock<()>,
 }
 
 impl PairingService {
     pub(crate) fn new(pairing: PairingStore, session: SessionStore) -> Self {
-        Self { pairing, session }
+        Self {
+            pairing,
+            session,
+            progress_barrier: RwLock::new(()),
+        }
     }
 
     pub(crate) fn start_window(&self) -> PairingWindow {
@@ -226,7 +235,30 @@ impl PairingService {
         self.session.refresh_activity(&session.id, trigger)
     }
 
+    /// Run a progress transaction only while this session is still live.
+    /// Revocation waits for admitted transactions, so after it returns no
+    /// transaction authenticated by the revoked session can commit.
+    pub(crate) fn with_live_progress<T>(
+        &self,
+        session_id: &str,
+        token: &str,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, SessionError> {
+        let _guard = self
+            .progress_barrier
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        match self.session.authenticate(token) {
+            Some(view) if view.id == session_id => Ok(operation()),
+            _ => Err(SessionError::Unauthorized),
+        }
+    }
+
     pub(crate) fn revoke_device(&self, session_id: &str) -> bool {
+        let _guard = self
+            .progress_barrier
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         self.session.revoke(session_id)
     }
 
@@ -262,6 +294,10 @@ impl PairingService {
     /// Stop path: cancel every claim, release outstanding reservations, and
     /// revoke every live session.
     pub(crate) fn stop_all(&self) {
+        let _guard = self
+            .progress_barrier
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         let reservations = self.pairing.cancel_window();
         self.release_reservations(&reservations);
         self.session.revoke_all();
@@ -660,6 +696,79 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code(), "pairing-cancelled");
         assert!(service.session_slots() == (0, 0));
+    }
+
+    #[test]
+    fn revocation_waits_for_admitted_progress_and_rejects_new_writes() {
+        use std::sync::mpsc;
+        let service = Arc::new(test_service());
+        let issued = service.issue_session_for_test("Device");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker_service = Arc::clone(&service);
+        let worker_id = issued.id.clone();
+        let worker_token = issued.token.clone();
+        let writer = thread::spawn(move || {
+            worker_service.with_live_progress(&worker_id, worker_token.as_str(), || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let revoker_service = Arc::clone(&service);
+        let revoker_id = issued.id.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let revoker = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx
+                .send(revoker_service.revoke_device(&revoker_id))
+                .unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        revoker.join().unwrap();
+        let rejected = service.with_live_progress(&issued.id, issued.token.as_str(), || {
+            panic!("revoked write must not run")
+        });
+        assert!(matches!(rejected, Err(SessionError::Unauthorized)));
+    }
+
+    #[test]
+    fn stop_waits_for_admitted_progress_before_revoking_sessions() {
+        use std::sync::mpsc;
+        let service = Arc::new(test_service());
+        let issued = service.issue_session_for_test("Device");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_service = Arc::clone(&service);
+        let id = issued.id.clone();
+        let token = issued.token.clone();
+        let writer = thread::spawn(move || {
+            writer_service.with_live_progress(&id, token.as_str(), || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let stopper_service = Arc::clone(&service);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let stopper = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            stopper_service.stop_all();
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        stopper.join().unwrap();
+        assert!(service.authenticate(issued.token.as_str()).is_none());
     }
 
     #[test]

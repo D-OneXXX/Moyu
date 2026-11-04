@@ -97,11 +97,11 @@ impl RenderCache {
         }
     }
 
-    /// 条漫切片存取：文件名 `{index:06}t{tile:02}@{w}.jpg`。
+    /// 条漫切片使用 v2 几何键，避免复用旧版放大估算产生的不兼容切片。
     pub fn get_tile(&self, book_id: &str, index: u32, tile: u32, w: u32) -> Option<Vec<u8>> {
         let path = self
             .book_dir(book_id)
-            .join(format!("{index:06}t{tile:02}@{w}.jpg"));
+            .join(format!("{index:06}v2t{tile:02}@{w}.jpg"));
         let mut f = std::fs::File::open(&path).ok()?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).ok()?;
@@ -116,7 +116,7 @@ impl RenderCache {
     pub fn remove_tile(&self, book_id: &str, index: u32, tile: u32, w: u32) {
         let _ = std::fs::remove_file(
             self.book_dir(book_id)
-                .join(format!("{index:06}t{tile:02}@{w}.jpg")),
+                .join(format!("{index:06}v2t{tile:02}@{w}.jpg")),
         );
     }
 
@@ -126,8 +126,8 @@ impl RenderCache {
             crate::cache_health::record_failure();
             return;
         }
-        let final_path = dir.join(format!("{index:06}t{tile:02}@{w}.jpg"));
-        let tmp = dir.join(format!(".tmp-{index:06}t{tile:02}@{w}"));
+        let final_path = dir.join(format!("{index:06}v2t{tile:02}@{w}.jpg"));
+        let tmp = dir.join(format!(".tmp-{index:06}v2t{tile:02}@{w}"));
         if std::fs::write(&tmp, bytes).is_ok() {
             if std::fs::rename(&tmp, &final_path).is_err() {
                 let _ = std::fs::remove_file(&tmp);
@@ -227,6 +227,31 @@ mod tests {
         rc.remove_book("../../victim.txt");
         assert!(victim.exists(), "任意 book_id 不得越出缓存根删除文件");
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn tile_geometry_v2_never_reuses_legacy_tile_files() {
+        use image::ImageEncoder as _;
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .write_image(&[255, 0, 0], 1, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mr-tile-v2-{}-{nanos}", std::process::id()));
+        let cache = RenderCache::new(dir.clone());
+        let book = cache.book_dir("book");
+        std::fs::create_dir_all(&book).unwrap();
+        std::fs::write(book.join("000000t00@320.jpg"), &jpeg).unwrap();
+        assert!(cache.get_tile("book", 0, 0, 320).is_none());
+        cache.put_tile("book", 0, 0, 320, &jpeg);
+        assert_eq!(
+            cache.get_tile("book", 0, 0, 320).as_deref(),
+            Some(jpeg.as_slice())
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

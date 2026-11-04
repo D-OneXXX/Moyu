@@ -2278,7 +2278,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn layout_reads_are_private_and_cacheable_for_five_minutes() {
+    async fn layout_reads_are_private_and_require_revalidation() {
         let data = Arc::new(FakeData::default());
         let fixture = Fixture::with_data(data.clone());
         let issued = fixture.issue_session();
@@ -2290,10 +2290,7 @@ mod tests {
                 .await,
         );
         assert_eq!(response.status, StatusCode::OK);
-        assert_eq!(
-            response.header("cache-control"),
-            Some("private, max-age=300")
-        );
+        assert_eq!(response.header("cache-control"), Some("private, no-cache"));
         assert_eq!(response.header("vary"), Some("Cookie"));
         assert_eq!(
             response.header("content-type"),

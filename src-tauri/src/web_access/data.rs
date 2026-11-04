@@ -54,7 +54,6 @@ const RENDER_GATE: usize = 2;
 const MAX_SESSION_BUCKETS: usize = 1024;
 
 const PRIVATE_NO_CACHE: &str = "private, no-cache";
-const PRIVATE_MAX_AGE_300: &str = "private, max-age=300";
 const NO_STORE: &str = "no-store";
 
 const X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
@@ -501,7 +500,7 @@ impl Payload {
             }
             Self::Layout(dims) => json_response(
                 &LayoutBody { pages: &dims },
-                PRIVATE_MAX_AGE_300,
+                PRIVATE_NO_CACHE,
                 request,
                 request_id,
             ),

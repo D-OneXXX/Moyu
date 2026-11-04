@@ -2336,4 +2336,108 @@ mod tests {
             "an oversized header block must be rejected before the provider runs"
         );
     }
+    #[tokio::test]
+    async fn session_management_authenticates_and_revokes_only_the_caller() {
+        let fixture = Fixture::new();
+        let first = fixture.issue_session();
+        let second = fixture.issue_session();
+        let cookie = format!("{SESSION_COOKIE}={}", first.token.as_str());
+        let unauthorized = TestResponse::of(fixture.router.handle(read("/api/session")).await);
+        assert_error(&unauthorized, StatusCode::UNAUTHORIZED, "unauthorized");
+        let before = fixture
+            .service
+            .authenticate(first.token.as_str())
+            .unwrap()
+            .expires_at;
+        let response = TestResponse::of(
+            fixture
+                .router
+                .handle(raw_cookie(read("/api/session"), &cookie))
+                .await,
+        );
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.header("cache-control"), Some("no-store"));
+        assert_eq!(response.json()["deviceId"], first.id);
+        assert_eq!(response.json()["deviceName"], "Pixel 8");
+        assert!(response.json()["createdAt"].as_str().is_some());
+        assert!(response.json()["lastSeenAt"].as_str().is_some());
+        assert!(!response.text().contains(first.token.as_str()));
+        assert!(response.cookies_named(SESSION_COOKIE).is_empty());
+        assert_eq!(
+            fixture
+                .service
+                .authenticate(first.token.as_str())
+                .unwrap()
+                .expires_at,
+            before
+        );
+        let mut invalid = raw_cookie(
+            request(Method::DELETE, "/api/session", Bytes::new()),
+            &cookie,
+        );
+        invalid.headers_mut().remove("origin");
+        let blocked = TestResponse::of(fixture.router.handle(invalid).await);
+        assert_eq!(blocked.status, StatusCode::FORBIDDEN);
+        assert!(fixture.service.authenticate(first.token.as_str()).is_some());
+        let delete = raw_cookie(
+            request(Method::DELETE, "/api/session", Bytes::new()),
+            &cookie,
+        );
+        let deleted = TestResponse::of(fixture.router.handle(delete).await);
+        assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+        let (_, attrs) = deleted.single_cookie(SESSION_COOKIE);
+        assert!(attrs.iter().any(|s| s.eq_ignore_ascii_case("Max-Age=0")));
+        assert!(fixture.service.authenticate(first.token.as_str()).is_none());
+        assert!(fixture
+            .service
+            .authenticate(second.token.as_str())
+            .is_some());
+        let after = TestResponse::of(
+            fixture
+                .router
+                .handle(raw_cookie(read("/api/session"), &cookie))
+                .await,
+        );
+        assert_error(&after, StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    #[tokio::test]
+    async fn browser_assets_are_same_origin_guarded_and_restrictive() {
+        let fixture = Fixture::new();
+        for path in [
+            "/",
+            "/reader.js",
+            "/reader.css",
+            "/reader-theme.css",
+            "/reader-messages.js",
+        ] {
+            let response = TestResponse::of(fixture.router.handle(read(path)).await);
+            assert_eq!(response.status, StatusCode::OK);
+            assert_eq!(response.header("cache-control"), Some("no-store"));
+            assert_eq!(response.header("referrer-policy"), Some("no-referrer"));
+            assert_eq!(response.header("x-content-type-options"), Some("nosniff"));
+            assert!(response
+                .header("content-security-policy")
+                .unwrap()
+                .contains("default-src 'none'"));
+            assert!(response
+                .header("content-security-policy")
+                .unwrap()
+                .contains("frame-ancestors 'none'"));
+            assert!(response.set_cookies().is_empty());
+            if path == "/reader-theme.css" {
+                assert!(response.text().contains("--sh-background: #eff8ff;"));
+                assert!(response.text().contains("--sh-background: #0b111e;"));
+                assert!(!response.text().contains("--mi-"));
+                assert!(!response.text().contains("--v3-"));
+            }
+            let mut untrusted = read(path);
+            untrusted
+                .headers_mut()
+                .insert("host", HeaderValue::from_static("attacker.invalid"));
+            let denied = TestResponse::of(fixture.router.handle(untrusted).await);
+            assert_eq!(denied.status, StatusCode::MISDIRECTED_REQUEST);
+        }
+        let response = TestResponse::of(fixture.router.handle(write("/", Bytes::new())).await);
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+    }
 }

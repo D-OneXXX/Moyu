@@ -2875,7 +2875,7 @@ export function checkAntiMockGuards(root, report) {
     const errors = [];
     const webAccessRoot = path.join(root, "src-tauri", "src", "web_access");
     const readProduction = (name) => {
-      const source = fs.readFileSync(path.join(webAccessRoot, name), "utf8");
+      const source = fs.readFileSync(path.join(webAccessRoot, name), "utf8").replace(/\r\n/g, "\n");
       // Exclude only the #[cfg(test)] mod tests block; cfg(test) helper
       // constructors before it are still part of the reviewed surface.
       const index = source.indexOf("#[cfg(test)]\nmod tests");
@@ -3712,7 +3712,7 @@ export function checkAntiMockGuards(root, report) {
   try {
     const errors = [];
     const read = (relative) =>
-      fs.readFileSync(path.join(root, relative), "utf8");
+      fs.readFileSync(path.join(root, relative), "utf8").replace(/\r\n/g, "\n");
     const productionOnly = (source) => {
       const index = source.indexOf("#[cfg(test)]\nmod tests");
       return stripRustComments(index >= 0 ? source.slice(0, index) : source);

@@ -25,6 +25,7 @@ mod http;
 pub(crate) mod pairing;
 pub(crate) mod progress_write;
 pub(crate) mod progress_write_app;
+mod reader_http;
 mod router;
 mod runtime;
 pub(crate) use data_app::AppData;
@@ -38,6 +39,7 @@ pub(crate) mod secret;
 pub(crate) mod session;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod session_auth;
+mod session_http;
 #[cfg(test)]
 mod test_http;
 mod tls;

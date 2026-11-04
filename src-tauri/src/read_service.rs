@@ -1920,11 +1920,11 @@ mod tests {
             "{}",
             1,
         );
-        // Source width < requested: renderer uses display height 300, so the
-        // actual tile count is 300 rather than the 317 from the raw formula.
+        // The source is not upscaled: 300 actual rows fit in one tile.
+        assert_eq!(tile_asset(&state, &a, 0, 0, 2112).unwrap().tile_count, 1);
         assert_eq!(
-            tile_asset(&state, &a, 0, 300, 2112),
-            Err(DataError::TileOutOfRange { max_tile: 299 })
+            tile_asset(&state, &a, 0, 1, 2112),
+            Err(DataError::TileOutOfRange { max_tile: 0 })
         );
     }
 

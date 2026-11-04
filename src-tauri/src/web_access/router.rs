@@ -258,6 +258,9 @@ impl PairingHttp {
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
 
+        if let Some(response) = super::reader_http::handle(&request) {
+            return response;
+        }
         if method == Method::GET && path == HEALTH_PATH {
             return health_response();
         }
@@ -312,6 +315,9 @@ impl PairingHttp {
                     Err(_) => timeout_response(),
                 };
             }
+        }
+        if let Some(response) = super::session_http::handle(&request, &self.service) {
+            return response;
         }
         if let Some(data) = self.data.as_ref() {
             match tokio::time::timeout(DATA_HANDLER_TIMEOUT, data.handle(&request, source_ip)).await

@@ -83,6 +83,8 @@ pub(crate) struct SessionView {
     pub issued_at: Instant,
     pub expires_at: Instant,
     pub absolute_expires_at: Instant,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Request classes allowed to refresh a session. All three share one 60-minute
@@ -123,6 +125,8 @@ struct SessionRecord {
     last_refreshed_at: Instant,
     expires_at: Instant,
     absolute_expires_at: Instant,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_seen_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl SessionRecord {
@@ -137,6 +141,8 @@ impl SessionRecord {
             issued_at: self.issued_at,
             expires_at: self.expires_at,
             absolute_expires_at: self.absolute_expires_at,
+            created_at: self.created_at,
+            last_seen_at: self.last_seen_at,
         }
     }
 }
@@ -183,9 +189,10 @@ impl SessionStore {
         let mut state = self.lock();
         state.purge_locked(now);
         let mut matched = None;
-        for record in &state.sessions {
+        for record in &mut state.sessions {
             // Compare every record so the lookup does not exit early.
             if constant_time_eq(&record.token_hash, &digest[..]) {
+                record.last_seen_at = chrono::Utc::now();
                 matched = Some(record.view());
             }
         }
@@ -317,6 +324,7 @@ impl SessionState {
         let mut token = Zeroizing::new(String::with_capacity(TOKEN_PREFIX.len() + suffix.len()));
         token.push_str(TOKEN_PREFIX);
         token.push_str(suffix.as_str());
+        let wall_now = chrono::Utc::now();
         let record = SessionRecord {
             id: format!("{SESSION_ID_PREFIX}{}", random_hex(ID_BYTES)),
             device_name: reservation.device_name,
@@ -325,6 +333,8 @@ impl SessionState {
             last_refreshed_at: now,
             expires_at: (now + SLIDING).min(now + ABSOLUTE),
             absolute_expires_at: now + ABSOLUTE,
+            created_at: wall_now,
+            last_seen_at: wall_now,
         };
         let id = record.id.clone();
         self.sessions.push(record);

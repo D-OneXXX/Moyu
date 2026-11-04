@@ -2233,3 +2233,180 @@ async fn real_tls_progress_pdf_is_415() {
 
     runtime.stop(StopReason::Stopped).await;
 }
+
+#[tokio::test]
+async fn real_tls_serves_browser_assets_and_revokes_current_session() {
+    let ca = TestCa::new("reader-d4-tls");
+    ca.initialize();
+    let runtime = WebAccessRuntime::for_test_with_data(ca.root.clone(), Arc::new(TestData));
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+    let host = runtime.status().await.bind_address.unwrap();
+    let addr: std::net::SocketAddr = host.parse().unwrap();
+    eprintln!(
+        "D4 isolated TLS test PID {} port {}",
+        std::process::id(),
+        addr.port()
+    );
+    let service = runtime.service_for_test().await.unwrap();
+    let issued = service.issue_session_for_test("Phone");
+    let other = service.issue_session_for_test("Other");
+    for path in [
+        "/",
+        "/reader.js",
+        "/reader.css",
+        "/reader-theme.css",
+        "/reader-messages.js",
+    ] {
+        let response = data_tls_request(&ca, addr, &host, "GET", path, None, &[]).await;
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response
+            .to_ascii_lowercase()
+            .contains("content-security-policy:"));
+    }
+    let response = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "GET",
+        "/api/session",
+        Some(issued.token.as_str()),
+        &[],
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 200"));
+    assert!(response.contains("Phone"));
+    assert!(!response.contains(issued.token.as_str()));
+    let origin = format!("https://{host}");
+    let denied = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "DELETE",
+        "/api/session",
+        Some(issued.token.as_str()),
+        &[],
+    )
+    .await;
+    assert!(denied.starts_with("HTTP/1.1 403"));
+    let deleted = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "DELETE",
+        "/api/session",
+        Some(issued.token.as_str()),
+        &[("Origin", &origin), ("X-Moyu-Request", "1")],
+    )
+    .await;
+    assert!(deleted.starts_with("HTTP/1.1 204"));
+    assert!(deleted.to_ascii_lowercase().contains("max-age=0"));
+    let revoked = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "GET",
+        "/api/session",
+        Some(issued.token.as_str()),
+        &[],
+    )
+    .await;
+    assert!(revoked.starts_with("HTTP/1.1 401"));
+    assert!(service.authenticate(other.token.as_str()).is_some());
+    runtime.stop(StopReason::Stopped).await;
+}
+
+/// Explicit opt-in: starts only a temporary HTTPS listener and a disposable,
+/// headless browser. No desktop window, real library, or trust store is used.
+#[tokio::test]
+#[ignore = "requires Node and a headless Chrome installation"]
+async fn d4_headless_browser_uses_real_tls_and_database() {
+    use image::ImageEncoder as _;
+    use std::process::Stdio;
+
+    let ca = TestCa::new("d4-browser-integration");
+    ca.initialize();
+    let book_dir = ca.wrapper.join("synthetic-book");
+    std::fs::create_dir_all(&book_dir).unwrap();
+    let image = image::RgbImage::from_pixel(64, 96, image::Rgb([180, 210, 230]));
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(image.as_raw(), 64, 96, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    std::fs::write(book_dir.join("1.png"), &png).unwrap();
+    std::fs::write(book_dir.join("2.png"), &png).unwrap();
+    let id = "d".repeat(64);
+    let mut state = AppState::new();
+    state.render = RenderCache::new(ca.wrapper.join("render"));
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    db::init_schema(&conn).unwrap();
+    db::upsert_book(&conn, &id, book_dir.to_str().unwrap(), "Synthetic Book", 2).unwrap();
+    state.db.set(conn);
+    let state = Arc::new(state);
+    let runtime = WebAccessRuntime::for_test_with_data(
+        ca.root.clone(),
+        Arc::new(AppData::new(Arc::clone(&state))),
+    )
+    .with_progress(Arc::new(AppProgress::new(Arc::clone(&state))));
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+    let addr: std::net::SocketAddr = runtime
+        .status()
+        .await
+        .bind_address
+        .unwrap()
+        .parse()
+        .unwrap();
+    let window = runtime.pairing_start().await.unwrap();
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
+    let mut browser = tokio::process::Command::new("node")
+        .arg(script)
+        .env("MR_D4_TEST_URL", &window.url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("start isolated browser harness");
+    eprintln!(
+        "D4 test PID {}; Node PID {}; HTTPS loopback port {}",
+        std::process::id(),
+        browser.id().unwrap_or_default(),
+        addr.port()
+    );
+    let mut approved = false;
+    for _ in 0..200 {
+        let claims = runtime.pairing_state().await.claims;
+        if let Some(claim) = claims.first() {
+            runtime.approve(&claim.claim_id).await.unwrap();
+            approved = true;
+            break;
+        }
+        if browser.try_wait().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let result = tokio::time::timeout(Duration::from_secs(40), browser.wait_with_output()).await;
+    let row = progress_row(state.as_ref(), &id);
+    runtime.stop(StopReason::Stopped).await;
+    let result = result
+        .expect("headless browser timed out")
+        .expect("browser harness exited");
+    eprintln!("{}", String::from_utf8_lossy(&result.stdout));
+    assert!(approved, "test pairing request was never approved");
+    assert!(
+        result.status.success(),
+        "headless browser integration failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        row,
+        (1, 1),
+        "browser page navigation must commit actual SQLite progress"
+    );
+}

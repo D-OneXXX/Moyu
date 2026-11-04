@@ -58,6 +58,7 @@ tests/qa/qa-knowledge-base.json
 # Internal documentation (kept locally, not published)
 /AGENTS.md
 /docs/ENGINEERING_WORKFLOW.md
+/docs/NON_INTRUSIVE_ENGINEERING.md
 /docs/PROJECT_STATE.md
 /docs/TECHNICAL.md
 /docs/TESTING.md

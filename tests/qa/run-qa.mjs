@@ -9,6 +9,11 @@ import { startQaApp } from "./lib/app.mjs";
 import { createQaFixtures } from "./lib/fixtures.mjs";
 import { startOnlineFixture } from "./lib/online-fixture.mjs";
 import {
+  E2E_SUITE_IDS,
+  classifyQaExecution,
+  formatAuthorizationError,
+} from "./lib/execution-level.mjs";
+import {
   createReport,
   fail,
   loadKnowledgeBase,
@@ -45,16 +50,7 @@ const ONLY = process.argv.find((arg) => arg.startsWith("--suite="))?.split("=")[
 /** --suite=a,b 可一次跑多个套件（同一应用实例），用于跨套件串扰排查。 */
 const ONLY_LIST = ONLY ? ONLY.split(",").map((name) => name.trim()).filter(Boolean) : null;
 /** 需要拉起隔离应用（而不是只跑静态检查）的 suite 白名单。 */
-const E2E_SUITES = new Set([
-  "visual",
-  "reader",
-  "pdf",
-  "online",
-  "cache",
-  "privacy",
-  "chaos",
-  "architecture",
-]);
+const E2E_SUITES = new Set(E2E_SUITE_IDS);
 
 function latestGitCommit() {
   try {
@@ -191,15 +187,34 @@ async function runOne(report, ctx, suite) {
 }
 
 async function main() {
+  const wantsE2E = !ONLY_LIST || ONLY_LIST.some((name) => E2E_SUITES.has(name));
+  const execution = classifyQaExecution({
+    e2e: wantsE2E,
+    env: process.env,
+    cdpPort: CDP_PORT,
+  });
+  if (!execution.authorization.granted) {
+    console.error(formatAuthorizationError(execution));
+    process.exitCode = 2;
+    return;
+  }
+
   cleanArtifacts();
   const report = createReport({
     root: ROOT,
     artifactDir: ARTIFACT_ROOT,
     appVersion: version(),
     buildCommit: latestGitCommit(),
+    execution,
   });
   note(report, "QA 运行器：isolated CDP harness");
   note(report, `CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}`);
+  note(
+    report,
+    `执行级别：${execution.level}（${execution.backgroundOrInteractive}）；授权：${
+      execution.authorization.granted ? "granted" : "missing"
+    }；来源：${execution.authorization.source}`,
+  );
 
   buildCheck(report);
 
@@ -218,6 +233,7 @@ async function main() {
     // Start before the app so the debug-only Telegram origin override can be
     // injected into the app environment. Production builds ignore it.
     onlineFixture = await startOnlineFixture();
+    if (report.execution) report.execution.ports.push(onlineFixture.port);
     ctx = await startQaApp({
       root: ROOT,
       artifactDir: ARTIFACT_ROOT,
@@ -303,12 +319,21 @@ async function main() {
       fix: "确保 cargo build 与 Vite 正常后重试",
     });
   } finally {
+    let cleanupFailure = null;
     if (ctx) {
-      await ctx.close().catch(() => {});
+      try {
+        await ctx.close();
+      } catch (error) {
+        cleanupFailure = `app/vite: ${error.message}`;
+      }
       await new Promise((resolve) => setTimeout(resolve, 900));
     }
     if (onlineFixture) {
-      await onlineFixture.close().catch(() => {});
+      try {
+        await onlineFixture.close();
+      } catch (error) {
+        cleanupFailure ??= `online fixture: ${error.message}`;
+      }
     }
     if (!KEEP_DATA) {
       for (const target of [DATA_DIR, CHAOS_DATA_DIR, FIXTURE_ROOT]) {
@@ -320,12 +345,20 @@ async function main() {
             retryDelay: 250,
           });
         } catch (error) {
+          cleanupFailure ??= `${path.relative(ROOT, target)}: ${error.message}`;
           note(
             report,
             `清理隔离数据失败（不影响审计结论）：${path.relative(ROOT, target)}: ${error.message}`,
           );
         }
       }
+    }
+    if (report.execution) {
+      report.execution.cleanup = KEEP_DATA
+        ? "retained-by-request"
+        : cleanupFailure
+          ? `failed: ${cleanupFailure}`
+          : "completed";
     }
   }
 

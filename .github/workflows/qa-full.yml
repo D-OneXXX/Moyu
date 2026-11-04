@@ -143,6 +143,9 @@ jobs:
       - name: Full QA regression (Windows/WebView2)
         shell: pwsh
         timeout-minutes: 45
+        env:
+          # 托管 runner 是 L2：没有用户交互桌面。显式声明可避免把 CI 误判为 L3。
+          MR_QA_EXECUTION_LEVEL: L2
         run: node tests/qa/run-qa.mjs
 
       - name: Summarize QA evidence

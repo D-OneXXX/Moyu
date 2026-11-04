@@ -215,3 +215,32 @@
   G3 **BLOCKED**；IPv6 限流桶为双栈前置条件；symlink/junction **BLOCKED/UNKNOWN**；
   D2 conditional GET 性能 **UNKNOWN**；D2-R2 **PARTIAL**（六语归 D4）。
 - 未提交、未合并、未推送、未启用生产；等待后续授权。
+
+## Phase 0B 记录（2026-11-04，P1 基线治理）
+
+- 基线：`feat/w7-d3-progress-write` @ `3759fed`；范围仅治理/QA 工具，不改产品 Rust、
+  不改 Web Access 路由、不启用监听、不集成、不推送、不创建 Tag/Release。
+- 治理文档本地同步：把 `AGENTS.md`、`docs/ENGINEERING_WORKFLOW.md`、
+  `docs/NON_INTRUSIVE_ENGINEERING.md`、`docs/PROJECT_STATE.md` 从主工作树复制到 D3
+  worktree（均按仓库既有策略保持本地、不入库），并运行 `npm run status` 以 `3759fed`
+  重生成 `PROJECT_STATE.md`；同时复制 2026-11-02 非侵入式合规审计到 `docs/dev/`。
+  `.gitignore` 补回 `/docs/NON_INTRUSIVE_ENGINEERING.md` 本地文档规则。
+- 静态台账：`qa-knowledge-base.json` 中 `static:d2-d3-security-invariants` 的历史
+  `Vary` 误报由 `open` 标记为 `resolved`，保留 `trigger/firstSeen/lastSeen` 与原始
+  证据字段；`static` 复跑后 `staticAudit` 为 0 条。
+- L3 QA 门禁：新增 `tests/qa/lib/execution-level.mjs` 与 10 条单元测试，按
+  NON_INTRUSIVE §3 分类 L1/L2/L3；本地全量 QA 无 `MR_QA_L3_AUTHORIZED=1` 时在启动
+  应用前以退出码 2 拒绝；托管 CI 由 `qa-full.yml` 显式声明
+  `MR_QA_EXECUTION_LEVEL=L2`。QA JSON/Markdown 报告新增执行级别、授权来源、进程/
+  端口、清理结果、延后套件与资源限制字段，并由报告级单测锁定。
+- 验证：`npm run test:governance` **49/49**；`node --test
+  scripts/release-governance/workflow-contract.test.mjs` **24/24**；
+  `node tests/qa/run-qa.mjs --suite=static` **30/30**，P0–P3=0；
+  未授权 `--suite=visual` 在启动前退出 2；未运行全量 QA/E2E/L3/GUI/真机。
+- 分支命名：创建关联 Issue **#163**（`W7 D1b/D2/D3 进度写入与 Web Access 集成`），并将
+  分支重命名为 `feat/163-w7-d1b-d2-d3-web-access`；`validatePrMetadata` 校验为 0 错误。
+  未推送、未创建 PR/Tag/Release。
+- 保留未决：治理文档仍按仓库策略为本地文件，干净克隆/CI 不包含其正文；该可追溯性
+  缺口需要单独决定是否改变发布策略。TLS session refresh **UNKNOWN**；HTTP concurrent
+  multi-writer **UNKNOWN**；G3 **BLOCKED**；D4 未开始。
+- 提交：Phase 0B 单独授权后创建本地提交；未合并、未推送、未发布。

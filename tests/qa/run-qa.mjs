@@ -200,8 +200,9 @@ async function main() {
     buildCommit: latestGitCommit(),
   });
   report.suiteCoverage = { planned: ["static", ...E2E_SUITES], executed: [] };
-  note(report, "QA 运行器：isolated CDP harness");
-  note(report, `CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}`);
+  const runsE2e = !ONLY_LIST || ONLY_LIST.some((name) => E2E_SUITES.has(name));
+  note(report, runsE2e ? "执行级别：L2，隔离 CDP；宿主桌面交互未覆盖" : "执行级别：L1，后台 CLI；未启动桌面或 CDP");
+  if (runsE2e) note(report, `计划 CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}；进程和端口须结合运行日志核对`);
 
   buildCheck(report);
 
@@ -306,11 +307,15 @@ async function main() {
     });
   } finally {
     if (ctx) {
-      await ctx.close().catch(() => {});
+      await ctx.close().catch((error) => {
+        fail(report, { id: "qa:cleanup-app", suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离应用清理失败", details: error.message });
+      });
       await new Promise((resolve) => setTimeout(resolve, 900));
     }
     if (onlineFixture) {
-      await onlineFixture.close().catch(() => {});
+      await onlineFixture.close().catch((error) => {
+        fail(report, { id: "qa:cleanup-fixture", suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离服务清理失败", details: error.message });
+      });
     }
     if (!KEEP_DATA) {
       for (const target of [DATA_DIR, CHAOS_DATA_DIR, FIXTURE_ROOT]) {
@@ -322,13 +327,10 @@ async function main() {
             retryDelay: 250,
           });
         } catch (error) {
-          note(
-            report,
-            `清理隔离数据失败（不影响审计结论）：${path.relative(ROOT, target)}: ${error.message}`,
-          );
+          fail(report, { id: `qa:cleanup-data:${path.basename(target)}`, suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离数据清理失败", details: error.message });
         }
       }
-    }
+    } else note(report, "按 --keep-data 保留本次隔离数据");
   }
 
   finalize(report);

@@ -28,7 +28,7 @@ pub enum BackendError {
     Db(String),
     #[error("网络错误：{0}")]
     Network(String),
-    #[error("长图切片超过网页阅读资源上限（webtoon-too-large）")]
+    #[error("长图切片超过安全处理资源上限（webtoon-too-large）")]
     WebtoonTooLarge,
     #[error("{0}")]
     Msg(String),

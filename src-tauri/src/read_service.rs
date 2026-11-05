@@ -599,8 +599,12 @@ pub(crate) fn layout_sync(
                 }
             }
             if persist_online {
-                if let Ok(json) = serde_json::to_string(&meta) {
-                    let _ = state.db.with(|conn| {
+                let failure =
+                    || BackendError::Msg("在线页面尺寸保存失败（online-metadata-write）".into());
+                let json = serde_json::to_string(&meta).map_err(|_| failure())?;
+                state
+                    .db
+                    .with(|conn| {
                         db::upsert_online_book(
                             conn,
                             &row.id,
@@ -611,8 +615,8 @@ pub(crate) fn layout_sync(
                             &json,
                         )
                         .map_err(|e| e.to_string())
-                    });
-                }
+                    })
+                    .map_err(|_| failure())?;
             }
         }
         state.cache_if_current(cache_epoch, || {

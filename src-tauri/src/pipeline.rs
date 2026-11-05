@@ -425,7 +425,12 @@ pub fn render_webtoon_tiles(
     raw: &RawPage,
     max_w: u32,
 ) -> Result<(u32, Vec<RenderedPage>), BackendError> {
-    render_webtoon_tiles_with(raw, max_w, true, None)
+    render_webtoon_tiles_with(
+        raw,
+        max_w,
+        true,
+        Some((MAX_WEBTOON_WEB_TILES, MAX_WEBTOON_WEB_ENCODED_BYTES)),
+    )
 }
 
 /// Bytes-only tile variant for the Web data plane.
@@ -674,6 +679,10 @@ mod tests {
         let raw = ultra_tall_page(1, 2_100_000);
         assert!(matches!(
             render_webtoon_tiles_asset(&raw, 320, false),
+            Err(BackendError::WebtoonTooLarge)
+        ));
+        assert!(matches!(
+            render_webtoon_tiles(&raw, 320),
             Err(BackendError::WebtoonTooLarge)
         ));
         assert!(

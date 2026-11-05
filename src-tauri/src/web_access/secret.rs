@@ -8,6 +8,7 @@ use base64::Engine;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 const MAX_DEVICE_NAME_SCALARS: usize = 64;
@@ -38,11 +39,7 @@ pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }
-    let mut diff = 0u8;
-    for (a, b) in left.iter().zip(right.iter()) {
-        diff |= a ^ b;
-    }
-    diff == 0
+    bool::from(left.ct_eq(right))
 }
 
 fn is_zero_width(c: char) -> bool {

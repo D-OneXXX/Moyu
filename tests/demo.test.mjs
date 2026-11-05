@@ -110,3 +110,29 @@ test("demo reader switches books, bounds page turns, and renders a continuous st
   assert.equal(prevented, true);
   assert.equal(named["#page-count"].textContent, "2 / 2");
 });
+
+test("embedded demo hides outbound navigation while standalone demo exposes it", () => {
+  function checkContext(embedded) {
+    class Element {
+      constructor() { this.dataset = {}; this.hidden = false; this.disabled = false; this.classList = { toggle() {} }; }
+      setAttribute() {}
+      addEventListener() {}
+      replaceChildren() {}
+    }
+    const named = Object.fromEntries(["#current-page", "#page-stack", "#reading-area", "#previous-page", "#next-page", "#page-count", "#current-title"].map((key) => [key, new Element()]));
+    const external = [new Element(), new Element()];
+    const back = new Element();
+    const document = {
+      documentElement: { dataset: {} },
+      querySelector: (selector) => named[selector],
+      querySelectorAll: (selector) => selector === "[data-external]" ? external : selector === "[data-return]" ? [back] : [],
+      createElement: () => new Element(),
+    };
+    const window = {};
+    window.parent = embedded ? { __TAURI_INTERNALS__: {} } : window;
+    vm.runInNewContext(script, { document, window, localStorage: { getItem: () => null }, navigator: { language: "en" } });
+    return { external: external.map((element) => element.hidden), back: back.hidden };
+  }
+  assert.deepEqual(checkContext(true), { external: [true, true], back: true });
+  assert.deepEqual(checkContext(false), { external: [false, false], back: true });
+});

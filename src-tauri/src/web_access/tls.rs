@@ -38,7 +38,7 @@ use super::tls_renewal::{
 const LEAF_DNS: &str = "moyu.local";
 const HEALTH_PATH: &str = "/api/health";
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_ACTIVE_CONNECTIONS: usize = 32;
+pub(crate) const MAX_ACTIVE_CONNECTIONS: usize = 32;
 /// One LAN peer must not be able to consume every global connection slot with
 /// slow or half-open TLS handshakes. Normal phones need a handful at most.
 const MAX_ACTIVE_CONNECTIONS_PER_IP: usize = 8;
@@ -47,23 +47,23 @@ type Clock = Arc<dyn Fn() -> OffsetDateTime + Send + Sync>;
 
 /// Per-peer connection budget. The global semaphore bounds total resource use;
 /// this keeps one LAN peer from holding all of it during slow handshakes.
-struct ConnectionLimiter {
+pub(crate) struct ConnectionLimiter {
     active: Mutex<HashMap<IpAddr, usize>>,
 }
 
-struct ConnectionPermit {
+pub(crate) struct ConnectionPermit {
     limiter: Arc<ConnectionLimiter>,
     ip: IpAddr,
 }
 
 impl ConnectionLimiter {
-    fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             active: Mutex::new(HashMap::new()),
         })
     }
 
-    fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
+    pub(crate) fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
         let mut active = self
             .active
             .lock()

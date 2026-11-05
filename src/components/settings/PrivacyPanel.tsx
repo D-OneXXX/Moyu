@@ -374,8 +374,11 @@ export default function PrivacyPanel() {
 
   return (
     <div className="space-y-4">
-      <CaDistributionPanel />
       <WebAccessPanel />
+      <details className="rounded-2xl border border-border bg-card p-4">
+        <summary className="cursor-pointer text-sm font-semibold">{t("settings.webAccess.startSecure")}</summary>
+        <div className="mt-3"><CaDistributionPanel /></div>
+      </details>
       <SettingsSection
         icon={ShieldCheck}
         title={t("privacy.statement.title")}

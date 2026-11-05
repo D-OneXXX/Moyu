@@ -654,6 +654,7 @@ pub fn run() {
             web_access::commands::web_access_status,
             web_access::commands::web_access_addresses,
             web_access::commands::web_access_start,
+            web_access::commands::web_access_start_plain,
             web_access::commands::web_access_stop,
             web_access::commands::web_access_pairing_start,
             web_access::commands::web_access_pairing_state,

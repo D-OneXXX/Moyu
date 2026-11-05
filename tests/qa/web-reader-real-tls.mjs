@@ -8,7 +8,8 @@ import { CdpPage, waitForTarget } from "./lib/cdp.mjs";
 // Only the disposable, loopback test browser ignores the test CA error.
 // Neither the system trust store nor any normal browser profile is changed.
 const targetUrl = process.env.MR_D4_TEST_URL;
-assert.ok(targetUrl && /^https:\/\/127\.0\.0\.1:\d+\/#pair_[a-f0-9]{32}$/.test(targetUrl));
+const plain = process.env.MR_D4_TEST_PLAIN === "1";
+assert.ok(targetUrl && (plain ? /^http:\/\/127\.0\.0\.1:\d+\/$/.test(targetUrl) : /^https:\/\/127\.0\.0\.1:\d+\/#pair_[a-f0-9]{32}$/.test(targetUrl)));
 const chrome = process.env.MR_HEADLESS_CHROME || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "moyu-real-tls-qa-"));
 let child, page, cdpPort;
@@ -22,8 +23,10 @@ try {
   const target = await waitForTarget(cdpPort, (item) => item.url === "about:blank");
   page = await CdpPage.connect(target, cdpPort);
   await page.send("Emulation.setDeviceMetricsOverride", {width: 390, height: 844, deviceScaleFactor: 1, mobile: true});
-  await page.send("Security.enable");
-  await page.send("Security.setIgnoreCertificateErrors", {ignore: true});
+  if (!plain) {
+    await page.send("Security.enable");
+    await page.send("Security.setIgnoreCertificateErrors", {ignore: true});
+  }
   await page.send("Page.navigate", {url: targetUrl});
   const wait = async (expression) => {
     for (let i = 0; i < 200; i++) {
@@ -32,17 +35,29 @@ try {
     }
     throw new Error("browser condition timed out: " + expression);
   };
-  await wait("document.querySelector('input') && document.querySelector('button.primary')");
-  assert.equal(await page.eval("location.hash"), "");
-  await page.eval("document.querySelector('input').value='Test browser'; document.querySelector('button.primary').click()");
+  if (!plain) {
+    await wait("document.querySelector('input') && document.querySelector('button.primary')");
+    assert.equal(await page.eval("location.hash"), "");
+    await page.eval("document.querySelector('input').value='Test browser'; document.querySelector('button.primary').click()");
+  }
   await wait("[...document.querySelectorAll('.book')].some(x=>x.textContent.includes('Synthetic Book'))");
   await page.eval("document.querySelector('.book').click()");
   await wait("document.querySelector('.tiles img')?.complete && document.querySelector('.tiles img')?.naturalWidth > 0 && document.querySelector('#tools')");
   assert.equal(await page.eval("document.querySelectorAll('.tiles > *').length"), 5, "1x10000 image must create five actual tiles");
   assert.equal(await page.eval("!!document.querySelector('.tiles .error')"), false);
+  if (plain) {
+    await page.send("Page.reload");
+    await wait("[...document.querySelectorAll('.book')].some(x=>x.textContent.includes('Synthetic Book'))");
+    await page.eval("document.querySelector('.book').click()");
+    await wait("document.querySelector('.tiles img')?.naturalWidth > 0 && document.querySelector('#tools')");
+  }
   await page.eval("document.querySelector('#tools button.primary').click()");
   await wait("document.querySelector('#tools span')?.textContent.includes('2 / 2') && document.querySelector('.tiles img')?.naturalWidth > 0");
-  console.log(`Browser PID ${child.pid}; CDP loopback port ${cdpPort}; real HTTPS pairing, image and progress flow passed.`);
+  if (plain) {
+    await page.eval("document.querySelector('#header-actions button').click()");
+    await wait("!document.querySelector('#tools') && document.querySelector('#app button') !== null");
+  }
+  console.log(`Browser PID ${child.pid}; CDP loopback port ${cdpPort}; real ${plain ? "HTTP" : "HTTPS"} pairing, image and progress flow passed.`);
 } finally {
   if (page?.socket) page.socket.close();
   if (child && child.exitCode === null) {

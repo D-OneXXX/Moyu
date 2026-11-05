@@ -26,6 +26,8 @@ export const webAccessApi = {
       ip,
       port: port ?? null,
     }),
+  startPlain: (ip: string, port?: number | null) =>
+    invoke<WebAccessStatusView>("web_access_start_plain", { ip, port: port ?? null }),
   stop: () => invoke<WebAccessStatusView>("web_access_stop"),
   pairingStart: () => invoke<PairingWindowView>("web_access_pairing_start"),
   pairingState: () => invoke<PairingStateView>("web_access_pairing_state"),

@@ -155,15 +155,16 @@ export function useWebAccess() {
   );
 
   const start = useCallback(
-    (ip: string) =>
+    (ip: string, secure = false) =>
       runAction("start", null, async () => {
-        const next = await webAccessApi.start(ip);
+        const next = secure ? await webAccessApi.start(ip) : await webAccessApi.startPlain(ip);
         if (!mountedRef.current) return;
         setStatus(next);
         clearPairing();
         clearDevices();
+        if (next.transport === "http") await refreshPairing();
       }),
-    [clearDevices, clearPairing, runAction],
+    [clearDevices, clearPairing, refreshPairing, runAction],
   );
 
   const stop = useCallback(

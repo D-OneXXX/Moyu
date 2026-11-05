@@ -23,12 +23,13 @@ pub(crate) fn error_message(error: &RuntimeError) -> String {
         "web-access-already-enabled" => "Web Access 已在运行或正在启动",
         "web-access-not-enabled" => "Web Access 尚未启用",
         "web-access-invalid-state" => "当前 Web Access 状态不允许该操作",
+        "web-access-safe-mode" => "安全模式下无法启动局域网阅读",
         "web-access-invalid-ip" => "只能选择当前设备的私有局域网 IPv4 地址",
         "web-access-no-lan-address" => "未找到可用的私有局域网 IPv4 地址",
-        "web-access-invalid-bind" => "TLS 绑定地址无效",
+        "web-access-invalid-bind" => "监听地址无效",
         "web-access-tls-config" => "TLS 证书配置失败",
-        "web-access-io" => "TLS 监听启动失败（端口可能被占用）",
-        "web-access-server-join" => "TLS 监听停止失败",
+        "web-access-io" => "监听启动失败（端口可能被占用）",
+        "web-access-server-join" => "监听停止失败",
         "web-access-certificate-expired" => "证书已过期，Web Access 已停止",
         "web-access-root-change-pending" => "CA 根已轮换，需要重新配对并分发新根证书",
         "web-access-root-change-mismatch" => "CA 根指纹与预期不一致",
@@ -83,6 +84,22 @@ pub(crate) async fn web_access_start(
         .map_err(|_| error_message(&RuntimeError::InvalidIp))?;
     runtime
         .start(ip, port.unwrap_or(0))
+        .await
+        .map_err(map_error)
+}
+
+#[tauri::command]
+pub(crate) async fn web_access_start_plain(
+    runtime: State<'_, Arc<WebAccessRuntime>>,
+    ip: String,
+    port: Option<u16>,
+) -> Result<WebAccessStatusView, String> {
+    let ip = ip
+        .trim()
+        .parse::<Ipv4Addr>()
+        .map_err(|_| error_message(&RuntimeError::InvalidIp))?;
+    runtime
+        .start_plain(ip, port.unwrap_or(0))
         .await
         .map_err(map_error)
 }
@@ -156,6 +173,7 @@ mod tests {
             RuntimeError::AlreadyEnabled,
             RuntimeError::NotEnabled,
             RuntimeError::InvalidState,
+            RuntimeError::SafeMode,
             RuntimeError::InvalidIp,
             RuntimeError::NoLanAddress,
             RuntimeError::Ca(crate::ca::CaError::NotInitialized),

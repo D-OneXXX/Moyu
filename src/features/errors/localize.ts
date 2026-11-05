@@ -62,6 +62,7 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "web-access-already-enabled", key: "error.webAccessAlreadyEnabled" },
   { code: "web-access-not-enabled", key: "error.webAccessNotEnabled" },
   { code: "web-access-invalid-state", key: "error.webAccessInvalidState" },
+  { code: "web-access-safe-mode", key: "settings.webAccess.safeModeBlocked" },
   { code: "web-access-invalid-ip", key: "error.webAccessInvalidIp" },
   { code: "web-access-no-lan-address", key: "error.webAccessNoLan" },
   { code: "web-access-invalid-bind", key: "error.webAccessInvalidBind" },

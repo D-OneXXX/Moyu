@@ -957,6 +957,9 @@ pub async fn resilience_enable_safe_mode(
     if let Some(runtime) = app.try_state::<Arc<crate::web_access::WebAccessRuntime>>() {
         let _ = runtime.stop(crate::web_access::StopReason::SafeMode).await;
     }
+    if let Some(runtime) = app.try_state::<Arc<crate::web_access::CaDistributionRuntime>>() {
+        runtime.stop().await;
+    }
 
     if let Some(browser) = app.get_webview_window("browser") {
         let _ = browser.close();

@@ -31,7 +31,7 @@ use hyper::header::{
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
@@ -39,6 +39,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::ca::{CaError, CaManager};
 
 use super::addrs::{is_private_lan_ipv4, local_private_ipv4s};
+use super::tls::ConnectionLimiter;
 
 /// The only path this service ever serves.
 pub const CA_DISTRIBUTION_PATH: &str = "/ca.crt";
@@ -62,6 +63,8 @@ pub(crate) enum CaDistributionError {
     NoLanAddress,
     #[error("CA distribution bind address must be a private LAN IPv4")]
     InvalidBindAddress,
+    #[error("CA distribution is unavailable in safe mode")]
+    SafeMode,
     #[error("CA distribution I/O failed")]
     Io(#[from] std::io::Error),
 }
@@ -74,6 +77,7 @@ impl CaDistributionError {
             Self::AlreadyRunning => "ca-distribution-running",
             Self::NoLanAddress => "ca-distribution-no-lan",
             Self::InvalidBindAddress => "ca-distribution-invalid-ip",
+            Self::SafeMode => "web-access-safe-mode",
             Self::Io(_) => "ca-distribution-io",
         }
     }
@@ -197,6 +201,9 @@ impl CaDistributionRuntime {
         }
 
         let mut state = self.state.lock().await;
+        if !self.test_allow_loopback && crate::resilience::ensure_online_allowed().is_err() {
+            return Err(CaDistributionError::SafeMode);
+        }
         if state.running.is_some() {
             return Err(CaDistributionError::AlreadyRunning);
         }
@@ -302,6 +309,7 @@ async fn accept_loop(
     run_id: u64,
 ) {
     let connections = Arc::new(Semaphore::new(MAX_ACTIVE_CONNECTIONS));
+    let per_ip = ConnectionLimiter::with_limit(2);
     let mut tasks = JoinSet::new();
     let timer = tokio::time::sleep(ttl);
     tokio::pin!(timer);
@@ -314,7 +322,11 @@ async fn accept_loop(
             _ = &mut timer => break CaDistributionStopReason::Expired,
             accepted = listener.accept() => {
                 match accepted {
-                    Ok((stream, _peer)) => {
+                    Ok((stream, peer)) => {
+                        let Some(ip_permit) = per_ip.try_acquire(peer.ip()) else {
+                            drop(stream);
+                            continue;
+                        };
                         let permit = match connections.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
@@ -328,6 +340,7 @@ async fn accept_loop(
                         let authority = Arc::clone(&authority);
                         tasks.spawn(async move {
                             let _permit = permit;
+                            let _ip_permit = ip_permit;
                             let io = TokioIo::new(stream);
                             let service = service_fn(move |request| {
                                 let body = body.clone();
@@ -339,6 +352,8 @@ async fn accept_loop(
                             let _ = tokio::time::timeout(
                                 CONNECTION_TIMEOUT,
                                 http1::Builder::new()
+                                    .timer(TokioTimer::new())
+                                    .header_read_timeout(Some(Duration::from_secs(5)))
                                     .keep_alive(false)
                                     .serve_connection(io, service),
                             )

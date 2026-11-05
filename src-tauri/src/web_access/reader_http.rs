@@ -5,6 +5,7 @@ use hyper::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS,
 };
 use hyper::{Method, Request, Response, StatusCode};
+use std::sync::OnceLock;
 
 pub(crate) fn handle<B>(request: &Request<B>) -> Option<Response<Full<Bytes>>> {
     if request.method() != Method::GET {
@@ -19,7 +20,15 @@ pub(crate) fn handle<B>(request: &Request<B>) -> Option<Response<Full<Bytes>>> {
             "text/css; charset=utf-8",
             Bytes::from_static(include_bytes!("reader/reader.css")),
         ),
-        "/reader-theme.css" => ("text/css; charset=utf-8", Bytes::from(reader_theme()?)),
+        "/reader-theme.css" => {
+            static THEME: OnceLock<Option<Bytes>> = OnceLock::new();
+            (
+                "text/css; charset=utf-8",
+                THEME
+                    .get_or_init(|| reader_theme().map(Bytes::from))
+                    .clone()?,
+            )
+        }
         "/reader-messages.js" => (
             "text/javascript; charset=utf-8",
             Bytes::from_static(include_bytes!("../../../src/i18n/messages/webReader.ts")),

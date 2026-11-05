@@ -148,11 +148,13 @@ jobs:
       - name: Summarize QA evidence
         if: always()
         shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
         run: |
           {
             echo "### Full QA evidence"
             echo ""
-            echo "- Requested ref: \`${{ inputs.ref }}\`（${{ steps.resolve.outputs.kind }}）"
+            echo "- Requested ref: \`${REQUESTED_REF}\`（${{ steps.resolve.outputs.kind }}）"
             echo "- Source: \`${{ steps.source.outputs.sha }}\`"
             echo "- Workflow run: ${{ github.run_id }}"
             if [ -f tests/qa/reports/latest.json ]; then

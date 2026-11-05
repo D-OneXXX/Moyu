@@ -586,6 +586,7 @@ fn json_response<T: Serialize, B>(
     Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(CACHE_CONTROL, cache_control)
         .header(VARY, "Cookie")
         .header(ETAG, etag)
@@ -767,6 +768,7 @@ pub(crate) fn error_response(
         .status(status)
         .header(CACHE_CONTROL, NO_STORE)
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(X_REQUEST_ID, request_id);
     if let Some(retry_after) = retry_after {
         builder = builder.header(RETRY_AFTER, retry_after_seconds(retry_after));

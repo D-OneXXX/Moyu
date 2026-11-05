@@ -456,6 +456,7 @@ export async function runChaosSuite(ctx, report) {
     await closeRecovery(ctx, recovery.page);
     freezeStage = "reconnect-after-reload";
     await ctx.reconnectMain();
+    ok(report, { id: "chaos:freeze-suite", suite: "chaos", layer: "chaos", title: "冻结恢复测试执行完成" });
   } catch (error) {
     fail(report, {
       id: "chaos:freeze-suite",
@@ -636,6 +637,7 @@ export async function runChaosSuite(ctx, report) {
       });
     }
     await closeRecovery(ctx, recovery.page);
+    ok(report, { id: "chaos:safe-mode-suite", suite: "chaos", layer: "chaos", title: "安全模式测试执行完成" });
   } catch (error) {
     fail(report, {
       id: "chaos:safe-mode-suite",

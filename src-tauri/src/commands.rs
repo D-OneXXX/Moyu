@@ -1088,6 +1088,10 @@ pub async fn get_page(
     max_height: Option<u32>,
 ) -> Result<PageImage, String> {
     let cache_epoch = state.refresh_epoch();
+    // Bound caller-supplied cache dimensions while preserving 0/None as the
+    // existing unconstrained sentinel and retaining smaller requested sizes.
+    let max_width = max_width.map(|value| value.min(8192));
+    let max_height = max_height.map(|value| value.min(8192));
     let w = max_width.unwrap_or(0);
     let h = max_height.unwrap_or(0);
     // 1) L1 内存。

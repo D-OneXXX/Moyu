@@ -129,7 +129,7 @@ function BookDetailSheetBody({
     if (!active) return;
     let alive = true;
     setCover(null);
-    api.getThumbnail(book.id, 256).then(
+    api.getThumbnail(book.id, 512).then(
       (img) => {
         if (alive) setCover(img.dataUrl);
       },

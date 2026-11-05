@@ -81,7 +81,7 @@ export default function BookCard({
     setCover(null);
     setCoverLoading(true);
     const isPdf = book.format === "pdf";
-    api.getThumbnail(book.id, 256).then(
+    api.getThumbnail(book.id, 512).then(
       (img) => {
         if (!alive) return;
         setCover(img.dataUrl);
@@ -92,7 +92,7 @@ export default function BookCard({
         // PDF：封面缺失不是错误——用 pdf.js 渲染首页并回写缓存。
         // 封面生成走模块级串行队列，整座书库同一时刻只开一份 PDF。
         if (isPdf && hasPdfErrorCode(error, "pdf-cover-missing")) {
-          void ensurePdfCover(book.id, 256).then((dataUrl) => {
+          void ensurePdfCover(book.id).then((dataUrl) => {
             if (!alive) return;
             setCover(dataUrl);
             setCoverLoading(false);

@@ -37,7 +37,7 @@ pub const MAX_PDF_PAGE_COUNT: u32 = 1_000_000;
 ///
 /// 必须固定：`get_thumbnail` 会被前端用不同的 `max_size`（240 / 256）调用，
 /// 封面若按请求尺寸分桶存储就会互相找不到。写入与读取共用这一个常量。
-pub const PDF_COVER_EDGE: u32 = 256;
+pub const PDF_COVER_EDGE: u32 = 512;
 
 /// PDF 封面字节上限（2 MiB）：封面由前端渲染后回传，必须有界。
 pub const MAX_PDF_COVER_BYTES: usize = 2 * 1024 * 1024;

@@ -173,6 +173,7 @@ function recordResetFailures(report, ctx, suiteId) {
 }
 
 async function runOne(report, ctx, suite) {
+  report.suiteCoverage.executed.push(suite.id);
   try {
     await suite.run(ctx, report);
   } catch (error) {
@@ -198,6 +199,7 @@ async function main() {
     appVersion: version(),
     buildCommit: latestGitCommit(),
   });
+  report.suiteCoverage = { planned: ["static", ...E2E_SUITES], executed: [] };
   note(report, "QA 运行器：isolated CDP harness");
   note(report, `CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}`);
 
@@ -356,6 +358,10 @@ function redactLocalPaths(value) {
 
 function finalize(report) {
   report.finishedAt = new Date().toISOString();
+  report.suiteCoverage.notExecuted = report.suiteCoverage.planned.filter(
+    (suite) => !report.suiteCoverage.executed.includes(suite),
+  );
+  note(report, `已执行套件：${report.suiteCoverage.executed.join(", ") || "无"}；未执行套件：${report.suiteCoverage.notExecuted.join(", ") || "无"}`);
   const kb = loadKnowledgeBase(KB_PATH);
   updateKnowledgeBase(kb, report);
   fs.writeFileSync(KB_PATH, JSON.stringify(redactLocalPaths(kb), null, 2), "utf8");

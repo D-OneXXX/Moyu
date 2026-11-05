@@ -1,7 +1,7 @@
 //! 阻塞 HTTP Transport：ureq + 代理 + 重试 + 响应大小上限。
 
 use std::io::Read;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -318,11 +318,35 @@ fn build_agent(proxy: Option<&str>) -> Result<ureq::Agent, OnlineError> {
         // 关闭 ureq 自动重定向：手动跟随以便每个 hop 重新应用请求头。
         .redirects(0)
         .user_agent(ONLINE_UA);
+    if proxy.is_none() {
+        let allow_loopback = allow_loopback_for_dev();
+        builder = builder.resolver(move |netloc: &str| {
+            let addresses: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
+            validate_connection_addresses(addresses, allow_loopback)
+        });
+    }
     if let Some(proxy) = proxy {
         let p = ureq::Proxy::new(proxy).map_err(|e| OnlineError::Proxy(e.to_string()))?;
         builder = builder.proxy(p);
     }
     Ok(builder.build())
+}
+
+fn validate_connection_addresses(
+    addresses: Vec<SocketAddr>,
+    allow_loopback: bool,
+) -> std::io::Result<Vec<SocketAddr>> {
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|addr| is_blocked_ip(addr.ip(), allow_loopback))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "blocked resolved address",
+        ));
+    }
+    Ok(addresses)
 }
 
 impl UreqTransport {
@@ -620,6 +644,15 @@ impl HttpTransport for UreqTransport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn connection_resolver_rejects_rebound_and_mixed_private_addresses() {
+        let public = "8.8.8.8:443".parse().unwrap();
+        let private = "192.168.1.1:443".parse().unwrap();
+        assert!(super::validate_connection_addresses(vec![public], false).is_ok());
+        assert!(super::validate_connection_addresses(vec![private], false).is_err());
+        assert!(super::validate_connection_addresses(vec![public, private], false).is_err());
+        assert!(super::validate_connection_addresses(vec![], false).is_err());
+    }
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;

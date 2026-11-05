@@ -41,6 +41,7 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "pdf-too-large", key: "error.pdfTooLarge" },
   { code: "pdf-source-unsupported", key: "error.pdfSourceUnsupported" },
   { code: "source-unsupported", key: "error.sourceUnsupported" },
+  { code: "source-page-too-large", key: "error.sourcePageTooLarge" },
   { code: "webtoon-too-large", key: "error.webtoonTooLarge" },
   { code: "pdf-cover-missing", key: "error.pdfCoverMissing" },
   { code: "pdf-page-count-invalid", key: "error.pdfPageCountInvalid" },

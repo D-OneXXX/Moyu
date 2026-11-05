@@ -850,7 +850,7 @@ export async function runPdfSuite(ctx, report) {
 
   /* ---------- 10) 加密文档：受控错误（稳定码 pdf-encrypted） ---------- */
   if (!encrypted) {
-    note(report, "加密 PDF 未入库，跳过加密用例（可能导入期已拒绝）");
+    fail(report, { id: "pdf:encrypted-fixture-missing", suite: "pdf", layer: "infrastructure", severity: "P1", title: "加密 PDF 夹具不可用，安全验证被阻断" });
   } else {
     await openReader(page, encrypted.id);
     await sleep(3000);
@@ -886,7 +886,7 @@ export async function runPdfSuite(ctx, report) {
 
   /* ---------- 11) 结构损坏文档：受控错误（稳定码 pdf-not-valid） ---------- */
   if (!truncated) {
-    note(report, "截断 PDF 未入库，跳过损坏文档用例");
+    fail(report, { id: "pdf:truncated-fixture-missing", suite: "pdf", layer: "infrastructure", severity: "P1", title: "损坏 PDF 夹具不可用，验证被阻断" });
   } else {
     await openReader(page, truncated.id);
     await sleep(3000);
@@ -951,7 +951,7 @@ export async function runPdfSuite(ctx, report) {
     })()`)
     .catch(() => false);
   if (!scripted) {
-    note(report, "含 JavaScript 的 PDF 未入库，跳过脚本执行用例");
+    fail(report, { id: "pdf:script-fixture-missing", suite: "pdf", layer: "infrastructure", severity: "P1", title: "脚本 PDF 夹具不可用，安全验证被阻断" });
   } else if (!probeReady) {
     fail(report, {
       id: "pdf:no-document-script-execution",
@@ -1033,7 +1033,7 @@ export async function runPdfSuite(ctx, report) {
     [external, "external"],
   ]) {
     if (!book) {
-      note(report, `${label} PDF 未入库，跳过外部请求用例`);
+      fail(report, { id: `pdf:external-fixture-missing:${label}`, suite: "pdf", layer: "infrastructure", severity: "P1", title: `${label} PDF 夹具不可用，外部请求验证被阻断` });
       continue;
     }
     const mark = observer.mark();

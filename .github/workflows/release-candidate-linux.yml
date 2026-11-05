@@ -73,9 +73,10 @@ jobs:
       - name: Resolve candidate identity
         id: identity
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-linux-sec[0-9]+$'; then
             echo "Linux 高危通道标签必须形如 vX.Y.Z-linux-secN：$TAG" >&2
             exit 1
@@ -151,6 +152,12 @@ jobs:
           RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${QA_RUN_ID}")"
           CONCLUSION="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).conclusion')"
           HEAD_SHA="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).head_sha')"
+          WORKFLOW_PATH="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).path')"
+          EVENT="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).event')"
+          if [ "$WORKFLOW_PATH" != ".github/workflows/qa-full.yml" ] || [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "QA run ${QA_RUN_ID} 不是手动触发的正式完整 QA 工作流" >&2
+            exit 1
+          fi
           if [ "$CONCLUSION" != "success" ]; then
             echo "QA run ${QA_RUN_ID} 结论为 ${CONCLUSION}，不是成功" >&2
             exit 1
@@ -325,12 +332,13 @@ jobs:
         env:
           TAG: ${{ steps.identity.outputs.tag }}
           COMMIT: ${{ steps.identity.outputs.commit }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
         run: |
           {
             echo "### Release Candidate (Linux critical)"
             echo ""
             echo "- Tag: \`${TAG}\`"
             echo "- Commit: \`${COMMIT}\`"
-            echo "- QA run: \`${{ inputs.qa_run_id }}\`"
+            echo "- QA run: \`${QA_RUN_ID}\`"
             echo "- 状态：**Draft（未公开）**，等待人工审批后由 publish 工作流发布"
           } >> "$GITHUB_STEP_SUMMARY"

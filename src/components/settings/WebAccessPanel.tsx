@@ -259,23 +259,24 @@ export default function WebAccessPanel() {
     );
   }, [addresses]);
 
+  const isPlain = status?.transport === "http";
   const pairingWindow = pairing?.window ?? null;
   const pairingUrl = pairingWindow?.url ?? null;
   const pairingExpiresAt = pairingWindow?.expiresAtUnixMs ?? null;
 
   // Local countdown only: this timer never talks to the backend.
   useLayoutEffect(() => {
-    if (pairingExpiresAt === null) return;
+    if (pairingExpiresAt === null || isPlain) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [pairingExpiresAt]);
+  }, [pairingExpiresAt, isPlain]);
 
   const secondsLeft =
     pairingExpiresAt === null
       ? 0
       : Math.max(0, Math.ceil((pairingExpiresAt - nowMs) / 1000));
-  const pairingExpired = pairingExpiresAt !== null && secondsLeft === 0;
+  const pairingExpired = !isPlain && pairingExpiresAt !== null && secondsLeft === 0;
 
   const qrImage = useMemo(() => {
     if (!pairingUrl || pairingExpired) return null;
@@ -389,7 +390,7 @@ export default function WebAccessPanel() {
               </div>
             ) : null}
 
-            {!status.caInitialized ? (
+            {status.transport === "https" && !status.caInitialized ? (
               <div
                 role="status"
                 className="flex flex-wrap items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs leading-relaxed text-warning"
@@ -410,6 +411,12 @@ export default function WebAccessPanel() {
                 <span className="min-w-0 flex-1">
                   {t("settings.webAccess.safeModeBlocked")}
                 </span>
+              </div>
+            ) : null}
+
+            {status.transport !== "https" ? (
+              <div role="status" className="rounded-2xl border border-warning/40 bg-warning/10 p-3 text-xs leading-relaxed text-warning">
+                {t("settings.webAccess.httpWarning")}
               </div>
             ) : null}
 
@@ -496,7 +503,7 @@ export default function WebAccessPanel() {
                 </p>
               ) : null}
 
-              <div className="mt-3 space-y-3">
+              {status.transport === "https" ? <div className="mt-3 space-y-3">
                 <FingerprintBlock
                   label={t("settings.webAccess.rootFingerprint")}
                   value={status.rootFingerprintSha256}
@@ -509,7 +516,7 @@ export default function WebAccessPanel() {
                   copyLabel={t("settings.webAccess.copyFingerprint")}
                   onCopy={(value) => void copyText(value)}
                 />
-              </div>
+              </div> : null}
 
               {status.leafNotAfter !== null ? (
                 <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
@@ -584,7 +591,6 @@ export default function WebAccessPanel() {
                       loading ||
                       safeModeActive ||
                       !selectedIp ||
-                      !status.caInitialized ||
                       phase === "starting"
                     }
                     onClick={onStart}
@@ -600,6 +606,15 @@ export default function WebAccessPanel() {
                   </Button>
                 )}
               </div>
+              {!canStop ? (
+                <details className="mt-3 text-xs text-muted-foreground">
+                  <summary className="cursor-pointer">{t("settings.webAccess.startSecure")}</summary>
+                  {!status.caInitialized ? <p className="mt-2">{t("settings.webAccess.caRequired")}</p> : null}
+                  <Button type="button" variant="pill" size="pill-sm" className="mt-2 whitespace-nowrap"
+                    disabled={busy !== null || loading || safeModeActive || !selectedIp || !status.caInitialized}
+                    onClick={() => void start(selectedIp, true)}>{t("settings.webAccess.startSecure")}</Button>
+                </details>
+              ) : null}
             </div>
 
             {/* Pairing window */}
@@ -609,7 +624,7 @@ export default function WebAccessPanel() {
                   <QrCode className="size-4 text-primary" />
                   {t("settings.webAccess.pairingTitle")}
                 </p>
-                {pairingWindow ? (
+                {pairingWindow && !isPlain ? (
                   <Badge
                     variant={pairingExpired ? "warning" : "success"}
                     className="whitespace-nowrap"
@@ -623,7 +638,7 @@ export default function WebAccessPanel() {
                 ) : null}
               </div>
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                {t("settings.webAccess.pairingDescription")}
+                {t(isPlain ? "settings.webAccess.plainPairHint" : "settings.webAccess.pairingDescription")}
               </p>
 
               {phase !== "enabled" ? (
@@ -661,12 +676,12 @@ export default function WebAccessPanel() {
                           {t("settings.webAccess.copyUrl")}
                         </Button>
                         <p className="text-xs leading-relaxed text-muted-foreground">
-                          {t("settings.webAccess.qrHint")}
+                          {t(isPlain ? "settings.webAccess.plainPairHint" : "settings.webAccess.qrHint")}
                         </p>
                       </div>
                     </div>
                   )}
-                  <Button
+                  {!isPlain ? <Button
                     type="button"
                     variant="pill"
                     size="pill-sm"
@@ -680,7 +695,7 @@ export default function WebAccessPanel() {
                       <Unplug className="size-3.5" />
                     )}
                     {t("settings.webAccess.pairingCancel")}
-                  </Button>
+                  </Button> : null}
                 </div>
               ) : (
                 <Button
@@ -732,7 +747,7 @@ export default function WebAccessPanel() {
                         claim={claim}
                         busy={busy}
                         busyTarget={busyTarget}
-                        onApprove={setApproveClaim}
+                        onApprove={(claim) => isPlain ? void approve(claim.claimId) : setApproveClaim(claim)}
                         onDeny={(claimId) => void deny(claimId)}
                       />
                     ))}

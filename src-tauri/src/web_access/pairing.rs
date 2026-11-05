@@ -638,6 +638,32 @@ impl PairingStore {
         PairingWindow { id, expires_at }
     }
 
+    /// HTTP LAN mode: every request gets its own short-lived window. The
+    /// desktop still approves each claim; bound creation before allocating.
+    pub(crate) fn claim_open(
+        &self,
+        device_name: &str,
+        claim_nonce: &str,
+        source_ip: Ipv4Addr,
+    ) -> Result<ClaimIssued, PairingError> {
+        if !is_valid_claim_nonce(claim_nonce) {
+            return Err(PairingError::InvalidParameter);
+        }
+        {
+            let now = self.clock.now();
+            let mut state = self.lock();
+            state.purge_locked(now);
+            state.check_rate_limits_locked(source_ip, now)?;
+            if state.windows.len() >= 64 {
+                return Err(PairingError::RateLimited {
+                    retry_after: CLAIM_RATE_WINDOW,
+                });
+            }
+        }
+        let window = self.start_window();
+        self.claim(&window.id, device_name, claim_nonce, source_ip)
+    }
+
     pub(crate) fn claim(
         &self,
         pairing_id: &str,

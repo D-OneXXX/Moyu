@@ -82,7 +82,7 @@ function header(signedIn = false) {
       await api("/api/session", { method: "DELETE" });
       recordBreadcrumb("sign_out");
       activeBook = null;
-      start();
+      start(false);
     } catch (e) {
       showError(app, e);
     }
@@ -128,7 +128,40 @@ async function pair(pairingId) {
   box.append(input, " ", submit);
   app.append(box);
 }
-async function start() {
+async function requestLocalPair() {
+  pairingContext = null;
+  clearReader();
+  const token = generation;
+  activeBook = null;
+  header();
+  const select = actions.querySelector("select");
+  if (select) select.disabled = true;
+  const box = node("section", null, "panel");
+  box.append(node("h1", t(1)), node("p", t(4)));
+  app.replaceChildren(box);
+  try {
+    const nonce = new Uint8Array(16);
+    crypto.getRandomValues(nonce);
+    const claimNonce = btoa(String.fromCharCode(...nonce)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const ua = navigator.userAgent || "";
+    const deviceName = /iPhone|iPad/.test(ua) ? "iPhone / iPad" : /Android/.test(ua) ? "Android" : t(28);
+    const claim = await api("/api/pair/claim", { method: "POST", body: JSON.stringify({ pairingId: "local", deviceName, claimNonce }) });
+    while (token === generation) {
+      const status = await api("/api/pair/claim/" + encodeURIComponent(claim.claimId));
+      if (status.state === "approved") {
+        await api("/api/pair/claim/" + encodeURIComponent(claim.claimId) + "/consume", { method: "POST" });
+        if (token === generation) await library();
+        return;
+      }
+      if (status.state !== "pending") throw new Error("ended");
+    }
+  } catch {
+    if (token !== generation) return;
+    if (select) select.disabled = false;
+    box.replaceChildren(node("p", t(5), "error"), button(t(17), () => requestLocalPair()));
+  }
+}
+async function start(autoPair = true) {
   pairingContext = null;
   clearReader();
   activeBook = null;
@@ -137,10 +170,16 @@ async function start() {
   try {
     await api("/api/session");
     await library();
-  } catch {
-    app.replaceChildren(node("section", t(22), "panel"));
+  } catch (error) {
+    if (location.protocol === "http:" && error?.code === "unauthorized") {
+      if (autoPair) await requestLocalPair();
+      else app.replaceChildren(button(t(3), () => requestLocalPair()));
+    } else {
+      app.replaceChildren(node("section", t(22), "panel"));
+    }
   }
 }
+
 async function library(query = "", cursor = null, append = false) {
   pairingContext = null;
   if (!append) {

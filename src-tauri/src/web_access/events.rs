@@ -1,6 +1,7 @@
 //! Tauri event sink for D1b. This is the only place the runtime touches a
 //! Tauri `AppHandle`; the runtime itself is testable without the desktop
-//! runtime. Event payloads contain no pairing id, claim secret, hash, or token.
+//! runtime. Pairing events include claim IDs and device names for the main
+//! window, but never include claim secrets, hashes, or session tokens.
 
 use tauri::{AppHandle, Emitter};
 

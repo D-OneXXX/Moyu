@@ -23,6 +23,7 @@ mod events;
 mod http;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod pairing;
+mod plain;
 pub(crate) mod progress_write;
 pub(crate) mod progress_write_app;
 mod reader_http;

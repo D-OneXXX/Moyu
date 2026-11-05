@@ -967,7 +967,10 @@ pub async fn list_entries(
 
 /// 日志里的书目标识：只保留稳定 ID 前 8 位，绝不写书名/路径。
 fn short_book_ref(book_id: &str) -> &str {
-    let end = book_id.len().min(8);
+    let end = book_id
+        .char_indices()
+        .nth(8)
+        .map_or(book_id.len(), |(i, _)| i);
     &book_id[..end]
 }
 
@@ -1085,6 +1088,10 @@ pub async fn get_page(
     max_height: Option<u32>,
 ) -> Result<PageImage, String> {
     let cache_epoch = state.refresh_epoch();
+    // Bound caller-supplied cache dimensions while preserving 0/None as the
+    // existing unconstrained sentinel and retaining smaller requested sizes.
+    let max_width = max_width.map(|value| value.min(8192));
+    let max_height = max_height.map(|value| value.min(8192));
     let w = max_width.unwrap_or(0);
     let h = max_height.unwrap_or(0);
     // 1) L1 内存。
@@ -1225,10 +1232,10 @@ pub async fn get_thumbnail(
     max_size: Option<u32>,
 ) -> Result<PageImage, String> {
     let cache_epoch = state.refresh_epoch();
-    if let Some(hit) = state.cache.get_thumb(&book_id) {
+    let edge = max_size.unwrap_or(240).clamp(64, 1024);
+    if let Some(hit) = state.cache.get_thumb(&book_id, edge) {
         return Ok(to_page_image(0, hit));
     }
-    let edge = max_size.unwrap_or(240).clamp(64, 1024);
     // 先查来源格式：PDF 没有「首页图片」，封面来自前端渲染后写回的 L2 缓存。
     // PDF 绝不能走 source_handle_for_book（那条路径有意拒绝 PDF）。
     let format = state.db.with(|conn| {
@@ -1282,7 +1289,7 @@ pub async fn get_thumbnail(
         }
     };
     state.cache_if_current(cache_epoch, || {
-        state.cache.put_thumb(&book_id, rendered.clone())
+        state.cache.put_thumb(&book_id, edge, rendered.clone())
     });
     Ok(to_page_image(0, rendered))
 }
@@ -3371,6 +3378,12 @@ pub async fn set_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_book_reference_handles_unicode_boundaries() {
+        assert_eq!(short_book_ref("漫画测试漫画测试更多"), "漫画测试漫画测试");
+        assert_eq!(short_book_ref("abc"), "abc");
+    }
 
     /// 回归守卫:hydrate_settings 会回读 trans_api_key,
     /// 持久化清单必须包含它(阶段二曾漏掉该键导致 key 永远存不下来)。

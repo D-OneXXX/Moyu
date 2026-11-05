@@ -64,9 +64,10 @@ jobs:
       - name: Resolve release identity
         id: identity
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
           if printf '%s' "$TAG" | grep -q "rehearsal"; then
             echo "演练标签永远不得发布：$TAG" >&2
             exit 1
@@ -285,12 +286,11 @@ jobs:
           gh release view "$TAG" --json body --jq .body > draft-release-notes.md
           node scripts/release-governance/release-notes.mjs --check draft-release-notes.md
           # 更新弹窗显示的是清单 notes，不是 Release 正文。结构与内部信息仍是硬门禁；
-          # 正文/清单是否逐字一致只告警（--warn-only）——清单在候选阶段固化，
-          # 改文案必须重跑候选，不能靠发布时改写。
+          # 正文与清单必须一致；修改说明时须重跑候选。
           gh release download "$TAG" --pattern latest.json --dir pre-publish-notes --clobber
           node scripts/release-governance/release-notes.mjs \
             --check-manifest pre-publish-notes/latest.json \
-            --require-match draft-release-notes.md --warn-only
+            --require-match draft-release-notes.md
 
       - name: Publish the Draft
         if: steps.state.outputs.need_publish == 'true'

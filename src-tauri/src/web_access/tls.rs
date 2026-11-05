@@ -38,7 +38,7 @@ use super::tls_renewal::{
 const LEAF_DNS: &str = "moyu.local";
 const HEALTH_PATH: &str = "/api/health";
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_ACTIVE_CONNECTIONS: usize = 32;
+pub(crate) const MAX_ACTIVE_CONNECTIONS: usize = 32;
 /// One LAN peer must not be able to consume every global connection slot with
 /// slow or half-open TLS handshakes. Normal phones need a handful at most.
 const MAX_ACTIVE_CONNECTIONS_PER_IP: usize = 8;
@@ -47,29 +47,35 @@ type Clock = Arc<dyn Fn() -> OffsetDateTime + Send + Sync>;
 
 /// Per-peer connection budget. The global semaphore bounds total resource use;
 /// this keeps one LAN peer from holding all of it during slow handshakes.
-struct ConnectionLimiter {
+pub(crate) struct ConnectionLimiter {
     active: Mutex<HashMap<IpAddr, usize>>,
+    max_per_ip: usize,
 }
 
-struct ConnectionPermit {
+pub(crate) struct ConnectionPermit {
     limiter: Arc<ConnectionLimiter>,
     ip: IpAddr,
 }
 
 impl ConnectionLimiter {
-    fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
+        Self::with_limit(MAX_ACTIVE_CONNECTIONS_PER_IP)
+    }
+
+    pub(crate) fn with_limit(max_per_ip: usize) -> Arc<Self> {
         Arc::new(Self {
             active: Mutex::new(HashMap::new()),
+            max_per_ip,
         })
     }
 
-    fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
+    pub(crate) fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
         let mut active = self
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let count = active.entry(ip).or_insert(0);
-        if *count >= MAX_ACTIVE_CONNECTIONS_PER_IP {
+        if *count >= self.max_per_ip {
             return None;
         }
         *count += 1;
@@ -1033,6 +1039,17 @@ async fn handle_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smaller_per_ip_connection_cap_is_enforced() {
+        let limiter = ConnectionLimiter::with_limit(2);
+        let peer = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let first = limiter.try_acquire(peer).unwrap();
+        let _second = limiter.try_acquire(peer).unwrap();
+        assert!(limiter.try_acquire(peer).is_none());
+        drop(first);
+        assert!(limiter.try_acquire(peer).is_some());
+    }
 
     #[test]
     fn per_ip_connection_cap_is_enforced_and_released() {

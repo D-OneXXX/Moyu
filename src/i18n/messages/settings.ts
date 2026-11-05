@@ -309,10 +309,10 @@ const zhCN = {
 
   "settings.webAccess.unknownDevice": "未知设备",
   "settings.webAccess.networkHint":
-    "手机必须先在系统设置中安装并信任上方根 CA；Windows 首次监听若被防火墙拦截，请在专用网络中允许本程序入站。",
-  "settings.webAccess.title": "Web Access 控制面",
+    "如果 Windows 防火墙阻止连接，请允许本程序在专用网络入站。仅 HTTPS 模式需要设备信任本地证书。",
+  "settings.webAccess.title": "局域网阅读",
   "settings.webAccess.description":
-    "在本机显式启动局域网 HTTPS 服务，供手机配对后访问；默认关闭，启动前必须先初始化本地 CA。本面板只管理服务、配对与设备，不提供书库数据入口。",
+    "手机扫码或输入网址，在电脑上批准后即可阅读。服务默认关闭。",
   "settings.webAccess.statusTitle": "服务状态",
   "settings.webAccess.refresh": "刷新状态",
   "settings.webAccess.loadError": "无法加载 Web Access 状态：{detail}",
@@ -322,7 +322,7 @@ const zhCN = {
   "settings.webAccess.phase.stopping": "正在停止",
   "settings.webAccess.phase.error": "错误",
   "settings.webAccess.caRequired":
-    "Web Access 需要上方「根 CA 与设备信任」中的本地 CA。请先在那里初始化或修复 CA；本面板不会自动创建 CA，也不会自动启动服务。",
+    "HTTPS 模式需要先在「根 CA 与设备信任」中初始化本地 CA。",
   "settings.webAccess.safeModeBlocked":
     "安全模式处于启用状态。Web Access 已被停止，退出安全模式前无法重新启动。",
   "settings.webAccess.address": "监听地址",
@@ -333,6 +333,9 @@ const zhCN = {
   "settings.webAccess.pendingCount": "待批准请求：{count}",
   "settings.webAccess.notRunning": "服务未运行；启动后可生成配对二维码。",
   "settings.webAccess.start": "启动服务",
+  "settings.webAccess.httpWarning": "局域网 HTTP 不加密；同一网络中的设备可能读取或篡改内容和会话。请仅在可信网络使用。",
+  "settings.webAccess.startSecure": "高级：使用 HTTPS",
+  "settings.webAccess.plainPairHint": "手机扫码或输入网址后，在此批准设备。无需安装证书。",
   "settings.webAccess.starting": "正在启动",
   "settings.webAccess.stop": "停止服务",
   "settings.webAccess.stopping": "正在停止",
@@ -697,10 +700,10 @@ const zhTW: SettingsMessages = {
 
   "settings.webAccess.unknownDevice": "未知裝置",
   "settings.webAccess.networkHint":
-    "手機必須先在系統設定中安裝並信任上方根 CA；Windows 首次監聽若被防火牆攔截，請在專用網路中允許本程式入站。",
-  "settings.webAccess.title": "Web Access 控制面",
+    "若 Windows 防火牆阻止連線，請允許本程式在私人網路的傳入連線。只有 HTTPS 模式需要裝置信任本機憑證。",
+  "settings.webAccess.title": "區域網路閱讀",
   "settings.webAccess.description":
-    "在本機明確啟動區域網路 HTTPS 服務，供手機配對後存取；預設關閉，啟動前必須先初始化本機 CA。本面板只管理服務、配對與裝置，不提供書庫資料入口。",
+    "手機掃碼或輸入網址，在電腦上核准後即可閱讀。服務預設關閉。",
   "settings.webAccess.statusTitle": "服務狀態",
   "settings.webAccess.refresh": "重新整理狀態",
   "settings.webAccess.loadError": "無法載入 Web Access 狀態：{detail}",
@@ -710,7 +713,7 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.phase.stopping": "正在停止",
   "settings.webAccess.phase.error": "錯誤",
   "settings.webAccess.caRequired":
-    "Web Access 需要上方「根 CA 與裝置信任」中的本機 CA。請先在那裡初始化或修復 CA；本面板不會自動建立 CA，也不會自動啟動服務。",
+    "HTTPS 模式需要先在「根 CA 與裝置信任」中初始化本機 CA。",
   "settings.webAccess.safeModeBlocked":
     "安全模式已啟用。Web Access 已停止，結束安全模式前無法重新啟動。",
   "settings.webAccess.address": "監聽位址",
@@ -721,6 +724,9 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.pendingCount": "待批准請求：{count}",
   "settings.webAccess.notRunning": "服務未執行；啟動後可產生配對 QR Code。",
   "settings.webAccess.start": "啟動服務",
+  "settings.webAccess.httpWarning": "區域網路 HTTP 未加密；同一網路的裝置可能讀取或竄改內容與工作階段。請僅在可信網路使用。",
+  "settings.webAccess.startSecure": "進階：使用 HTTPS",
+  "settings.webAccess.plainPairHint": "手機掃碼或輸入網址後，在此核准裝置。無需安裝憑證。",
   "settings.webAccess.starting": "正在啟動",
   "settings.webAccess.stop": "停止服務",
   "settings.webAccess.stopping": "正在停止",
@@ -1089,10 +1095,10 @@ const en: SettingsMessages = {
 
   "settings.webAccess.unknownDevice": "Unknown device",
   "settings.webAccess.networkHint":
-    "The phone must install and trust the root CA above first. If Windows Firewall blocks the first listen, allow this app inbound on the private network.",
-  "settings.webAccess.title": "Web Access control plane",
+    "If Windows Firewall blocks the connection, allow this app inbound on private networks. Only HTTPS mode requires the device to trust the local certificate.",
+  "settings.webAccess.title": "Local network reading",
   "settings.webAccess.description":
-    "Start a local-network HTTPS service explicitly so a paired phone can connect. It is off by default and requires the local CA from the card above. This panel manages the service, pairing, and devices only; it exposes no library data.",
+    "Scan the code or enter the address and approve the device on your computer. The service is off by default.",
   "settings.webAccess.statusTitle": "Service status",
   "settings.webAccess.refresh": "Refresh status",
   "settings.webAccess.loadError": "Could not load Web Access status: {detail}",
@@ -1102,7 +1108,7 @@ const en: SettingsMessages = {
   "settings.webAccess.phase.stopping": "Stopping",
   "settings.webAccess.phase.error": "Error",
   "settings.webAccess.caRequired":
-    "Web Access needs the local CA from the “Root CA and device trust” card above. Initialize or repair it there first; this panel never creates a CA and never starts the service automatically.",
+    "HTTPS mode requires the local CA to be initialized in “Root CA and device trust” first.",
   "settings.webAccess.safeModeBlocked":
     "Safe mode is active. Web Access has been stopped and cannot be started until you leave safe mode.",
   "settings.webAccess.address": "Listen address",
@@ -1115,6 +1121,9 @@ const en: SettingsMessages = {
   "settings.webAccess.notRunning":
     "The service is not running. Start it to generate a pairing QR code.",
   "settings.webAccess.start": "Start service",
+  "settings.webAccess.httpWarning": "Local HTTP is unencrypted. Devices on the network may read or alter content and sessions. Use only on a trusted network.",
+  "settings.webAccess.startSecure": "Advanced: use HTTPS",
+  "settings.webAccess.plainPairHint": "Scan the code or enter the address, then approve the device here. No certificate is needed.",
   "settings.webAccess.starting": "Starting",
   "settings.webAccess.stop": "Stop service",
   "settings.webAccess.stopping": "Stopping",
@@ -1499,10 +1508,10 @@ const es: SettingsMessages = {
 
   "settings.webAccess.unknownDevice": "Dispositivo desconocido",
   "settings.webAccess.networkHint":
-    "El teléfono debe instalar y confiar primero en la CA raíz de arriba. Si el Firewall de Windows bloquea la primera escucha, permite la entrada de esta aplicación en la red privada.",
-  "settings.webAccess.title": "Control de Web Access",
+    "Si el Firewall de Windows bloquea la conexión, permite el acceso entrante de esta aplicación en redes privadas. Solo HTTPS requiere confiar en el certificado local.",
+  "settings.webAccess.title": "Lectura en red local",
   "settings.webAccess.description":
-    "Inicia explícitamente un servicio HTTPS de red local para que el teléfono acceda tras vincularse. Está desactivado por defecto y requiere la CA local de la tarjeta superior. Este panel solo gestiona el servicio, la vinculación y los dispositivos; no expone datos de la biblioteca.",
+    "Escanea el código o introduce la dirección y aprueba el dispositivo en el ordenador. El servicio está desactivado por defecto.",
   "settings.webAccess.statusTitle": "Estado del servicio",
   "settings.webAccess.refresh": "Actualizar estado",
   "settings.webAccess.loadError":
@@ -1513,7 +1522,7 @@ const es: SettingsMessages = {
   "settings.webAccess.phase.stopping": "Deteniendo",
   "settings.webAccess.phase.error": "Error",
   "settings.webAccess.caRequired":
-    "Web Access necesita la CA local de la tarjeta «CA raíz y confianza de dispositivos» de arriba. Inicialízala o repárala allí primero; este panel nunca crea una CA ni inicia el servicio automáticamente.",
+    "El modo HTTPS requiere inicializar primero la CA local en «CA raíz y confianza del dispositivo».",
   "settings.webAccess.safeModeBlocked":
     "El modo seguro está activo. Web Access se ha detenido y no se puede iniciar hasta que salgas del modo seguro.",
   "settings.webAccess.address": "Dirección de escucha",
@@ -1526,6 +1535,9 @@ const es: SettingsMessages = {
   "settings.webAccess.notRunning":
     "El servicio no está activo; inícialo para generar el código QR de vinculación.",
   "settings.webAccess.start": "Iniciar servicio",
+  "settings.webAccess.httpWarning": "HTTP local no está cifrado. Otros dispositivos de la red pueden leer o modificar el contenido y la sesión. Úsalo solo en redes de confianza.",
+  "settings.webAccess.startSecure": "Avanzado: usar HTTPS",
+  "settings.webAccess.plainPairHint": "Escanea el código o introduce la dirección y aprueba el dispositivo aquí. No se necesita certificado.",
   "settings.webAccess.starting": "Iniciando",
   "settings.webAccess.stop": "Detener servicio",
   "settings.webAccess.stopping": "Deteniendo",
@@ -1915,10 +1927,10 @@ const ja: SettingsMessages = {
 
   "settings.webAccess.unknownDevice": "不明なデバイス",
   "settings.webAccess.networkHint":
-    "スマートフォン側で上記のルート CA をインストールして信頼する必要があります。Windows ファイアウォールが最初の待受を遮断した場合は、プライベート ネットワークでこのアプリの受信を許可してください。",
-  "settings.webAccess.title": "Web Access コントロールプレーン",
+    "Windows ファイアウォールが接続を遮断する場合は、プライベートネットワークでこのアプリの受信を許可してください。ローカル証明書の信頼設定が必要なのは HTTPS モードだけです。",
+  "settings.webAccess.title": "ローカルネットワーク閲覧",
   "settings.webAccess.description":
-    "ローカルネットワーク向け HTTPS サービスを明示的に起動し、ペアリング済みのスマートフォンから接続できるようにします。既定は無効で、起動にはローカル CA の初期化が必要です。このパネルはサービスの管理、ペアリング、端末の管理のみを行い、書庫データへの入口は提供しません。",
+    "コードを読み取るかアドレスを入力し、パソコンで端末を承認すると閲覧できます。サービスは既定でオフです。",
   "settings.webAccess.statusTitle": "サービスの状態",
   "settings.webAccess.refresh": "状態を更新",
   "settings.webAccess.loadError":
@@ -1929,7 +1941,7 @@ const ja: SettingsMessages = {
   "settings.webAccess.phase.stopping": "停止中",
   "settings.webAccess.phase.error": "エラー",
   "settings.webAccess.caRequired":
-    "Web Access には上の「ルート CA と端末の信頼」にあるローカル CA が必要です。先にそこで CA を初期化または修復してください。このパネルが CA を自動作成したり、サービスを自動起動したりすることはありません。",
+    "HTTPS モードでは、先に「ルート CA と端末の信頼」でローカル CA を初期化してください。",
   "settings.webAccess.safeModeBlocked":
     "セーフモードが有効です。Web Access は停止されており、セーフモードを終了するまで再起動できません。",
   "settings.webAccess.address": "待ち受けアドレス",
@@ -1942,6 +1954,9 @@ const ja: SettingsMessages = {
   "settings.webAccess.notRunning":
     "サービスは停止しています。起動するとペアリング用 QR コードを生成できます。",
   "settings.webAccess.start": "サービスを起動",
+  "settings.webAccess.httpWarning": "ローカル HTTP は暗号化されません。同じネットワークの機器が内容やセッションを読み取り、改ざんする可能性があります。信頼できるネットワークでのみ使用してください。",
+  "settings.webAccess.startSecure": "詳細：HTTPS を使用",
+  "settings.webAccess.plainPairHint": "コードを読み取るかアドレスを入力し、ここで端末を承認します。証明書は不要です。",
   "settings.webAccess.starting": "起動中",
   "settings.webAccess.stop": "サービスを停止",
   "settings.webAccess.stopping": "停止中",
@@ -2323,10 +2338,10 @@ const ko: SettingsMessages = {
 
   "settings.webAccess.unknownDevice": "알 수 없는 기기",
   "settings.webAccess.networkHint":
-    "휴대폰에서 위의 루트 CA를 먼저 설치하고 신뢰해야 합니다. Windows 방화벽이 첫 수신을 차단하면 개인 네트워크에서 이 앱의 인바운드를 허용하세요.",
-  "settings.webAccess.title": "Web Access 제어면",
+    "Windows 방화벽이 연결을 차단하면 개인 네트워크에서 이 앱의 인바운드를 허용하세요. 로컬 인증서 신뢰는 HTTPS 모드에서만 필요합니다.",
+  "settings.webAccess.title": "로컬 네트워크 읽기",
   "settings.webAccess.description":
-    "로컬 네트워크용 HTTPS 서비스를 사용자가 직접 시작해 페어링된 휴대폰에서 접속할 수 있게 합니다. 기본값은 꺼짐이며 시작하려면 로컬 CA를 먼저 초기화해야 합니다. 이 패널은 서비스, 페어링, 기기 관리만 담당하고 서재 데이터 입구는 제공하지 않습니다.",
+    "코드를 스캔하거나 주소를 입력하고 컴퓨터에서 기기를 승인하면 읽을 수 있습니다. 서비스는 기본적으로 꺼져 있습니다.",
   "settings.webAccess.statusTitle": "서비스 상태",
   "settings.webAccess.refresh": "상태 새로 고침",
   "settings.webAccess.loadError":
@@ -2337,7 +2352,7 @@ const ko: SettingsMessages = {
   "settings.webAccess.phase.stopping": "중지 중",
   "settings.webAccess.phase.error": "오류",
   "settings.webAccess.caRequired":
-    "Web Access에는 위의 '루트 CA 및 기기 신뢰' 카드에 있는 로컬 CA가 필요합니다. 먼저 그곳에서 CA를 초기화하거나 복구하세요. 이 패널은 CA를 자동으로 만들지 않고 서비스를 자동으로 시작하지도 않습니다.",
+    "HTTPS 모드에서는 먼저 ‘루트 CA 및 기기 신뢰’에서 로컬 CA를 초기화해야 합니다.",
   "settings.webAccess.safeModeBlocked":
     "안전 모드가 활성화되어 있습니다. Web Access가 중지되었으며 안전 모드를 종료할 때까지 다시 시작할 수 없습니다.",
   "settings.webAccess.address": "수신 주소",
@@ -2350,6 +2365,9 @@ const ko: SettingsMessages = {
   "settings.webAccess.notRunning":
     "서비스가 실행 중이 아닙니다. 시작하면 페어링 QR 코드를 만들 수 있습니다.",
   "settings.webAccess.start": "서비스 시작",
+  "settings.webAccess.httpWarning": "로컬 HTTP는 암호화되지 않습니다. 같은 네트워크의 기기가 콘텐츠와 세션을 읽거나 변경할 수 있습니다. 신뢰할 수 있는 네트워크에서만 사용하세요.",
+  "settings.webAccess.startSecure": "고급: HTTPS 사용",
+  "settings.webAccess.plainPairHint": "코드를 스캔하거나 주소를 입력한 뒤 여기서 기기를 승인하세요. 인증서는 필요하지 않습니다.",
   "settings.webAccess.starting": "시작 중",
   "settings.webAccess.stop": "서비스 중지",
   "settings.webAccess.stopping": "중지 중",

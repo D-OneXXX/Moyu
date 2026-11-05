@@ -98,7 +98,7 @@ type TileKey = (String, u32, u32, u32); // (book, index, tile, render_w)
 /// 全局缓存：缩略图 LRU + 成品页 LRU + 条漫切片 LRU。内部 `parking_lot::Mutex`
 /// （临界区极短、无 await，满足 tokio 异步 command 约束）。
 pub struct ImageCache {
-    thumbs: Mutex<ByteLru<String>>,
+    thumbs: Mutex<ByteLru<(String, u32)>>,
     pages: Mutex<ByteLru<PageKey>>,
     /// 条漫切片：预算固定 48MB（切片体积小、翻滚复用率高）。
     tiles: Mutex<ByteLru<TileKey>>,
@@ -117,14 +117,14 @@ impl ImageCache {
     }
 
     /// 缩略图命中则返回克隆。
-    pub fn get_thumb(&self, book_id: &str) -> Option<RenderedPage> {
-        self.thumbs.lock().get(&book_id.to_string())
+    pub fn get_thumb(&self, book_id: &str, edge: u32) -> Option<RenderedPage> {
+        self.thumbs.lock().get(&(book_id.to_string(), edge))
     }
 
-    pub fn put_thumb(&self, book_id: &str, mut page: RenderedPage) {
+    pub fn put_thumb(&self, book_id: &str, edge: u32, mut page: RenderedPage) {
         // 与 put_page 同理：L1 只留 data_url。
         page.bytes = Vec::new();
-        self.thumbs.lock().put(book_id.to_string(), page);
+        self.thumbs.lock().put((book_id.to_string(), edge), page);
     }
 
     /// 设置缩略图与页缓存预算（同一滑杆，字节），超限立即收缩。
@@ -163,7 +163,7 @@ impl ImageCache {
 
     /// 删除书籍时级联清理：该书缩略图 + 全部页缓存 + 条漫切片。
     pub fn remove_book(&self, book_id: &str) {
-        self.thumbs.lock().remove_by(|k| k == book_id);
+        self.thumbs.lock().remove_by(|(b, _)| b == book_id);
         self.pages.lock().remove_by(|(b, _, _, _)| b == book_id);
         self.tiles.lock().remove_by(|(b, _, _, _)| b == book_id);
     }
@@ -279,7 +279,7 @@ mod tests {
     fn set_budgets_shrinks_immediately() {
         let cache = ImageCache::new();
         for i in 0..5 {
-            cache.put_thumb(&format!("book{i}"), fake_page(10_000));
+            cache.put_thumb(&format!("book{i}"), 256, fake_page(10_000));
         }
         cache.put_page("bookX", 0, 100, 100, fake_page(10_000));
         cache.set_budgets(15_000);
@@ -289,28 +289,39 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_sizes_are_independent_and_all_evicted_with_book() {
+        let cache = ImageCache::new();
+        cache.put_thumb("bookA", 256, fake_page(10));
+        assert!(cache.get_thumb("bookA", 512).is_none());
+        cache.put_thumb("bookA", 512, fake_page(20));
+        cache.remove_book("bookA");
+        assert!(cache.get_thumb("bookA", 256).is_none());
+        assert!(cache.get_thumb("bookA", 512).is_none());
+    }
+
+    #[test]
     fn remove_book_evicts_thumb_and_pages() {
         let cache = ImageCache::new();
-        cache.put_thumb("bookA", fake_page(10));
+        cache.put_thumb("bookA", 256, fake_page(10));
         cache.put_page("bookA", 0, 100, 100, fake_page(10));
         cache.put_page("bookA", 1, 100, 100, fake_page(10));
-        cache.put_thumb("bookB", fake_page(10));
+        cache.put_thumb("bookB", 256, fake_page(10));
         cache.put_page("bookB", 0, 100, 100, fake_page(10));
         cache.remove_book("bookA");
-        assert!(cache.get_thumb("bookA").is_none());
+        assert!(cache.get_thumb("bookA", 256).is_none());
         assert!(cache.get_page("bookA", 0, 100, 100).is_none());
         assert!(cache.get_page("bookA", 1, 100, 100).is_none());
-        assert!(cache.get_thumb("bookB").is_some());
+        assert!(cache.get_thumb("bookB", 256).is_some());
         assert!(cache.get_page("bookB", 0, 100, 100).is_some());
     }
 
     #[test]
     fn clear_pages_keeps_thumbs() {
         let cache = ImageCache::new();
-        cache.put_thumb("bookA", fake_page(10));
+        cache.put_thumb("bookA", 256, fake_page(10));
         cache.put_page("bookA", 0, 100, 100, fake_page(10));
         cache.clear_pages();
         assert!(cache.get_page("bookA", 0, 100, 100).is_none());
-        assert!(cache.get_thumb("bookA").is_some());
+        assert!(cache.get_thumb("bookA", 256).is_some());
     }
 }

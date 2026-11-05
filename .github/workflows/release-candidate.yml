@@ -78,10 +78,11 @@ jobs:
       - name: Resolve candidate identity
         id: identity
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          REHEARSAL: ${{ inputs.rehearsal }}
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
-          REHEARSAL="${{ inputs.rehearsal }}"
           git fetch --no-tags origin main
           if [ "$REHEARSAL" = "true" ]; then
             # 隔离演练：标签限定在 v0.0.0-rehearsal 系列，不参与版本语义。
@@ -177,6 +178,12 @@ jobs:
           CONCLUSION="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).conclusion')"
           HEAD_SHA="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).head_sha')"
           NAME="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).name')"
+          WORKFLOW_PATH="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).path')"
+          EVENT="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).event')"
+          if [ "$WORKFLOW_PATH" != ".github/workflows/qa-full.yml" ] || [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "QA run ${QA_RUN_ID} 不是手动触发的正式完整 QA 工作流" >&2
+            exit 1
+          fi
           if [ "$CONCLUSION" != "success" ]; then
             echo "QA run ${QA_RUN_ID} 结论为 ${CONCLUSION}，不是成功" >&2
             exit 1
@@ -206,6 +213,38 @@ jobs:
       # 上传资产，并且**只创建 Draft**（releaseDraft: true）。
       # 旧的 release-windows.yml 用的就是它（v0.17.0/v0.17.1 的更新清单由它产出），
       # 这里保留同一条成熟路径，只把「直接发布」换成「建 Draft」。
+      - name: Re-check release state before Draft write
+        id: release_recheck
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # gh 对「不存在 / 401 / 403 限流 / 5xx / DNS 失败」都返回 exit 1，必须看诊断输出分类；
+          # 旧写法 `if ! gh release view` 会把瞬时故障当成"不存在"，继续构建并改写已发布资产。
+          # 临时文件放在 Node 也可见的原生临时目录（Git Bash 的 /tmp 原生 Node 读不到）。
+          WORKDIR="${RUNNER_TEMP:-$(node -p 'require("os").tmpdir()')}"
+          mkdir -p "$WORKDIR"
+          OUT_FILE="$WORKDIR/mr-release-guard-out-$$.txt"
+          ERR_FILE="$WORKDIR/mr-release-guard-err-$$.txt"
+          : >"$OUT_FILE"
+          : >"$ERR_FILE"
+          trap 'status=$?; rm -f "$OUT_FILE" "$ERR_FILE" 2>/dev/null || true; exit $status' EXIT
+          set +e
+          gh release view "$TAG" --json isDraft --jq .isDraft >"$OUT_FILE" 2>"$ERR_FILE"
+          STATUS=$?
+          set -e
+          # 只有正向 404 才放行；401/403/限流/5xx/网络/空输出/未知文本一律失败关闭。
+          STATE="$(node scripts/release-governance/release-guard.mjs \
+            --status "$STATUS" --stdout-file "$OUT_FILE" --stderr-file "$ERR_FILE" --tag "$TAG")"
+          case "$STATE" in
+            draft) echo "Draft 已存在，复用：$TAG" ;;
+            missing) echo "确认 Release 不存在，候选流程将创建 Draft：$TAG" ;;
+            *) echo "release-guard 返回未知状态：$STATE；拒绝继续" >&2; exit 1 ;;
+          esac
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
       - name: Build signed NSIS bundle → Draft
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
@@ -329,12 +368,13 @@ jobs:
         env:
           TAG: ${{ steps.identity.outputs.tag }}
           COMMIT: ${{ steps.identity.outputs.commit }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
         run: |
           {
             echo "### Release Candidate (Windows)"
             echo ""
             echo "- Tag: \`${TAG}\`"
             echo "- Commit: \`${COMMIT}\`"
-            echo "- QA run: \`${{ inputs.qa_run_id }}\`"
+            echo "- QA run: \`${QA_RUN_ID}\`"
             echo "- 状态：**Draft（未公开）**，等待人工审批后由 publish 工作流发布"
           } >> "$GITHUB_STEP_SUMMARY"

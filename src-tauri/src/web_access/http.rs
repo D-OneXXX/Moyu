@@ -60,13 +60,20 @@ impl AllowedAuthority {
     /// be verified by a client. This never reads a request, setting, or
     /// environment value.
     pub(crate) fn from_socket_addr(addr: SocketAddr) -> Option<Self> {
+        Self::from_socket_addr_scheme(addr, "https")
+    }
+
+    pub(crate) fn from_socket_addr_scheme(addr: SocketAddr, scheme: &str) -> Option<Self> {
+        if !matches!(scheme, "http" | "https") {
+            return None;
+        }
         let SocketAddr::V4(addr) = addr else {
             return None;
         };
         let ip = addr.ip();
         Some(Self {
             authority: format!("{ip}:{}", addr.port()),
-            origin: format!("https://{ip}:{}", addr.port()),
+            origin: format!("{scheme}://{ip}:{}", addr.port()),
         })
     }
 

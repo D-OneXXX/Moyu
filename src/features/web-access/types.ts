@@ -15,6 +15,7 @@ export type WebAccessPhase =
 
 export interface WebAccessStatusView {
   phase: WebAccessPhase | string;
+  transport: "http" | "https" | null;
   bindAddress: string | null;
   bindIp: string | null;
   port: number | null;

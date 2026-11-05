@@ -78,6 +78,9 @@ jobs:
       - name: QA fixture unit tests
         run: npm run test:fixtures
 
+      - name: Demo asset and interaction tests
+        run: npm run test:demo
+
       - name: Release contract tests
         run: npm run test:release
 

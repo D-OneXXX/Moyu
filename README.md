@@ -134,7 +134,7 @@ Windows 安装器未做 Authenticode 代码签名，SmartScreen 可能显示警�
 <summary><strong>源码里的功能都会出现在下载版中吗？</strong></summary>
 <br>
 
-不一定。仓库主分支可能包含尚未发布的改动，请以相应平台的公开 Release 和发行说明为准。Windows 与 Linux 的发布节奏可能不同。
+不一定。仓库主分支可能包含尚未发布的改动，例如局域网阅读和自建 OPDS 书库。请以相应平台的公开 Release 和发行说明为准；Windows 与 Linux 的发布节奏可能不同。
 
 </details>
 

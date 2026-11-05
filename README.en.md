@@ -47,7 +47,7 @@ Your library data and progress stay on your machine. Local reading does not uplo
 
 A `.mrbackup` contains library records, progress, statistics and selected preferences, but does **not** contain your comic files, image caches, or online request headers. Copy your source files separately and relocate them if necessary.
 
-The main branch can contain features that are not yet in a public release. Check the release notes for your platform. Some installer names and data directories retain the legacy MangaReader identity for upgrade compatibility.
+The main branch can contain features that are not yet in a public release, including local-network reading and self-hosted OPDS libraries. Check the release notes for your platform. Some installer names and data directories retain the legacy MangaReader identity for upgrade compatibility.
 
 <a id="development"></a>
 ## Development

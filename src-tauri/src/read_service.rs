@@ -544,7 +544,11 @@ pub(crate) fn layout_read_only(state: &AppState, id: &str) -> Result<Vec<PageDim
         return Err(DataError::PdfUnsupported);
     }
     ensure_source_allowed(&row)?;
-    layout_sync(state, id, false).map_err(|_| DataError::SourceMissing)
+    layout_sync_bounded(state, id, false, Some(MAX_WEB_PAGES as usize)).map_err(|error| match error
+    {
+        BackendError::WebtoonTooLarge => DataError::WebtoonTooLarge,
+        _ => DataError::SourceMissing,
+    })
 }
 
 /// Shared layout scanner used by the desktop command and the Web read path.
@@ -555,8 +559,20 @@ pub(crate) fn layout_sync(
     book_id: &str,
     persist_online: bool,
 ) -> Result<Vec<PageDim>, BackendError> {
+    layout_sync_bounded(state, book_id, persist_online, None)
+}
+
+fn layout_sync_bounded(
+    state: &AppState,
+    book_id: &str,
+    persist_online: bool,
+    max_pages: Option<usize>,
+) -> Result<Vec<PageDim>, BackendError> {
     let cache_epoch = state.refresh_epoch();
     if let Some(cached) = state.webtoon_layouts.lock().get(book_id).cloned() {
+        if max_pages.is_some_and(|limit| cached.len() > limit) {
+            return Err(BackendError::WebtoonTooLarge);
+        }
         return Ok(page_dims(&cached));
     }
     let row = state
@@ -570,6 +586,9 @@ pub(crate) fn layout_sync(
             .map_err(|e| BackendError::Msg(format!("在线书元数据损坏：{e}")))?;
         if meta.pages.is_empty() {
             return Err(BackendError::Msg("该在线书籍没有可阅读页面".into()));
+        }
+        if max_pages.is_some_and(|limit| meta.pages.len() > limit) {
+            return Err(BackendError::WebtoonTooLarge);
         }
         let mut dims: Vec<(u32, u32)> = meta
             .pages
@@ -630,6 +649,9 @@ pub(crate) fn layout_sync(
 
     let handle = state.source_handle_for_book(book_id)?;
     let count = handle.page_count()?;
+    if max_pages.is_some_and(|limit| count > limit) {
+        return Err(BackendError::WebtoonTooLarge);
+    }
     let mut dims: Vec<(u32, u32)> = Vec::with_capacity(count);
     for index in 0..count {
         let header: Option<(u32, u32)> =
@@ -1956,6 +1978,19 @@ mod tests {
         let started = std::time::Instant::now();
         assert_eq!(tile_asset(&state, &a, 0, 0, 320), Err(DataError::Busy));
         assert!(started.elapsed() >= Duration::from_millis(700));
+    }
+
+    #[test]
+    fn bounded_layout_rejects_oversized_cached_entries() {
+        let state = state_with_db();
+        state.webtoon_layouts.lock().insert(
+            "large".to_string(),
+            Arc::new(vec![(1, 1); MAX_WEB_PAGES as usize + 1]),
+        );
+        assert!(matches!(
+            layout_sync_bounded(&state, "large", false, Some(MAX_WEB_PAGES as usize)),
+            Err(BackendError::WebtoonTooLarge)
+        ));
     }
 
     #[test]

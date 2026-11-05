@@ -1,252 +1,163 @@
 <p align="center">
-  <img src="docs/assets/logo.png" width="96" height="96" alt="Moyu icon">
+  <img src="docs/assets/logo.png" width="96" alt="Moyu 图标">
 </p>
 
 <h1 align="center">Moyu</h1>
 
+<p align="center"><strong>把喜欢的漫画，留在自己的书库里。</strong></p>
+
 <p align="center">
-  <strong>A local-first manga reader for Windows and Linux.</strong><br>
-  Moyu is a free desktop application for manga reading and library management.<br>
-  Your library stays on your disk. No account, no cloud library, no bundled manga sources.
+  一款本地优先的桌面漫画阅读器。<br>
+  整理书库，打开漫画，从上次停下的地方继续阅读。
 </p>
 
 <p align="center">
-  <a href="https://github.com/D-OneXXX/Moyu/releases">Download</a>
-  ·
-  <a href="README.zh-CN.md">简体中文</a>
-  ·
-  <a href="docs/ARCHITECTURE.md">Architecture</a>
-  ·
-  <a href="https://github.com/D-OneXXX/Moyu/issues">Support</a>
+  简体中文 · <a href="README.en.md">English</a>
 </p>
 
 <p align="center">
-  <img alt="Windows and Linux" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-38A8F8">
-  <img alt="PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-09090B">
+  <a href="https://github.com/D-OneXXX/Moyu/releases"><strong>下载 Moyu ↗</strong></a>
+  &nbsp; · &nbsp;
+  <a href="#开始使用">开始使用</a>
+  &nbsp; · &nbsp;
+  <a href="#常见问题">常见问题</a>
+  &nbsp; · &nbsp;
+  <a href="https://github.com/D-OneXXX/Moyu/issues">问题反馈 ↗</a>
 </p>
-
-## Product preview
 
 <p align="center">
-  <img src="docs/assets/screenshots/reader.png" width="82%" alt="Moyu reader showing an original synthetic comic page">
+  <img src="https://img.shields.io/badge/Windows-x64-38A8F8?style=flat-square" alt="Windows x64">
+  <img src="https://img.shields.io/badge/Linux-x86__64-38A8F8?style=flat-square" alt="Linux x86_64">
+  <img src="https://img.shields.io/badge/许可-非商业使用-64748B?style=flat-square" alt="非商业使用许可">
 </p>
+
 <p align="center">
-  <sub>The screenshot is from the real application, captured with an isolated demo library and original synthetic sample pages. No personal library data is shown.</sub>
+  <img src="public/demo/assets/real-library.png" width="88%" alt="Moyu 书库，展示四本 AI 生成的演示漫画">
+  <br><sub>真实应用开发版截图 · 使用隔离书库与 AI 生成的示例漫画</sub>
 </p>
-
-## What it does
-
-- **Library on your disk.** Import folders, ZIP archives, CBZ files, or local PDF documents;
-  scan recursively, group chapters into series, and search or filter without sending your
-  library anywhere.
-- **Read the way you want.** Single-page, double-page, and continuous webtoon modes; RTL/LTR
-  direction; zoom and pan; multiple tabs; seamless next-chapter reading.
-- **PDF documents, read in place.** Local PDFs open in the same reader with page navigation,
-  zoom, fit-to-page / fit-to-width, and remembered reading position. Rendering happens entirely
-  on your machine through a bundled PDF engine — no upload, no online service.
-- **Pick up where you left off.** Reading progress and webtoon scroll position are remembered.
-  When a source file moves, relocate it and keep the progress you already made.
-- **Natural ordering.** Pages and chapter titles are sorted by number, not by raw filename
-  order, so `1, 2, 10` stays in the right order across folders and archive entries.
-- **Online reading on your terms.** Open supported JSON manifest or HTML gallery URLs, or
-  browse public Telegram channels. Session request headers can be kept in memory only and are
-  never written to the library database or logs.
-- **A reader built for large images.** Very tall webtoon pages are sliced before rendering so
-  they remain usable in a desktop WebView.
-- **Local cache and backup.** A configurable disk cache keeps derived images bounded; export a
-  `.mrbackup` file to move library metadata, progress, statistics, and preferences to another machine.
-- **Six UI languages and two themes.** English, Simplified Chinese, Traditional Chinese,
-  Spanish, Japanese, and Korean; light, dark, or follow-system appearance.
-
-## Supported platforms
-
-| Platform | Package | Notes |
-|---|---|---|
-| **Windows x64** | NSIS installer | Primary platform. `.cbz` / `.zip` file associations and single-instance activation are supported. |
-| **Linux x86_64** | `.deb`, `.rpm`, `.AppImage` | Long-term-stability channel for critical security and crash fixes. System package installs do not self-update; the AppImage build can use the in-app updater. |
-
-macOS and ARM64 builds are not part of the current release scope.
-
-## Download
-
-Official builds are distributed through GitHub Releases:
-
-**[Browse releases →](https://github.com/D-OneXXX/Moyu/releases)**
-
-A release normally provides:
-
-- Windows: an NSIS installer.
-- Linux: `.deb`, `.rpm`, and `.AppImage` packages.
-- Tauri updater manifests and signatures alongside the packages.
-
-If no public build is listed yet, use the development instructions below to build from source.
-
-## Installation
-
-### Windows
-
-1. Download the NSIS installer from the latest release.
-2. Run the installer and choose the installation scope and language.
-3. Launch **Moyu**, add a folder or archive, and select a book.
-
-The Windows installer is **not Authenticode-signed**. Windows SmartScreen may show a warning;
-verify that the installer came from this repository’s Releases page before running it. Update
-packages use a separate Tauri updater signature.
-
-### Linux
-
-- Install the `.deb` or `.rpm` with your distribution’s package manager.
-- For the AppImage, make it executable (`chmod +x MangaReader*.AppImage`) and run it.
-- System package installs are not replaced in place by the application. Use your package
-  manager to install updates; the AppImage build can use the in-app updater.
-
-On Windows, library data lives under `%APPDATA%\com.local.manga-reader` and cache data under
-`%LOCALAPPDATA%\com.local.manga-reader`. The exact data and cache locations are shown in
-**Settings → Storage & data**. Uninstall through Windows **Settings → Apps** or your Linux
-package manager; remove the data directory manually if you also want to delete local library
-metadata and progress.
-
-## Name and upgrade compatibility
-
-The application calls itself **Moyu**. For existing installations, the installer product identity,
-the `.cbz` / `.zip` file-association registration names, the data directories
-(`com.local.manga-reader`), update signatures and endpoints, and some artifact filenames
-intentionally keep the legacy **MangaReader** identity so that upgrades, existing file
-associations, and existing user data remain intact.
-
-## Quick start
-
-1. Choose **Add folder** or **Add books** and select a folder, ZIP, CBZ, or PDF file.
-2. Open a cover to view details, then double-click or press **Shift+Enter** to start reading.
-3. Switch between single-page, double-page, and webtoon layouts from the reader.
-   PDF documents always use the single-page PDF layout with fit-to-page / fit-to-width.
-4. Use **Settings → General & appearance** to change the theme, interface language, and
-   reading preferences.
-5. For online reading, use the browser/online entry with a URL you are authorized to access.
-   Moyu does not bundle manga sources or subscriptions.
-
-## Configuration
-
-- **Appearance & language** — light, dark, or system theme; six interface languages.
-- **Storage & data** — cache usage and budget, backup/export, and cleanup.
-- **Network & sources** — proxy mode, online reading controls, and request-header scope.
-- **Privacy & security** — local data policy, diagnostics, and safety controls.
-- **About & maintenance** — version, build origin, updates, and support links.
-
-Online session headers can be restricted to memory only. They are not written to SQLite, logs,
-backup files, or diagnostics.
-
-## FAQ
-
-**Does Moyu upload my library?**
-
-No. The library database, progress, cache, and reading statistics stay on the local machine.
-There is no account or cloud sync.
-
-**Which formats are supported?**
-
-Image folders, ZIP, CBZ, and local PDF documents. Other archive formats are not part of the
-current scope.
-
-**Are encrypted PDFs supported?**
-
-No. Password-protected PDFs are detected and reported with a clear message; Moyu never asks for
-a password and never stores one. Remove the password from the file first, then import it again.
-
-**Does opening a PDF send anything over the network?**
-
-No. The file is read from your disk and rendered by the bundled PDF engine inside the
-application window. Closing the reader only releases the current reference to the document:
-the document itself may stay in a bounded cache (at most 4 documents at a time, each with its
-own render worker). When the limit is reached, the least recently used document is evicted
-and its document and render worker are actually released. Embedded document scripts are not
-executed and a PDF cannot make the application fetch external resources.
-
-**Can I move my books after importing them?**
-
-Yes. Use the missing-file relocation flow. Existing progress, webtoon position, and reading
-statistics are preserved.
-
-**Where is my data stored?**
-
-On Windows: `%APPDATA%\com.local.manga-reader` for library data and
-`%LOCALAPPDATA%\com.local.manga-reader` for cache. The app’s **Storage & data** settings show
-the active locations.
-
-**How do updates work?**
-
-Open **Settings → About & maintenance** and check for updates manually. The app does not
-silently restart or switch reading modes. Windows follows the regular release channel; Linux
-follows the critical-fix channel.
-
-**Why does Windows SmartScreen warn me?**
-
-The Windows installer is not Authenticode-signed. This is separate from the updater signature,
-which is verified by the application.
-
-**Does Moyu include manga sources?**
-
-No. You provide local files or URLs you are authorized to access. The project does not bundle
-publishers’ catalogs or scanlation feeds.
-
-**How do I uninstall it?**
-
-Use Windows **Settings → Apps** or your Linux package manager. Local data is not removed
-automatically; remove the data directory if you want a full cleanup.
-
-## Support
-
-- Bugs and feature requests: [GitHub Issues](https://github.com/D-OneXXX/Moyu/issues)
-- Security reports: [GitHub Security Advisories](https://github.com/D-OneXXX/Moyu/security/advisories/new)
-
-When reporting a problem, include the app version, operating system, build origin shown in
-**About & maintenance**, and the steps to reproduce. Remove personal paths, book titles,
-cookies, tokens, and full URLs before posting logs or screenshots.
-
-## License
-
-Moyu is **free for personal and other noncommercial use** under the **PolyForm Noncommercial
-License 1.0.0**. The project is source-available; it is not an OSI open-source project.
-Commercial use is not granted by this license.
-
-- [LICENSE](LICENSE)
-- [NOTICE.md](NOTICE.md) — required notice, build-origin fingerprint, and update channels
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — bundled font, icon, and dependency notices
-
-## Languages
-
-- English (this file, canonical)
-- [简体中文](README.zh-CN.md)
-
-The application UI also includes Traditional Chinese, Spanish, Japanese, and Korean.
-
-## Development
-
-Requirements: Node.js 22+, a stable Rust toolchain, WebView2 on Windows, and the usual
-Tauri 2 Linux build dependencies.
-
-```bash
-npm install
-npm run tauri dev     # Vite on :1420 + the desktop window
-npm run build         # version gate + TypeScript + production frontend build
-```
-
-```bash
-npx tsc --noEmit
-cargo test --lib --manifest-path src-tauri/Cargo.toml
-node tests/qa/run-qa.mjs --suite=static
-```
-
-The QA harness starts the application with isolated data and cache directories. Never point it
-at a real library. The full suite is `node tests/qa/run-qa.mjs` (Node.js 22+); `--suite=static` is
-the fast guard. The harness isolates the application data directory, the render and online caches,
-and the WebView2 profile. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the runtime
-architecture and where your data lives.
-
-Bug reports and release feedback are welcome in the issue tracker. Security issues should
-follow `SECURITY.md`.
 
 ---
 
-Moyu is not affiliated with any manga publisher, scanlation group, or online source.
-You are responsible for the content you import or access.
+<details>
+<summary>查看真实阅读界面</summary>
+
+![Moyu 阅读器中的演示漫画](docs/assets/screenshots/demo-reader.png)
+
+</details>
+
+## 让阅读回到简单
+
+| 你的书库 | 舒适阅读 | 接着上次继续 |
+| :--- | :--- | :--- |
+| 整理文件夹、ZIP、CBZ 和本地 PDF，按系列浏览、搜索与筛选。 | 单页、双页、连续条漫、缩放与阅读方向，按自己的习惯选择。 | 自动记住阅读进度；本地文件移动后，可重新定位并保留已有进度。 |
+
+- **本地优先**：无需账号或云端书库；书库数据与阅读进度保存在本机。
+- **贴合习惯**：支持明亮、深色和跟随系统外观，以及六种界面语言。
+- **按需在线阅读**：支持指定格式的在线页面和公开 Telegram 频道；不内置漫画源。
+
+> PDF 使用独立的单页阅读布局，支持适应页面与宽度；不支持加密 PDF。
+
+## 演示漫画
+
+[查看轻量 HTML 演示源码](public/demo/index.html) · [预览演示页面](docs/assets/screenshots/demo-site.png) · 下载仓库后可直接在浏览器中打开；当前源码构建也可从「设置 → 关于与维护」进入。演示页展示的是简化交互。
+
+
+用四份 AI 生成的示例漫画体验不同的阅读方式。前三部各含封面和一页正文；《木卫二的回声》包含封面和四页正文，可用于体验连续翻页。点击标题可获取 CBZ 文件，再从书库导入。
+
+<table>
+  <tr>
+    <td align="center"><a href="public/demo/assets/sky-station.cbz"><img src="public/demo/assets/sky-cover.png" width="210" alt="黑白漫画：天空站与机械鸟"></a><br><a href="public/demo/assets/sky-station.cbz"><strong>天空站与机械鸟 ↓</strong></a><br><sub>黑白分镜 · 单页阅读</sub></td>
+    <td align="center"><a href="public/demo/assets/rain-cafe.cbz"><img src="public/demo/assets/rain-cover.png" width="125" alt="彩色条漫：雨天咖啡馆"></a><br><a href="public/demo/assets/rain-cafe.cbz"><strong>雨天咖啡馆 ↓</strong></a><br><sub>彩色条漫 · 纵向阅读</sub></td>
+    <td align="center"><a href="public/demo/assets/orbital-garden.cbz"><img src="public/demo/assets/orbital-cover.png" width="210" alt="彩色漫画：星轨温室"></a><br><a href="public/demo/assets/orbital-garden.cbz"><strong>星轨温室 ↓</strong></a><br><sub>彩色分镜 · 单页阅读</sub></td>
+    <td align="center"><a href="public/demo/assets/europa-echo.cbz"><img src="public/demo/assets/europa-cover.png" width="210" alt="写实科幻漫画：木卫二的回声"></a><br><a href="public/demo/assets/europa-echo.cbz"><strong>木卫二的回声 ↓</strong></a><br><sub>写实科幻 · 多页阅读</sub></td>
+  </tr>
+</table>
+
+示例仅用于演示，不代表应用内置漫画源。
+
+## 下载 Moyu
+
+<table>
+  <tr><td><strong>Windows</strong><br>x64 · NSIS 安装器</td><td><strong>Linux</strong><br>x86_64 · DEB / RPM / AppImage</td></tr>
+  <tr><td colspan="2" align="center"><a href="https://github.com/D-OneXXX/Moyu/releases"><strong>前往 GitHub Releases 选择安装包 →</strong></a></td></tr>
+</table>
+
+Windows 与 Linux 分别维护发布通道，版本和可用安装包请以 Releases 页面为准。目前不提供 macOS 或 ARM64 构建。
+
+Windows 安装器未做 Authenticode 代码签名，SmartScreen 可能显示警告；运行前请确认文件来自本项目的 Releases 页面。应用内更新包使用独立的签名校验。Linux 的 DEB / RPM 安装通过包管理器更新；AppImage 可使用应用内更新。
+
+## 开始使用
+
+**01 · 安装**　从 Releases 下载适合系统的安装包并安装。
+
+**02 · 添加**　在书库中选择「添加文件夹」或「添加书籍」，导入本地内容。
+
+**03 · 阅读**　打开一本书，选择喜欢的阅读布局，Moyu 会记住你的进度。
+
+在线内容由你自行提供，请只访问你有权访问的内容。
+
+## 常见问题
+
+<details>
+<summary><strong>我的书库和阅读进度存在哪里？</strong></summary>
+<br>
+
+数据保存在本机。Windows 默认数据目录为 `%APPDATA%\com.local.manga-reader`，缓存目录为 `%LOCALAPPDATA%\com.local.manga-reader`；应用的「设置 → 存储与数据」也会显示实际位置。没有账号或云同步。
+
+</details>
+
+<details>
+<summary><strong>Moyu 会联网吗？</strong></summary>
+<br>
+
+阅读本地漫画和 PDF 不需要上传书库。使用在线阅读或检查更新等网络功能时，应用需要进行相应的网络请求。在线会话请求头可选择仅驻留内存；全局请求头设置则是用户管理的持久化偏好。
+
+</details>
+
+<details>
+<summary><strong>备份会包含漫画文件吗？</strong></summary>
+<br>
+
+不会。`.mrbackup` 保存书库记录、进度、统计和部分偏好，不包含漫画源文件或图片缓存。迁移时请另外复制源文件，并根据需要重新定位；备份不会保存在线请求头。
+
+</details>
+
+<details>
+<summary><strong>为什么看到 MangaReader 这个名字？</strong></summary>
+<br>
+
+应用名称是 Moyu。为了兼容已有安装、数据和更新，部分安装器名称、文件关联与数据目录仍保留 MangaReader 标识。
+
+</details>
+
+<details>
+<summary><strong>源码里的功能都会出现在下载版中吗？</strong></summary>
+<br>
+
+不一定。仓库主分支可能包含尚未发布的改动，请以相应平台的公开 Release 和发行说明为准。Windows 与 Linux 的发布节奏可能不同。
+
+</details>
+
+## 反馈与开发
+
+- 发现问题或有建议：[提交 Issue](https://github.com/D-OneXXX/Moyu/issues)。提交日志或截图前，请移除个人路径、书名、Cookie、Token 和完整 URL。
+- 发现安全问题：[私下提交安全报告](https://github.com/D-OneXXX/Moyu/security/advisories/new)。
+- 想了解架构：[查看架构说明](docs/ARCHITECTURE.md)。
+
+<a id="development"></a>
+### 从源码构建
+
+需要 Node.js 22+、稳定版 Rust 工具链，以及对应平台的 Tauri 2 构建依赖；Windows 还需要 WebView2。
+
+```bash
+npm install
+npm run tauri dev
+```
+
+构建前端使用 `npm run build`，更多验证命令见 [英文开发说明](README.en.md#development)。`tauri dev` 会启动桌面窗口；请在适合交互操作的环境中运行。
+
+## 许可证
+
+Moyu 使用 [PolyForm Noncommercial License 1.0.0](LICENSE)，允许个人及其他非商业用途，不授予商业使用权。项目源码可见，但不属于 OSI 定义的开源软件。其他声明见 [NOTICE](NOTICE.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
+
+<p align="center"><sub>不内置漫画源 · 你的内容，由你选择</sub></p>

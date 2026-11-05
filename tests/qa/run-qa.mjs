@@ -102,7 +102,7 @@ function buildCheck(report) {
       id: "qa:version-gate",
       suite: "static",
       layer: "build",
-      title: "版本门禁失败，QA 运行中止",
+      title: "版本门禁失败",
       severity: "P0",
       details: error.stdout || error.message,
       location: "scripts/version-check.mjs",
@@ -175,8 +175,16 @@ function recordResetFailures(report, ctx, suiteId) {
 }
 
 async function runOne(report, ctx, suite) {
+  report.suiteCoverage.executed.push(suite.id);
   try {
     await suite.run(ctx, report);
+    // This historical P0 was emitted only when the PDF suite threw. Confirm
+    // both relevant late-stage checks ran before recording its successful run.
+    if (suite.id === "pdf" && ["pdf:progress-persisted", "pdf:vanishing-source-during"].every(
+      (id) => report.checks.some((check) => check.id === id && check.status === "pass"),
+    )) {
+      record(report, { id: "pdf:crashed", suite: "pdf", layer: "infrastructure", title: "PDF 完整套件运行至结尾且未中断", pass: true });
+    }
   } catch (error) {
     fail(report, {
       id: `${suite.id}:crashed`,
@@ -200,8 +208,10 @@ async function main() {
     appVersion: version(),
     buildCommit: latestGitCommit(),
   });
-  note(report, "QA 运行器：isolated CDP harness");
-  note(report, `CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}`);
+  report.suiteCoverage = { planned: ["static", ...E2E_SUITES], executed: [] };
+  const runsE2e = !ONLY_LIST || ONLY_LIST.some((name) => E2E_SUITES.has(name));
+  note(report, runsE2e ? "执行级别：L2，隔离 CDP；宿主桌面交互未覆盖" : "执行级别：L1，后台 CLI；未启动桌面或 CDP");
+  if (runsE2e) note(report, `计划 CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}；进程和端口须结合运行日志核对`);
 
   buildCheck(report);
 
@@ -228,6 +238,7 @@ async function main() {
       cdpPort: CDP_PORT,
       telegramTestOrigin: onlineFixture.origin,
     });
+    record(report, { id: "qa:app-bootstrap", suite: "infrastructure", layer: "infrastructure", title: "QA 隔离应用成功启动", pass: true });
     ctx.onlineFixture = onlineFixture;
     const suites = [
       { id: "visual", title: "双主题与六语种排版", run: runVisualSuite },
@@ -307,11 +318,15 @@ async function main() {
     });
   } finally {
     if (ctx) {
-      await ctx.close().catch(() => {});
+      await ctx.close().catch((error) => {
+        fail(report, { id: "qa:cleanup-app", suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离应用清理失败", details: error.message });
+      });
       await new Promise((resolve) => setTimeout(resolve, 900));
     }
     if (onlineFixture) {
-      await onlineFixture.close().catch(() => {});
+      await onlineFixture.close().catch((error) => {
+        fail(report, { id: "qa:cleanup-fixture", suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离服务清理失败", details: error.message });
+      });
     }
     if (!KEEP_DATA) {
       for (const target of [DATA_DIR, CHAOS_DATA_DIR, FIXTURE_ROOT]) {
@@ -323,13 +338,10 @@ async function main() {
             retryDelay: 250,
           });
         } catch (error) {
-          note(
-            report,
-            `清理隔离数据失败（不影响审计结论）：${path.relative(ROOT, target)}: ${error.message}`,
-          );
+          fail(report, { id: `qa:cleanup-data:${path.basename(target)}`, suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离数据清理失败", details: error.message });
         }
       }
-    }
+    } else note(report, "按 --keep-data 保留本次隔离数据");
   }
 
   finalize(report);
@@ -359,6 +371,10 @@ function redactLocalPaths(value) {
 
 function finalize(report) {
   report.finishedAt = new Date().toISOString();
+  report.suiteCoverage.notExecuted = report.suiteCoverage.planned.filter(
+    (suite) => !report.suiteCoverage.executed.includes(suite),
+  );
+  note(report, `已执行套件：${report.suiteCoverage.executed.join(", ") || "无"}；未执行套件：${report.suiteCoverage.notExecuted.join(", ") || "无"}`);
   const kb = loadKnowledgeBase(KB_PATH);
   updateKnowledgeBase(kb, report);
   fs.writeFileSync(KB_PATH, JSON.stringify(redactLocalPaths(kb), null, 2), "utf8");

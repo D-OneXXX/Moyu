@@ -569,8 +569,8 @@ test("发布说明：双语结构与内部信息门禁在两条通道上同时�
   assert.ok(windowsGate.includes("--pattern latest.json"), "Windows 发布必须取回即将公开的更新清单");
   assert.ok(windowsGate.includes("--check-manifest"), "Windows 发布必须校验清单里的 notes");
   assert.ok(
-    windowsGate.includes("--require-match") && windowsGate.includes("--warn-only"),
-    "Windows 发布必须把正文/清单一致性作为告警（结构校验仍为硬门禁）",
+    windowsGate.includes("--require-match") && !windowsGate.includes("--warn-only"),
+    "Windows 发布必须在正文与清单不一致时失败关闭",
   );
 
   // Linux 通道的 notes 是单行双语摘要，必须用 summary 模式校验自己的清单。

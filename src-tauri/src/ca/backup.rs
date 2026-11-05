@@ -769,7 +769,7 @@ fn restrict_permissions(_file: &File) -> CaResult<()> {
     Ok(())
 }
 
-fn ensure_destination_outside_ca_root(paths: &CaPaths, path: &Path) -> CaResult<()> {
+pub(crate) fn ensure_destination_outside_ca_root(paths: &CaPaths, path: &Path) -> CaResult<()> {
     let root = paths.root_dir();
     let destination = absolute_lexical(path)?;
     let root_lexical = absolute_lexical(root)?;

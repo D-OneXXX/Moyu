@@ -40,10 +40,10 @@ jobs:
     if: always()
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout PR head
+      - name: Checkout trusted base gate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       # 证据是本门禁的输入，必须能取到；取不到就让下一步判定"缺证据 → 阻断"。

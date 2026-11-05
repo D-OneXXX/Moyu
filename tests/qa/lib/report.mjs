@@ -141,7 +141,7 @@ export function writeMarkdownReport(report, file, kb = null) {
     "",
     ...(staticBlocking.length
       ? [
-          "### 静态审计确认（尚未形成自动化断言）",
+          "### 台账中尚未关闭的 P0 / P1（来源与现状须逐项核实）",
           "",
           staticBlocking.map(issueBlock).join("\n"),
           "",
@@ -153,7 +153,7 @@ export function writeMarkdownReport(report, file, kb = null) {
     "",
     ...(staticCosmetic.length
       ? [
-          "### 静态审计 backlog（P2 / P3）",
+          "### 台账中尚未关闭的 P2 / P3（来源与现状须逐项核实）",
           "",
           staticCosmetic.map(issueBlock).join("\n"),
           "",
@@ -189,7 +189,8 @@ export function writeMarkdownReport(report, file, kb = null) {
 export function loadKnowledgeBase(file) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
     return {
       schema: 1,
       updatedAt: null,
@@ -203,6 +204,20 @@ export function updateKnowledgeBase(kb, report) {
   const added = [];
   const byTest = new Map((kb.regressions || []).map((entry) => [entry.testId, entry]));
   const defectByTest = new Map((kb.defects || []).map((entry) => [entry.testId, entry]));
+  // Only close a QA-generated issue when its exact test actually ran and all
+  // observations for that ID passed. Static and unexecuted findings stay open.
+  const checkResults = new Map();
+  for (const check of report.checks || []) {
+    const previous = checkResults.get(check.id) ?? true;
+    checkResults.set(check.id, previous && check.status === "pass");
+  }
+  for (const [id, passed] of checkResults) {
+    const issue = defectByTest.get(id);
+    if (passed && issue?.status === "open" && byTest.get(id)?.source === "qa-run") {
+      issue.status = "closed";
+      issue.resolvedAt = report.runId;
+    }
+  }
   for (const defect of report.defects) {
     if (!byTest.has(defect.id)) {
       const regression = {
@@ -238,6 +253,7 @@ export function updateKnowledgeBase(kb, report) {
     } else {
       const entry = defectByTest.get(defect.id);
       entry.lastSeen = report.runId;
+      if (byTest.get(defect.id)?.source === "qa-run") entry.status = "open";
       entry.severity = defect.severity;
       entry.location = defect.location || entry.location;
     }

@@ -49,6 +49,7 @@ type Clock = Arc<dyn Fn() -> OffsetDateTime + Send + Sync>;
 /// this keeps one LAN peer from holding all of it during slow handshakes.
 pub(crate) struct ConnectionLimiter {
     active: Mutex<HashMap<IpAddr, usize>>,
+    max_per_ip: usize,
 }
 
 pub(crate) struct ConnectionPermit {
@@ -58,8 +59,13 @@ pub(crate) struct ConnectionPermit {
 
 impl ConnectionLimiter {
     pub(crate) fn new() -> Arc<Self> {
+        Self::with_limit(MAX_ACTIVE_CONNECTIONS_PER_IP)
+    }
+
+    pub(crate) fn with_limit(max_per_ip: usize) -> Arc<Self> {
         Arc::new(Self {
             active: Mutex::new(HashMap::new()),
+            max_per_ip,
         })
     }
 
@@ -69,7 +75,7 @@ impl ConnectionLimiter {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let count = active.entry(ip).or_insert(0);
-        if *count >= MAX_ACTIVE_CONNECTIONS_PER_IP {
+        if *count >= self.max_per_ip {
             return None;
         }
         *count += 1;
@@ -1033,6 +1039,17 @@ async fn handle_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smaller_per_ip_connection_cap_is_enforced() {
+        let limiter = ConnectionLimiter::with_limit(2);
+        let peer = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let first = limiter.try_acquire(peer).unwrap();
+        let _second = limiter.try_acquire(peer).unwrap();
+        assert!(limiter.try_acquire(peer).is_none());
+        drop(first);
+        assert!(limiter.try_acquire(peer).is_some());
+    }
 
     #[test]
     fn per_ip_connection_cap_is_enforced_and_released() {

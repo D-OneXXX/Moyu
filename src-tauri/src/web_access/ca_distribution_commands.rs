@@ -158,7 +158,12 @@ fn validate_export_path(raw: &str, ca_root: &Path) -> Result<PathBuf, String> {
     // Never allow the public PEM export to overwrite CA state, keys or audit
     // files. The save dialog normally points elsewhere; this is a fail-closed
     // backend check, not a UI-only guard.
-    if path.starts_with(ca_root) {
+    if crate::ca::backup::ensure_destination_outside_ca_root(
+        &crate::ca::CaPaths::new(ca_root.to_path_buf()),
+        &path,
+    )
+    .is_err()
+    {
         return Err("导出路径不能位于本地 CA 目录内（ca-export-path）".to_string());
     }
     Ok(path)
@@ -324,6 +329,7 @@ mod tests {
                 CaDistributionError::InvalidBindAddress,
                 "ca-distribution-invalid-ip",
             ),
+            (CaDistributionError::SafeMode, "web-access-safe-mode"),
             (
                 CaDistributionError::Io(std::io::Error::other("io")),
                 "ca-distribution-io",
@@ -346,6 +352,10 @@ mod tests {
         assert!(validate_export_path("   ", &ca_root).is_err());
         let inside = ca_root.join("state.json");
         assert!(validate_export_path(inside.to_str().unwrap(), &ca_root).is_err());
+        let via_parent = ca_root.join("folder").join("..").join("state.json");
+        assert!(validate_export_path(via_parent.to_str().unwrap(), &ca_root).is_err());
+        #[cfg(windows)]
+        assert!(validate_export_path(&inside.to_string_lossy().to_uppercase(), &ca_root).is_err());
         let absolute = temp_path("commands-export").join("ca.crt");
         assert!(validate_export_path(absolute.to_str().unwrap(), &ca_root).is_ok());
     }

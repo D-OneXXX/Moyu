@@ -28,7 +28,7 @@ pub enum BackendError {
     Db(String),
     #[error("网络错误：{0}")]
     Network(String),
-    #[error("长图切片超过网页阅读资源上限（webtoon-too-large）")]
+    #[error("长图切片超过安全处理资源上限（webtoon-too-large）")]
     WebtoonTooLarge,
     #[error("{0}")]
     Msg(String),
@@ -290,6 +290,22 @@ pub struct FolderSource {
     files: Vec<PathBuf>,
 }
 
+fn read_bounded_folder_page(path: &Path) -> Result<Vec<u8>, BackendError> {
+    let file = File::open(path)?;
+    let too_large =
+        || BackendError::Msg("单页文件超过安全大小上限（source-page-too-large）".into());
+    if file.metadata()?.len() > PAGE_MAX_BYTES as u64 {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    file.take(PAGE_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > PAGE_MAX_BYTES {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+
 impl FolderSource {
     pub fn open(dir: &Path) -> Result<Self, BackendError> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -335,7 +351,7 @@ impl ImageSource for FolderSource {
             .files
             .get(index)
             .ok_or_else(|| BackendError::Msg(format!("页码越界：{index}")))?;
-        let bytes = std::fs::read(path)?;
+        let bytes = read_bounded_folder_page(path)?;
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -734,7 +750,7 @@ impl SourceHandle {
                 let path = files
                     .get(index)
                     .ok_or_else(|| BackendError::Msg(format!("页码越界：{index}")))?;
-                let bytes = std::fs::read(path)?;
+                let bytes = read_bounded_folder_page(path)?;
                 let ext = path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -831,6 +847,39 @@ mod tests {
     use crate::online::{OnlineError, PageRef};
 
     use super::{fixup_entry_name, ImageSource};
+
+    #[test]
+    fn folder_page_size_limit_is_enforced_for_both_read_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "moyu-folder-limit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("page.png");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(crate::online::PAGE_MAX_BYTES as u64 + 1)
+            .unwrap();
+        drop(file);
+        let a = super::FolderSource::open(&dir)
+            .unwrap()
+            .read_raw(0)
+            .err()
+            .unwrap()
+            .to_string();
+        let b = super::SourceHandle::open(&dir)
+            .unwrap()
+            .read_raw(0)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(a.contains("source-page-too-large"));
+        assert!(b.contains("source-page-too-large"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// 每次请求记录 (url, referer, max_bytes, header_scope)。
     type RequestLog = Mutex<Vec<(String, Option<String>, usize, Option<String>)>>;

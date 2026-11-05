@@ -3299,8 +3299,8 @@ export function checkAntiMockGuards(root, report) {
     }
 
     // 8. Web layout is read-only; the desktop command keeps meta persistence.
-    if (!readServiceSource.includes("layout_sync(state, id, false)")) {
-      errors.push("read_service 的 layout_read_only 未以 persist_online=false 调用");
+    if (!/layout_sync_bounded\s*\(\s*state\s*,\s*id\s*,\s*false\s*,\s*Some\s*\(\s*MAX_WEB_PAGES/.test(readServiceSource)) {
+      errors.push("read_service 的 layout_read_only 未以 persist_online=false 且受页数上限约束调用");
     }
     if (/layout_sync\s*\([^;]*?,\s*true\s*\)/.test(readServiceSource)) {
       errors.push("read_service 出现 layout_sync(..., true) Web 持久化调用");

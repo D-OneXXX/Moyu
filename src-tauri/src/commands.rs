@@ -1225,10 +1225,10 @@ pub async fn get_thumbnail(
     max_size: Option<u32>,
 ) -> Result<PageImage, String> {
     let cache_epoch = state.refresh_epoch();
-    if let Some(hit) = state.cache.get_thumb(&book_id) {
+    let edge = max_size.unwrap_or(240).clamp(64, 1024);
+    if let Some(hit) = state.cache.get_thumb(&book_id, edge) {
         return Ok(to_page_image(0, hit));
     }
-    let edge = max_size.unwrap_or(240).clamp(64, 1024);
     // 先查来源格式：PDF 没有「首页图片」，封面来自前端渲染后写回的 L2 缓存。
     // PDF 绝不能走 source_handle_for_book（那条路径有意拒绝 PDF）。
     let format = state.db.with(|conn| {
@@ -1282,7 +1282,7 @@ pub async fn get_thumbnail(
         }
     };
     state.cache_if_current(cache_epoch, || {
-        state.cache.put_thumb(&book_id, rendered.clone())
+        state.cache.put_thumb(&book_id, edge, rendered.clone())
     });
     Ok(to_page_image(0, rendered))
 }

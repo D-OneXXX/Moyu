@@ -2,7 +2,7 @@
  * PDF 封面生成。
  *
  * PDF 没有「首页图片」：书库封面由前端用 pdf.js 渲染第 1 页，再经
- * `put_pdf_thumbnail` 写回后端缓存（后端按固定边长 256 落 L2 缓存）。
+ * `put_pdf_thumbnail` 写回后端缓存（后端按固定边长 512 落 L2 缓存）。
  *
  * 并发保护：整座书库可能同时有几十张 PDF 卡片进入视口，因此这里用
  * 模块级队列把封面生成**串行化**——同一时刻只打开一份 PDF 文档，
@@ -13,7 +13,7 @@ import { openPdfDocument, releasePdfDocument } from "./document";
 import { renderPdfPage } from "./render";
 
 /** 封面边长（与后端 `pdf::PDF_COVER_EDGE` 一致）。 */
-export const PDF_COVER_EDGE = 256;
+export const PDF_COVER_EDGE = 512;
 
 /** 串行队列：保证同一时刻只有一个封面任务在跑。 */
 let coverQueue: Promise<unknown> = Promise.resolve();

@@ -756,6 +756,7 @@ export async function runPdfSuite(ctx, report) {
       actual: JSON.stringify(atThird),
     });
   } else {
+    ok(report, { id: "pdf:progress-navigate", suite: "pdf", layer: "e2e", title: "进度用例成功翻到第 3 页" });
     // 关闭阅读器（回书库）→ 阅读器卸载时立即落盘进度。
     await ctx.goto("#/");
     await sleep(900);

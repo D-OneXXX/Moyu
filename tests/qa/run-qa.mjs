@@ -176,6 +176,13 @@ async function runOne(report, ctx, suite) {
   report.suiteCoverage.executed.push(suite.id);
   try {
     await suite.run(ctx, report);
+    // This historical P0 was emitted only when the PDF suite threw. Confirm
+    // both relevant late-stage checks ran before recording its successful run.
+    if (suite.id === "pdf" && ["pdf:progress-persisted", "pdf:vanishing-source-during"].every(
+      (id) => report.checks.some((check) => check.id === id && check.status === "pass"),
+    )) {
+      record(report, { id: "pdf:crashed", suite: "pdf", layer: "infrastructure", title: "PDF 完整套件运行至结尾且未中断", pass: true });
+    }
   } catch (error) {
     fail(report, {
       id: `${suite.id}:crashed`,
@@ -229,6 +236,7 @@ async function main() {
       cdpPort: CDP_PORT,
       telegramTestOrigin: onlineFixture.origin,
     });
+    record(report, { id: "qa:app-bootstrap", suite: "infrastructure", layer: "infrastructure", title: "QA 隔离应用成功启动", pass: true });
     ctx.onlineFixture = onlineFixture;
     const suites = [
       { id: "visual", title: "双主题与六语种排版", run: runVisualSuite },

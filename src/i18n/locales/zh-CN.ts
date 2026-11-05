@@ -8,6 +8,7 @@ import { updatesMessages } from "../messages/updates";
 import { privacyMessages } from "../messages/privacy";
 import { resilienceMessages } from "../messages/resilience";
 import { onlineMessages } from "../messages/online";
+import { opdsMessages } from "../messages/opds";
 
 export const zhCN = {
   ...commonMessages["zh-CN"],
@@ -19,6 +20,7 @@ export const zhCN = {
   ...updatesMessages["zh-CN"],
   ...privacyMessages["zh-CN"],
   ...onlineMessages["zh-CN"],
+  ...opdsMessages["zh-CN"],
   ...resilienceMessages["zh-CN"],
 } as const;
 

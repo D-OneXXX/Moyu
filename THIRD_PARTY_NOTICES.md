@@ -80,6 +80,7 @@ JavaScript to run, which the project's security policy forbids.
 | `if-addrs` | MIT OR BSD-3-Clause |
 | `rustls` | Apache-2.0 OR ISC OR MIT |
 | `tokio-rustls` | MIT OR Apache-2.0 |
+| `unrar-rs` | Apache-2.0 plus the UnRAR restriction (see below) |
 
 ### CA infrastructure dependencies (W7-CA)
 
@@ -107,6 +108,13 @@ All listed licenses are permissive (MIT, ISC, Apache-2.0, BSD-3-Clause) and comp
 project's PolyForm Noncommercial 1.0.0 license. No GPL/AGPL/SSPL or other copyleft dependency is
 introduced by the CA or W7-TLS stacks.
 
+`unrar-rs` (OPDS CBR reading) is Apache-2.0 with the UnRAR restriction inherited from RARLAB's
+UnRAR source: it may be used to handle RAR archives free of charge, but may not be used to develop
+a RAR-compatible archiver or re-create the RAR compression algorithm. The crate exposes no writer
+or archive-creation API, and Moyu only uses it to read user-provided CBR files into a local CBZ.
+The full notice is included at [docs/licenses/unrar-rs.txt](docs/licenses/unrar-rs.txt) and is also
+bundled with the application as `/licenses/unrar-rs.txt`.
+
 ### W7-TLS transport dependencies
 
 The TLS transport slice adds a real HTTPS listener using the CA-issued leaf. The listener is not
@@ -130,6 +138,7 @@ License texts used by these components are included under [docs/licenses](docs/l
 - [ISC](docs/licenses/ISC.txt)
 - [OFL-1.1](docs/licenses/OFL-1.1.txt)
 - [BSD-3-Clause](docs/licenses/BSD-3-Clause.txt)
+- [unrar-rs (Apache-2.0 + UnRAR restriction)](docs/licenses/unrar-rs.txt)
 
 ## Notes for distributors
 

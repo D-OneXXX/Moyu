@@ -24,6 +24,7 @@ import { runVisualSuite } from "./suites/visual.mjs";
 import { runReaderSuite } from "./suites/reader.mjs";
 import { runPdfSuite } from "./suites/pdf.mjs";
 import { runOnlineSuite } from "./suites/online.mjs";
+import { runOpdsSuite } from "./suites/opds.mjs";
 import { runCacheSuite } from "./suites/cache.mjs";
 import { runPrivacySuite } from "./suites/privacy.mjs";
 import { runChaosSuite } from "./suites/chaos.mjs";
@@ -50,6 +51,7 @@ const E2E_SUITES = new Set([
   "reader",
   "pdf",
   "online",
+  "opds",
   "cache",
   "privacy",
   "chaos",
@@ -232,6 +234,7 @@ async function main() {
       { id: "reader", title: "阅读器与条漫压测", run: runReaderSuite },
       { id: "pdf", title: "PDF 渲染、进度与安全策略", run: runPdfSuite },
       { id: "online", title: "在线直读与噪音过滤", run: runOnlineSuite },
+      { id: "opds", title: "OPDS 1.2 自建远程书库", run: runOpdsSuite },
       { id: "cache", title: "磁盘缓存上限与清理隔离", run: runCacheSuite },
       { id: "privacy", title: "隐私脱敏与版本展示", run: runPrivacySuite },
       {

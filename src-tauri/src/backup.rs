@@ -47,6 +47,8 @@ const EXCLUDED_ASSETS: &[&str] = &[
     "online_filter_events",
     "app_meta",
     "unapproved_settings",
+    "opds_credentials",
+    "opds_downloads",
 ];
 
 /// 允许随备份迁移的 SQLite settings 白名单。
@@ -1437,6 +1439,10 @@ mod tests {
         db::set_setting(conn, "online_proxy", "socks5://backup-proxy:1080").unwrap();
         db::set_setting(conn, "experimental_online", "true").unwrap();
         db::set_setting(conn, "online_headers", "Cookie: secret=1").unwrap();
+        db::set_setting(conn, "opds_enabled", "true").unwrap();
+        db::set_setting(conn, "opds_url", "http://192.168.1.20/opds/v1.2/catalog").unwrap();
+        db::set_setting(conn, "opds_username", "reader").unwrap();
+        db::set_setting(conn, "opds_password", "opds-secret").unwrap();
         db::set_meta(conn, "last_run_version", "0.15.0").unwrap();
         db::upsert_filter_profile(conn, &profile("example.com")).unwrap();
         db::upsert_filter_rule(conn, &rule("r1", "example.com")).unwrap();
@@ -1856,6 +1862,7 @@ mod tests {
         assert_eq!(manifest.counts.books, 2);
         assert!(manifest.excludes.iter().any(|v| v == "online_headers"));
         assert!(manifest.excludes.iter().any(|v| v == "caches"));
+        assert!(manifest.excludes.iter().any(|v| v == "opds_credentials"));
 
         let exported = exported_db(&backup, &dir);
         let conn = Connection::open(&exported).unwrap();
@@ -1866,6 +1873,14 @@ mod tests {
             ),
             0,
             "凭据与未审计网络设置绝不进入备份"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM settings WHERE k IN ('opds_enabled','opds_url','opds_username','opds_password')"
+            ),
+            0,
+            "OPDS 地址与凭据绝不进入备份"
         );
         assert_eq!(
             count(

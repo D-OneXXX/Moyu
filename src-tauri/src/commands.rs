@@ -393,7 +393,33 @@ fn archive_stamp(path: &Path) -> Option<db::SourceStamp> {
 /// 扫描一本书：打开源 → 取页数 → upsert。
 ///
 /// 显式扫描总是重新读取源目录；文件时间和字节数相同也可能换了内容。
-fn scan_single_book(conn: &rusqlite::Connection, path: &Path) -> Result<BookInfo, BackendError> {
+pub(crate) fn scan_single_book(
+    conn: &rusqlite::Connection,
+    path: &Path,
+) -> Result<BookInfo, BackendError> {
+    scan_single_book_with_title(conn, path, None)
+}
+
+/// 与 [`scan_single_book`] 相同，但允许在线/远程来源提供显示标题。
+///
+/// 文件名只是落盘标识（必须去掉 Windows 非法字符）；远程章节标题可以包含
+/// `:`、`/` 等字符，入库时应保留用户看到的原始标题。
+pub(crate) fn scan_single_book_with_title(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    display_title: Option<&str>,
+) -> Result<BookInfo, BackendError> {
+    let display_title = display_title
+        .map(|title| {
+            title
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(200)
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .filter(|title| !title.is_empty());
     // 书库 id = sha256(path)，path 会落 SQLite/JSON；非 UTF-8 必须显式拒绝，
     // 否则 lossy 转换可能让两本不同的书落到同一个 id。
     let path_str = path
@@ -409,7 +435,7 @@ fn scan_single_book(conn: &rusqlite::Connection, path: &Path) -> Result<BookInfo
     // 页数留 0（PDF-2 之前没有阅读能力，也不需要任何 PDF 依赖）。
     if source::is_pdf_path(path) {
         source::validate_pdf_document(path)?;
-        let title = title_for(path);
+        let title = display_title.clone().unwrap_or_else(|| title_for(path));
         // 已知页数必须保留：PDF 的真实页数由前端 PDF.js 解析后经
         // `set_book_page_count` 回写；重新导入 / 重扫同一路径时若把它写回 0，
         // `clamp_reading_page` 就会退化成「完全不钳制」，PDF 的阅读位置也失去上界。
@@ -437,7 +463,7 @@ fn scan_single_book(conn: &rusqlite::Connection, path: &Path) -> Result<BookInfo
         if count == 0 {
             return Err(BackendError::Msg("书中没有可读图片，跳过".into()));
         }
-        let title = title_for(path);
+        let title = display_title.clone().unwrap_or_else(|| title_for(path));
         db::upsert_book(conn, &id, &path_str, &title, count)?;
         if let Some(stamp) = stamp {
             db::set_source_stamp(conn, &id, stamp)?;
@@ -3366,6 +3392,151 @@ pub async fn set_settings(
     }
     // 数据库不可用必须显式失败；启动恢复门会阻止用户在坏库上改设置。
     res
+}
+
+// ---------- OPDS 远程书库（仅用户自建服务；配置只存本地） ----------
+
+fn opds_runtime(st: &AppState) -> Result<crate::opds::OpdsRuntime, BackendError> {
+    st.db
+        .with(|conn| crate::opds::load_runtime(conn).map_err(err))
+        .map_err(BackendError::Msg)
+}
+
+fn opds_target(runtime: &crate::opds::OpdsRuntime, raw: &str) -> Result<url::Url, BackendError> {
+    crate::opds::same_origin_link(&runtime.origin, &runtime.origin, raw.trim())
+        .map_err(|error| BackendError::Msg(error.into()))
+}
+
+#[tauri::command]
+pub fn opds_get_config(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::opds::OpdsConfigView, String> {
+    state
+        .db
+        .with(|conn| crate::opds::load_config(conn).map_err(err))
+}
+
+#[tauri::command]
+pub fn opds_set_config(
+    state: State<'_, Arc<AppState>>,
+    config: crate::opds::OpdsConfigInput,
+) -> Result<crate::opds::OpdsConfigView, String> {
+    state
+        .db
+        .with(|conn| crate::opds::save_config(conn, config).map_err(err))
+}
+
+/// 连接测试只读取目录第一页，不写库、不下载。
+#[tauri::command]
+pub async fn opds_test_connection(state: State<'_, Arc<AppState>>) -> Result<OnlineProbe, String> {
+    crate::resilience::ensure_online_allowed()?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let runtime = opds_runtime(&st)?;
+        let client = crate::opds::client_for(&runtime)?;
+        let started = Instant::now();
+        let feed = client
+            .feed(&runtime.origin)
+            .map_err(|error| BackendError::Msg(error.into()))?;
+        let view = crate::opds::feed_view(&feed, &runtime.origin);
+        Ok(OnlineProbe {
+            ok: true,
+            title: view.title,
+            page_count: view.entries.len() as u32,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            message: "OPDS 目录可读（opds-ok）".into(),
+        })
+    })
+    .await
+}
+
+/// 读取一页 OPDS 目录；只接受已配置 origin 内的链接。
+#[tauri::command]
+pub async fn opds_browse(
+    state: State<'_, Arc<AppState>>,
+    url: Option<String>,
+) -> Result<crate::opds::OpdsFeedView, String> {
+    crate::resilience::ensure_online_allowed()?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let runtime = opds_runtime(&st)?;
+        let client = crate::opds::client_for(&runtime)?;
+        let target = match url.as_deref().map(str::trim).filter(|raw| !raw.is_empty()) {
+            Some(raw) => opds_target(&runtime, raw)?,
+            None => runtime.origin.clone(),
+        };
+        let feed = client
+            .feed(&target)
+            .map_err(|error| BackendError::Msg(error.into()))?;
+        Ok(crate::opds::feed_view(&feed, &target))
+    })
+    .await
+}
+
+/// 封面代理：由后端带着同源凭据取回并缩放到 512px，前端只拿到 data URL。
+/// 这样封面 URL（可能含 Kavita API key）不会进入 `<img src>` 或日志。
+#[tauri::command]
+pub async fn opds_cover(state: State<'_, Arc<AppState>>, url: String) -> Result<PageImage, String> {
+    crate::resilience::ensure_online_allowed()?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let runtime = opds_runtime(&st)?;
+        let client = crate::opds::client_for(&runtime)?;
+        let target = opds_target(&runtime, &url)?;
+        let bytes = client
+            .fetch(&target, crate::opds::MAX_COVER_BYTES)
+            .map_err(|error| BackendError::Msg(error.into()))?;
+        let dimensions = image::ImageReader::new(std::io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(|_| {
+                BackendError::Msg("OPDS 封面不是有效图片（opds-unsupported-format）".into())
+            })?
+            .into_dimensions()
+            .map_err(|_| {
+                BackendError::Msg("OPDS 封面不是有效图片（opds-unsupported-format）".into())
+            })?;
+        let (width, height) = dimensions;
+        if width > 4096 || height > 4096 || u64::from(width) * u64::from(height) > 16_000_000 {
+            return Err(BackendError::Msg(
+                "OPDS 封面尺寸超过安全上限（opds-resource-too-large）".into(),
+            ));
+        }
+        let raw = crate::source::RawPage {
+            bytes,
+            ext: String::new(),
+        };
+        let rendered = pipeline::render_raw(&raw, Some(512), Some(512))?;
+        Ok(to_page_image(0, rendered))
+    })
+    .await
+}
+
+/// 下载一个 OPDS 章节到本地缓存，再复用现有扫描/阅读管线入库。
+#[tauri::command]
+pub async fn opds_download_entry(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    title: String,
+) -> Result<BookInfo, String> {
+    crate::resilience::ensure_online_allowed()?;
+    let st = state.inner().clone();
+    let st_work = st.clone();
+    let row = blocking(move || {
+        let runtime = opds_runtime(&st_work)?;
+        let client = crate::opds::client_for(&runtime)?;
+        let target = opds_target(&runtime, &url)?;
+        let root = crate::data_dir()
+            .map_err(BackendError::Msg)?
+            .join("downloads")
+            .join("opds");
+        let path = crate::opds::download_archive(&client, &target, &root, &title)?;
+        let conn = db::open(st_work.db_path())?;
+        db::init_schema(&conn)?;
+        scan_single_book_with_title(&conn, &path, Some(&title))
+    })
+    .await?;
+    invalidate_book_caches(&st, &row.id);
+    Ok(row)
 }
 
 #[cfg(test)]

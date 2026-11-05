@@ -75,6 +75,7 @@ import UpdatesPanel from "@/components/settings/UpdatesPanel";
 import PrivacyPanel from "@/components/settings/PrivacyPanel";
 import SupportPanel from "@/components/settings/SupportPanel";
 import OnlineFilterPanel from "@/components/settings/OnlineFilterPanel";
+import OpdsPanel from "@/components/settings/OpdsPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { recordBreadcrumb } from "@/features/resilience";
@@ -1147,6 +1148,9 @@ export default function SettingsPage() {
             </SettingsSection>
 
             <OnlineFilterPanel />
+
+            {/* 自建 OPDS 1.2 远程书库：地址与凭据只存本机，密码只写不读。 */}
+            <OpdsPanel />
 
             {/* 卡片 3：在线直读开关（URL 解析与 Telegram 频道统一走「浏览器」页唯一地址栏）。 */}
             <SettingsSection

@@ -99,6 +99,20 @@ export async function startOnlineFixture(port = 0) {
   }
   const telegramArchive = makeZip(documentEntries);
 
+  // OPDS 1.2 fixtures: a Komga-shaped catalog (Basic auth) and a
+  // Kavita-shaped catalog (API key in the path). Both expose one archive.
+  const opdsCoverOne = makePng(320, 480, [56, 168, 248]);
+  const opdsCoverTwo = makePng(320, 480, [248, 168, 56]);
+  const opdsArchive = makeZip([
+    ["001.png", imageBuffer("page-001.png")],
+    ["002.png", imageBuffer("page-002.png")],
+  ]);
+  const basicAuth = "Basic dXNlcjpwYXNz"; // user:pass
+  const atom = (body) => ({
+    "content-type": "application/atom+xml; charset=utf-8",
+    "cache-control": "no-store",
+  });
+
   function imageBuffer(name) {
     const cached = imageCache.get(name);
     if (cached) return cached;
@@ -357,6 +371,113 @@ export async function startOnlineFixture(port = 0) {
       return;
     }
 
+    // ---------- OPDS 1.2 remote library ----------
+    // Komga-like catalog: same-origin navigation, covers, acquisition, paging.
+    if (url.pathname.startsWith("/opds/")) {
+      if (request.headers.authorization !== basicAuth) {
+        response.writeHead(401, { "content-type": "text/plain" });
+        response.end("auth required");
+        return;
+      }
+    }
+    if (url.pathname === "/opds/v1.2/catalog") {
+      response.writeHead(200, atom());
+      response.end(`<feed xmlns="http://www.w3.org/2005/Atom">
+        <title>QA Komga Catalog</title>
+        <entry><title>QA Library One</title><link rel="subsection" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="/opds/v1.2/libraries/one"/></entry>
+        <entry><title>QA Library Two</title><link rel="subsection" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="/opds/v1.2/libraries/two"/></entry>
+      </feed>`);
+      return;
+    }
+    if (url.pathname === "/opds/v1.2/libraries/one" && !url.searchParams.has("page")) {
+      response.writeHead(200, atom());
+      response.end(`<feed xmlns="http://www.w3.org/2005/Atom">
+        <title>QA Library One</title>
+        <entry>
+          <title>QA Chapter 001</title>
+          <link rel="http://opds-spec.org/image/thumbnail" type="image/png" href="/opds/covers/one.png"/>
+          <link rel="http://opds-spec.org/acquisition" type="application/vnd.comicbook+zip" href="/opds/books/one.cbz"/>
+        </entry>
+        <entry>
+          <title>QA Chapter 002</title>
+          <link rel="http://opds-spec.org/image" type="image/png" href="/opds/covers/two.png"/>
+          <link rel="http://opds-spec.org/acquisition" type="application/vnd.comicbook+zip" href="/opds/books/two.cbz"/>
+        </entry>
+        <link rel="next" href="/opds/v1.2/libraries/one?page=2"/>
+      </feed>`);
+      return;
+    }
+    if (url.pathname === "/opds/v1.2/libraries/one" && url.searchParams.get("page") === "2") {
+      response.writeHead(200, atom());
+      response.end(`<feed xmlns="http://www.w3.org/2005/Atom">
+        <title>QA Library One · Page 2</title>
+        <entry>
+          <title>QA Chapter 003</title>
+          <link rel="http://opds-spec.org/acquisition" type="application/vnd.comicbook+zip" href="/opds/books/one.cbz"/>
+        </entry>
+        <link rel="prev" href="/opds/v1.2/libraries/one"/>
+      </feed>`);
+      return;
+    }
+    if (url.pathname === "/opds/v1.2/libraries/two") {
+      response.writeHead(200, atom());
+      response.end(`<feed xmlns="http://www.w3.org/2005/Atom"><title>QA Library Two</title><entry><title>QA Empty Series</title></entry></feed>`);
+      return;
+    }
+    if (url.pathname === "/opds/covers/one.png") {
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end(opdsCoverOne);
+      return;
+    }
+    if (url.pathname === "/opds/covers/two.png") {
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end(opdsCoverTwo);
+      return;
+    }
+    if (url.pathname === "/opds/books/one.cbz" || url.pathname === "/opds/books/two.cbz") {
+      response.writeHead(200, {
+        "content-type": "application/vnd.comicbook+zip",
+        "content-length": String(opdsArchive.length),
+      });
+      response.end(opdsArchive);
+      return;
+    }
+
+    // Kavita-like catalog: API key in the path, no Basic auth header.
+    if (url.pathname === "/api/opds/qa-key/catalog") {
+      response.writeHead(200, atom());
+      response.end(`<feed xmlns="http://www.w3.org/2005/Atom">
+        <title>QA Kavita Catalog</title>
+        <entry><title>QA Kavita Library</title><link rel="subsection" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="/api/opds/qa-key/libraries/one"/></entry>
+      </feed>`);
+      return;
+    }
+    if (url.pathname === "/api/opds/qa-key/libraries/one") {
+      response.writeHead(200, atom());
+      response.end(`<feed xmlns="http://www.w3.org/2005/Atom">
+        <title>QA Kavita Library</title>
+        <entry>
+          <title>QA Kavita Chapter</title>
+          <link rel="http://opds-spec.org/image" type="image/png" href="/api/opds/qa-key/covers/one.png"/>
+          <link rel="http://opds-spec.org/acquisition" type="application/zip" href="/api/opds/qa-key/books/one.cbz"/>
+        </entry>
+      </feed>`);
+      return;
+    }
+    if (url.pathname === "/api/opds/qa-key/covers/one.png") {
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end(opdsCoverOne);
+      return;
+    }
+    if (url.pathname === "/api/opds/qa-key/books/one.cbz") {
+      response.writeHead(200, {
+        "content-type": "application/zip",
+        "content-length": String(opdsArchive.length),
+      });
+      response.end(opdsArchive);
+      return;
+    }
+
     response.writeHead(404, { "content-type": "text/plain" });
     response.end("not found");
   });
@@ -369,6 +490,12 @@ export async function startOnlineFixture(port = 0) {
       manifestPath: "/protected/manifest.json",
       stats: protectedStats,
       reset: resetProtected,
+    },
+    opds: {
+      komgaRoot: "/opds/v1.2/catalog",
+      kavitaRoot: "/api/opds/qa-key/catalog",
+      username: "user",
+      password: "pass",
     },
     close: () => new Promise((resolve) => server.close(resolve)),
   };

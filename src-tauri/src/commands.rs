@@ -967,7 +967,10 @@ pub async fn list_entries(
 
 /// 日志里的书目标识：只保留稳定 ID 前 8 位，绝不写书名/路径。
 fn short_book_ref(book_id: &str) -> &str {
-    let end = book_id.len().min(8);
+    let end = book_id
+        .char_indices()
+        .nth(8)
+        .map_or(book_id.len(), |(i, _)| i);
     &book_id[..end]
 }
 
@@ -3371,6 +3374,12 @@ pub async fn set_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_book_reference_handles_unicode_boundaries() {
+        assert_eq!(short_book_ref("漫画测试漫画测试更多"), "漫画测试漫画测试");
+        assert_eq!(short_book_ref("abc"), "abc");
+    }
 
     /// 回归守卫:hydrate_settings 会回读 trans_api_key,
     /// 持久化清单必须包含它(阶段二曾漏掉该键导致 key 永远存不下来)。

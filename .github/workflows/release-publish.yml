@@ -64,9 +64,10 @@ jobs:
       - name: Resolve release identity
         id: identity
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
           if printf '%s' "$TAG" | grep -q "rehearsal"; then
             echo "演练标签永远不得发布：$TAG" >&2
             exit 1

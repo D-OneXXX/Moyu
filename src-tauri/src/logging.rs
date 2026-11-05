@@ -41,8 +41,14 @@ pub fn init(dir: PathBuf) {
 pub fn log_error(scope: &str, message: &str) {
     let now = chrono::Local::now();
     let at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
-    let message: String = message.chars().take(MAX_MESSAGE_CHARS).collect();
-    let scope: String = scope.chars().take(80).collect();
+    let message: String = crate::diagnostics::sanitize_text(message, true)
+        .chars()
+        .take(MAX_MESSAGE_CHARS)
+        .collect();
+    let scope: String = crate::diagnostics::sanitize_text(scope, true)
+        .chars()
+        .take(80)
+        .collect();
 
     let path_guard = LOG_FILE.lock();
     if let Some(path) = path_guard.as_ref() {
@@ -96,6 +102,22 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("mr-log-{}-{tag}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn log_redacts_sensitive_path_before_storage() {
+        let _guard = TEST_LOCK.lock();
+        let dir = unique_dir("redaction");
+        init(dir.clone());
+        log_error("browser_import", r"failed C:\Users\Alice\Comics\Secret.cbz");
+        let content = std::fs::read_to_string(dir.join("app.log")).unwrap();
+        assert!(
+            !content.contains("Alice") && !content.contains("Secret"),
+            "{content}"
+        );
+        let entry = recent_logs(1).pop().unwrap();
+        assert!(!entry.message.contains("Alice") && !entry.message.contains("Secret"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

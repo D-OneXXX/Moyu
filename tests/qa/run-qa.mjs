@@ -100,7 +100,7 @@ function buildCheck(report) {
       id: "qa:version-gate",
       suite: "static",
       layer: "build",
-      title: "版本门禁失败，QA 运行中止",
+      title: "版本门禁失败",
       severity: "P0",
       details: error.stdout || error.message,
       location: "scripts/version-check.mjs",

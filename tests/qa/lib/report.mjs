@@ -189,7 +189,8 @@ export function writeMarkdownReport(report, file, kb = null) {
 export function loadKnowledgeBase(file) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
     return {
       schema: 1,
       updatedAt: null,

@@ -26,7 +26,7 @@
 
 use std::fmt;
 use std::net::Ipv4Addr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use thiserror::Error;
 
@@ -68,6 +68,8 @@ impl AuthError {
 pub(crate) struct PairingService {
     pairing: PairingStore,
     session: SessionStore,
+    // Keep the open-mode allocation limit strict under concurrent claims.
+    open_claim_gate: Mutex<()>,
     // Progress writes take a shared guard; revoke/stop take an exclusive guard.
     // Revalidate after acquiring it so a request waiting on body/gates cannot
     // commit after revocation returns. This lock is never acquired while
@@ -80,6 +82,7 @@ impl PairingService {
         Self {
             pairing,
             session,
+            open_claim_gate: Mutex::new(()),
             progress_barrier: RwLock::new(()),
         }
     }
@@ -108,14 +111,23 @@ impl PairingService {
         Ok(self.pairing.status(claim_id, claim_secret)?)
     }
 
-    /// Reserve a session slot for a pending claim and mark the claim approved
-    /// in one critical section. No token is generated here; a failed approval
-    /// never leaves a reservation behind.
-    ///
-    /// The claim state is checked after the device name is read and before a
-    /// slot is probed, so an unapprovable claim always reports its own state
-    /// (a second approval is `pairing-claimed`) even when the device list is
-    /// already at the cap and would otherwise answer `device-limit`.
+    pub(crate) fn claim_open(
+        &self,
+        device_name: &str,
+        claim_nonce: &str,
+        source_ip: Ipv4Addr,
+    ) -> Result<ClaimIssued, AuthError> {
+        let _guard = self
+            .open_claim_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Ok(self
+            .pairing
+            .claim_open(device_name, claim_nonce, source_ip)?)
+    }
+
+    /// Reserve a session slot and approve the pending claim atomically.
+    /// No token is generated here; a failed approval leaves no reservation.
     pub(crate) fn approve(&self, claim_id: &str) -> Result<(), AuthError> {
         let now = self.pairing.clock().now();
         // Frozen lock order: pairing state first, session state second.

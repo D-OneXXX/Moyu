@@ -2415,3 +2415,113 @@ async fn d4_headless_browser_uses_real_tls_and_database() {
         "browser page navigation must commit actual SQLite progress"
     );
 }
+
+#[tokio::test]
+#[ignore = "explicit isolated headless browser integration"]
+async fn simple_lan_headless_browser_pairs_over_real_http() {
+    use image::ImageEncoder as _;
+    use std::process::Stdio;
+
+    let ca = TestCa::new("plain-browser-integration");
+    let book_dir = ca.wrapper.join("synthetic-book");
+    std::fs::create_dir_all(&book_dir).unwrap();
+    let image = image::RgbImage::from_pixel(64, 96, image::Rgb([180, 210, 230]));
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(image.as_raw(), 64, 96, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    let narrow = image::RgbImage::from_pixel(1, 10_000, image::Rgb([100, 140, 220]));
+    let mut narrow_png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut narrow_png)
+        .write_image(narrow.as_raw(), 1, 10_000, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    std::fs::write(book_dir.join("1.png"), &narrow_png).unwrap();
+    std::fs::write(book_dir.join("2.png"), &png).unwrap();
+    let id = "d".repeat(64);
+    let mut state = AppState::new();
+    state.render = RenderCache::new(ca.wrapper.join("render"));
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    db::init_schema(&conn).unwrap();
+    db::upsert_book(&conn, &id, book_dir.to_str().unwrap(), "Synthetic Book", 2).unwrap();
+    state.db.set(conn);
+    let state = Arc::new(state);
+    let runtime = WebAccessRuntime::for_test_with_data(
+        ca.root.clone(),
+        Arc::new(AppData::new(Arc::clone(&state))),
+    )
+    .with_progress(Arc::new(AppProgress::new(Arc::clone(&state))));
+    runtime.start_plain(Ipv4Addr::LOCALHOST, 0).await.unwrap();
+    let addr: std::net::SocketAddr = runtime
+        .status()
+        .await
+        .bind_address
+        .unwrap()
+        .parse()
+        .unwrap();
+    // Before approval, the data plane is unavailable and cross-origin writes fail.
+    async fn raw_http(addr: std::net::SocketAddr, request: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+    let no_session = raw_http(
+        addr,
+        format!("GET /api/books HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert!(no_session.starts_with("HTTP/1.1 401"), "{no_session}");
+    let cross_origin = raw_http(addr, format!("POST /api/pair/claim HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://evil.example\r\nX-Moyu-Request: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")).await;
+    assert!(cross_origin.starts_with("HTTP/1.1 403"), "{cross_origin}");
+    let window = runtime.pairing_state().await.window.unwrap();
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
+    let mut browser = tokio::process::Command::new("node")
+        .arg(script)
+        .env("MR_D4_TEST_URL", &window.url)
+        .env("MR_D4_TEST_PLAIN", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("start isolated browser harness");
+    eprintln!(
+        "LAN test PID {}; Node PID {}; HTTP loopback port {}",
+        std::process::id(),
+        browser.id().unwrap_or_default(),
+        addr.port()
+    );
+    let mut approved = false;
+    for _ in 0..200 {
+        let claims = runtime.pairing_state().await.claims;
+        if let Some(claim) = claims.first() {
+            runtime.approve(&claim.claim_id).await.unwrap();
+            approved = true;
+            break;
+        }
+        if browser.try_wait().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let result = tokio::time::timeout(Duration::from_secs(40), browser.wait_with_output()).await;
+    let row = progress_row(state.as_ref(), &id);
+    runtime.stop(StopReason::Stopped).await;
+    let result = result
+        .expect("headless browser timed out")
+        .expect("browser harness exited");
+    eprintln!("{}", String::from_utf8_lossy(&result.stdout));
+    assert!(approved, "test pairing request was never approved");
+    assert!(
+        result.status.success(),
+        "headless browser integration failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        row,
+        (1, 1),
+        "browser page navigation must commit actual SQLite progress"
+    );
+}

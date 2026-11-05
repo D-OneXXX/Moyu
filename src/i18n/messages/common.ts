@@ -157,10 +157,10 @@ const zhCN = {
   "error.webAccessInvalidState": "当前 Web Access 状态不允许该操作。",
   "error.webAccessInvalidIp": "只能选择当前设备的私有局域网 IPv4 地址。",
   "error.webAccessNoLan": "未找到可用的私有局域网 IPv4 地址。",
-  "error.webAccessInvalidBind": "TLS 绑定地址无效。",
+  "error.webAccessInvalidBind": "监听地址无效。",
   "error.webAccessTlsConfig": "TLS 证书配置失败。",
-  "error.webAccessIo": "TLS 监听启动失败（端口可能被占用）。",
-  "error.webAccessServerJoin": "TLS 监听停止失败。",
+  "error.webAccessIo": "监听启动失败（端口可能被占用）。",
+  "error.webAccessServerJoin": "监听停止失败。",
   "error.webAccessCertificateExpired": "证书已过期，Web Access 已停止。",
   "error.webAccessRootChangePending":
     "CA 根已轮换，需要重新配对并分发新根证书。",
@@ -340,10 +340,10 @@ const zhTW: CommonMessages = {
   "error.webAccessInvalidIp":
     "只能選擇目前裝置的私有區域網路 IPv4 位址。",
   "error.webAccessNoLan": "找不到可用的私有區域網路 IPv4 位址。",
-  "error.webAccessInvalidBind": "TLS 綁定位址無效。",
+  "error.webAccessInvalidBind": "監聽位址無效。",
   "error.webAccessTlsConfig": "TLS 憑證設定失敗。",
-  "error.webAccessIo": "TLS 監聽啟動失敗（連接埠可能被占用）。",
-  "error.webAccessServerJoin": "TLS 監聽停止失敗。",
+  "error.webAccessIo": "監聽啟動失敗（連接埠可能被占用）。",
+  "error.webAccessServerJoin": "監聽停止失敗。",
   "error.webAccessCertificateExpired": "憑證已過期，Web Access 已停止。",
   "error.webAccessRootChangePending":
     "CA 根已輪換，需要重新配對並分發新根憑證。",
@@ -529,11 +529,11 @@ const en: CommonMessages = {
   "error.webAccessInvalidIp":
     "Select a private LAN IPv4 address of this device.",
   "error.webAccessNoLan": "No private LAN IPv4 address is available.",
-  "error.webAccessInvalidBind": "The TLS bind address is invalid.",
+  "error.webAccessInvalidBind": "The listen address is invalid.",
   "error.webAccessTlsConfig": "TLS certificate configuration failed.",
   "error.webAccessIo":
-    "The TLS listener could not start (the port may be in use).",
-  "error.webAccessServerJoin": "The TLS listener could not stop cleanly.",
+    "The listener could not start (the port may be in use).",
+  "error.webAccessServerJoin": "The listener could not stop cleanly.",
   "error.webAccessCertificateExpired":
     "The certificate has expired; Web Access has stopped.",
   "error.webAccessRootChangePending":
@@ -736,13 +736,13 @@ const es: CommonMessages = {
   "error.webAccessNoLan":
     "No hay ninguna dirección IPv4 privada de red local disponible.",
   "error.webAccessInvalidBind":
-    "La dirección de enlace TLS no es válida.",
+    "La dirección de escucha no es válida.",
   "error.webAccessTlsConfig":
     "La configuración del certificado TLS ha fallado.",
   "error.webAccessIo":
-    "El listener TLS no pudo iniciarse (el puerto puede estar en uso).",
+    "No se pudo iniciar la escucha (el puerto puede estar en uso).",
   "error.webAccessServerJoin":
-    "El listener TLS no pudo detenerse correctamente.",
+    "No se pudo detener la escucha correctamente.",
   "error.webAccessCertificateExpired":
     "El certificado ha caducado; Web Access se ha detenido.",
   "error.webAccessRootChangePending":
@@ -947,12 +947,12 @@ const ja: CommonMessages = {
     "この端末のプライベート IPv4 アドレスを選択してください。",
   "error.webAccessNoLan":
     "利用可能なプライベート IPv4 アドレスが見つかりません。",
-  "error.webAccessInvalidBind": "TLS のバインドアドレスが無効です。",
+  "error.webAccessInvalidBind": "待ち受けアドレスが無効です。",
   "error.webAccessTlsConfig": "TLS 証明書の設定に失敗しました。",
   "error.webAccessIo":
-    "TLS リスナーを開始できませんでした（ポートが使用中の可能性があります）。",
+    "リスナーを開始できませんでした（ポートが使用中の可能性があります）。",
   "error.webAccessServerJoin":
-    "TLS リスナーを正常に停止できませんでした。",
+    "リスナーを正常に停止できませんでした。",
   "error.webAccessCertificateExpired":
     "証明書の有効期限が切れたため、Web Access を停止しました。",
   "error.webAccessRootChangePending":
@@ -1154,12 +1154,12 @@ const ko: CommonMessages = {
     "이 기기의 사설 LAN IPv4 주소를 선택하세요.",
   "error.webAccessNoLan":
     "사용 가능한 사설 LAN IPv4 주소가 없습니다.",
-  "error.webAccessInvalidBind": "TLS 바인드 주소가 올바르지 않습니다.",
+  "error.webAccessInvalidBind": "수신 주소가 올바르지 않습니다.",
   "error.webAccessTlsConfig": "TLS 인증서 설정에 실패했습니다.",
   "error.webAccessIo":
-    "TLS 리스너를 시작하지 못했습니다(포트가 사용 중일 수 있습니다).",
+    "수신을 시작하지 못했습니다(포트가 사용 중일 수 있습니다).",
   "error.webAccessServerJoin":
-    "TLS 리스너를 정상적으로 중지하지 못했습니다.",
+    "수신을 정상적으로 중지하지 못했습니다.",
   "error.webAccessCertificateExpired":
     "인증서가 만료되어 Web Access가 중지되었습니다.",
   "error.webAccessRootChangePending":

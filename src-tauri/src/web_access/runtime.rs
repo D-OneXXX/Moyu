@@ -30,6 +30,7 @@ use super::clock::SystemClock;
 use super::data::WebDataAccess;
 use super::error::WebAccessError;
 use super::pairing::PairingStore;
+use super::plain::{start_plain_server, PlainServerHandle};
 use super::progress_write::WebProgressWrite;
 use super::router::PairingHttp;
 use super::session::SessionStore;
@@ -93,6 +94,8 @@ pub(crate) enum RuntimeError {
     NotEnabled,
     #[error("web access state does not allow this operation")]
     InvalidState,
+    #[error("web access is unavailable in safe mode")]
+    SafeMode,
     #[error("the selected address is not a current private LAN IPv4")]
     InvalidIp,
     #[error("no private LAN IPv4 address is available")]
@@ -111,6 +114,7 @@ impl RuntimeError {
             Self::AlreadyEnabled => "web-access-already-enabled",
             Self::NotEnabled => "web-access-not-enabled",
             Self::InvalidState => "web-access-invalid-state",
+            Self::SafeMode => "web-access-safe-mode",
             Self::InvalidIp => "web-access-invalid-ip",
             Self::NoLanAddress => "web-access-no-lan-address",
             Self::Ca(error) => error.code(),
@@ -140,6 +144,7 @@ impl From<LanAddress> for LanAddressView {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WebAccessStatusView {
     pub phase: String,
+    pub transport: Option<String>,
     pub bind_address: Option<String>,
     pub bind_ip: Option<String>,
     pub port: Option<u16>,
@@ -298,10 +303,32 @@ pub(crate) trait WebAccessEventSink: Send + Sync {
     fn emit_pairing(&self, event: &PairingEventView);
 }
 
+enum Listener {
+    Tls(TlsServerHandle),
+    Plain(PlainServerHandle),
+}
+impl Listener {
+    fn is_plain(&self) -> bool {
+        matches!(self, Self::Plain(_))
+    }
+    fn certificate_snapshot(&self) -> Option<super::tls_renewal::TlsCertificateSnapshot> {
+        match self {
+            Self::Tls(listener) => Some(listener.certificate_snapshot()),
+            Self::Plain(_) => None,
+        }
+    }
+    async fn shutdown(self) -> Result<(), WebAccessError> {
+        match self {
+            Self::Tls(listener) => listener.shutdown().await,
+            Self::Plain(listener) => listener.shutdown().await,
+        }
+    }
+}
+
 struct RunningState {
     phase: Phase,
     service: Option<Arc<PairingService>>,
-    listener: Option<TlsServerHandle>,
+    listener: Option<Listener>,
     bind_addr: Option<SocketAddr>,
     pairing_id: Option<String>,
     last_error_code: Option<&'static str>,
@@ -399,6 +426,7 @@ impl WebAccessRuntime {
         let (
             phase,
             bind_addr,
+            transport,
             cert,
             device_count,
             pending_count,
@@ -410,7 +438,7 @@ impl WebAccessRuntime {
             let cert = state
                 .listener
                 .as_ref()
-                .map(TlsServerHandle::certificate_snapshot);
+                .and_then(Listener::certificate_snapshot);
             let (device_count, pending_count) = state.service.as_ref().map_or((0, 0), |service| {
                 (
                     service.session_slots().0 as u32,
@@ -419,13 +447,23 @@ impl WebAccessRuntime {
             });
             // The monotonic store is authoritative; wall-clock display fields
             // may drift if the system time is changed.
-            let pairing_active = match (state.service.as_ref(), state.pairing_id.as_ref()) {
-                (Some(service), Some(pairing_id)) => service.window_expiry(pairing_id).is_some(),
-                _ => false,
+            let pairing_active = if state.listener.as_ref().is_some_and(Listener::is_plain) {
+                state.phase == Phase::Enabled
+            } else {
+                match (state.service.as_ref(), state.pairing_id.as_ref()) {
+                    (Some(service), Some(pairing_id)) => {
+                        service.window_expiry(pairing_id).is_some()
+                    }
+                    _ => false,
+                }
             };
             (
                 state.phase,
                 state.bind_addr,
+                state
+                    .listener
+                    .as_ref()
+                    .map(|listener| if listener.is_plain() { "http" } else { "https" }),
                 cert,
                 device_count,
                 pending_count,
@@ -465,6 +503,7 @@ impl WebAccessRuntime {
 
         WebAccessStatusView {
             phase: display_phase.to_owned(),
+            transport: transport.map(str::to_owned),
             bind_address: bind_addr.map(|addr| addr.to_string()),
             bind_ip,
             port,
@@ -511,6 +550,10 @@ impl WebAccessRuntime {
         port: u16,
     ) -> Result<WebAccessStatusView, RuntimeError> {
         let _operation = self.operation.lock().await;
+        // Check after acquiring the same operation lock used by safe-mode stop.
+        if !self.allow_loopback && crate::resilience::ensure_online_allowed().is_err() {
+            return Err(RuntimeError::SafeMode);
+        }
         {
             let state = self.state.lock().await;
             match state.phase {
@@ -595,7 +638,7 @@ impl WebAccessRuntime {
                 let mut state = self.state.lock().await;
                 state.phase = Phase::Enabled;
                 state.service = Some(service);
-                state.listener = Some(listener);
+                state.listener = Some(Listener::Tls(listener));
                 state.bind_addr = Some(local_addr);
                 state.last_error_code = None;
                 drop(state);
@@ -612,6 +655,101 @@ impl WebAccessRuntime {
                     state.listener = None;
                     state.bind_addr = None;
                 }
+                self.emit_state().await;
+                Err(RuntimeError::Tls(error))
+            }
+        }
+    }
+
+    /// Start the explicitly requested, unencrypted private-LAN mode.
+    pub(crate) async fn start_plain(
+        &self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<WebAccessStatusView, RuntimeError> {
+        let _operation = self.operation.lock().await;
+        // Check after acquiring the same operation lock used by safe-mode stop.
+        if !self.allow_loopback && crate::resilience::ensure_online_allowed().is_err() {
+            return Err(RuntimeError::SafeMode);
+        }
+        {
+            let state = self.state.lock().await;
+            if !matches!(state.phase, Phase::Disabled | Phase::Error) {
+                return Err(RuntimeError::AlreadyEnabled);
+            }
+        }
+        if !self.allow_loopback {
+            if !is_private_lan_ipv4(ip) {
+                return Err(RuntimeError::InvalidIp);
+            }
+            let current = local_lan_addresses().map_err(|_| RuntimeError::NoLanAddress)?;
+            if !current.iter().any(|address| address.ip == ip) {
+                return Err(RuntimeError::InvalidIp);
+            }
+        } else if !ip.is_loopback() && !is_private_lan_ipv4(ip) {
+            return Err(RuntimeError::InvalidIp);
+        }
+        {
+            let mut state = self.state.lock().await;
+            state.phase = Phase::Starting;
+            state.last_error_code = None;
+            state.stop_reason = None;
+            state.bind_addr = None;
+            state.pairing_id = None;
+        }
+        self.emit_state().await;
+        let service = Arc::new(PairingService::new(
+            PairingStore::new(Arc::new(SystemClock)),
+            SessionStore::new(Arc::new(SystemClock)),
+        ));
+        let factory_data = self.data.clone();
+        let factory_progress = self.progress.clone();
+        let factory_service = Arc::clone(&service);
+        let factory: HandlerFactory = Arc::new(move |addr| {
+            let mut router = match factory_data.as_ref() {
+                Some(provider) => PairingHttp::with_data_open(
+                    Arc::clone(&factory_service),
+                    addr,
+                    Arc::clone(provider),
+                )?,
+                None => PairingHttp::new_with_scheme(Arc::clone(&factory_service), addr, true)?,
+            };
+            if let Some(progress) = factory_progress.as_ref() {
+                router.with_progress(Arc::clone(progress));
+            }
+            let router = Arc::new(router);
+            let handler: RequestHandler = Arc::new(move |request, peer| {
+                let router = Arc::clone(&router);
+                let source_ip = match peer.ip() {
+                    std::net::IpAddr::V4(ip) => ip,
+                    std::net::IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+                };
+                Box::pin(
+                    async move { Ok::<_, Infallible>(router.handle(request, source_ip).await) },
+                )
+            });
+            Ok(handler)
+        });
+        match start_plain_server(SocketAddr::from((ip, port)), factory, self.allow_loopback).await {
+            Ok(listener) => {
+                let addr = listener.local_addr();
+                let bridge = self.spawn_open_bridge(Arc::clone(&service));
+                let mut state = self.state.lock().await;
+                state.phase = Phase::Enabled;
+                state.service = Some(service);
+                state.listener = Some(Listener::Plain(listener));
+                state.bind_addr = Some(addr);
+                state.bridge = bridge;
+                state.last_error_code = None;
+                drop(state);
+                self.emit_state().await;
+                Ok(self.status().await)
+            }
+            Err(error) => {
+                let mut state = self.state.lock().await;
+                state.phase = Phase::Error;
+                state.last_error_code = Some(error.code());
+                drop(state);
                 self.emit_state().await;
                 Err(RuntimeError::Tls(error))
             }
@@ -687,6 +825,13 @@ impl WebAccessRuntime {
                 return Err(RuntimeError::NotEnabled);
             }
             ensure_listener_serving(state.listener.as_ref())?;
+            if state.listener.as_ref().is_some_and(Listener::is_plain) {
+                let addr = state.bind_addr.ok_or(RuntimeError::InvalidState)?;
+                return Ok(PairingWindowView {
+                    url: format!("http://{addr}/"),
+                    expires_at_unix_ms: 0,
+                });
+            }
             (
                 state.service.clone().ok_or(RuntimeError::NotEnabled)?,
                 state.bind_addr.ok_or(RuntimeError::InvalidState)?,
@@ -725,6 +870,18 @@ impl WebAccessRuntime {
                 state.pairing_id.clone(),
             )
         };
+        if let (Some(service), Some(addr)) = (&service, bind_addr) {
+            let state = self.state.lock().await;
+            if state.listener.as_ref().is_some_and(Listener::is_plain) {
+                return PairingStateView {
+                    window: Some(PairingWindowView {
+                        url: format!("http://{addr}/"),
+                        expires_at_unix_ms: 0,
+                    }),
+                    claims: pending_claim_views(service),
+                };
+            }
+        }
         let (Some(service), Some(bind_addr), Some(pairing_id)) = (service, bind_addr, pairing_id)
         else {
             return PairingStateView {
@@ -760,8 +917,17 @@ impl WebAccessRuntime {
         // Keep the bridge until approval succeeds: an error must not detach a
         // task that stop/new-window cannot abort.
         service.approve(claim_id)?;
-        self.abort_pairing_bridge().await;
-        self.clear_pairing_window().await;
+        let is_plain = self
+            .state
+            .lock()
+            .await
+            .listener
+            .as_ref()
+            .is_some_and(Listener::is_plain);
+        if !is_plain {
+            self.abort_pairing_bridge().await;
+            self.clear_pairing_window().await;
+        }
         self.emit_pairing(PairingEventView {
             kind: "claim-approved".to_owned(),
             claim_id: Some(claim_id.to_owned()),
@@ -792,8 +958,17 @@ impl WebAccessRuntime {
         let _operation = self.operation.lock().await;
         let service = self.enabled_service().await?;
         service.cancel_window();
-        self.abort_pairing_bridge().await;
-        self.clear_pairing_window().await;
+        let is_plain = self
+            .state
+            .lock()
+            .await
+            .listener
+            .as_ref()
+            .is_some_and(Listener::is_plain);
+        if !is_plain {
+            self.abort_pairing_bridge().await;
+            self.clear_pairing_window().await;
+        }
         self.emit_pairing(PairingEventView::window("window-cancelled", 0));
         Ok(self.status().await)
     }
@@ -893,6 +1068,43 @@ impl WebAccessRuntime {
         }
     }
 
+    fn spawn_open_bridge(&self, service: Arc<PairingService>) -> Option<JoinHandle<()>> {
+        let events = self.events.clone()?;
+        Some(tokio::spawn(async move {
+            let mut known: HashSet<String> = HashSet::new();
+            let mut ticker = tokio::time::interval(PAIRING_BRIDGE_TICK);
+            loop {
+                ticker.tick().await;
+                let pending = pending_claim_views(&service);
+                let current = pending
+                    .iter()
+                    .map(|claim| claim.claim_id.clone())
+                    .collect::<HashSet<_>>();
+                for claim in pending
+                    .iter()
+                    .filter(|claim| !known.contains(&claim.claim_id))
+                {
+                    events.emit_pairing(&PairingEventView::claim(
+                        "claim-created",
+                        claim,
+                        pending.len(),
+                    ));
+                }
+                for removed in known.difference(&current) {
+                    events.emit_pairing(&PairingEventView {
+                        kind: "claim-removed".into(),
+                        claim_id: Some(removed.clone()),
+                        device_name: None,
+                        source_ip: None,
+                        created_at_unix_ms: None,
+                        pending_count: pending.len() as u32,
+                    });
+                }
+                known = current;
+            }
+        }))
+    }
+
     fn spawn_pairing_bridge(
         &self,
         service: Arc<PairingService>,
@@ -954,15 +1166,16 @@ impl std::fmt::Debug for WebAccessRuntime {
 /// Reject new pairing/approval work once the listener can no longer complete
 /// a handshake. The runtime phase may still read `enabled` until the user
 /// stops it; this guard prevents a dead listener from issuing new QR codes.
-fn ensure_listener_serving(listener: Option<&TlsServerHandle>) -> Result<(), RuntimeError> {
-    let Some(listener) = listener else {
-        return Err(RuntimeError::NotEnabled);
-    };
-    match listener.certificate_snapshot().state {
-        TlsCertificateState::Expired | TlsCertificateState::Stopped => {
-            Err(RuntimeError::Tls(WebAccessError::CertificateExpired))
-        }
-        _ => Ok(()),
+fn ensure_listener_serving(listener: Option<&Listener>) -> Result<(), RuntimeError> {
+    match listener {
+        Some(Listener::Tls(listener)) => match listener.certificate_snapshot().state {
+            TlsCertificateState::Expired | TlsCertificateState::Stopped => {
+                Err(RuntimeError::Tls(WebAccessError::CertificateExpired))
+            }
+            _ => Ok(()),
+        },
+        Some(Listener::Plain(listener)) if listener.is_running() => Ok(()),
+        _ => Err(RuntimeError::NotEnabled),
     }
 }
 
@@ -1041,6 +1254,78 @@ mod tests {
     }
 
     const NONCE: &str = "AAAAAAAAAAAAAAAAAAAAAA";
+
+    #[tokio::test]
+    async fn plain_runtime_emits_requests_supports_multiple_devices_and_revokes_on_stop() {
+        #[derive(Default)]
+        struct Sink(std::sync::Mutex<Vec<String>>);
+        impl WebAccessEventSink for Sink {
+            fn emit_state(&self, _: &WebAccessStatusView) {}
+            fn emit_pairing(&self, event: &PairingEventView) {
+                self.0.lock().unwrap().push(event.kind.clone());
+            }
+        }
+        let wrapper = temp_path("plain-runtime-events");
+        let sink = Arc::new(Sink::default());
+        let runtime =
+            WebAccessRuntime::with_events(wrapper.join("ca"), Some(sink.clone()), true, None);
+        let started = runtime.start_plain(Ipv4Addr::LOCALHOST, 0).await.unwrap();
+        assert_eq!(started.transport.as_deref(), Some("http"));
+        assert!(started.pairing_active);
+        assert!(!started.ca_initialized);
+        assert!(runtime
+            .pairing_state()
+            .await
+            .window
+            .unwrap()
+            .url
+            .starts_with("http://127.0.0.1:"));
+        assert!(runtime
+            .pairing_start()
+            .await
+            .unwrap()
+            .url
+            .starts_with("http://127.0.0.1:"));
+        let service = runtime.service_for_test().await.unwrap();
+        let first = service
+            .claim_open("Phone", NONCE, Ipv4Addr::new(192, 168, 1, 20))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !sink
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|kind| kind == "claim-created")
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        runtime.approve(&first.claim_id).await.unwrap();
+        let session = service
+            .consume(&first.claim_id, first.claim_secret.as_str())
+            .unwrap();
+        assert!(service.authenticate(session.token.as_str()).is_some());
+        let second = service
+            .claim_open("Tablet", NONCE, Ipv4Addr::new(192, 168, 1, 21))
+            .unwrap();
+        assert_eq!(runtime.pairing_state().await.claims.len(), 1);
+        runtime.approve(&second.claim_id).await.unwrap();
+        let second_session = service
+            .consume(&second.claim_id, second.claim_secret.as_str())
+            .unwrap();
+        assert!(service
+            .authenticate(second_session.token.as_str())
+            .is_some());
+        assert_eq!(runtime.stop(StopReason::Stopped).await.phase, "disabled");
+        assert!(service.authenticate(session.token.as_str()).is_none());
+        assert!(service
+            .authenticate(second_session.token.as_str())
+            .is_none());
+        let _ = std::fs::remove_dir_all(wrapper);
+    }
 
     #[tokio::test]
     async fn runtime_defaults_to_disabled_and_reports_ca_state() {

@@ -152,6 +152,7 @@ pub(crate) struct PairingHttp {
     guard: RequestGuard,
     service: Arc<PairingService>,
     origin: String,
+    open_pairing: bool,
     poll_window: Duration,
     poll_interval: Duration,
     limiter: RateLimiter,
@@ -176,13 +177,26 @@ impl PairingHttp {
         service: Arc<PairingService>,
         local_addr: SocketAddr,
     ) -> WebAccessResult<Self> {
-        let authority = AllowedAuthority::from_socket_addr(local_addr)
-            .ok_or(WebAccessError::InvalidBindAddress)?;
+        Self::new_with_scheme(service, local_addr, false)
+    }
+
+    pub(crate) fn new_with_scheme(
+        service: Arc<PairingService>,
+        local_addr: SocketAddr,
+        open_pairing: bool,
+    ) -> WebAccessResult<Self> {
+        let authority = if open_pairing {
+            AllowedAuthority::from_socket_addr_scheme(local_addr, "http")
+        } else {
+            AllowedAuthority::from_socket_addr(local_addr)
+        }
+        .ok_or(WebAccessError::InvalidBindAddress)?;
         let origin = authority.origin().to_owned();
         Ok(Self {
             guard: RequestGuard::for_authority(authority),
             service,
             origin,
+            open_pairing,
             poll_window: DEFAULT_POLL_WINDOW,
             poll_interval: DEFAULT_POLL_INTERVAL,
             limiter: RateLimiter::new(RATE_WINDOW),
@@ -211,6 +225,17 @@ impl PairingHttp {
     ) -> WebAccessResult<Self> {
         let data_http = Arc::new(DataHttp::new(Arc::clone(&service), data));
         let mut router = Self::new(service, local_addr)?;
+        router.data = Some(data_http);
+        Ok(router)
+    }
+
+    pub(crate) fn with_data_open(
+        service: Arc<PairingService>,
+        local_addr: SocketAddr,
+        data: Arc<dyn WebDataAccess>,
+    ) -> WebAccessResult<Self> {
+        let data_http = Arc::new(DataHttp::new(Arc::clone(&service), data));
+        let mut router = Self::new_with_scheme(service, local_addr, true)?;
         router.data = Some(data_http);
         Ok(router)
     }
@@ -355,12 +380,18 @@ impl PairingHttp {
             return invalid_parameter_response();
         };
 
-        match self.service.claim(
-            &payload.pairing_id,
-            &payload.device_name,
-            &payload.claim_nonce,
-            source_ip,
-        ) {
+        let result = if self.open_pairing && payload.pairing_id == "local" {
+            self.service
+                .claim_open(&payload.device_name, &payload.claim_nonce, source_ip)
+        } else {
+            self.service.claim(
+                &payload.pairing_id,
+                &payload.device_name,
+                &payload.claim_nonce,
+                source_ip,
+            )
+        };
+        match result {
             Ok(issued) => claim_created_response(issued),
             Err(error) => auth_error_response(&error),
         }
@@ -683,6 +714,62 @@ mod tests {
 
     fn ip(last: u8) -> Ipv4Addr {
         Ipv4Addr::new(192, 168, 1, last)
+    }
+
+    #[tokio::test]
+    async fn plain_lan_claim_requires_same_origin_and_desktop_approval() {
+        use super::super::clock::SystemClock;
+        use super::super::pairing::PairingStore;
+        use super::super::session::SessionStore;
+        let service = Arc::new(PairingService::new(
+            PairingStore::new(Arc::new(SystemClock)),
+            SessionStore::new(Arc::new(SystemClock)),
+        ));
+        let addr: SocketAddr = "192.168.1.10:8080".parse().unwrap();
+        let router = PairingHttp::new_with_scheme(Arc::clone(&service), addr, true).unwrap();
+        let request = |origin: &str| {
+            Request::builder()
+            .method(Method::POST).uri("/api/pair/claim")
+            .header("host", "192.168.1.10:8080")
+            .header("origin", origin)
+            .header("x-moyu-request", "1")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from_static(br#"{"pairingId":"local","deviceName":"Phone","claimNonce":"AAAAAAAAAAAAAAAAAAAAAA"}"#))).unwrap()
+        };
+        let denied = router
+            .handle(
+                request("http://evil.example"),
+                Ipv4Addr::new(192, 168, 1, 20),
+            )
+            .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        assert_eq!(service.pending_count(), 0);
+        let accepted = router
+            .handle(
+                request("http://192.168.1.10:8080"),
+                Ipv4Addr::new(192, 168, 1, 20),
+            )
+            .await;
+        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+        assert_eq!(service.pending_count(), 1);
+        assert_eq!(
+            service.session_slots(),
+            (0, 0),
+            "request alone must never authorize a session"
+        );
+        let unauthenticated = Request::builder()
+            .method(Method::GET)
+            .uri("/api/session")
+            .header("host", "192.168.1.10:8080")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        assert_eq!(
+            router
+                .handle(unauthenticated, Ipv4Addr::new(192, 168, 1, 20))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[test]

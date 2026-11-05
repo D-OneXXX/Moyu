@@ -2709,6 +2709,7 @@ export function checkAntiMockGuards(root, report) {
     for (const forbidden of [
       "web_access_pairing_",
       "web_access_start",
+      "web_access_start_plain",
       "web_access_stop",
       "web_access_devices_list",
       "web_access_device_revoke",
@@ -3635,8 +3636,9 @@ export function checkAntiMockGuards(root, report) {
     if (!routerSource.includes("progress.handle(request")) {
       errors.push("router.rs 未在 data 之后调用写面 handler");
     }
-    if ((runtimeSource.match(/router\.with_progress\s*\(/g) || []).length !== 1) {
-      errors.push("runtime 应恰好挂载写面一次");
+    if ((runtimeSource.match(/router\.with_progress\s*\(/g) || []).length !== 2 ||
+        !runtimeSource.includes("async fn start_plain")) {
+      errors.push("HTTPS 和用户启用的 HTTP 模式各应挂载写面一次");
     }
     if (!runtimeSource.includes("factory_progress")) {
       errors.push("runtime 未克隆写面 provider 到 factory");
@@ -3729,6 +3731,7 @@ export function checkAntiMockGuards(root, report) {
     const webFile = (name) =>
       productionOnly(read(path.join("src-tauri", "src", "web_access", name)));
 
+    const plain = webFile("plain.rs");
     const data = webFile("data.rs");
     const dataApp = webFile("data_app.rs");
     const sessionAuth = webFile("session_auth.rs");
@@ -4050,6 +4053,17 @@ export function checkAntiMockGuards(root, report) {
       }
     }
 
+    // The explicitly enabled HTTP listener keeps peer, resource and cookie boundaries.
+    for (const token of ["is_private_lan_ipv4", "MAX_ACTIVE_CONNECTIONS", "ConnectionLimiter", "HEADER_READ_TIMEOUT", "HTTP_CONNECTION_TIMEOUT", "moyul_session", "moyul_claim", "inbound_cookies", "outbound_cookies"]) {
+      if (!plain.includes(token)) errors.push(`HTTP 局域网监听缺少不变量：${token}`);
+    }
+    if (!inFunction(runtime.slice(runtime.indexOf("async fn start_plain")), "async fn start_plain", "ensure_online_allowed")) {
+      errors.push("HTTP 模式未在启动锁内检查安全模式");
+    }
+    if (!router.includes("self.open_pairing") || !/self\.service\s*\.claim_open\s*\(/.test(router)) {
+      errors.push("HTTP 模式缺少受控设备申请入口");
+    }
+
     // D3 service owns the database rules; the adapter only forwards.
     if ((service.match(/set_progress_cas_checked\(/g) || []).length !== 1) {
       errors.push("D3 写服务必须恰好调用一次事务内校验的 set_progress_cas_checked");
@@ -4123,8 +4137,9 @@ export function checkAntiMockGuards(root, report) {
     if ((runtime.match(/PairingHttp::with_data\s*\(/g) || []).length !== 1) {
       errors.push("Runtime 的 with_data 应恰好出现一次");
     }
-    if ((runtime.match(/router\.with_progress\s*\(/g) || []).length !== 1) {
-      errors.push("Runtime 的 with_progress 应恰好挂载一次");
+    if ((runtime.match(/router\.with_progress\s*\(/g) || []).length !== 2 ||
+        !inFunction(runtime.slice(runtime.indexOf("async fn start_plain")), "async fn start_plain", "router.with_progress")) {
+      errors.push("HTTPS 和 HTTP 模式必须分别挂载写面");
     }
     if (!inFunction(runtime, "async fn start_inner", "PairingHttp::with_data")) {
       errors.push("with_data 未在 start_inner 内挂载");

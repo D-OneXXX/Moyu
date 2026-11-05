@@ -6,7 +6,7 @@ export const messages = {
     "Device name",
     "Request pairing",
     "Approve this device on the desktop.",
-    "Pairing failed or expired. Scan a new code.",
+    "Pairing failed or expired. Please try again.",
     "Search",
     "Search",
     "No books found.",
@@ -28,7 +28,8 @@ export const messages = {
     "Image failed to load.",
     "Language",
     "The saved page is beyond the end of this book. Showing the last page.",
-    "This image is too large to process safely in the browser reader."
+    "This image is too large to process safely in the browser reader.",
+    "Web browser"
   ],
   "zh-CN": [
     "书库",
@@ -36,7 +37,7 @@ export const messages = {
     "设备名称",
     "请求配对",
     "请在桌面端批准此设备。",
-    "配对失败或已过期，请重新扫码。",
+    "配对失败或已过期，请重试。",
     "搜索",
     "搜索",
     "书库中没有找到漫画。",
@@ -58,7 +59,8 @@ export const messages = {
     "图片加载失败。",
     "语言",
     "已保存的页码超过本书范围，现显示最后一页。",
-    "这张长图超过网页阅读的安全处理上限。"
+    "这张长图超过网页阅读的安全处理上限。",
+    "网页浏览器"
   ],
   "zh-TW": [
     "書庫",
@@ -66,7 +68,7 @@ export const messages = {
     "裝置名稱",
     "請求配對",
     "請在桌面端核准此裝置。",
-    "配對失敗或已過期，請重新掃碼。",
+    "配對失敗或已過期，請重試。",
     "搜尋",
     "搜尋",
     "書庫中沒有找到漫畫。",
@@ -88,7 +90,8 @@ export const messages = {
     "圖片載入失敗。",
     "語言",
     "已儲存的頁碼超出本書範圍，現顯示最後一頁。",
-    "這張長圖超過網頁閱讀的安全處理上限。"
+    "這張長圖超過網頁閱讀的安全處理上限。",
+    "網頁瀏覽器"
   ],
   "es": [
     "Biblioteca",
@@ -96,7 +99,7 @@ export const messages = {
     "Nombre del dispositivo",
     "Solicitar vinculación",
     "Aprueba este dispositivo en el escritorio.",
-    "La vinculación falló o caducó. Escanea otro código.",
+    "La vinculación falló o caducó. Inténtalo de nuevo.",
     "Buscar",
     "Buscar",
     "No se encontraron cómics.",
@@ -118,7 +121,8 @@ export const messages = {
     "No se pudo cargar la imagen.",
     "Idioma",
     "La página guardada supera el final del libro. Se muestra la última página.",
-    "Esta imagen supera el límite de procesamiento seguro del lector web."
+    "Esta imagen supera el límite de procesamiento seguro del lector web.",
+    "Navegador web"
   ],
   "ja": [
     "ライブラリ",
@@ -126,7 +130,7 @@ export const messages = {
     "端末名",
     "ペアリングを申請",
     "デスクトップでこの端末を承認してください。",
-    "ペアリングに失敗したか期限切れです。再度スキャンしてください。",
+    "ペアリングに失敗したか期限切れです。もう一度お試しください。",
     "検索",
     "検索",
     "漫画が見つかりません。",
@@ -148,7 +152,8 @@ export const messages = {
     "画像を読み込めません。",
     "言語",
     "保存されたページが本の末尾を超えているため、最後のページを表示しています。",
-    "この画像はウェブリーダーで安全に処理できる上限を超えています。"
+    "この画像はウェブリーダーで安全に処理できる上限を超えています。",
+    "ウェブブラウザー"
   ],
   "ko": [
     "서재",
@@ -156,7 +161,7 @@ export const messages = {
     "기기 이름",
     "페어링 요청",
     "데스크톱에서 이 기기를 승인하세요.",
-    "페어링이 실패했거나 만료되었습니다. 다시 스캔하세요.",
+    "페어링이 실패했거나 만료되었습니다. 다시 시도하세요.",
     "검색",
     "검색",
     "만화를 찾을 수 없습니다.",
@@ -178,6 +183,7 @@ export const messages = {
     "이미지를 불러오지 못했습니다.",
     "언어",
     "저장된 페이지가 책의 범위를 벗어나 마지막 페이지를 표시합니다.",
-    "이 이미지는 웹 리더의 안전한 처리 한도를 초과합니다."
+    "이 이미지는 웹 리더의 안전한 처리 한도를 초과합니다.",
+    "웹 브라우저"
   ]
 };

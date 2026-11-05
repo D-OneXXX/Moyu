@@ -99,7 +99,7 @@ export default function TelegramChannelPanel({
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground">
                       <span>{t(meta.key)}</span>
                       {chapter.pageCount ? (
-                        <span className="mono">{chapter.pageCount}p</span>
+                        <span className="mono">{chapter.pageCount} {t("common.pages")}</span>
                       ) : null}
                       {chapter.grouped ? (
                         <span>{t("browser.telegram.grouped")}</span>

@@ -12,6 +12,8 @@ pub mod diagnostics;
 pub mod disk_cache;
 pub mod logging;
 mod online;
+#[cfg_attr(not(test), allow(dead_code))]
+mod opds;
 mod open_with;
 mod paths;
 pub mod pdf;

@@ -248,6 +248,13 @@ export async function runOpdsSuite(ctx, report) {
 
     // Frontend wiring: the library button opens the dialog and lists entries.
     try {
+      // The preceding suite may leave the app on another route. Navigate
+      // explicitly so this check exercises the actual library entry point.
+      await page.navigateHash("#/");
+      await page.waitFor(
+        `document.querySelector('[data-testid="opds-open"]') !== null`,
+        { timeout: 8000 },
+      );
       const opened = await page.eval(`(() => {
         const button = document.querySelector('[data-testid="opds-open"]');
         if (!button) return false;

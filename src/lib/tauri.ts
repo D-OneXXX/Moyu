@@ -258,6 +258,43 @@ export interface OnlineProbe {
   message: string;
 }
 
+/** 本地 OPDS 配置；密码永不回传，只暴露是否已保存。 */
+export interface OpdsConfigView {
+  enabled: boolean;
+  url: string;
+  username: string;
+  hasPassword: boolean;
+}
+
+/** 保存配置；password=null 保留原密码，空串表示清除。 */
+export interface OpdsConfigInput {
+  enabled: boolean;
+  url: string;
+  username: string;
+  password: string | null;
+}
+
+export type OpdsArchiveKind = "zip" | "rar" | "auto";
+
+/** 一个 OPDS 条目：可能可进入下一级、可下载，或两者都有。 */
+export interface OpdsEntry {
+  title: string;
+  navigationUrl?: string | null;
+  coverUrl?: string | null;
+  downloadUrl?: string | null;
+  mediaType: string;
+  archive?: OpdsArchiveKind | null;
+}
+
+/** 一页 OPDS 1.2 Atom 目录。 */
+export interface OpdsFeed {
+  url: string;
+  title: string;
+  entries: OpdsEntry[];
+  nextUrl?: string | null;
+  prevUrl?: string | null;
+}
+
 /** 内嵌浏览器下载项（后端扫描应用下载目录）。 */
 export interface BrowserDownload {
   path: string;
@@ -398,6 +435,18 @@ export const api = {
     }),  // 解析 JSON 清单/单页 HTML 图集并入库或恢复；不改变已有书进度。
   resolveOnlineUrl: (url: string) =>
     invoke<BookInfo>("resolve_online_url", { url }),
+  // OPDS 1.2 自建库：配置只存本地 SQLite，密码只写不读。
+  getOpdsConfig: () => invoke<OpdsConfigView>("opds_get_config"),
+  setOpdsConfig: (config: OpdsConfigInput) =>
+    invoke<OpdsConfigView>("opds_set_config", { config }),
+  testOpdsConnection: () =>
+    invoke<OnlineProbe>("opds_test_connection"),
+  browseOpds: (url?: string | null) =>
+    invoke<OpdsFeed>("opds_browse", { url: url ?? null }),
+  getOpdsCover: (url: string) =>
+    invoke<PageImage>("opds_cover", { url }),
+  downloadOpdsEntry: (url: string, title: string) =>
+    invoke<BookInfo>("opds_download_entry", { url, title }),
   // 系统代理探测（只填入表单，不落库）。
   detectSystemProxy: () => invoke<string | null>("detect_system_proxy"),
   // 外部系统浏览器配对桥接：长驻监听，结果经 online-handoff-imported 回传。

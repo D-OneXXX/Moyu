@@ -5,6 +5,7 @@ import {
   BookOpen,
   BookX,
   Check,
+  Cloud,
   FolderPlus,
   ListChecks,
   Loader2,
@@ -42,6 +43,7 @@ import LibrarySearch from "@/components/library/LibrarySearch";
 import LibrarySelectionBar from "@/components/library/LibrarySelectionBar";
 import LibrarySkeleton from "@/components/library/LibrarySkeleton";
 import RelocateDialog from "@/components/library/RelocateDialog";
+import OpdsBrowserDialog from "@/components/library/OpdsBrowserDialog";
 
 const GROUP_KEY = "mr-library-group-series";
 const FILTER_KEY = "mr-library-source-filter";
@@ -107,6 +109,8 @@ export default function LibraryPage() {
   // 详情 Sheet：保留书籍快照，列表刷新时用最新数据覆盖展示。
   const [selectedBook, setSelectedBook] = useState<BookInfo | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // 远程书库（OPDS）：只读目录，下载后进入现有阅读管线。
+  const [opdsOpen, setOpdsOpen] = useState(false);
   // 失效路径重定位引导（不进入 Reader，先让用户重新指定位置）。
   const [relocatingBook, setRelocatingBook] = useState<BookInfo | null>(null);
 
@@ -635,6 +639,18 @@ export default function LibraryPage() {
               <Plus />
               {t("library.addBooks")}
             </Button>
+            {!safeMode ? (
+              <Button
+                variant="pill"
+                size="pill"
+                onClick={() => setOpdsOpen(true)}
+                title={t("opds.libraryButtonTitle")}
+                data-testid="opds-open"
+              >
+                <Cloud />
+                {t("opds.libraryButton")}
+              </Button>
+            ) : null}
             <Button
               variant={selectMode ? "pill-primary" : "pill"}
               size="pill"
@@ -876,6 +892,13 @@ export default function LibraryPage() {
         }}
         onRelocated={onRelocated}
         onRemove={onRemoveMissing}
+      />
+
+      <OpdsBrowserDialog
+        open={opdsOpen}
+        onOpenChange={setOpdsOpen}
+        onOpenBook={(book) => openReader(book.id)}
+        onGoSettings={() => nav("/settings?tab=network")}
       />
 
     </div>

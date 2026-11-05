@@ -12,6 +12,7 @@ pub mod diagnostics;
 pub mod disk_cache;
 pub mod logging;
 mod online;
+mod opds;
 mod open_with;
 mod paths;
 pub mod pdf;
@@ -611,6 +612,12 @@ pub fn run() {
             backup::recover_database_from_backup,
             commands::resolve_online_url,
             commands::test_online_connection,
+            commands::opds_get_config,
+            commands::opds_set_config,
+            commands::opds_test_connection,
+            commands::opds_browse,
+            commands::opds_cover,
+            commands::opds_download_entry,
             commands::import_resolved_pages,
             commands::resolve_online_batch,
             commands::resolve_telegram_channel,

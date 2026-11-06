@@ -87,10 +87,11 @@ export const SCHEMA_VERSION = 3;
 export const BACKUP_FORMAT = "mangareader-backup";
 export const BACKUP_SCHEMA = 1;
 /** 与 `src-tauri/src/pdf.rs::PDF_COVER_EDGE` 一致。 */
-export const PDF_COVER_EDGE = 256;
-/** 与 `src-tauri/src/pdf.rs::MAX_PDF_COVER_BYTES / MAX_PDF_COVER_EDGE` 一致。 */
+export const PDF_COVER_EDGE = 512;
+/** 与 `src-tauri/src/pdf.rs::MAX_PDF_COVER_BYTES / MAX_PDF_COVER_EDGE / MAX_PDF_COVER_PIXELS` 一致。 */
 export const MAX_PDF_COVER_BYTES = 2 * 1024 * 1024;
 export const MAX_PDF_COVER_EDGE = 4096;
+export const MAX_PDF_COVER_PIXELS = 16_000_000;
 export const LEGACY_APP_VERSION = "0.17.2";
 export const LEGACY_BOOK_TITLE = "Legacy Smoke Book";
 export const LEGACY_PAGE_COUNT = 20;
@@ -443,7 +444,7 @@ function readingLogOf(db, bookId) {
 }
 
 /**
- * PDF 封面缓存校验：固定键 `<bookId>/000000@256x256.jpg`（见 render_cache.rs）。
+ * PDF 封面缓存校验：固定键 `<bookId>/000000@512x512.jpg`（见 render_cache.rs）。
  * 写回路径只接受 JPEG（pdf.rs::validate_pdf_cover），因此这里要求 FF D8 FF。
  */
 export function coverCacheState(renderCacheDir, bookId) {
@@ -474,6 +475,9 @@ export function coverCacheState(renderCacheDir, bookId) {
   state.height = dims.height;
   if (dims.width > MAX_PDF_COVER_EDGE || dims.height > MAX_PDF_COVER_EDGE) {
     problems.push("cover-cache-dimensions");
+  }
+  if (dims.width * dims.height > MAX_PDF_COVER_PIXELS) {
+    problems.push("cover-cache-pixels");
   }
   return state;
 }

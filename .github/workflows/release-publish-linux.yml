@@ -244,6 +244,8 @@ jobs:
           gh release download "$TAG" --pattern latest-linux-critical.json --dir pre-publish-notes --clobber
           node scripts/release-governance/release-notes.mjs \
             --check-manifest pre-publish-notes/latest-linux-critical.json --mode summary
+          # 固化审批时看到的正文摘要，发布前/发布后都必须与它一致。
+          node -e 'const fs=require("node:fs");const {sha256File}=require("./scripts/release-governance/rc-record.mjs");fs.writeFileSync("approved/release-notes.sha256",`${sha256File("draft-release-notes.md")}\n`)'
 
       # 审批之后、写入之前的竞态门禁（与 Windows 通道同一语义）：
       # 标签 / Draft 目标 / 全部制品必须仍是审批时的那一组。
@@ -281,8 +283,18 @@ jobs:
               }
             }
           '
-          # 正文也可能在上一次检查后被改写；发布前再取一次并重新校验。
+          # 正文也可能在上一次检查后被改写；发布前再取一次，先比对审批摘要再校验结构。
           gh release view "$TAG" --json body --jq .body > release-recheck-notes.md
+          node -e '
+            const fs = require("node:fs");
+            const { sha256File } = require("./scripts/release-governance/rc-record.mjs");
+            const before = fs.readFileSync("approved/release-notes.sha256", "utf8").trim();
+            const after = sha256File("release-recheck-notes.md");
+            if (before !== after) {
+              console.error("Release 正文在校验与发布之间发生变化，拒绝发布");
+              process.exit(1);
+            }
+          '
           node scripts/release-governance/release-notes.mjs --check release-recheck-notes.md
           node scripts/release-governance/release-notes.mjs \
             --check-manifest publish-recheck/latest-linux-critical.json --mode summary
@@ -376,6 +388,20 @@ jobs:
           fi
           rm -rf published && mkdir -p published
           gh release download "$TAG" --dir published --clobber
+          # 已公开正文也必须与审批时一致（仅首次公开的本次运行有审批摘要）。
+          if [ -f approved/release-notes.sha256 ]; then
+            gh release view "$TAG" --json body --jq .body > published-notes.md
+            node -e '
+              const fs = require("node:fs");
+              const { sha256File } = require("./scripts/release-governance/rc-record.mjs");
+              const before = fs.readFileSync("approved/release-notes.sha256", "utf8").trim();
+              const after = sha256File("published-notes.md");
+              if (before !== after) {
+                console.error("已公开 Release 正文与审批快照不一致，发布失败");
+                process.exit(1);
+              }
+            '
+          fi
           # 本次接力写入的对端清单也必须保持摘要不变。
           if [ -f peer-expected.json ]; then
             node -e '

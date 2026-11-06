@@ -97,6 +97,7 @@ test("正式发布：审批后重新下载并校验全部 Draft 资产，再公�
       "sha256File",
       "verify-draft.mjs",
       "release-notes.mjs",
+      "approved/release-notes.sha256",
     ]) {
       assert.ok(recheckStep.run.includes(marker), `${name} 发布前复检缺少：${marker}`);
     }
@@ -111,6 +112,7 @@ test("正式发布：审批后重新下载并校验全部 Draft 资产，再公�
       "approved/${name}",
       "--allow-extra",
       "peer-expected.json",
+      "approved/release-notes.sha256",
     ]) {
       assert.ok(postStep.run.includes(marker), `${name} 发布后复核缺少：${marker}`);
     }

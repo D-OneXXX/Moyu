@@ -25,6 +25,17 @@ Closes #
 实际执行的命令与结果写在这里；不要只写“已测试”。
 ```
 
+## QA 范围
+
+- [ ] 纯文档 / 演示 / 治理元数据（仅 static）
+- [ ] 小型前端（static + visual + architecture）
+- [ ] 非高危后端（static + architecture + cache）
+- [ ] 高风险 / 前后端混合 / 不确定（全量 QA）
+- [ ] Draft（不跑 L2；标记 ready_for_review 后补跑）
+
+`L2 · QA gate` 会按改动路径自动选择套件；本段用于人工核对，不替代 CI 判定。
+高风险包括 reader、PDF、在线、缓存、SQLite、更新、签名、发布工作流与依赖升级。
+
 ## 数据与隐私
 
 - [ ] 不涉及书库、阅读进度、SQLite、备份、缓存或文件删除

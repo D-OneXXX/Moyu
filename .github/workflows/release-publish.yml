@@ -323,8 +323,9 @@ jobs:
           node scripts/release-governance/release-notes.mjs \
             --check-manifest pre-publish-notes/latest.json \
             --require-match draft-release-notes.md
-          # 固化审批时看到的正文摘要，发布前/发布后都必须与它一致。
-          node -e 'const fs=require("node:fs");const {sha256File}=require("./scripts/release-governance/rc-record.mjs");fs.writeFileSync("approved/release-notes.sha256",`${sha256File("draft-release-notes.md")}\n`)'
+          # 固化审批时看到的正文与摘要；发布时直接使用这份正文，发布前后都必须一致。
+          cp draft-release-notes.md approved/release-notes.md
+          node -e 'const fs=require("node:fs");const {sha256File}=require("./scripts/release-governance/rc-record.mjs");fs.writeFileSync("approved/release-notes.sha256",`${sha256File("approved/release-notes.md")}\n`)'
 
       # 审批之后、写入之前的竞态门禁：
       # - 标签仍存在且仍指向同一个候选提交（v* 标签由仓库规则禁止更新/删除）；
@@ -401,7 +402,8 @@ jobs:
           set -euo pipefail
           # 标签必须已由维护者按授权流程创建；--tag 让 --verify-tag 真正检查远端标签，
           # 防止标签在复检后被删除时 GitHub 在这里用 target_commitish 顺带创建它。
-          gh release edit "$TAG" --tag "$TAG" --draft=false --verify-tag --title "Moyu $TAG"
+          gh release edit "$TAG" --tag "$TAG" --draft=false --verify-tag \
+            --title "Moyu $TAG" --notes-file approved/release-notes.md
 
       # 幂等接力：缺才补。已公开的 Release 也允许补——这是部分失败的唯一自救路径，
       # 且只新增"另一通道清单"这一个资产，不会重新公开、不会改写其它资产。

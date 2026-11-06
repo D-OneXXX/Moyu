@@ -244,8 +244,9 @@ jobs:
           gh release download "$TAG" --pattern latest-linux-critical.json --dir pre-publish-notes --clobber
           node scripts/release-governance/release-notes.mjs \
             --check-manifest pre-publish-notes/latest-linux-critical.json --mode summary
-          # 固化审批时看到的正文摘要，发布前/发布后都必须与它一致。
-          node -e 'const fs=require("node:fs");const {sha256File}=require("./scripts/release-governance/rc-record.mjs");fs.writeFileSync("approved/release-notes.sha256",`${sha256File("draft-release-notes.md")}\n`)'
+          # 固化审批时看到的正文与摘要；发布时直接使用这份正文，发布前后都必须一致。
+          cp draft-release-notes.md approved/release-notes.md
+          node -e 'const fs=require("node:fs");const {sha256File}=require("./scripts/release-governance/rc-record.mjs");fs.writeFileSync("approved/release-notes.sha256",`${sha256File("approved/release-notes.md")}\n`)'
 
       # 审批之后、写入之前的竞态门禁（与 Windows 通道同一语义）：
       # 标签 / Draft 目标 / 全部制品必须仍是审批时的那一组。
@@ -318,7 +319,8 @@ jobs:
           set -euo pipefail
           # 标签必须已由维护者按授权流程创建；--tag 让 --verify-tag 真正检查远端标签，
           # 防止标签在复检后被删除时 GitHub 在这里用 target_commitish 顺带创建它。
-          gh release edit "$TAG" --tag "$TAG" --draft=false --verify-tag --title "Moyu $TAG (Linux critical)"
+          gh release edit "$TAG" --tag "$TAG" --draft=false --verify-tag \
+            --title "Moyu $TAG (Linux critical)" --notes-file approved/release-notes.md
 
       - name: Channel hand-off (carry the other channel manifest)
         if: steps.state.outputs.need_handoff == 'true'

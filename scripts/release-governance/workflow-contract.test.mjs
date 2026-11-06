@@ -74,6 +74,10 @@ test("正式发布：不自动创建/推送标签，标签缺失或指向别处�
       /gh release edit "\$TAG" --tag "\$TAG" --draft=false --verify-tag/,
       `${name} 必须用 --tag + --verify-tag 禁止发布时顺带创建标签`,
     );
+    assert.ok(
+      source.includes("--notes-file approved/release-notes.md"),
+      `${name} 发布时必须使用审批快照正文，而不是可能被改写的 Draft 正文`,
+    );
   }
 });
 

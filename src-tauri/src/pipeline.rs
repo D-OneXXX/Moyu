@@ -144,6 +144,23 @@ pub(crate) fn source_dimensions(raw: &RawPage) -> Result<(u32, u32), BackendErro
 fn into_rgb(img: image::DynamicImage) -> image::RgbImage {
     match img {
         image::DynamicImage::ImageRgb8(v) => v,
+        image::DynamicImage::ImageRgba8(v) => {
+            // Compact in place: converting a large RGBA page with `to_rgb8`
+            // would keep both the original and the new raster alive at once.
+            let (width, height) = v.dimensions();
+            let mut bytes = v.into_raw();
+            let pixels = bytes.len() / 4;
+            for i in 0..pixels {
+                let src = i * 4;
+                let dst = i * 3;
+                bytes[dst] = bytes[src];
+                bytes[dst + 1] = bytes[src + 1];
+                bytes[dst + 2] = bytes[src + 2];
+            }
+            bytes.truncate(pixels * 3);
+            image::RgbImage::from_raw(width, height, bytes)
+                .expect("RGBA and RGB dimensions must have equal pixel counts")
+        }
         other => other.to_rgb8(),
     }
 }
@@ -474,6 +491,14 @@ fn render_webtoon_tiles_with(
     }
     let plan = TilePlan::build(th, tiles);
 
+    if fmt == ImageFormat::Png && sh > TALL_IMAGE_H {
+        if let Some(result) =
+            render_tall_png_rows(raw, (sw, sh), tw, th, &plan, encode_data_url, web_limits)?
+        {
+            return Ok((tiles, result));
+        }
+    }
+
     // 工作栅格（只解码一次）：长图 JPEG 走 IDCT 缩放解码；其余格式整图解码。
     let work: image::RgbImage = if sh > TALL_IMAGE_H && fmt == ImageFormat::Jpeg {
         decode_tall_jpeg_raster(raw, tw, tall_want_h(sw, sh, tw))?
@@ -521,6 +546,119 @@ fn render_webtoon_tiles_with(
         });
     }
     Ok((tiles, out))
+}
+
+/// Decode ordinary PNGs one source band at a time instead of allocating a
+/// complete 8/16-bit raster. Interlaced PNGs use the existing decoder path.
+fn render_tall_png_rows(
+    raw: &RawPage,
+    source_size: (u32, u32),
+    tw: u32,
+    th: u32,
+    plan: &TilePlan,
+    encode_data_url: bool,
+    limits: Option<(u32, usize)>,
+) -> Result<Option<Vec<RenderedPage>>, BackendError> {
+    const MAX_BAND_BYTES: u64 = 64 * 1024 * 1024;
+    let (sw, sh) = source_size;
+    let png_error = |e: png::DecodingError| BackendError::Decode(format!("PNG 解码失败：{e}"));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&raw.bytes));
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().map_err(png_error)?;
+    if reader.info().interlaced {
+        return Ok(None);
+    }
+    let (color, depth) = reader.output_color_type();
+    let bytes_per_sample = match depth {
+        png::BitDepth::Eight => 1,
+        png::BitDepth::Sixteen => 2,
+        _ => return Err(BackendError::Decode("PNG 像素格式不受支持".into())),
+    };
+    let mut result = Vec::with_capacity(plan.bounds.len() - 1);
+    let mut encoded_bytes = 0usize;
+    let mut read_rows = 0u32;
+    for bounds in plan.bounds.windows(2) {
+        let d0 = bounds[0];
+        let d1 = bounds[1];
+        let w0 = work_row_at(d0, sh, th);
+        let w1 = work_row_at(d1, sh, th);
+        let rows = w1.saturating_sub(w0);
+        let bytes = u64::from(sw) * u64::from(rows) * 3;
+        if rows == 0 || bytes > MAX_BAND_BYTES || read_rows != w0 {
+            return Err(BackendError::WebtoonTooLarge);
+        }
+        let mut band = image::RgbImage::new(sw, rows);
+        for y in 0..rows {
+            let row = reader
+                .next_row()
+                .map_err(png_error)?
+                .ok_or_else(|| BackendError::Decode("PNG 行数据不完整".into()))?;
+            let channels = match color {
+                png::ColorType::Rgb => 3,
+                png::ColorType::Rgba => 4,
+                png::ColorType::Grayscale => 1,
+                png::ColorType::GrayscaleAlpha => 2,
+                png::ColorType::Indexed => {
+                    return Err(BackendError::Decode("PNG 色板未展开".into()))
+                }
+            };
+            let data = row.data();
+            let stride = channels * bytes_per_sample;
+            if data.len() != sw as usize * stride {
+                return Err(BackendError::Decode("PNG 行数据长度不正确".into()));
+            }
+            let dest = &mut band.as_mut()
+                [(y as usize * sw as usize * 3)..((y as usize + 1) * sw as usize * 3)];
+            for (src, dst) in data
+                .chunks_exact(stride)
+                .zip(dest.as_chunks_mut::<3>().0.iter_mut())
+            {
+                let sample = |index: usize| -> u8 {
+                    let offset = index * bytes_per_sample;
+                    if bytes_per_sample == 1 {
+                        src[offset]
+                    } else {
+                        ((u32::from(u16::from_be_bytes([src[offset], src[offset + 1]])) + 128)
+                            / 257) as u8
+                    }
+                };
+                if channels <= 2 {
+                    dst.fill(sample(0));
+                } else {
+                    dst.copy_from_slice(&[sample(0), sample(1), sample(2)]);
+                }
+            }
+        }
+        read_rows = w1;
+        let height = d1 - d0;
+        let tile = render_band_tile(&band, 0, rows, tw, height)?;
+        let mut buf = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80).encode_image(&tile)?;
+        encoded_bytes = encoded_bytes
+            .checked_add(buf.len())
+            .ok_or(BackendError::WebtoonTooLarge)?;
+        if limits.is_some_and(|(_, max)| encoded_bytes > max) {
+            return Err(BackendError::WebtoonTooLarge);
+        }
+        result.push(RenderedPage {
+            width: tw,
+            height,
+            orig_width: sw,
+            orig_height: sh,
+            mime: "image/jpeg".into(),
+            data_url: if encode_data_url {
+                format!("data:image/jpeg;base64,{}", B64.encode(&buf))
+            } else {
+                String::new()
+            },
+            bytes: buf,
+        });
+    }
+    if read_rows != sh {
+        return Err(BackendError::Decode("PNG 行数据不完整".into()));
+    }
+    reader.finish().map_err(png_error)?;
+    Ok(Some(result))
 }
 
 /// 显示行 → 工作栅格行（等比映射 + 取整 + 边界收敛）。
@@ -602,6 +740,55 @@ fn render_band_tile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgba_to_rgb_reuses_buffer_and_preserves_existing_conversion() {
+        let input =
+            image::RgbaImage::from_raw(3, 1, vec![10, 20, 30, 0, 40, 50, 60, 128, 70, 80, 90, 255])
+                .unwrap();
+        let original_address = input.as_raw().as_ptr();
+        let dynamic = image::DynamicImage::ImageRgba8(input);
+        let expected = dynamic.to_rgb8();
+        let result = into_rgb(dynamic);
+        assert_eq!(result, expected);
+        assert_eq!(result.as_raw().as_ptr(), original_address);
+    }
+
+    #[test]
+    fn streamed_png_bands_match_full_raster_for_alpha_and_grayscale() {
+        let rgba = image::RgbaImage::from_fn(4, 9001, |x, y| {
+            image::Rgba([x as u8 * 30, y as u8, (y >> 3) as u8, (y >> 1) as u8])
+        });
+        let gray = image::GrayImage::from_fn(4, 9001, |x, y| image::Luma([(x + y) as u8]));
+        let rgb16 = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::from_fn(4, 9001, |x, y| {
+            image::Rgb([(y * 13) as u16, (y * 7 + x * 150) as u16, (y * 5) as u16])
+        });
+        for original in [
+            image::DynamicImage::ImageRgba8(rgba),
+            image::DynamicImage::ImageLuma8(gray),
+            image::DynamicImage::ImageRgb16(rgb16),
+        ] {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            original.write_to(&mut bytes, ImageFormat::Png).unwrap();
+            let raw = RawPage {
+                bytes: bytes.into_inner(),
+                ext: "png".into(),
+            };
+            let (count, actual) = render_webtoon_tiles_asset(&raw, 4, false).unwrap();
+            let source = into_rgb(original);
+            let plan = TilePlan::build(9001, count);
+            for (i, page) in actual.iter().enumerate() {
+                let start = plan.bounds[i];
+                let end = plan.bounds[i + 1];
+                let tile = render_band_tile(&source, start, end, 4, end - start).unwrap();
+                let mut expected = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut expected, 80)
+                    .encode_image(&tile)
+                    .unwrap();
+                assert_eq!(page.bytes, expected, "PNG band {i}");
+            }
+        }
+    }
 
     #[test]
     fn source_dimensions_rejects_oversized_header_before_decode() {

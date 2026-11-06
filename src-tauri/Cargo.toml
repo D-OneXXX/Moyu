@@ -20,7 +20,7 @@ tauri-plugin-dialog = "2"
 # 双击文件关联/二次启动：单实例唤醒并转发命令行路径。
 tauri-plugin-single-instance = "2"
 # 官方 Updater：GitHub Releases latest.json + minisign 签名校验。
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "2.14.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -29,6 +29,7 @@ zip = "9"
 # OPDS CBR：纯 Rust RAR 读取（Apache-2.0 + UnRAR restriction，见 THIRD_PARTY_NOTICES）。
 unrar-rs = { version = "0.15", default-features = false, features = ["crypto-rust"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+png = "0.18"
 # 条漫长图：IDCT 缩放解码（>8000px 高的 JPEG 按显示宽度解码，全分辨率栅格不进内存）
 jpeg-decoder = "0.3"
 lru = "0.19"
@@ -48,6 +49,7 @@ url = "2"
 quick-xml = "0.42"
 percent-encoding = "2"
 ureq = { version = "2", features = ["json", "socks-proxy"] }
+webpki-roots = "0.26"
 # 在线源：单页 HTML 图集解析
 regex = "1"
 # 在线 HTML 图集：按 charset 正确解码（GBK/Shift_JIS 等）。

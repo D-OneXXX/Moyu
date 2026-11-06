@@ -3,7 +3,17 @@ import path from "node:path";
 
 const SEVERITY_ORDER = ["P0", "P1", "P2", "P3"];
 
-export function createReport({ root, artifactDir, appVersion, buildCommit }) {
+/**
+ * `execution` 是 NON_INTRUSIVE_ENGINEERING §13 要求的执行记录
+ * （级别 / 授权来源 / 进程 / 端口 / 清理结果 / 延后套件）。
+ */
+export function createReport({
+  root,
+  artifactDir,
+  appVersion,
+  buildCommit,
+  execution = null,
+}) {
   return {
     schema: 1,
     runId: new Date().toISOString().replace(/[:.]/g, "-"),
@@ -13,6 +23,7 @@ export function createReport({ root, artifactDir, appVersion, buildCommit }) {
     artifactDir,
     appVersion,
     buildCommit,
+    execution,
     checks: [],
     defects: [],
     notes: [],
@@ -117,6 +128,24 @@ export function writeMarkdownReport(report, file, kb = null) {
       staticOpen.filter((issue) => issue.severity === severity).length,
     ]),
   );
+  // 执行级别与授权记录：未执行的套件必须在这里显式出现，不能被当成 PASS。
+  const execution = report.execution || null;
+  const executionLines = execution
+    ? [
+        "### 执行级别与非侵入式记录",
+        "",
+        `- 执行级别：**${execution.level}**（${execution.backgroundOrInteractive}）`,
+        `- 判定依据：${execution.rationale}`,
+        `- 授权：required=${execution.authorization?.required ? "yes" : "no"} · granted=${execution.authorization?.granted ? "yes" : "no"} · source=${execution.authorization?.source || "UNKNOWN"}`,
+        `- 桌面/系统交互：${execution.desktopInteraction?.length ? execution.desktopInteraction.join("；") : "无"}`,
+        `- 创建进程：${execution.processes?.length ? execution.processes.join("；") : "无"}`,
+        `- 监听端口：${execution.ports?.length ? execution.ports.join("；") : "无"}`,
+        `- 清理结果：${execution.cleanup || "UNKNOWN"}`,
+        `- 延后/阻塞套件：${execution.deferredSuites?.length ? execution.deferredSuites.join("；") : "无"}`,
+        `- 资源限制：${execution.resourceLimits || "UNKNOWN"}`,
+        "",
+      ]
+    : [];
   const lines = [
     "# Moyu QA 审计报告",
     "",
@@ -133,6 +162,7 @@ export function writeMarkdownReport(report, file, kb = null) {
     `- 静态审计 backlog：${staticOpen.length} 条（P0=${staticBySeverity.P0} · P1=${staticBySeverity.P1} · P2=${staticBySeverity.P2} · P3=${staticBySeverity.P3}，尚未全部自动化）`,
     `- 回归用例：${report.knowledgeBase?.regressions ?? 0} 条记忆，新增 ${report.knowledgeBase?.newRegressions ?? 0} 条`,
     "",
+    ...executionLines,
     "## 2. 阻塞与严重缺陷直指（P0 / P1）",
     "",
     "### 自动化运行",

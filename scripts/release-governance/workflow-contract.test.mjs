@@ -866,10 +866,13 @@ test("qa-full：证据来源必须是实际检出的提交，且无效引用必�
 
 test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/P1 不得登记豁免", () => {
   const source = workflow("qa-l2.yml");
-  assert.match(
-    source,
-    /uses: \.\/\.github\/workflows\/qa-full\.yml/,
-    "L2 的 full 模式必须复用 qa-full，而不是另写一套全量 QA",
+  assert.ok(
+    !source.includes("uses: ./.github/workflows/qa-full.yml"),
+    "PR 的 L2 不得再调用 qa-full：发布证据只在候选阶段生成，PR 不再重复其 L1",
+  );
+  assert.ok(
+    !source.includes("L2 · full QA"),
+    "PR 的 L2 不得再有 full-qa job；full 模式由同一个 PR QA job 跑全量套件",
   );
   assert.match(
     source,
@@ -883,22 +886,18 @@ test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/
     "门禁必须读取与 head 绑定的证据",
   );
 
-  // 分层：先分类，再决定 full / targeted；gate 名称不变，Draft 之外 always 执行。
+  // 分层：先分类，再决定 suite；full/定向共用同一个 PR QA job，gate 名称不变。
   assert.match(source, /classify-qa-scope\.mjs/, "L2 必须按改动范围分类");
-  assert.match(
-    source,
-    /needs\.changes\.outputs\.mode == 'full'/,
-    "full 模式必须走 qa-full",
-  );
-  assert.match(
-    source,
-    /needs\.changes\.outputs\.mode != 'full'/,
-    "非 full 模式必须走定向 QA",
-  );
+  assert.match(source, /name: L2 · PR QA/, "full/定向必须共用 L2 · PR QA job");
   assert.match(
     source,
     /node tests\/qa\/run-qa\.mjs --suite=/,
     "定向 QA 必须显式传 --suite=",
+  );
+  assert.match(
+    source,
+    /node tests\/qa\/run-qa\.mjs\n\s*fi/,
+    "suite 为空（full）时必须回退到全量 QA",
   );
   assert.match(
     source,

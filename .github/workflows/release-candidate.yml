@@ -12,7 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "候选标签（vX.Y.Z）。必须已存在于远端，且指向 main 上的提交"
+        description: "候选标签（vX.Y.Z）。已有标签必须指向候选提交"
+        required: true
+        type: string
+      source_commit:
+        description: "候选的完整 40 位 main 提交 SHA，必须与 QA 证据一致"
         required: true
         type: string
       qa_run_id:
@@ -51,13 +55,42 @@ jobs:
     permissions:
       contents: write # 仅用于创建 Draft 与上传候选制品
     steps:
-      - name: Checkout candidate tag
+      - name: Checkout trusted main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: main
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Validate requested candidate commit
+        id: candidate_ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ inputs.tag }}
+          CANDIDATE_COMMIT: ${{ inputs.source_commit }}
+          CANDIDATE_REHEARSAL: ${{ inputs.rehearsal }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          mkdir -p "$RUNNER_TEMP/candidate-gate"
+          cp scripts/release-governance/{candidate-evidence,candidate-identity,release-guard}.mjs "$RUNNER_TEMP/candidate-gate/"
+          node "$RUNNER_TEMP/candidate-gate/candidate-evidence.mjs"
+          echo "commit=$CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout verified candidate commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.candidate_ref.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enable Node.js dependency cache
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -81,6 +114,7 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           REHEARSAL: ${{ inputs.rehearsal }}
+          EXPECTED_COMMIT: ${{ steps.candidate_ref.outputs.commit }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
@@ -107,6 +141,10 @@ jobs:
               exit 1
             fi
             COMMIT="$(git rev-parse HEAD)"
+          fi
+          if [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "候选检出提交与验证的提交不一致" >&2
+            exit 1
           fi
           if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
             echo "候选 Commit $COMMIT 不在 main 上，拒绝作为发布候选" >&2
@@ -245,6 +283,16 @@ jobs:
           esac
           echo "state=$STATE" >> "$GITHUB_OUTPUT"
 
+      - name: Re-check candidate identity before Draft write
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.identity.outputs.tag }}
+          CANDIDATE_COMMIT: ${{ steps.identity.outputs.commit }}
+          CANDIDATE_REHEARSAL: ${{ inputs.rehearsal }}
+        run: |
+          node "$RUNNER_TEMP/candidate-gate/candidate-evidence.mjs"
+
       - name: Build signed NSIS bundle → Draft
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
@@ -254,6 +302,7 @@ jobs:
           MR_BUILD_ORIGIN: official
         with:
           tagName: ${{ steps.identity.outputs.tag }}
+          releaseCommitish: ${{ steps.identity.outputs.commit }}
           releaseName: Moyu ${{ steps.identity.outputs.tag }}
           # 由 Validate and resolve bilingual release notes 生成的 step output；空输入时是占位文案。
           releaseBody: ${{ steps.notes.outputs.body }}

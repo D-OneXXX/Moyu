@@ -122,6 +122,8 @@ impl RequestHeaders {
 /// ureq 阻塞传输实现。
 pub struct UreqTransport {
     agent: ureq::Agent,
+    proxy: Option<String>,
+    resolver: Arc<HostResolver>,
     /// 代理配置存在且 NO_PROXY 命中时使用的直连 agent。
     direct_agent: Option<ureq::Agent>,
     /// 进程环境里的 NO_PROXY 规则（逗号/空白分隔，已去除 scheme/path）。
@@ -134,6 +136,8 @@ pub struct UreqTransport {
     allow_loopback: bool,
 }
 
+type HostResolver = dyn Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync;
+
 struct RawResponse {
     status: u16,
     final_url: String,
@@ -141,6 +145,21 @@ struct RawResponse {
     body: Vec<u8>,
     retry_after_s: Option<u64>,
     location: Option<String>,
+}
+
+struct PinnedTls {
+    original_host: String,
+    tls: Arc<rustls::ClientConfig>,
+}
+
+impl ureq::TlsConnector for PinnedTls {
+    fn connect(
+        &self,
+        _address: &str,
+        stream: Box<dyn ureq::ReadWrite>,
+    ) -> Result<Box<dyn ureq::ReadWrite>, ureq::Error> {
+        ureq::TlsConnector::connect(&self.tls, &self.original_host, stream)
+    }
 }
 
 /// 最多跟随的重定向次数；第 6 个重定向响应视为错误。
@@ -363,6 +382,10 @@ impl UreqTransport {
         };
         Ok(Self {
             agent,
+            proxy,
+            resolver: Arc::new(|host, port| {
+                (host, port).to_socket_addrs().map(|addrs| addrs.collect())
+            }),
             direct_agent,
             no_proxy,
             headers,
@@ -429,8 +452,7 @@ impl UreqTransport {
             return Ok(());
         }
         let port = target.port_or_known_default().unwrap_or(443);
-        let addrs = (host, port)
-            .to_socket_addrs()
+        let addrs = (self.resolver)(host, port)
             .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
         let mut saw = false;
         for addr in addrs {
@@ -464,7 +486,83 @@ impl UreqTransport {
         referer: Option<&str>,
     ) -> Result<RawResponse, OnlineError> {
         let within_scope = scope.is_some_and(|s| same_origin(target, s));
-        let mut req = self.agent_for(target).get(target.as_str());
+        let use_proxy = self.proxy.as_deref().filter(|_| {
+            !no_proxy_matches(
+                target.host_str().unwrap_or_default(),
+                target.port_or_known_default(),
+                &self.no_proxy,
+            )
+        });
+        // A proxy resolves its own destination, independently of our DNS
+        // preflight. Pass an already validated IP to the proxy while keeping
+        // the original name for HTTP Host and TLS certificate verification.
+        let pinned = if let Some(proxy) = use_proxy {
+            let host = target.host_str().ok_or_else(|| {
+                OnlineError::Network("URL 缺少主机名（online-url-invalid）".into())
+            })?;
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            let port = target.port_or_known_default().unwrap_or(443);
+            let addresses = (self.resolver)(host, port)
+                .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
+            let addresses =
+                validate_connection_addresses(addresses, self.allow_loopback).map_err(|_| {
+                    OnlineError::Network("目标地址不允许访问（online-blocked-address）".into())
+                })?;
+            // ureq's SOCKS adapter treats bracketed IPv6 URL hosts as DNS
+            // names. Never let the proxy resolve them again; prefer IPv4 and
+            // fail closed for IPv6-only targets until the adapter supports it.
+            let selected = if proxy.starts_with("socks5://") {
+                addresses
+                    .iter()
+                    .find(|addr| addr.is_ipv4())
+                    .ok_or_else(|| {
+                        OnlineError::Network(
+                            "SOCKS 代理暂不支持仅 IPv6 的目标（online-fetch-failed）".into(),
+                        )
+                    })?
+            } else {
+                addresses
+                    .iter()
+                    .find(|addr| addr.is_ipv4())
+                    .unwrap_or(&addresses[0])
+            };
+            let mut pinned_url = target.clone();
+            pinned_url
+                .set_ip_host(selected.ip())
+                .map_err(|_| OnlineError::Network("目标地址无效（online-url-invalid）".into()))?;
+            let root_store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            let tls = Arc::new(
+                rustls::ClientConfig::builder_with_provider(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .with_safe_default_protocol_versions()
+                .map_err(|_| OnlineError::Network("TLS 初始化失败（online-fetch-failed）".into()))?
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+            );
+            let connector = Arc::new(PinnedTls {
+                original_host: host.to_string(),
+                tls,
+            });
+            let proxy = ureq::Proxy::new(proxy).map_err(|e| OnlineError::Proxy(e.to_string()))?;
+            let agent = ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .redirects(0)
+                .user_agent(ONLINE_UA)
+                .proxy(proxy)
+                .tls_connector(connector)
+                .build();
+            Some((agent, pinned_url))
+        } else {
+            None
+        };
+        let mut req = match pinned.as_ref() {
+            Some((agent, url)) => agent.get(url.as_str()),
+            None => self.agent_for(target).get(target.as_str()),
+        };
         // 辅助会话请求头：只在目标 origin 与登记 origin 完全一致时附带。
         // 放在用户请求头之前，保证用户显式设置优先。
         if let Some(headers) = self.assisted_headers(target) {
@@ -498,6 +596,12 @@ impl UreqTransport {
                     }
                 }
             }
+        }
+        if pinned.is_some() {
+            req = req.set(
+                "Host",
+                &target[url::Position::BeforeHost..url::Position::AfterPort],
+            );
         }
         match req.call() {
             Ok(resp) => read_response(resp, target, max_bytes),
@@ -657,6 +761,209 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread::JoinHandle;
+
+    #[test]
+    fn proxy_dns_rebinding_is_rejected_before_contacting_proxy() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut transport = UreqTransport::new(&format!("http://{address}"), "").unwrap();
+        transport.no_proxy.clear();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        transport.resolver = Arc::new(move |_, port| {
+            let ip = if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                "8.8.8.8"
+            } else {
+                "192.168.1.1"
+            };
+            Ok(vec![SocketAddr::new(ip.parse().unwrap(), port)])
+        });
+        let target = url::Url::parse("http://rebind.example/page").unwrap();
+        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn socks_ipv6_only_target_fails_before_contacting_proxy() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut transport = UreqTransport::new(&format!("socks5://{address}"), "").unwrap();
+        transport.no_proxy.clear();
+        transport.resolver = Arc::new(|_, port| {
+            Ok(vec![SocketAddr::new(
+                "2606:4700:4700::1111".parse().unwrap(),
+                port,
+            )])
+        });
+        let target = url::Url::parse("http://ipv6-only.example/page").unwrap();
+        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn http_proxy_receives_validated_ip_and_original_host() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut byte = [0u8; 1];
+            while !bytes.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 8192);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            String::from_utf8(bytes).unwrap()
+        });
+        let mut transport = UreqTransport::new(&format!("http://{proxy_address}"), "").unwrap();
+        transport.allow_loopback = true;
+        transport.no_proxy.clear();
+        let target = url::Url::parse("http://localhost:9876/book?x=1").unwrap();
+        let response = transport.execute(&target, None, 1024, None).unwrap();
+        assert_eq!(response.body, b"ok");
+        let request = server.join().unwrap().to_ascii_lowercase();
+        assert!(
+            request.starts_with("get http://127.0.0.1:9876/book?x=1 ")
+                || request.starts_with("get http://[::1]:9876/book?x=1 "),
+            "{request}"
+        );
+        assert!(
+            request.contains("\r\nhost: localhost:9876\r\n"),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn socks5_proxy_receives_an_ip_instead_of_a_hostname() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut greeting = [0; 2];
+            socket.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting[0], 5);
+            let mut methods = vec![0; greeting[1] as usize];
+            socket.read_exact(&mut methods).unwrap();
+            socket.write_all(&[5, 0]).unwrap();
+            let mut command = [0; 4];
+            socket.read_exact(&mut command).unwrap();
+            assert_eq!(&command[..3], &[5, 1, 0]);
+            let addr_len = match command[3] {
+                1 => 4,
+                4 => 16,
+                _ => panic!("proxy received a hostname"),
+            };
+            let mut dest = vec![0; addr_len + 2];
+            socket.read_exact(&mut dest).unwrap();
+            socket.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 8192);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let mut transport = UreqTransport::new(&format!("socks5://{address}"), "").unwrap();
+        transport.allow_loopback = true;
+        transport.no_proxy.clear();
+        let target = url::Url::parse("http://localhost:9876/book").unwrap();
+        assert_eq!(
+            transport.execute(&target, None, 1024, None).unwrap().body,
+            b"ok"
+        );
+        assert!(server
+            .join()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("\r\nhost: localhost:9876\r\n"));
+    }
+
+    #[test]
+    fn pinned_tls_verifies_and_sends_the_original_server_name() {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let der = cert.cert.der().clone();
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let server_config = rustls::ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![der.clone()], key.into())
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(der).unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut connect = Vec::new();
+            let mut byte = [0u8; 1];
+            while !connect.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                connect.push(byte[0]);
+                assert!(connect.len() < 8192);
+            }
+            assert!(String::from_utf8(connect)
+                .unwrap()
+                .starts_with("CONNECT 127.0.0.1:9876 "));
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .unwrap();
+            let connection = rustls::ServerConnection::new(Arc::new(server_config)).unwrap();
+            let mut tls = rustls::StreamOwned::new(connection, socket);
+            let mut request = [0u8; 1024];
+            assert!(tls.read(&mut request).unwrap() > 0);
+            let server_name = tls.conn.server_name().map(str::to_string);
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            tls.flush().unwrap();
+            server_name
+        });
+        let connector = Arc::new(PinnedTls {
+            original_host: "localhost".into(),
+            tls: Arc::new(client_config),
+        });
+        let proxy = ureq::Proxy::new(format!("http://{address}")).unwrap();
+        let agent = ureq::AgentBuilder::new()
+            .proxy(proxy)
+            .tls_connector(connector)
+            .build();
+        let response = agent.get("https://127.0.0.1:9876/").call().unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(server.join().unwrap().as_deref(), Some("localhost"));
+    }
 
     #[test]
     fn no_proxy_rules_match_exact_subdomain_port_and_wildcard() {

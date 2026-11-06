@@ -42,6 +42,87 @@ test("安装验证：Draft 必须绑定固定提交且无需预建版本标签",
 });
 
 
+test("正式发布：从 Draft 的 RC 记录解析固定提交，不检出尚可能不存在的标签", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.doesNotMatch(
+      source,
+      /ref:\s*refs\/tags\/\$\{\{\s*inputs\.tag\s*\}\}/,
+      `${name} 不得在候选标签创建前检出标签`,
+    );
+    assert.match(source, /ref:\s*main\b/, `${name} 必须从受保护的 main 取得治理工具`);
+    assert.ok(source.includes("Resolve release identity from Draft"), `${name} 必须从 Draft 解析发布身份`);
+    assert.ok(source.includes("publish-identity.mjs"), `${name} 必须使用统一发布身份闸门`);
+    for (const marker of ["--release-json", "--record release-meta/rc-record.json", 'git checkout --detach "$COMMIT"']) {
+      assert.ok(source.includes(marker), `${name} 缺少发布身份标记：${marker}`);
+    }
+    assert.match(source, /rc-record\.json/, `${name} 必须从 Draft 的 RC 记录取得候选提交`);
+  }
+});
+
+test("正式发布：不自动创建/推送标签，标签缺失或指向别处必须失败关闭", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.doesNotMatch(source, /git\s+push[^\n]*refs\/tags/, `${name} 不得推送标签`);
+    assert.doesNotMatch(source, /git\s+tag\s/, `${name} 不得在发布流程内创建标签`);
+    assert.doesNotMatch(source, /gh\s+release\s+create/, `${name} 不得在发布流程内创建 Release/标签`);
+    assert.doesNotMatch(source, /git\/refs/, `${name} 不得直接写 refs 绕过标签保护`);
+    assert.ok(source.includes("publish-identity.mjs"), `${name} 必须校验标签存在且绑定候选提交`);
+    // gh 的 --verify-tag 只有同时给了 --tag 才会真正检查远端标签；缺 --tag 时是空操作。
+    assert.match(
+      source,
+      /gh release edit "\$TAG" --tag "\$TAG" --draft=false --verify-tag/,
+      `${name} 必须用 --tag + --verify-tag 禁止发布时顺带创建标签`,
+    );
+    assert.ok(
+      source.includes("--notes-file approved/release-notes.md"),
+      `${name} 发布时必须使用审批快照正文，而不是可能被改写的 Draft 正文`,
+    );
+  }
+});
+
+test("正式发布：审批后重新下载并校验全部 Draft 资产，再公开；发布后再次复核", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const steps = parseSteps(workflow(name));
+    const index = (title) => steps.findIndex((step) => step.name === title);
+    const notes = index("Enforce bilingual release notes");
+    const recheck = index("Re-check tag and Draft identity before publish");
+    const publish = index("Publish the Draft");
+    const post = index("Post-release verification");
+    assert.ok(notes >= 0 && recheck > notes && publish > recheck && post > publish, `${name} 发布步骤顺序异常`);
+
+    const recheckStep = steps[recheck];
+    for (const marker of [
+      "publish-identity.mjs",
+      "gh release download",
+      "--clobber",
+      "rc-record.json",
+      "install-verification.json",
+      "sha256File",
+      "verify-draft.mjs",
+      "release-notes.mjs",
+      "approved/release-notes.sha256",
+    ]) {
+      assert.ok(recheckStep.run.includes(marker), `${name} 发布前复检缺少：${marker}`);
+    }
+    assert.match(recheckStep.run, /RECHECK_COMMIT[^\n]*COMMIT/, `${name} 必须比对复检得到的候选提交`);
+    assert.match(recheckStep.run, /set -euo pipefail/, `${name} 复检必须失败关闭`);
+
+    const postStep = steps[post];
+    for (const marker of [
+      "publish-identity.mjs",
+      "verify-draft.mjs",
+      "published/rc-record.json",
+      "approved/${name}",
+      "--allow-extra",
+      "peer-expected.json",
+      "approved/release-notes.sha256",
+    ]) {
+      assert.ok(postStep.run.includes(marker), `${name} 发布后复核缺少：${marker}`);
+    }
+  }
+});
+
 test("release-candidate：候选阶段产出并回填 signature-verification.json", () => {
   const source = workflow("release-candidate.yml");
   const rc = source.indexOf("Build and upload RC record");
@@ -126,6 +207,26 @@ test("发布接力：只从已公开且非预发布的 Release 携带另一通�
   }
 });
 
+test("发布接力：对端清单必须绑定源 Release 自己的 rc-record 摘要", () => {
+  const cases = {
+    "release-publish.yml": { channel: "linux-critical", name: "latest-linux-critical.json" },
+    "release-publish-linux.yml": { channel: "windows", name: "latest.json" },
+  };
+  for (const [file, { channel, name }] of Object.entries(cases)) {
+    const source = workflow(file);
+    const handoff = parseSteps(source).find((step) => step.name === "Channel hand-off (carry the other channel manifest)");
+    assert.ok(handoff, `${file} 缺少通道接力步骤`);
+    assert.ok(handoff.run.includes("verify-peer-manifest.mjs"), `${file} 接力清单必须校验源记录`);
+    assert.ok(handoff.run.includes("rc-record.json"), `${file} 接力必须下载源 Release 的 rc-record.json`);
+    assert.ok(handoff.run.includes(`--channel ${channel}`), `${file} 必须校验源通道`);
+    assert.ok(handoff.run.includes(`--name ${name}`), `${file} 必须校验对端清单名称`);
+    assert.ok(handoff.run.includes("--out handoff/peer-expected.json"), `${file} 必须记录接力清单的源摘要`);
+    const verifyAt = handoff.run.indexOf("verify-peer-manifest.mjs");
+    const uploadAt = handoff.run.indexOf("gh release upload");
+    assert.ok(verifyAt >= 0 && uploadAt > verifyAt, `${file} 必须先验证摘要再上传接力清单`);
+  }
+});
+
 test("候选通道：已公开的 Release 不得被候选流程覆盖（Windows 与 Linux 一致）", () => {
   for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
     const source = workflow(name);
@@ -192,12 +293,12 @@ test("发布通道：已公开但缺清单必须可重跑补齐（Windows 与 Li
     );
 
     // 发布后校验不得被“已发布”短路，否则部分失败的重跑永远不会被检查。
-    const verifyAt = source.indexOf("Post-release verification");
-    const verifyBlock = source.slice(verifyAt, verifyAt + 1800);
-    assert.ok(!verifyBlock.includes("published != 'true'"), `${name} 的发布后校验不得跳过已公开状态`);
+    const verifyStep = parseSteps(source).find((step) => step.name === "Post-release verification");
+    assert.ok(verifyStep, `${name} 缺少发布后校验步骤`);
+    assert.ok(!verifyStep.run.includes("published != 'true'"), `${name} 的发布后校验不得跳过已公开状态`);
     const peer = channel === "windows" ? "latest-linux-critical.json" : "latest.json";
     assert.ok(
-      verifyBlock.includes(peer),
+      verifyStep.run.includes(peer),
       `${name} 的发布后校验必须确认另一通道清单 ${peer} 存在`,
     );
 
@@ -317,6 +418,14 @@ test("场景 1/2：首次公开与已发布重跑走同一套资产校验，产�
     );
     // 两种状态（Draft / 已公开）都不会让产出步骤消失：它没有 if。
     assert.equal(draftAssetsProducer(steps).if, "");
+    // 已公开重跑才允许对端接力清单；首次公开的 Draft 不得夹带额外资产。
+    const producer = draftAssetsProducer(steps);
+    assert.ok(producer.run.includes("NEED_PUBLISH"), `${name} 资产校验必须按发布状态决定是否允许接力清单`);
+    assert.match(
+      producer.run,
+      /ALLOW_EXTRA=\(\)\s*\n\s*if \[ "\$NEED_PUBLISH" != "true" \]; then\s*\n\s*ALLOW_EXTRA\+=\(--allow-extra/,
+      `${name} 只有已公开重跑才允许携带接力清单，首次公开的 Draft 不得夹带`,
+    );
   }
 });
 

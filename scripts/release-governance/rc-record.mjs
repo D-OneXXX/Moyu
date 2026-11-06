@@ -552,6 +552,7 @@ export function validateInstallAttestation(attestation, expected) {
  * @param {object} input.attestation 安装验证回执
  * @param {string} input.channel 期望通道
  * @param {string} input.commit 期望 Commit
+ * @param {string[]} [input.allowedExtra] 发布后允许出现的对端通道清单（不得掩盖记录内制品）
  * @returns {{ok: boolean, problems: string[]}}
  */
 export function verifyPublishPreconditions(input) {
@@ -600,8 +601,9 @@ export function verifyPublishPreconditions(input) {
       );
     }
   }
+  const allowedExtra = new Set(input.allowedExtra || []);
   for (const name of digests.keys()) {
-    if (!record.artifacts.some((item) => item.name === name)) {
+    if (!record.artifacts.some((item) => item.name === name) && !allowedExtra.has(name)) {
       problems.push(`出现记录之外的制品：${name}`);
     }
   }

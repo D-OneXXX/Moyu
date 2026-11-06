@@ -290,6 +290,30 @@ test("verifyPublishPreconditions：额外出现记录之外的制品 → 拒绝"
   assert.ok(verdict.problems.some((p) => p.includes("记录之外的制品")));
 });
 
+test("verifyPublishPreconditions：发布后仅允许显式指定的对端通道清单，其他额外制品仍拒绝", () => {
+  const peer = "latest-linux-critical.json";
+  const base = {
+    record: makeRecord(),
+    actualDigests: new Map([
+      ["app-setup.exe", INSTALLER_SHA],
+      [peer, sha256Bytes(Buffer.from("linux-peer"))],
+    ]),
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  };
+  assert.equal(verifyPublishPreconditions(base).ok, false);
+  assert.equal(verifyPublishPreconditions({ ...base, allowedExtra: [peer] }).ok, true);
+
+  const withSurprise = verifyPublishPreconditions({
+    ...base,
+    actualDigests: new Map([...base.actualDigests, ["surprise.exe", INSTALLER_SHA]]),
+    allowedExtra: [peer],
+  });
+  assert.equal(withSurprise.ok, false);
+  assert.ok(withSurprise.problems.some((p) => p.includes("记录之外的制品")));
+});
+
 test("verifyPublishPreconditions：Linux 安装回执绑定 deb（不是字母序靠前的 rpm）", () => {
   const debName = "MangaReader_0.17.2_amd64.deb";
   const appName = "MangaReader_0.17.2_amd64.AppImage";
@@ -506,6 +530,17 @@ test("runVerification：Draft 中的治理文件按治理文件处理，不参�
     commit: COMMIT,
   });
   assert.equal(verdict.ok, true, verdict.problems.join(" | "));
+  fs.writeFileSync(path.join(dir, "latest-linux-critical.json"), Buffer.from("peer"));
+  const allowed = runVerification({
+    record: makeRecord(),
+    assetsDir: dir,
+    attestation: makeAttestation(),
+    tag: "v0.17.2",
+    channel: "windows",
+    commit: COMMIT,
+    allowedExtra: ["latest-linux-critical.json"],
+  });
+  assert.equal(allowed.ok, true, allowed.problems.join(" | "));
   fs.writeFileSync(path.join(dir, "surprise.exe"), Buffer.from("extra"));
   const rejected = runVerification({
     record: makeRecord(),
@@ -514,6 +549,7 @@ test("runVerification：Draft 中的治理文件按治理文件处理，不参�
     tag: "v0.17.2",
     channel: "windows",
     commit: COMMIT,
+    allowedExtra: ["latest-linux-critical.json"],
   });
   assert.equal(rejected.ok, false);
   assert.ok(rejected.problems.some((p) => p.includes("记录之外的制品")));

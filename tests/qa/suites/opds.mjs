@@ -1,5 +1,6 @@
 import { invoke, invokeSafe } from "../lib/app.mjs";
 import { fail, ok } from "../lib/report.mjs";
+import { startOpdsFixture } from "../lib/opds-fixture.mjs";
 
 function pageCount(book) {
   return book?.page_count ?? book?.pageCount ?? 0;
@@ -19,22 +20,12 @@ function isDataImage(value) {
  */
 export async function runOpdsSuite(ctx, report) {
   const page = ctx.page;
-  const fixture = ctx.onlineFixture;
-  const opds = fixture?.opds;
-  if (!opds) {
-    fail(report, {
-      id: "opds:fixture-missing",
-      suite: "opds",
-      layer: "infrastructure",
-      title: "OPDS 隔离夹具未启动",
-      severity: "P0",
-      location: "tests/qa/lib/online-fixture.mjs",
-    });
-    return;
-  }
-
+  let fixture = null;
+  let opds = null;
   const downloaded = [];
   try {
+    fixture = await startOpdsFixture();
+    opds = fixture.opds;
     const komgaUrl = `${fixture.origin}${opds.komgaRoot}`;
     const saved = await invoke(page, "opds_set_config", {
       config: {
@@ -48,19 +39,22 @@ export async function runOpdsSuite(ctx, report) {
     const configOk =
       saved.enabled === true &&
       saved.url === komgaUrl &&
-      saved.username === opds.username &&
+      saved.hasUsername === true &&
       saved.hasPassword === true &&
+      saved.username === undefined &&
+      !serializedConfig.includes(opds.username) &&
       !serializedConfig.includes(opds.password);
     if (!configOk) {
       fail(report, {
         id: "opds:config-local",
         suite: "opds",
         layer: "integration",
-        title: "OPDS 配置未正确落库或密码回传给了前端",
+        title: "OPDS 配置未正确落库或账号密码回传给了前端",
         severity: "P1",
         details: serializedConfig,
         location: "src-tauri/src/opds.rs / opds_get_config",
-        expected: "enabled=true、URL/用户名正确、hasPassword=true、响应不含密码",
+        expected:
+          "enabled=true、URL 正确、hasUsername/hasPassword=true、响应不含账号与密码",
         actual: serializedConfig,
       });
     } else {
@@ -68,7 +62,7 @@ export async function runOpdsSuite(ctx, report) {
         id: "opds:config-local",
         suite: "opds",
         layer: "integration",
-        title: "OPDS 配置仅本地保存，密码不回传前端",
+        title: "OPDS 账号密码仅本地保存，不回传前端",
       });
     }
 
@@ -417,6 +411,262 @@ export async function runOpdsSuite(ctx, report) {
       });
     }
 
+    // Credential boundary: Basic is only sent to the configured Komga origin;
+    // the Kavita path-key chain must not add an Authorization header at all.
+    const kavitaCover = await invoke(page, "opds_cover", {
+      url: kavitaChapter.coverUrl,
+    });
+    const kavitaAuthLeaked =
+      fixture.stats.kavitaRequests === 0 ||
+      fixture.stats.kavitaAuthorization !== 0 ||
+      fixture.stats.basicAuthRequests === 0;
+    if (!isDataImage(kavitaCover?.dataUrl) || kavitaAuthLeaked) {
+      fail(report, {
+        id: "opds:credentials-same-origin",
+        suite: "opds",
+        layer: "security",
+        title: "Kavita 封面失败或 Basic 凭据越界发送",
+        severity: "P1",
+        details: JSON.stringify({
+          mime: kavitaCover?.mime,
+          kavitaRequests: fixture.stats.kavitaRequests,
+          kavitaAuthorization: fixture.stats.kavitaAuthorization,
+          basicAuthRequests: fixture.stats.basicAuthRequests,
+        }),
+        location: "src-tauri/src/opds.rs OpdsClient",
+        expected: "Kavita 仅走路径内 API key，不带 Authorization；Komga 仅同源 Basic",
+      });
+    } else {
+      ok(report, {
+        id: "opds:credentials-same-origin",
+        suite: "opds",
+        layer: "security",
+        title: "Basic 只发 Komga 同源，Kavita 路径 key 不带 Basic",
+      });
+    }
+
+    const awayOriginRequests = fixture.stats.crossOriginRequests;
+
+    // ---------- CBR: download RAR, convert to CBZ, read through pipeline ----------
+    await invoke(page, "opds_set_config", {
+      config: {
+        enabled: true,
+        url: `${fixture.origin}${opds.cbrRoot}`,
+        username: "",
+        password: "",
+      },
+    });
+    const cbrRoot = await invoke(page, "opds_browse", { url: null });
+    const cbrEntry = cbrRoot?.entries?.[0];
+    if (cbrEntry?.archive !== "rar" || typeof cbrEntry?.downloadUrl !== "string") {
+      fail(report, {
+        id: "opds:cbr-feed",
+        suite: "opds",
+        layer: "integration",
+        title: "CBR 目录条目未被识别为 RAR 附件",
+        severity: "P1",
+        details: JSON.stringify(cbrRoot),
+        location: "src-tauri/src/opds.rs archive_kind",
+      });
+    } else {
+      ok(report, {
+        id: "opds:cbr-feed",
+        suite: "opds",
+        layer: "integration",
+        title: "CBR 目录条目识别为 RAR 并给出下载地址",
+      });
+    }
+    const cbrBook = await invoke(page, "opds_download_entry", {
+      url: cbrEntry.downloadUrl,
+      title: cbrEntry.title,
+    });
+    downloaded.push(cbrBook.id);
+    if (pageCount(cbrBook) !== 2 || cbrBook.title !== opds.cbrTitle) {
+      fail(report, {
+        id: "opds:cbr-convert",
+        suite: "opds",
+        layer: "integration",
+        title: "CBR 下载后未转换为可读 CBZ",
+        severity: "P1",
+        details: JSON.stringify({
+          pageCount: pageCount(cbrBook),
+          title: cbrBook.title,
+          path: cbrBook.path,
+        }),
+        location: "src-tauri/src/opds.rs convert_rar_to_cbz",
+        expected: "2 页且标题保持",
+      });
+    } else {
+      ok(report, {
+        id: "opds:cbr-convert",
+        suite: "opds",
+        layer: "integration",
+        title: "CBR 下载后转 CBZ 并进入既有书库",
+        details: `${cbrBook.title} · ${pageCount(cbrBook)} 页`,
+      });
+    }
+    const cbrRead = await invokeSafe(page, "get_page", {
+      bookId: cbrBook.id,
+      index: 1,
+      maxWidth: 480,
+      maxHeight: 720,
+    });
+    if (!cbrRead.ok || !isDataImage(cbrRead.value?.dataUrl)) {
+      fail(report, {
+        id: "opds:cbr-pipeline",
+        suite: "opds",
+        layer: "integration",
+        title: "CBR 转换后的页面无法经现有阅读管线读出",
+        severity: "P1",
+        details: JSON.stringify({
+          error: cbrRead.ok ? null : cbrRead.error,
+        }),
+        location: "src-tauri/src/commands.rs get_page",
+      });
+    } else {
+      ok(report, {
+        id: "opds:cbr-pipeline",
+        suite: "opds",
+        layer: "integration",
+        title: "CBR 转换后的页面经既有阅读管线读出",
+        details: `${cbrRead.value.width}×${cbrRead.value.height}`,
+      });
+    }
+
+    // ---------- CBR: encrypted archive fails closed with stable code ----------
+    await invoke(page, "opds_set_config", {
+      config: {
+        enabled: true,
+        url: `${fixture.origin}${opds.encryptedRoot}`,
+        username: "",
+        password: "",
+      },
+    });
+    const encryptedFeed = await invoke(page, "opds_browse", { url: null });
+    const encryptedEntry = encryptedFeed?.entries?.[0];
+    const encrypted = await invokeSafe(page, "opds_download_entry", {
+      url: encryptedEntry?.downloadUrl,
+      title: encryptedEntry?.title || "encrypted",
+    });
+    if (
+      encrypted.ok ||
+      !String(encrypted.error).includes("opds-cbr-encrypted")
+    ) {
+      fail(report, {
+        id: "opds:cbr-encrypted",
+        suite: "opds",
+        layer: "security",
+        title: "加密 CBR 未按稳定码失败关闭",
+        severity: "P1",
+        details: JSON.stringify(encrypted),
+        location: "src-tauri/src/opds.rs cbr_error",
+        expected: "opds-cbr-encrypted",
+      });
+    } else {
+      ok(report, {
+        id: "opds:cbr-encrypted",
+        suite: "opds",
+        layer: "security",
+        title: "加密 CBR 按稳定码失败关闭，不写半成品",
+      });
+    }
+
+    // ---------- Cross-origin boundary ----------
+    await invoke(page, "opds_set_config", {
+      config: {
+        enabled: true,
+        url: `${fixture.origin}${opds.redirectRoot}`,
+        username: "",
+        password: "",
+      },
+    });
+    const redirect = await invokeSafe(page, "opds_browse", { url: null });
+    if (redirect.ok || !String(redirect.error).includes("opds-cross-origin")) {
+      fail(report, {
+        id: "opds:redirect-cross-origin",
+        suite: "opds",
+        layer: "security",
+        title: "OPDS 跨源重定向未被拒绝",
+        severity: "P1",
+        details: JSON.stringify(redirect),
+        location: "src-tauri/src/opds.rs same_origin_link",
+        expected: "opds-cross-origin",
+      });
+    } else {
+      ok(report, {
+        id: "opds:redirect-cross-origin",
+        suite: "opds",
+        layer: "security",
+        title: "OPDS 跨源重定向被拒绝且未发出请求",
+      });
+    }
+    if (fixture.stats.crossOriginRequests !== awayOriginRequests) {
+      fail(report, {
+        id: "opds:redirect-target-untouched",
+        suite: "opds",
+        layer: "security",
+        title: "OPDS 跨源目标服务器仍被访问",
+        severity: "P1",
+        details: JSON.stringify({
+          before: awayOriginRequests,
+          after: fixture.stats.crossOriginRequests,
+        }),
+        location: "tests/qa/lib/opds-fixture.mjs",
+      });
+    } else {
+      ok(report, {
+        id: "opds:redirect-target-untouched",
+        suite: "opds",
+        layer: "security",
+        title: "跨源目标服务器零请求",
+      });
+    }
+
+    await invoke(page, "opds_set_config", {
+      config: {
+        enabled: true,
+        url: `${fixture.origin}${opds.awayRoot}`,
+        username: "",
+        password: "",
+      },
+    });
+    const awayFeed = await invoke(page, "opds_browse", { url: null });
+    const offOriginDropped =
+      awayFeed?.entries?.[0]?.navigationUrl === undefined &&
+      typeof awayFeed?.entries?.[1]?.navigationUrl === "string" &&
+      fixture.stats.crossOriginRequests === awayOriginRequests;
+    if (!offOriginDropped) {
+      fail(report, {
+        id: "opds:off-origin-link-dropped",
+        suite: "opds",
+        layer: "security",
+        title: "目录中的跨源链接未被丢弃",
+        severity: "P1",
+        details: JSON.stringify({
+          entries: awayFeed?.entries,
+          crossOriginRequests: fixture.stats.crossOriginRequests,
+        }),
+        location: "src-tauri/src/opds.rs parse_feed",
+      });
+    } else {
+      ok(report, {
+        id: "opds:off-origin-link-dropped",
+        suite: "opds",
+        layer: "security",
+        title: "目录中的跨源链接被丢弃，仅保留已配置 origin",
+      });
+    }
+
+    // Restore the Kavita configuration for the settings-panel check.
+    await invoke(page, "opds_set_config", {
+      config: {
+        enabled: true,
+        url: `${fixture.origin}${opds.kavitaRoot}`,
+        username: "",
+        password: "",
+      },
+    });
+
     // Settings panel smoke: the network tab renders the OPDS card and reads
     // the saved Kavita URL back from the local config.
     try {
@@ -548,6 +798,11 @@ export async function runOpdsSuite(ctx, report) {
       });
     } catch {
       /* ignore */
+    }
+    if (fixture) {
+      await fixture.close().catch(() => {
+        /* isolated loopback servers; close failure is not a product defect */
+      });
     }
   }
 }

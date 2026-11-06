@@ -26,6 +26,7 @@ export default function OpdsPanel() {
   const [enabled, setEnabled] = useState(false);
   const [url, setUrl] = useState("");
   const [username, setUsername] = useState("");
+  const [clearUsername, setClearUsername] = useState(false);
   const [password, setPassword] = useState("");
   const [clearPassword, setClearPassword] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -42,7 +43,7 @@ export default function OpdsPanel() {
         setConfig(value);
         setEnabled(value.enabled);
         setUrl(value.url);
-        setUsername(value.username);
+        setUsername("");
         setLoading(false);
       },
       (reason) => {
@@ -62,14 +63,15 @@ export default function OpdsPanel() {
     const payload = {
       enabled,
       url: url.trim(),
-      username: username.trim(),
+      username: clearUsername ? "" : username.length > 0 ? username : null,
       password: clearPassword ? "" : password.length > 0 ? password : null,
     };
     const saved = await api.setOpdsConfig(payload);
     setConfig(saved);
     setEnabled(saved.enabled);
     setUrl(saved.url);
-    setUsername(saved.username);
+    setUsername("");
+    setClearUsername(false);
     setPassword("");
     setClearPassword(false);
     recordBreadcrumb("settingsChange");
@@ -94,7 +96,7 @@ export default function OpdsPanel() {
     if (saving || testing) return;
     if (
       !config || !enabled || !config.enabled || url.trim() !== config.url ||
-      username.trim() !== config.username || password.length > 0 || clearPassword
+      username.length > 0 || clearUsername || password.length > 0 || clearPassword
     ) {
       setError(t("opds.settings.saveFirst"));
       return;
@@ -185,15 +187,44 @@ export default function OpdsPanel() {
           <Label htmlFor="opds-username">
             {t("opds.settings.usernameLabel")}
           </Label>
-          <Input
-            id="opds-username"
-            value={username}
-            onChange={(event) => setUsername(event.currentTarget.value)}
-            placeholder={t("opds.settings.usernamePlaceholder")}
-            autoComplete="username"
-            spellCheck={false}
-            data-testid="opds-username"
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              id="opds-username"
+              value={username}
+              onChange={(event) => {
+                setUsername(event.currentTarget.value);
+                if (event.currentTarget.value.length > 0) setClearUsername(false);
+              }}
+              placeholder={t("opds.settings.usernamePlaceholder")}
+              autoComplete="username"
+              spellCheck={false}
+              data-testid="opds-username"
+              className="min-w-0 flex-1"
+            />
+            <Button
+              type="button"
+              variant="pill"
+              size="pill-sm"
+              className="shrink-0"
+              onClick={() => {
+                setUsername("");
+                setClearUsername(true);
+              }}
+              disabled={!config?.hasUsername && !clearUsername}
+              title={t("opds.settings.clearUsername")}
+              data-testid="opds-clear-username"
+            >
+              <Eraser className="size-3.5" aria-hidden />
+              {t("opds.settings.clearUsername")}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {clearUsername
+              ? t("opds.settings.clearUsername")
+              : config?.hasUsername
+                ? t("opds.settings.usernameSaved")
+                : t("opds.settings.usernameNone")}
+          </p>
         </div>
         <div className="space-y-2">
           <Label htmlFor="opds-password">

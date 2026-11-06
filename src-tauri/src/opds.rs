@@ -47,14 +47,15 @@ pub(crate) const OPDS_PASSWORD_KEY: &str = "opds_password";
 const OPDS_FEED_ACCEPT: &str =
     "application/atom+xml,application/atom+xml;profile=opds-catalog,application/xml;q=0.9,*/*;q=0.5";
 
-/// Local-only OPDS configuration. The password is never serialized to the
-/// frontend: [`OpdsConfigView`] only exposes whether one is stored.
+/// Local-only OPDS configuration. Neither the stored username nor the
+/// password is serialized to the frontend: [`OpdsConfigView`] only exposes
+/// whether they are stored. Credentials never leave the Rust side.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OpdsConfigView {
     pub enabled: bool,
     pub url: String,
-    pub username: String,
+    pub has_username: bool,
     pub has_password: bool,
 }
 
@@ -66,13 +67,15 @@ impl std::fmt::Debug for OpdsConfigView {
 
 /// Request payload for saving local OPDS configuration.
 ///
-/// `password: None` preserves the stored password; `Some("")` clears it.
+/// `None` preserves the stored value; `Some("")` clears it. The frontend never
+/// receives the stored username/password, so an untouched field stays `None`.
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpdsConfigInput {
     pub enabled: bool,
     pub url: String,
-    pub username: String,
+    #[serde(default)]
+    pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
 }
@@ -610,11 +613,12 @@ fn validate_password(raw: &str) -> Result<(), BackendError> {
 }
 
 pub(crate) fn load_config(conn: &rusqlite::Connection) -> Result<OpdsConfigView, BackendError> {
+    let username = setting(conn, OPDS_USERNAME_KEY)?.unwrap_or_default();
     let password = setting(conn, OPDS_PASSWORD_KEY)?.unwrap_or_default();
     Ok(OpdsConfigView {
         enabled: bool_setting(conn, OPDS_ENABLED_KEY)?,
         url: setting(conn, OPDS_URL_KEY)?.unwrap_or_default(),
-        username: setting(conn, OPDS_USERNAME_KEY)?.unwrap_or_default(),
+        has_username: !username.is_empty(),
         has_password: !password.is_empty(),
     })
 }
@@ -624,7 +628,10 @@ pub(crate) fn save_config(
     input: OpdsConfigInput,
 ) -> Result<OpdsConfigView, BackendError> {
     let url = validate_config_url(&input.url, input.enabled)?;
-    let username = validate_username(&input.username)?;
+    let username = match input.username.as_deref() {
+        Some(raw) => Some(validate_username(raw)?),
+        None => None,
+    };
     let transaction = conn.unchecked_transaction()?;
     let conn = &transaction;
     let previous_url = setting(conn, OPDS_URL_KEY)?.unwrap_or_default();
@@ -638,6 +645,13 @@ pub(crate) fn save_config(
         // to a new origin. The user has to re-enter it (or explicitly clear).
         crate::db::set_setting(conn, OPDS_PASSWORD_KEY, "")?;
     }
+    match username {
+        Some(username) => crate::db::set_setting(conn, OPDS_USERNAME_KEY, &username)?,
+        None if previous_origin != next_origin => {
+            crate::db::set_setting(conn, OPDS_USERNAME_KEY, "")?;
+        }
+        None => {}
+    }
     crate::db::set_setting(
         conn,
         OPDS_ENABLED_KEY,
@@ -645,7 +659,6 @@ pub(crate) fn save_config(
     )?;
     let url = url.map(|value| value.to_string()).unwrap_or_default();
     crate::db::set_setting(conn, OPDS_URL_KEY, &url)?;
-    crate::db::set_setting(conn, OPDS_USERNAME_KEY, &username)?;
     let view = load_config(conn)?;
     transaction.commit()?;
     Ok(view)
@@ -1054,6 +1067,19 @@ pub(crate) fn convert_rar_to_cbz(src: &Path, dest: &Path) -> Result<(), BackendE
         max_data_segment: 64 * 1024 * 1024,
         ..Default::default()
     });
+    // A downloaded OPDS attachment is always a single file. Multi-volume RAR
+    // sets cannot be completed here, so fail closed before extracting any
+    // member instead of surfacing a truncated/partial archive later.
+    let missing_volumes = archive
+        .member_names()
+        .iter()
+        .any(|name| !archive.missing_volumes(name).is_empty());
+    if archive.more_volumes() || missing_volumes {
+        return Err(cbr_error(unrar_rs::RarError::MissingVolume {
+            volume: 1,
+            member: String::new(),
+        }));
+    }
     if archive.len() > CBR_MAX_MEMBERS {
         return Err(BackendError::Msg(
             "CBR 条目数量超过安全上限（opds-resource-too-large）".into(),
@@ -1154,6 +1180,36 @@ pub(crate) fn convert_rar_to_cbz(src: &Path, dest: &Path) -> Result<(), BackendE
 mod tests {
     use super::*;
 
+    /// 读取完整 HTTP 请求头。Windows 的 `set_read_timeout` 会以 `WouldBlock`
+    /// 表示超时（而不是 `TimedOut`），因此两种错误都必须重试到测试截止时间。
+    fn read_http_request(
+        stream: &mut std::net::TcpStream,
+        deadline: std::time::Instant,
+    ) -> Vec<u8> {
+        use std::io::Read;
+        let mut request = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(count) => request.extend_from_slice(&buf[..count]),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if std::time::Instant::now() >= deadline {
+                        panic!("mock request read timed out: {error}");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("mock request read failed: {error}"),
+            }
+        }
+        request
+    }
+
     #[test]
     fn cbr_page_buffer_rejects_oversized_output_during_write() {
         let mut page = BoundedPageBuffer {
@@ -1176,7 +1232,7 @@ mod tests {
             OpdsConfigInput {
                 enabled: true,
                 url: "http://old.example/catalog".into(),
-                username: "old".into(),
+                username: Some("old".into()),
                 password: Some("secret".into()),
             },
         )
@@ -1187,7 +1243,7 @@ mod tests {
             OpdsConfigInput {
                 enabled: true,
                 url: "http://new.example/catalog".into(),
-                username: "new".into(),
+                username: Some("new".into()),
                 password: None,
             }
         )
@@ -1201,7 +1257,7 @@ mod tests {
 
     #[test]
     fn isolated_http_server_serves_catalog_cover_and_cbz_after_same_origin_redirect() {
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::net::TcpListener;
         use std::time::Instant;
         let mut png = std::io::Cursor::new(Vec::new());
@@ -1237,15 +1293,7 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut request = Vec::new();
-                let mut buf = [0; 1024];
-                while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
-                    let count = stream.read(&mut buf).unwrap();
-                    if count == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buf[..count]);
-                }
+                let request = read_http_request(&mut stream, deadline);
                 let text = std::str::from_utf8(&request).unwrap();
                 assert!(text.to_ascii_lowercase().contains(
                     "authorization: basic dXNlcjpwYXNz"
@@ -1527,15 +1575,18 @@ mod tests {
         let input = OpdsConfigInput {
             enabled: true,
             url: "http://192.168.1.20:25600/opds/v1.2/catalog#ignored".into(),
-            username: "reader".into(),
+            username: Some("reader".into()),
             password: Some("top-secret".into()),
         };
         let view = save_config(&conn, input).unwrap();
         assert!(view.enabled);
         assert_eq!(view.url, "http://192.168.1.20:25600/opds/v1.2/catalog");
-        assert_eq!(view.username, "reader");
+        assert!(view.has_username);
         assert!(view.has_password);
-        assert!(!serde_json::to_string(&view).unwrap().contains("top-secret"));
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(!serialized.contains("reader"), "{serialized}");
+        assert!(!serialized.contains("top-secret"), "{serialized}");
+        assert!(!serialized.contains("\"username\""), "{serialized}");
         assert_eq!(
             crate::db::get_setting(&conn, OPDS_PASSWORD_KEY)
                 .unwrap()
@@ -1547,30 +1598,33 @@ mod tests {
         assert_eq!(runtime.username, "reader");
         assert_eq!(runtime.password, "top-secret");
 
-        // None preserves the stored secret; Some("") explicitly clears it.
+        // None preserves the stored credentials; Some("") explicitly clears.
         save_config(
             &conn,
             OpdsConfigInput {
                 enabled: true,
                 url: "http://192.168.1.20:25600/opds/v1.2/catalog".into(),
-                username: "reader".into(),
+                username: None,
                 password: None,
             },
         )
         .unwrap();
         assert!(load_config(&conn).unwrap().has_password);
+        assert!(load_config(&conn).unwrap().has_username);
         save_config(
             &conn,
             OpdsConfigInput {
                 enabled: true,
                 url: "http://192.168.1.20:25600/opds/v1.2/catalog".into(),
-                username: "reader".into(),
+                username: Some(String::new()),
                 password: Some(String::new()),
             },
         )
         .unwrap();
         assert!(!load_config(&conn).unwrap().has_password);
+        assert!(!load_config(&conn).unwrap().has_username);
         assert!(load_runtime(&conn).unwrap().password.is_empty());
+        assert!(load_runtime(&conn).unwrap().username.is_empty());
 
         // Local self-hosted addresses are intentionally allowed.
         let runtime = load_runtime(&conn).unwrap();
@@ -1582,7 +1636,7 @@ mod tests {
             OpdsConfigInput {
                 enabled: false,
                 url: "http://192.168.1.20:25600/opds/v1.2/catalog".into(),
-                username: String::new(),
+                username: None,
                 password: None,
             },
         )
@@ -1605,7 +1659,7 @@ mod tests {
                 OpdsConfigInput {
                     enabled,
                     url: url.into(),
-                    username: String::new(),
+                    username: None,
                     password: None,
                 },
             )
@@ -1624,7 +1678,7 @@ mod tests {
             OpdsConfigInput {
                 enabled: true,
                 url: "http://192.168.1.20:25600/opds/v1.2/catalog".into(),
-                username: "reader".into(),
+                username: Some("reader".into()),
                 password: Some("secret".into()),
             },
         )
@@ -1642,13 +1696,13 @@ mod tests {
     fn changing_origin_without_a_new_password_clears_the_stored_secret() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::init_schema(&conn).unwrap();
-        let save = |url: &str, password: Option<&str>| {
+        let save = |url: &str, username: Option<&str>, password: Option<&str>| {
             save_config(
                 &conn,
                 OpdsConfigInput {
                     enabled: true,
                     url: url.into(),
-                    username: "reader".into(),
+                    username: username.map(str::to_string),
                     password: password.map(str::to_string),
                 },
             )
@@ -1656,21 +1710,28 @@ mod tests {
         };
         save(
             "http://192.168.1.20:25600/opds/v1.2/catalog",
+            Some("reader"),
             Some("old-secret"),
         );
         assert!(load_config(&conn).unwrap().has_password);
-        // Same origin, different path: keep the secret.
-        save("http://192.168.1.20:25600/opds/v1.2/other", None);
+        assert!(load_config(&conn).unwrap().has_username);
+        // Same origin, different path: keep the credentials.
+        save("http://192.168.1.20:25600/opds/v1.2/other", None, None);
         assert!(load_config(&conn).unwrap().has_password);
-        // New origin without a new password: never forward the old secret.
-        save("http://192.168.1.30:25600/opds/v1.2/catalog", None);
+        assert!(load_config(&conn).unwrap().has_username);
+        // New origin without new credentials: never forward the old pair.
+        save("http://192.168.1.30:25600/opds/v1.2/catalog", None, None);
         assert!(!load_config(&conn).unwrap().has_password);
+        assert!(!load_config(&conn).unwrap().has_username);
         assert!(load_runtime(&conn).unwrap().password.is_empty());
+        assert!(load_runtime(&conn).unwrap().username.is_empty());
         save(
             "http://192.168.1.30:25600/opds/v1.2/catalog",
+            Some("reader"),
             Some("new-secret"),
         );
         assert_eq!(load_runtime(&conn).unwrap().password, "new-secret");
+        assert_eq!(load_runtime(&conn).unwrap().username, "reader");
     }
 
     #[test]
@@ -1706,7 +1767,7 @@ mod tests {
                 OpdsConfigInput {
                     enabled: true,
                     url: format!("http://{address}{path}"),
-                    username: String::new(),
+                    username: None,
                     password: None,
                 },
             )
@@ -1812,6 +1873,154 @@ mod tests {
     }
 
     #[test]
+    fn stored_cbr_converts_to_cbz_with_all_pages() {
+        let png = test_png();
+        let cbr = rar5_archive(&[
+            ("001.png", png.as_slice(), png.len() as u64),
+            ("notes.txt", b"ignored".as_slice(), 7),
+            ("002.png", png.as_slice(), png.len() as u64),
+        ]);
+        let root = test_temp_dir("opds-cbr-success");
+        let src = root.join("book.cbr");
+        let out = root.join("book.cbz");
+        std::fs::write(&src, &cbr).unwrap();
+        convert_rar_to_cbz(&src, &out).unwrap();
+        let handle = crate::source::open_source(&out).unwrap();
+        assert_eq!(handle.page_count().unwrap(), 2);
+        assert!(!handle.read_raw(0).unwrap().bytes.is_empty());
+        drop(handle);
+        let names = {
+            let file = File::open(&out).unwrap();
+            let mut archive = zip::ZipArchive::new(file).unwrap();
+            (0..archive.len())
+                .map(|index| archive.by_index(index).unwrap().name().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names, vec!["001.png", "002.png"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn multivolume_cbr_fails_closed_with_stable_code() {
+        let png = test_png();
+        let vol0 = rar5_split_archive(&png, png.len() / 2);
+        let root = test_temp_dir("opds-cbr-volume");
+        let src = root.join("book.cbr");
+        let out = root.join("book.cbz");
+        std::fs::write(&src, &vol0).unwrap();
+        let error = convert_rar_to_cbz(&src, &out).unwrap_err().to_string();
+        assert!(error.contains("opds-cbr-multivolume"), "{error}");
+        assert!(!out.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn oversized_cbr_page_fails_closed_with_stable_code() {
+        let declared = CBR_PAGE_MAX_BYTES + 1;
+        let cbr = rar5_archive(&[("001.png", b"tiny".as_slice(), declared)]);
+        let root = test_temp_dir("opds-cbr-large");
+        let src = root.join("book.cbr");
+        let out = root.join("book.cbz");
+        std::fs::write(&src, &cbr).unwrap();
+        let error = convert_rar_to_cbz(&src, &out).unwrap_err().to_string();
+        assert!(error.contains("opds-resource-too-large"), "{error}");
+        assert!(!out.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn path_api_keys_stay_on_the_configured_origin_only() {
+        let base = Url::parse("http://192.168.1.20:26500/api/opds/qa-key/catalog").unwrap();
+        let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+          <title>Key library</title>
+          <entry>
+            <title>Chapter</title>
+            <link rel="http://opds-spec.org/acquisition" type="application/vnd.comicbook+zip" href="/api/opds/qa-key/books/1.cbz"/>
+            <link rel="subsection" type="application/atom+xml" href="http://192.168.1.21:26500/api/opds/other-key/catalog"/>
+          </entry>
+          <link rel="next" href="http://127.0.0.1:26500/api/opds/qa-key/catalog?page=2"/>
+        </feed>"#;
+        let feed = parse_feed(&base, &base, xml).unwrap();
+        // Off-origin LAN and loopback links are discarded before a request can
+        // ever carry the path credential to another server.
+        assert_eq!(feed.entries[0].links.len(), 1);
+        assert!(feed.links.is_empty());
+        let view = feed_view(&feed, &base);
+        assert!(view.entries[0]
+            .download_url
+            .as_deref()
+            .unwrap()
+            .contains("/api/opds/qa-key/"));
+        assert!(view.next_url.is_none());
+        assert!(same_origin_link(
+            &base,
+            &base,
+            "http://192.168.1.21:26500/api/opds/qa-key/catalog"
+        )
+        .is_err());
+        // Relative links keep the key because they stay on the same origin.
+        assert_eq!(
+            same_origin_link(&base, &base, "../books/1.cbz")
+                .unwrap()
+                .as_str(),
+            "http://192.168.1.20:26500/api/opds/books/1.cbz"
+        );
+    }
+
+    #[test]
+    fn ambient_proxy_is_ignored_for_opds_requests() {
+        if std::env::var_os("MOYU_OPDS_PROXY_CHILD").is_some() {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let output = std::process::Command::new(exe)
+            .args(["--exact", "opds::tests::ambient_proxy_child", "--nocapture"])
+            .env("MOYU_OPDS_PROXY_CHILD", "1")
+            .env("HTTP_PROXY", "http://127.0.0.1:1")
+            .env("http_proxy", "http://127.0.0.1:1")
+            .env("ALL_PROXY", "http://127.0.0.1:1")
+            .env("all_proxy", "http://127.0.0.1:1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "OPDS used the ambient proxy: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn ambient_proxy_child() {
+        if std::env::var_os("MOYU_OPDS_PROXY_CHILD").is_none() {
+            return;
+        }
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buffer = [0; 2048];
+            let _ = stream.read(&mut buffer).unwrap();
+            let body = "<feed xmlns='http://www.w3.org/2005/Atom'><title>Direct</title></feed>";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let root = Url::parse(&format!("http://{address}/catalog")).unwrap();
+        let client = OpdsClient::new(root.clone(), None).unwrap();
+        assert_eq!(client.feed(&root).unwrap().title, "Direct");
+        server.join().unwrap();
+    }
+
+    #[test]
     fn rar_conversion_rejects_invalid_and_imageless_archives() {
         let root = test_temp_dir("opds-cbr");
         let invalid = root.join("bad.cbr");
@@ -1871,15 +2080,10 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut request = Vec::new();
-                let mut buf = [0; 1024];
-                while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
-                    let count = stream.read(&mut buf).unwrap();
-                    if count == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buf[..count]);
-                }
+                let request = read_http_request(
+                    &mut stream,
+                    std::time::Instant::now() + Duration::from_secs(10),
+                );
                 let text = std::str::from_utf8(&request).unwrap();
                 assert!(text.to_ascii_lowercase().contains(
                     "authorization: basic dXNlcjpwYXNz"
@@ -1954,6 +2158,127 @@ mod tests {
         drop(handle);
         server.join().unwrap();
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---------- Test-only RAR5 writer (stored method) ----------
+    //
+    // unrar-rs is read-only, so the CBR acceptance tests build valid RAR5
+    // archives byte by byte. The layout mirrors what RARLAB `rar` emits for
+    // `-m0` (stored) files; it is only used by unit tests.
+
+    fn rar5_vint(mut value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                return out;
+            }
+        }
+    }
+
+    fn rar5_crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    fn rar5_finish(content: Vec<u8>) -> Vec<u8> {
+        let size = rar5_vint(content.len() as u64);
+        let mut crc_input = size.clone();
+        crc_input.extend_from_slice(&content);
+        let mut out = Vec::new();
+        out.extend_from_slice(&rar5_crc32(&crc_input).to_le_bytes());
+        out.extend_from_slice(&size);
+        out.extend_from_slice(&content);
+        out
+    }
+
+    fn rar5_header(kind: u64, flags: u64, body: &[u8]) -> Vec<u8> {
+        let mut content = Vec::new();
+        content.extend_from_slice(&rar5_vint(kind));
+        content.extend_from_slice(&rar5_vint(flags));
+        content.extend_from_slice(body);
+        rar5_finish(content)
+    }
+
+    fn rar5_file_header(
+        name: &str,
+        unpacked: u64,
+        common_extra: u64,
+        crc: Option<u32>,
+        data_size: u64,
+    ) -> Vec<u8> {
+        let mut file_flags = 0u64;
+        if crc.is_some() {
+            file_flags |= 0x0004;
+        }
+        let mut body = Vec::new();
+        body.extend_from_slice(&rar5_vint(file_flags));
+        body.extend_from_slice(&rar5_vint(unpacked));
+        body.extend_from_slice(&rar5_vint(0o644));
+        if let Some(crc) = crc {
+            body.extend_from_slice(&crc.to_le_bytes());
+        }
+        body.extend_from_slice(&rar5_vint(0)); // stored
+        body.extend_from_slice(&rar5_vint(1)); // Unix host
+        body.extend_from_slice(&rar5_vint(name.len() as u64));
+        body.extend_from_slice(name.as_bytes());
+
+        let mut content = Vec::new();
+        content.extend_from_slice(&rar5_vint(2)); // file header
+        content.extend_from_slice(&rar5_vint(0x0002 | common_extra)); // data area
+        content.extend_from_slice(&rar5_vint(data_size));
+        content.extend_from_slice(&body);
+        rar5_finish(content)
+    }
+
+    fn rar5_archive(files: &[(&str, &[u8], u64)]) -> Vec<u8> {
+        let mut archive = Vec::new();
+        archive.extend_from_slice(b"Rar!\x1a\x07\x01\x00");
+        archive.extend_from_slice(&rar5_header(1, 0, &rar5_vint(0)));
+        for (name, data, unpacked) in files {
+            archive.extend_from_slice(&rar5_file_header(
+                name,
+                *unpacked,
+                0,
+                Some(rar5_crc32(data)),
+                data.len() as u64,
+            ));
+            archive.extend_from_slice(data);
+        }
+        archive.extend_from_slice(&rar5_header(5, 0, &rar5_vint(0)));
+        archive
+    }
+
+    fn rar5_split_archive(content: &[u8], split_at: usize) -> Vec<u8> {
+        let part = &content[..split_at];
+        let mut archive = Vec::new();
+        archive.extend_from_slice(b"Rar!\x1a\x07\x01\x00");
+        archive.extend_from_slice(&rar5_header(1, 0, &rar5_vint(0x0001)));
+        archive.extend_from_slice(&rar5_file_header(
+            "001.png",
+            content.len() as u64,
+            0x0010, // SPLIT_AFTER
+            None,
+            part.len() as u64,
+        ));
+        archive.extend_from_slice(part);
+        archive.extend_from_slice(&rar5_header(5, 0, &rar5_vint(0x0001)));
+        archive
     }
 
     fn test_png() -> Vec<u8> {

@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { collectCandidateEvidence } from "./candidate-evidence.mjs";
 
 const commit = "a".repeat(40);
@@ -49,4 +53,31 @@ test("unexpected, duplicated, and missing ref lines fail closed", () => {
     `${commit}\trefs/tags/${tag}\n${commit}\trefs/tags/${tag}\n`,
     `${commit}\trefs/tags/${tag}^{}\n`,
   ]) assert.throws(() => collectCandidateEvidence({ tag, commit, run: makeRun(ok(), ok(refs), absentRelease) }), /candidate-tag-state-unknown/);
+});
+
+test("a real local annotated tag is peeled to the candidate commit", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "moyu-candidate-evidence-"));
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "-b", "main");
+    git("config", "user.name", "Candidate Test");
+    git("config", "user.email", "candidate@example.invalid");
+    git("config", "commit.gpgsign", "false");
+    git("config", "tag.gpgsign", "false");
+    git("commit", "--allow-empty", "-m", "fixture");
+    const actualCommit = git("rev-parse", "HEAD");
+    git("remote", "add", "origin", dir);
+    git("update-ref", "refs/remotes/origin/main", actualCommit);
+    git("tag", "-a", tag, "-m", "fixture");
+    const run = (program, args, options) => program === "gh"
+      ? absentRelease
+      : spawnSync(program, args, { ...options, cwd: dir });
+    assert.equal(collectCandidateEvidence({ tag, commit: actualCommit, run }).tagExists, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

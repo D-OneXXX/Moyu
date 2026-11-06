@@ -2,6 +2,59 @@ import fs from "node:fs";
 import path from "node:path";
 
 const SEVERITY_ORDER = ["P0", "P1", "P2", "P3"];
+const DAY_MS = 86_400_000;
+const DEFAULT_STALE_AFTER_DAYS = 7;
+
+function parseRunTimestamp(value) {
+  const runId = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(
+    String(value || ""),
+  );
+  if (runId) {
+    const [, year, month, day, hour, minute, second, millis] = runId;
+    return Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}.${millis}Z`);
+  }
+  const parsed = Date.parse(String(value || ""));
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * 超过阈值未复验的 open 台账条目标记为 stale：保留原始 open 状态与历史，
+ * 但在报告中与活跃 P0/P1 分开，避免“全绿 + 历史 P0”同时出现。
+ */
+export function markStaleDefects(
+  kb,
+  { now = Date.now(), staleAfterDays = DEFAULT_STALE_AFTER_DAYS } = {},
+) {
+  const days = Number(staleAfterDays);
+  const effectiveDays =
+    Number.isFinite(days) && days > 0 ? days : DEFAULT_STALE_AFTER_DAYS;
+  const threshold = effectiveDays * DAY_MS;
+  for (const entry of kb.defects || []) {
+    if (entry.status !== "open") {
+      delete entry.stale;
+      delete entry.staleSince;
+      delete entry.staleAfterDays;
+      continue;
+    }
+    const seenAt = parseRunTimestamp(entry.lastSeen);
+    if (seenAt === null) {
+      entry.stale = false;
+      delete entry.staleSince;
+      delete entry.staleAfterDays;
+      continue;
+    }
+    entry.stale = now - seenAt > threshold;
+    if (entry.stale) {
+      entry.staleSince ??= new Date(now).toISOString();
+      entry.staleAfterDays = effectiveDays;
+    } else {
+      delete entry.staleSince;
+      delete entry.staleAfterDays;
+    }
+  }
+  kb.staleAfterDays = effectiveDays;
+  return kb;
+}
 
 /**
  * `execution` 是 NON_INTRUSIVE_ENGINEERING §13 要求的执行记录
@@ -116,18 +169,33 @@ export function writeMarkdownReport(report, file, kb = null) {
   // QA 台账的真实字段是 defects；历史 backlog 字段不存在，读取它会让
   // 静态缺陷恒为 0，已登记的 open P0/P1 在报告里完全消失。
   const staticOpen = (kb?.defects || []).filter((issue) => issue.status === "open");
-  const staticBlocking = staticOpen
+  const activeOpen = staticOpen.filter((issue) => !issue.stale);
+  const staleOpen = staticOpen.filter((issue) => issue.stale);
+  const staticBlocking = activeOpen
     .filter((issue) => issue.severity === "P0" || issue.severity === "P1")
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
-  const staticCosmetic = staticOpen
+  const staleBlocking = staleOpen
+    .filter((issue) => issue.severity === "P0" || issue.severity === "P1")
+    .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
+  const staticCosmetic = activeOpen
+    .filter((issue) => issue.severity === "P2" || issue.severity === "P3")
+    .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
+  const staleCosmetic = staleOpen
     .filter((issue) => issue.severity === "P2" || issue.severity === "P3")
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
   const staticBySeverity = Object.fromEntries(
     SEVERITY_ORDER.map((severity) => [
       severity,
-      staticOpen.filter((issue) => issue.severity === severity).length,
+      activeOpen.filter((issue) => issue.severity === severity).length,
     ]),
   );
+  const staleBySeverity = Object.fromEntries(
+    SEVERITY_ORDER.map((severity) => [
+      severity,
+      staleOpen.filter((issue) => issue.severity === severity).length,
+    ]),
+  );
+  const staleAfterDays = kb?.staleAfterDays ?? DEFAULT_STALE_AFTER_DAYS;
   // 执行级别与授权记录：未执行的套件必须在这里显式出现，不能被当成 PASS。
   const execution = report.execution || null;
   const executionLines = execution
@@ -159,7 +227,8 @@ export function writeMarkdownReport(report, file, kb = null) {
     `- 通过率：**${summary.passed}/${summary.total}（${summary.passRate.toFixed(1)}%）**`,
     `- 覆盖层级：${summary.coverage.join(" / ") || "无"}`,
     `- 运行时缺陷：P0=${summary.bySeverity.P0} · P1=${summary.bySeverity.P1} · P2=${summary.bySeverity.P2} · P3=${summary.bySeverity.P3}`,
-    `- 静态审计 backlog：${staticOpen.length} 条（P0=${staticBySeverity.P0} · P1=${staticBySeverity.P1} · P2=${staticBySeverity.P2} · P3=${staticBySeverity.P3}，尚未全部自动化）`,
+    `- 静态审计 backlog：${activeOpen.length} 条（P0=${staticBySeverity.P0} · P1=${staticBySeverity.P1} · P2=${staticBySeverity.P2} · P3=${staticBySeverity.P3}，尚未全部自动化）`,
+    `- 陈旧待复验：${staleOpen.length} 条（P0=${staleBySeverity.P0} · P1=${staleBySeverity.P1} · P2=${staleBySeverity.P2} · P3=${staleBySeverity.P3}，超过 ${staleAfterDays} 天未复验，不计入活跃 backlog）`,
     `- 回归用例：${report.knowledgeBase?.regressions ?? 0} 条记忆，新增 ${report.knowledgeBase?.newRegressions ?? 0} 条`,
     "",
     ...executionLines,
@@ -177,6 +246,19 @@ export function writeMarkdownReport(report, file, kb = null) {
           "",
         ]
       : []),
+    ...(staleBlocking.length
+      ? [
+          `### 陈旧台账（超过 ${staleAfterDays} 天未复验，不计入活跃 P0 / P1）`,
+          "",
+          staleBlocking
+            .map(
+              (issue) =>
+                `- **${issue.severity} · ${issue.id}** — ${issue.title}（最后复验：${issue.lastSeen || "UNKNOWN"}）`,
+            )
+            .join("\n"),
+          "",
+        ]
+      : []),
     "## 3. 视觉排版与交互瑕疵（P2 / P3）",
     "",
     cosmetic.length ? cosmetic.map(issueBlock).join("\n") : "未发现运行时 P2 / P3 缺陷。",
@@ -188,6 +270,9 @@ export function writeMarkdownReport(report, file, kb = null) {
           staticCosmetic.map(issueBlock).join("\n"),
           "",
         ]
+      : []),
+    ...(staleCosmetic.length
+      ? [`- 陈旧 P2 / P3：${staleCosmetic.length} 条，不计入活跃瑕疵。`, ""]
       : []),
     "## 4. 测试记忆库更新记录",
     "",
@@ -209,8 +294,9 @@ export function writeMarkdownReport(report, file, kb = null) {
       : "- 无",
     "",
   ];
-  if (report.notes.length) {
-    lines.push("## 附：环境与执行备注", "", ...report.notes.map((text) => `- ${text}`), "");
+  const notes = report.notes || [];
+  if (notes.length) {
+    lines.push("## 附：环境与执行备注", "", ...notes.map((text) => `- ${text}`), "");
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, lines.join("\n"), "utf8");
@@ -230,7 +316,7 @@ export function loadKnowledgeBase(file) {
   }
 }
 
-export function updateKnowledgeBase(kb, report) {
+export function updateKnowledgeBase(kb, report, options = {}) {
   const added = [];
   const byTest = new Map((kb.regressions || []).map((entry) => [entry.testId, entry]));
   const defectByTest = new Map((kb.defects || []).map((entry) => [entry.testId, entry]));
@@ -292,6 +378,7 @@ export function updateKnowledgeBase(kb, report) {
   kb.schema = kb.schema || 1;
   kb.regressions = kb.regressions || [];
   kb.defects = kb.defects || [];
+  markStaleDefects(kb, options);
   report.knowledgeBase = {
     regressions: kb.regressions.length,
     newRegressions: added.length,

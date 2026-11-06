@@ -404,7 +404,13 @@ function finalize(report) {
   );
   note(report, `已执行套件：${report.suiteCoverage.executed.join(", ") || "无"}；未执行套件：${report.suiteCoverage.notExecuted.join(", ") || "无"}`);
   const kb = loadKnowledgeBase(KB_PATH);
-  updateKnowledgeBase(kb, report);
+  const staleAfterDays = Number(process.env.MR_QA_STALE_DAYS);
+  updateKnowledgeBase(kb, report, {
+    staleAfterDays:
+      Number.isFinite(staleAfterDays) && staleAfterDays > 0
+        ? staleAfterDays
+        : undefined,
+  });
   fs.writeFileSync(KB_PATH, JSON.stringify(redactLocalPaths(kb), null, 2), "utf8");
   // 与 report.mjs 保持一致：台账字段是 defects，不是已不存在的 backlog。
   report.staticAudit = (kb.defects || []).filter(

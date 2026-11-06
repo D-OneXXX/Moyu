@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { evaluateGate } from "./qa-gate.mjs";
+import { evaluateGate, evaluateSuiteCoverage } from "./qa-gate.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, "qa-gate.mjs");
@@ -101,4 +101,97 @@ test("CLI：正常报告放行（退出码 0），报告缺失阻断（退出码
   });
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /无法读取 QA 报告/);
+});
+
+test("覆盖：声明的套件必须实际执行", () => {
+  const report = {
+    buildCommit: "abcdef123456",
+    suiteCoverage: { executed: ["static", "visual"] },
+  };
+  const ok = evaluateSuiteCoverage(report, {
+    expectedSuites: ["static", "visual"],
+    expectedCommit: "abcdef1234567890",
+  });
+  assert.equal(ok.ok, true, ok.errors.join("\n"));
+
+  const missing = evaluateSuiteCoverage(report, {
+    expectedSuites: ["static", "reader"],
+  });
+  assert.equal(missing.ok, false);
+  assert.match(missing.errors.join("\n"), /缺少套件：reader/);
+});
+
+test("覆盖：buildCommit 必须匹配且不得来自脏工作树", () => {
+  const base = { suiteCoverage: { executed: ["static"] } };
+  assert.equal(
+    evaluateSuiteCoverage(
+      { ...base, buildCommit: "abcdef123456" },
+      { expectedCommit: "abcdef1234567890" },
+    ).ok,
+    true,
+  );
+  assert.equal(
+    evaluateSuiteCoverage(
+      { ...base, buildCommit: "abcdef123456-dirty" },
+      { expectedCommit: "abcdef1234567890" },
+    ).ok,
+    false,
+  );
+  assert.equal(
+    evaluateSuiteCoverage(
+      { ...base, buildCommit: "ffffffffffff" },
+      { expectedCommit: "abcdef1234567890" },
+    ).ok,
+    false,
+  );
+});
+
+test("覆盖：缺少 suiteCoverage 视为不通过（fail-closed）", () => {
+  const result = evaluateSuiteCoverage(
+    { buildCommit: "abcdef123456" },
+    { expectedSuites: ["static"] },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /缺少套件：static/);
+});
+
+test("CLI：--expect-suites / --expect-commit 生效", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-qa-gate-coverage-"));
+  const registry = path.join(dir, "registry.json");
+  fs.writeFileSync(registry, JSON.stringify({ issues: [] }));
+  const report = path.join(dir, "latest.json");
+  fs.writeFileSync(
+    report,
+    JSON.stringify({
+      buildCommit: "abcdef123456",
+      checks: [],
+      defects: [],
+      suiteCoverage: { executed: ["static"] },
+    }),
+  );
+
+  const ok = spawnSync(
+    process.execPath,
+    [
+      script,
+      "--report",
+      report,
+      "--registry",
+      registry,
+      "--expect-suites",
+      "static",
+      "--expect-commit",
+      "abcdef1234567890",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(ok.status, 0, `${ok.stdout}${ok.stderr}`);
+
+  const missing = spawnSync(
+    process.execPath,
+    [script, "--report", report, "--registry", registry, "--expect-suites", "reader"],
+    { encoding: "utf8" },
+  );
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /缺少套件：reader/);
 });

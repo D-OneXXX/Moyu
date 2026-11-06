@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# 同一 PR 的旧 run 在新提交后没有继续跑的价值：取消它们，避免
+# 6 次 push 叠出 6 份 Windows check。main 上的 push 不取消，保留合并后验证。
+concurrency:
+  group: ci-windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   windows-check:
     name: tsc + cargo test + static QA (windows-latest)

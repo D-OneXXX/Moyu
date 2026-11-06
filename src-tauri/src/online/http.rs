@@ -790,6 +790,27 @@ mod tests {
     }
 
     #[test]
+    fn socks_ipv6_only_target_fails_before_contacting_proxy() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut transport = UreqTransport::new(&format!("socks5://{address}"), "").unwrap();
+        transport.no_proxy.clear();
+        transport.resolver = Arc::new(|_, port| {
+            Ok(vec![SocketAddr::new(
+                "2606:4700:4700::1111".parse().unwrap(),
+                port,
+            )])
+        });
+        let target = url::Url::parse("http://ipv6-only.example/page").unwrap();
+        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
     fn http_proxy_receives_validated_ip_and_original_host() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let proxy_address = listener.local_addr().unwrap();

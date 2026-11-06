@@ -574,6 +574,16 @@ fn render_tall_png_rows(
         png::BitDepth::Sixteen => 2,
         _ => return Err(BackendError::Decode("PNG 像素格式不受支持".into())),
     };
+    // Keep the existing reader for extreme geometries whose source band
+    // cannot fit the bounded streaming buffer. This avoids rejecting books
+    // that were readable before this optimization.
+    if plan.bounds.windows(2).any(|bounds| {
+        let start = work_row_at(bounds[0], sh, th);
+        let end = work_row_at(bounds[1], sh, th);
+        u64::from(sw) * u64::from(end.saturating_sub(start)) * 3 > MAX_BAND_BYTES
+    }) {
+        return Ok(None);
+    }
     let mut result = Vec::with_capacity(plan.bounds.len() - 1);
     let mut encoded_bytes = 0usize;
     let mut read_rows = 0u32;

@@ -10,7 +10,11 @@
  *     --tag v0.17.2 --channel windows --commit <40-hex> \
  *     --record <rc-record.json> --assets-dir <dir> \
  *     --attestation <install-verification.json> \
- *     [--manifest <latest.json>] [--platform windows-x86_64]
+ *     [--manifest <latest.json>] [--platform windows-x86_64] \
+ *     [--allow-extra <对端通道清单>]
+ *
+ * --allow-extra 只用于发布后重跑：允许已公开 Release 携带另一通道的接力清单；
+ * 首次公开的 Draft 不得夹带，其他额外制品也始终拒绝。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -40,7 +44,7 @@ function parseArgs(argv) {
   return args;
 }
 
-export function runVerification({ record, assetsDir, attestation, tag, channel, commit, manifest, platform }) {
+export function runVerification({ record, assetsDir, attestation, tag, channel, commit, manifest, platform, allowedExtra }) {
   const problems = [];
   const parsed = parseTag(tag);
   if (!parsed) problems.push(`标签不符合通道命名约定：${tag}`);
@@ -65,6 +69,7 @@ export function runVerification({ record, assetsDir, attestation, tag, channel, 
     attestation,
     channel,
     commit,
+    allowedExtra,
   });
   problems.push(...verdict.problems);
 
@@ -108,6 +113,9 @@ function main(argv = process.argv.slice(2)) {
     commit: args.commit,
     manifest,
     platform: args.platform,
+    allowedExtra: typeof args["allow-extra"] === "string"
+      ? args["allow-extra"].split(",").map((name) => name.trim()).filter(Boolean)
+      : [],
   });
   if (!result.ok) {
     console.error("[publish-gate] 发布前校验失败：");

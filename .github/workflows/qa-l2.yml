@@ -1,4 +1,4 @@
-name: QA L2 (targeted regression gate)
+name: QA L2 (PR regression gate)
 
 # 分层 QA 门禁说明（三层，互不冒充）：
 #
@@ -9,6 +9,8 @@ name: QA L2 (targeted regression gate)
 #         非高危后端跑 static+architecture+cache；高危、混合、未知或空 diff 一律全量；
 #         Draft 不跑 L2（required check 保持 skipped，Draft 本不可合并），
 #         标记 ready_for_review 后重新计算。
+#      —— full 模式只跑全量 QA 套件，不再重复 L1（tsc/build/cargo test/clippy/audit）；
+#         L1 由同一 commit 的 Windows/Linux required checks 负责。
 #      —— `L2 · QA gate (known-issues)` 始终执行并保持 required check 名称不变。
 #   L3 发布验收（release-candidate* / release-publish* / release-install-verify*）：
 #      候选构建、签名与证据、Draft、审批、跨通道清单接力、干净机安装/升级。
@@ -110,19 +112,12 @@ jobs:
             printf -- '- Reason: %s\n' "${REASON:-unknown}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  full-qa:
-    name: L2 · full QA
+  pr-qa:
+    name: L2 · PR QA
     needs: changes
-    if: needs.changes.result == 'success' && needs.changes.outputs.mode == 'full' && github.event.pull_request.draft == false
-    uses: ./.github/workflows/qa-full.yml
-    with:
-      # 对 PR 的 head 提交做完整回归；短 SHA 不受支持，因此用完整 SHA。
-      ref: ${{ github.event.pull_request.head.sha }}
-
-  targeted-qa:
-    name: L2 · targeted QA
-    needs: changes
-    if: needs.changes.result == 'success' && needs.changes.outputs.mode != 'full' && github.event.pull_request.draft == false
+    # 所有非 Draft 模式共用：full 时 suite 为空，直接跑全量套件；
+    # 定向模式只跑相关 suite。本 job 不跑 L1，避免与 Windows/Linux check 重复。
+    if: needs.changes.result == 'success' && github.event.pull_request.draft == false
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -133,7 +128,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -159,7 +154,7 @@ jobs:
           npm run build
           cargo build --manifest-path src-tauri/Cargo.toml
 
-      - name: Run targeted QA
+      - name: Run PR QA
         shell: bash
         env:
           SUITE: ${{ needs.changes.outputs.suite }}
@@ -189,7 +184,7 @@ jobs:
 
   gate:
     name: L2 · QA gate (known-issues)
-    needs: [changes, full-qa, targeted-qa]
+    needs: [changes, pr-qa]
     # Draft 不跑 L2：required check 保持 skipped（Draft 不可合并）；
     # 标记 ready_for_review 会重新触发本工作流并重新计算范围。
     if: always() && github.event.pull_request.draft == false
@@ -239,8 +234,7 @@ jobs:
           MODE: ${{ needs.changes.outputs.mode }}
           SUITE: ${{ needs.changes.outputs.suite }}
           CHANGES_RESULT: ${{ needs.changes.result }}
-          FULL_RESULT: ${{ needs.full-qa.result }}
-          TARGETED_RESULT: ${{ needs.targeted-qa.result }}
+          PR_QA_RESULT: ${{ needs.pr-qa.result }}
         run: |
           {
             echo "### L2 QA gate"
@@ -249,7 +243,6 @@ jobs:
             printf -- '- Scope mode: `%s`\n' "${MODE:-unknown}"
             printf -- '- Suite: `%s`\n' "${SUITE:-(full)}"
             printf -- '- Changes job: %s\n' "${CHANGES_RESULT:-unknown}"
-            printf -- '- Full QA job: %s\n' "${FULL_RESULT:-unknown}"
-            printf -- '- Targeted QA job: %s\n' "${TARGETED_RESULT:-unknown}"
+            printf -- '- PR QA job: %s\n' "${PR_QA_RESULT:-unknown}"
             echo '- Registry: `scripts/release-governance/qa-known-issues.json`'
           } >> "$GITHUB_STEP_SUMMARY"

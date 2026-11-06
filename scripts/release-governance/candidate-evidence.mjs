@@ -4,7 +4,7 @@ import { classifyReleaseView } from "./release-guard.mjs";
 
 // Commands are executed without a shell. Callers must fetch origin/main and
 // its history first; an incomplete history fails ancestry validation closed.
-export function collectCandidateEvidence({ tag, commit, rehearsal = false, requireDraft = false, run = spawnSync }) {
+export function collectCandidateEvidence({ tag, commit, rehearsal = false, requireDraft = false, allowPublished = false, run = spawnSync }) {
   if (typeof tag !== "string" || !/^v[0-9A-Za-z.-]+$/.test(tag)) throw new Error("candidate-tag-invalid");
   if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) throw new Error("candidate-commit-invalid");
   const invoke = (program, args) => {
@@ -37,15 +37,15 @@ export function collectCandidateEvidence({ tag, commit, rehearsal = false, requi
   if (release.status === 0) {
     let data;
     try { data = JSON.parse(release.stdout); } catch { throw new Error("candidate-release-state-invalid"); }
-    if (data.isDraft !== true || typeof data.tagName !== "string" || typeof data.targetCommitish !== "string") {
+    if (typeof data.isDraft !== "boolean" || typeof data.tagName !== "string" || typeof data.targetCommitish !== "string") {
       throw new Error("candidate-release-state-invalid");
     }
-    releaseState = { state: "draft", tag: data.tagName, targetCommitish: data.targetCommitish };
+    releaseState = { state: data.isDraft ? "draft" : "published", tag: data.tagName, targetCommitish: data.targetCommitish };
   } else if (classifyReleaseView({ status: release.status, stdout: release.stdout, stderr: release.stderr }) === "missing") {
     releaseState = { state: "missing" };
   } else throw new Error("candidate-release-state-invalid");
 
-  const identity = validateCandidateIdentity({ tag, commit, onMain: ancestry.status === 0, tagState, releaseState, rehearsal });
+  const identity = validateCandidateIdentity({ tag, commit, onMain: ancestry.status === 0, tagState, releaseState, rehearsal, allowPublished });
   if (requireDraft && !identity.draftExists) throw new Error("candidate-draft-required");
   return identity;
 }
@@ -57,6 +57,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replaceAll("\\",
       commit: process.env.CANDIDATE_COMMIT,
       rehearsal: process.env.CANDIDATE_REHEARSAL === "true",
       requireDraft: process.env.CANDIDATE_REQUIRE_DRAFT === "true",
+      allowPublished: process.env.CANDIDATE_ALLOW_PUBLISHED === "true",
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {

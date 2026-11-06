@@ -3,7 +3,7 @@
  * This module does not create tags, releases, or perform network requests.
  * A caller must classify a missing ref separately from network/API failures.
  */
-export function validateCandidateIdentity({ tag, commit, onMain, tagState, releaseState, rehearsal = false }) {
+export function validateCandidateIdentity({ tag, commit, onMain, tagState, releaseState, rehearsal = false, allowPublished = false }) {
   const normalTag = typeof tag === "string" && /^v\d+\.\d+\.\d+(?:-linux-sec\d+)?$/.test(tag);
   const rehearsalTag = typeof tag === "string" && /^v0\.0\.0-rehearsal\d*$/.test(tag);
   if (rehearsal === true ? !rehearsalTag : rehearsal !== false || !normalTag) {
@@ -19,7 +19,13 @@ export function validateCandidateIdentity({ tag, commit, onMain, tagState, relea
   if (tagState.state === "present" && tagState.commit !== commit) {
     throw new Error("candidate-tag-commit-mismatch");
   }
-  if (!releaseState || !["missing", "draft"].includes(releaseState.state)) {
+  if (!releaseState || !["missing", "draft", "published"].includes(releaseState.state)) {
+    throw new Error("candidate-release-state-invalid");
+  }
+  if (releaseState.state === "published" && (!allowPublished || tagState.state !== "present")) {
+    throw new Error("candidate-release-state-invalid");
+  }
+  if (releaseState.state === "published" && releaseState.tag !== tag) {
     throw new Error("candidate-release-state-invalid");
   }
   if (releaseState.state === "draft") {

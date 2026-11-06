@@ -652,6 +652,7 @@ test("Linux 写入前复检：真实 run 块的状态传递、失败关闭与分
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
           FAKE_MODE: "draft",
           TAG: "v0.19.0",
+          COMMIT: "a".repeat(40),
           GH_CALLS: callsFile,
           GITHUB_OUTPUT: outFile,
           RELEASE_STATE: state,
@@ -670,6 +671,7 @@ test("Linux 写入前复检：真实 run 块的状态传递、失败关闭与分
     assert.equal(fresh.status, 0, fresh.calls);
     assert.match(fresh.calls, /release create/, "确认不存在必须新建 Draft");
     assert.match(fresh.calls, /--draft/, "新建必须是 Draft");
+    assert.match(fresh.calls, /--target a{40}/, "新 Draft 必须绑定固定提交");
 
     // 清理失败不得覆盖原始退出码。
     const failBin = path.join(workDir, "failbin");

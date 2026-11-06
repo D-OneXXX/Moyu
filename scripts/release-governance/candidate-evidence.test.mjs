@@ -54,6 +54,14 @@ test("a draft without a tag must use the exact commit and public releases fail",
   ]) assert.throws(() => collectCandidateEvidence({ tag, commit, run: makeRun(ok(), absentTag, ok(JSON.stringify(metadata))) }));
 });
 
+test("published-release recovery requires explicit opt-in and an existing matching tag", () => {
+  const published = ok(JSON.stringify({ isDraft: false, tagName: tag, targetCommitish: "main" }));
+  const refs = ok(`${commit}\trefs/tags/${tag}\n`);
+  assert.throws(() => collectCandidateEvidence({ tag, commit, run: makeRun(ok(), refs, published) }), /candidate-release-state-invalid/);
+  assert.throws(() => collectCandidateEvidence({ tag, commit, allowPublished: true, run: makeRun(ok(), absentTag, published) }), /candidate-release-state-invalid/);
+  assert.equal(collectCandidateEvidence({ tag, commit, allowPublished: true, run: makeRun(ok(), refs, published) }).tagExists, true);
+});
+
 test("unexpected, duplicated, and missing ref lines fail closed", () => {
   for (const refs of [
     `${commit}\trefs/tags/other\n`,

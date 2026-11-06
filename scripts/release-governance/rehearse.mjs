@@ -30,6 +30,11 @@ import {
 } from "./rc-record.mjs";
 import { verifyUpdaterManifest } from "../verify-updater-manifest.mjs";
 import {
+  CHANNEL_MANIFESTS,
+  assessPublicationState,
+  verifyManifestPresence,
+} from "./publish-state.mjs";
+import {
   INSTALL_EVIDENCE_KIND,
   SIGNATURE_EVIDENCE_KIND,
   verifyReleaseEvidence,
@@ -55,6 +60,8 @@ class FakeReleaseStore {
     this.published = new Map();
     this.locks = new Set();
     this.publishCalls = 0;
+    this.uploadCalls = 0;
+    this.overwriteRejections = 0;
   }
 
   createDraft(record, assets) {
@@ -67,6 +74,109 @@ class FakeReleaseStore {
 
   getDraft(tag) {
     return this.drafts.get(tag) || null;
+  }
+
+  /** 直接登记一条已公开 Release（历史发布 / 已完成的发布），供恢复运行场景使用。 */
+  seedPublished(tag, record, assets) {
+    if (this.drafts.has(tag) || this.published.has(tag)) {
+      throw new Error(`Release 已存在：${tag}`);
+    }
+    this.published.set(tag, { record, assets: new Map(assets), body: renderRcSummary(record) });
+    return this.published.get(tag);
+  }
+
+  /** 资产快照（name:sha256 排序）：用于断言重跑没有改写任何已发布字节。 */
+  snapshot(tag) {
+    const release = this.published.get(tag) || this.drafts.get(tag);
+    if (!release) return null;
+    return [...release.assets.entries()]
+      .map(([name, bytes]) => `${name}:${sha256Bytes(bytes)}`)
+      .sort();
+  }
+
+  /**
+   * 恢复运行唯一允许的写入：新增一件缺失资产。
+   * 已存在的资产即便字节相同也不重写；不同字节一律失败关闭（不允许覆盖已发布内容）。
+   */
+  uploadAsset(tag, name, bytes) {
+    const release = this.published.get(tag);
+    if (!release) throw new Error(`没有已公开的 Release：${tag}`);
+    if (release.assets.has(name)) {
+      if (sha256Bytes(release.assets.get(name)) !== sha256Bytes(bytes)) {
+        this.overwriteRejections += 1;
+        throw new Error(`拒绝覆盖已发布资产：${tag}/${name}`);
+      }
+      return "unchanged";
+    }
+    release.assets.set(name, bytes);
+    this.uploadCalls += 1;
+    return "added";
+  }
+
+  /**
+   * 接力来源：只能是**已公开**的其它 Release，且清单摘要必须绑定到该 Release
+   * 自己的 RC 记录；Draft 来源与未绑定字节一律不作为来源。
+   */
+  findPeerManifest(channel, tag) {
+    const { peer } = CHANNEL_MANIFESTS[channel];
+    for (const [sourceTag, release] of this.published) {
+      if (sourceTag === tag) continue;
+      const bytes = release.assets.get(peer);
+      if (!bytes) continue;
+      const artifact = (release.record.artifacts || []).find((item) => item.name === peer);
+      if (!artifact || artifact.sha256 !== sha256Bytes(bytes)) continue;
+      return { sourceTag, bytes };
+    }
+    return null;
+  }
+
+  /**
+   * 发布后恢复运行：判定来自生产用的 publish-state.mjs。
+   * - 已公开 → 永不重新公开；
+   * - 只允许补缺失的对端清单；
+   * - 缺自有清单等无法自愈的状态 → 返回 ok=false（工作流保持红色）。
+   */
+  rerunPublish({ tag, channel }) {
+    const release = this.published.get(tag);
+    if (!release) {
+      throw new Error(`没有已公开的 Release：${tag}（恢复运行只处理已公开状态）`);
+    }
+    let state = assessPublicationState({
+      isDraft: false,
+      assets: [...release.assets.keys()],
+      channel,
+    });
+    if (state.needPublish) throw new Error("已公开的 Release 不得重新公开");
+
+    // 自有清单缺失不是可自愈状态：没有"再发一次"这条路，只能保持失败。
+    if (!state.hasOwnManifest) {
+      return {
+        actions: [],
+        ok: false,
+        missing: verifyManifestPresence(state).missing,
+        republished: false,
+      };
+    }
+
+    const actions = [];
+    if (state.needHandoff) {
+      const peer = this.findPeerManifest(channel, tag);
+      if (!peer) {
+        throw new Error(
+          `未找到可接力的对端清单 ${state.peerManifest}：来源必须已公开且清单绑定自身 RC 记录`,
+        );
+      }
+      this.uploadAsset(tag, state.peerManifest, peer.bytes);
+      actions.push(`handoff:${state.peerManifest}`);
+      state = assessPublicationState({
+        isDraft: false,
+        assets: [...release.assets.keys()],
+        channel,
+      });
+    }
+
+    const presence = verifyManifestPresence(state);
+    return { actions, ok: presence.ok, missing: presence.missing, republished: false };
   }
 
   /** 并发锁：同一 channel+tag 同时只允许一个发布在途。 */
@@ -626,6 +736,173 @@ fs.rmSync(rerunDir, { recursive: true, force: true });
 check("G1 常规通道拒绝 linux 后缀标签", parseTag("v0.17.2-linux-sec1")?.channel === "linux-critical");
 check("G2 常规通道标签解析正确", parseTag("v0.17.2")?.channel === "windows");
 check("G3 非法标签被拒", parseTag("v0.17.2-rc1") === null);
+
+/* ------------------------------------------------------------------ */
+/* K. 发布后恢复运行（成功或中断后重跑）                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 恢复运行必须同时满足两件事：
+ *  1) 已公开的 Release 永不再公开一次，也不再改写任何既有资产；
+ *  2) 只允许「新增缺失的另一通道清单」，其余无法自愈的状态一律失败关闭。
+ * 这里的判定来源是生产用的 publish-state.mjs，而不是演练自造的布尔值。
+ */
+
+const peerManifest = Buffer.from(
+  JSON.stringify({
+    version: "0.16.0",
+    platforms: { "linux-x86_64": { signature: "sig", url: "https://example.invalid/a.AppImage" } },
+  }),
+);
+const prevLinuxTag = "v0.16.0-linux-sec1";
+const prevLinuxRecord = buildRcRecord({
+  tag: prevLinuxTag,
+  commit,
+  qa: { runId: "1234567890", buildCommit: commit },
+  artifacts: [
+    {
+      name: "latest-linux-critical.json",
+      sha256: sha256Bytes(peerManifest),
+      size: peerManifest.length,
+    },
+  ],
+});
+store.seedPublished(prevLinuxTag, prevLinuxRecord, [["latest-linux-critical.json", peerManifest]]);
+
+// C2 之后 `tag` 已公开，但中断在接力之前：缺 latest-linux-critical.json。
+const assetsAfterPublish = store.snapshot(tag);
+const publishCallsAfterSuccess = store.publishCalls;
+const uploadsBeforeRecovery = store.uploadCalls;
+
+const k1 = store.rerunPublish({ tag, channel: "windows" });
+check(
+  "K1 发布成功后中断（缺对端清单）→ 重跑只补一件缺失资产",
+  k1.ok &&
+    JSON.stringify(k1.actions) === JSON.stringify(["handoff:latest-linux-critical.json"]) &&
+    k1.republished === false,
+  k1.actions.join(","),
+);
+check(
+  "K2 恢复运行不重新公开、不改写任何已发布字节",
+  store.publishCalls === publishCallsAfterSuccess &&
+    store.uploadCalls === uploadsBeforeRecovery + 1 &&
+    JSON.stringify(store.snapshot(tag).filter((item) => !item.startsWith("latest-linux-critical.json"))) ===
+      JSON.stringify(assetsAfterPublish),
+  `publish=${store.publishCalls} upload=${store.uploadCalls}`,
+);
+
+const k2 = store.rerunPublish({ tag, channel: "windows" });
+check(
+  "K3 恢复完成后的再次重跑 → 零写入且校验通过",
+  k2.ok &&
+    k2.actions.length === 0 &&
+    store.uploadCalls === uploadsBeforeRecovery + 1 &&
+    store.publishCalls === publishCallsAfterSuccess,
+  k2.actions.join(","),
+);
+
+expectThrow("K4 已公开 Release 再次发布 → 拒绝", () => store.publishDraft(tag, goodApproval), "没有可发布的 Draft");
+check(
+  "K5 拒绝后资产与 Release 数量不变",
+  JSON.stringify(store.snapshot(tag).filter((item) => !item.startsWith("latest-linux-critical.json"))) ===
+    JSON.stringify(assetsAfterPublish) &&
+    store.published.size === 2 &&
+    store.uploadCalls === uploadsBeforeRecovery + 1,
+  `${store.published.size} 个 Release`,
+);
+
+const peerDigestBefore = store.snapshot(tag).find((item) => item.startsWith("latest-linux-critical.json"));
+expectThrow(
+  "K6 覆盖已发布资产 → 拒绝（只允许新增缺失文件）",
+  () => store.uploadAsset(tag, "latest-linux-critical.json", Buffer.from("tampered-peer-manifest")),
+  "拒绝覆盖已发布资产",
+);
+check(
+  "K7 覆盖被拒后资产字节未变",
+  store.snapshot(tag).find((item) => item.startsWith("latest-linux-critical.json")) === peerDigestBefore,
+  peerDigestBefore,
+);
+
+// Linux 通道镜像：已公开但缺 latest.json 时只补这一件，且来源必须是已公开 Release。
+const linuxPeerManifest = Buffer.from(
+  JSON.stringify({
+    version: "0.17.0",
+    platforms: { "linux-x86_64": { signature: "sig", url: "https://example.invalid/b.AppImage" } },
+  }),
+);
+const linuxTag = "v0.17.0-linux-sec1";
+const linuxPublishedRecord = buildRcRecord({
+  tag: linuxTag,
+  commit,
+  qa: { runId: "1234567890", buildCommit: commit },
+  artifacts: [
+    { name: "latest-linux-critical.json", sha256: sha256Bytes(linuxPeerManifest), size: linuxPeerManifest.length },
+  ],
+});
+store.seedPublished(linuxTag, linuxPublishedRecord, [["latest-linux-critical.json", linuxPeerManifest]]);
+const linuxAssetsBefore = store.snapshot(linuxTag);
+const uploadsBeforeLinux = store.uploadCalls;
+const k8 = store.rerunPublish({ tag: linuxTag, channel: "linux" });
+check(
+  "K8 Linux 通道同规则：只补 latest.json，不重新公开",
+  k8.ok &&
+    JSON.stringify(k8.actions) === JSON.stringify(["handoff:latest.json"]) &&
+    store.uploadCalls === uploadsBeforeLinux + 1 &&
+    JSON.stringify(store.snapshot(linuxTag).filter((item) => !item.startsWith("latest.json"))) ===
+      JSON.stringify(linuxAssetsBefore),
+  k8.actions.join(","),
+);
+
+// 对端清单只能来自已公开 Release：只有 Draft 形态的来源时必须失败关闭。
+const draftOnlyStore = new FakeReleaseStore();
+const draftSourceTag = "v0.17.5-linux-sec1";
+const draftPeer = Buffer.from(
+  JSON.stringify({
+    version: "0.17.5",
+    platforms: { "linux-x86_64": { signature: "sig", url: "https://example.invalid/c.AppImage" } },
+  }),
+);
+draftOnlyStore.createDraft(
+  buildRcRecord({
+    tag: draftSourceTag,
+    commit,
+    qa: { runId: "1234567890", buildCommit: commit },
+    artifacts: [{ name: "latest-linux-critical.json", sha256: sha256Bytes(draftPeer) }],
+  }),
+  [["latest-linux-critical.json", draftPeer]],
+);
+draftOnlyStore.seedPublished(
+  tag,
+  record,
+  artifacts.map((item) => [item.name, item.bytes]),
+);
+expectThrow(
+  "K9 对端来源仍是 Draft → 恢复运行失败关闭",
+  () => draftOnlyStore.rerunPublish({ tag, channel: "windows" }),
+  "未找到可接力的对端清单",
+);
+check(
+  "K10 失败关闭后没有追加任何资产",
+  draftOnlyStore.snapshot(tag).length === 2 && draftOnlyStore.uploadCalls === 0,
+  draftOnlyStore.snapshot(tag).join(","),
+);
+
+// 已公开但缺**自己的**清单：不存在任何自动修好的路径，必须保持红色。
+const ownMissingStore = new FakeReleaseStore();
+ownMissingStore.seedPublished(
+  tag,
+  record,
+  artifacts.filter((item) => item.name !== "latest.json").map((item) => [item.name, item.bytes]),
+);
+const k11 = ownMissingStore.rerunPublish({ tag, channel: "windows" });
+check(
+  "K11 已公开但缺自有清单 → 恢复运行判定不通过（不自愈、不重发）",
+  k11.ok === false &&
+    k11.actions.length === 0 &&
+    k11.missing.includes("latest.json") &&
+    ownMissingStore.publishCalls === 0,
+  k11.missing.join(","),
+);
 
 /* ------------------------------------------------------------------ */
 /* 输出                                                                */

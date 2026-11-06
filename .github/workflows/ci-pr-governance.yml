@@ -1,0 +1,73 @@
+name: PR governance
+
+# 只校验 PR 元数据；不 checkout、不执行 PR 代码。
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-governance-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  pr-governance:
+    name: PR governance (issue link + branch naming)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR metadata
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          node - <<'NODE'
+          function stripHtmlComments(value) {
+            let output = "";
+            let index = 0;
+            while (index < value.length) {
+              const open = value.indexOf("<!--", index);
+              if (open === -1) {
+                output += value.slice(index);
+                break;
+              }
+              output += value.slice(index, open);
+              const close = value.indexOf("-->", open + 4);
+              if (close === -1) break;
+              index = close + 3;
+            }
+            return output;
+          }
+
+          const branch = process.env.HEAD_REF || "";
+          const body = stripHtmlComments(process.env.PR_BODY || "");
+          const errors = [];
+
+          if (!/^(fix|feat|hotfix|chore)\/[0-9]+-[a-z0-9-]+$/.test(branch)) {
+            errors.push(`分支名不符合 fix|feat|hotfix|chore/<issue>-<slug>：${branch}`);
+          }
+          if (!/(?:Closes|Fixes|Resolves|Refs)\s+#\d+/i.test(body)) {
+            errors.push("PR 正文缺少 Closes/Fixes/Resolves/Refs #<issue>");
+          }
+          for (const section of ["验证", "数据与隐私", "发布影响"]) {
+            if (!body.includes(section)) errors.push(`PR 正文缺少「${section}」小节`);
+          }
+
+          if (errors.length > 0) {
+            for (const error of errors) console.error(`[pr-governance] ${error}`);
+            process.exitCode = 1;
+          } else {
+            console.log("[pr-governance] OK");
+          }
+          NODE
+
+      - name: Dependabot passthrough
+        if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+        run: echo "Dependabot PR：跳过人工治理字段校验。"
+
+      - name: Merge queue passthrough
+        if: github.event_name == 'merge_group'
+        run: echo "merge_group：PR 阶段已校验，保持同一必需检查名。"

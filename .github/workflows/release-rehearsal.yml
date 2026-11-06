@@ -7,10 +7,15 @@ name: Release governance rehearsal
 #
 # 任何一项失败都会让本工作流变红：发布状态机回归必须立刻可见。
 on:
-  push:
-    branches: [main]
+  # 只在改动触碰发布链路时才演练：纯前端/后端 PR 不必等一遍发布状态机。
+  # 这里没有必需检查（分支保护只要求 4 个上下文），所以 paths 过滤不会
+  # 制造"Expected 永不满足"的死锁——需要时仍可手动 workflow_dispatch。
   pull_request:
     branches: [main]
+    paths:
+      - ".github/workflows/release-*"
+      - "scripts/release-governance/**"
+      - "scripts/release-smoke/**"
   workflow_dispatch:
 
 permissions:

@@ -1584,9 +1584,11 @@ export function checkReleaseSurface(root, report) {
   }
 
   // 常规 CI 必须覆盖 main 与 PR，且门禁步骤真实存在于 steps 内。
-  for (const [file, markers] of [
+  // Linux / Windows 门禁已合并为单个 matrix 工作流 ci.yml；两个必需检查名
+  // 由 matrix 的 name 逐字产出，分支保护按这个上下文名匹配，改名即失效。
+  for (const [file, markers, requiredNames] of [
     [
-      ".github/workflows/ci-linux-check.yml",
+      ".github/workflows/ci.yml",
       [
         "cargo clippy",
         "-D warnings",
@@ -1594,17 +1596,13 @@ export function checkReleaseSurface(root, report) {
         "--test memory_budget",
         "cargo audit",
         "npm audit",
-      ],
-    ],
-    [
-      ".github/workflows/ci-windows-check.yml",
-      [
         "npx tsc --noEmit",
         "cargo test --lib",
-        "--test e2e_stage1",
-        "--test memory_budget",
         "tests/qa/run-qa.mjs",
-        "npm audit",
+      ],
+      [
+        "cargo check + frontend build (ubuntu-22.04)",
+        "tsc + cargo test + static QA (windows-latest)",
       ],
     ],
   ]) {
@@ -1620,6 +1618,11 @@ export function checkReleaseSurface(root, report) {
     for (const marker of markers) {
       if (!body.includes(marker)) {
         errors.push(`${file} 的 steps 缺少 ${marker}`);
+      }
+    }
+    for (const name of requiredNames ?? []) {
+      if (!source.includes(name)) {
+        errors.push(`${file} 缺少分支保护必需检查名 ${name}`);
       }
     }
   }

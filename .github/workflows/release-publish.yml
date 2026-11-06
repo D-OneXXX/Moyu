@@ -156,6 +156,7 @@ jobs:
           TAG: ${{ steps.identity.outputs.tag }}
           COMMIT: ${{ steps.identity.outputs.commit }}
           VERSION: ${{ steps.identity.outputs.version }}
+          NEED_PUBLISH: ${{ steps.state.outputs.need_publish }}
         run: |
           set -euo pipefail
           rm -rf draft-assets && mkdir -p draft-assets
@@ -168,6 +169,11 @@ jobs:
             echo "缺少干净 Windows VM 的安装验证回执 install-verification.json：正式发布强制条件未满足，拒绝发布" >&2
             exit 1
           fi
+          # 已公开 Release 会带接力清单；只在重跑复核时允许它，首次公开的 Draft 不得夹带。
+          ALLOW_EXTRA=()
+          if [ "$NEED_PUBLISH" != "true" ]; then
+            ALLOW_EXTRA+=(--allow-extra latest-linux-critical.json)
+          fi
           node scripts/release-governance/verify-draft.mjs \
             --tag "$TAG" \
             --channel windows \
@@ -176,7 +182,8 @@ jobs:
             --assets-dir draft-assets \
             --attestation draft-assets/install-verification.json \
             --manifest draft-assets/latest.json \
-            --platform windows-x86_64
+            --platform windows-x86_64 \
+            "${ALLOW_EXTRA[@]}"
           # 固化审批时看到的两份治理文件；发布前复检必须与这份快照逐字节一致。
           rm -rf approved && mkdir -p approved
           cp draft-assets/rc-record.json draft-assets/install-verification.json approved/
@@ -356,6 +363,12 @@ jobs:
               }
             }
           '
+          # 正文也可能在上一次检查后被改写；发布前再取一次并重新校验。
+          gh release view "$TAG" --json body --jq .body > release-recheck-notes.md
+          node scripts/release-governance/release-notes.mjs --check release-recheck-notes.md
+          node scripts/release-governance/release-notes.mjs \
+            --check-manifest publish-recheck/latest.json \
+            --require-match release-recheck-notes.md
           node scripts/release-governance/verify-draft.mjs \
             --tag "$TAG" \
             --channel windows \
@@ -374,8 +387,9 @@ jobs:
           TAG: ${{ steps.identity.outputs.tag }}
         run: |
           set -euo pipefail
-          # 标签必须已由维护者按授权流程创建；--verify-tag 禁止在这里顺带创建标签。
-          gh release edit "$TAG" --draft=false --verify-tag --title "Moyu $TAG"
+          # 标签必须已由维护者按授权流程创建；--tag 让 --verify-tag 真正检查远端标签，
+          # 防止标签在复检后被删除时 GitHub 在这里用 target_commitish 顺带创建它。
+          gh release edit "$TAG" --tag "$TAG" --draft=false --verify-tag --title "Moyu $TAG"
 
       # 幂等接力：缺才补。已公开的 Release 也允许补——这是部分失败的唯一自救路径，
       # 且只新增"另一通道清单"这一个资产，不会重新公开、不会改写其它资产。
@@ -404,8 +418,23 @@ jobs:
           # 公开 Release，绕过该通道的人工审批。
           for PREV in $(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name'); do
             if [ "$PREV" = "$TAG" ]; then continue; fi
-            if gh release download "$PREV" -p latest-linux-critical.json -D handoff --clobber 2>/dev/null; then
+            rm -rf handoff && mkdir -p handoff
+            if gh release download "$PREV" -p latest-linux-critical.json -p rc-record.json -D handoff --clobber 2>/dev/null; then
+              # 接力的清单必须能绑定到源 Release 自己的 RC 记录；不接受未经摘要绑定的字节。
+              # 退出码 2 = 该 Release 不是这个对端通道（继续找下一个），1 = 摘要/记录异常（失败关闭）。
+              set +e
+              node scripts/release-governance/verify-peer-manifest.mjs \
+                --record handoff/rc-record.json \
+                --manifest handoff/latest-linux-critical.json \
+                --channel linux-critical \
+                --name latest-linux-critical.json \
+                --out handoff/peer-expected.json
+              STATUS=$?
+              set -e
+              if [ "$STATUS" -eq 2 ]; then continue; fi
+              if [ "$STATUS" -ne 0 ]; then exit 1; fi
               gh release upload "$TAG" handoff/latest-linux-critical.json --clobber
+              cp handoff/peer-expected.json peer-expected.json
               echo "已从 ${PREV} 接力 latest-linux-critical.json"
               # 上传后立刻确认资产真的在，避免"命令返回 0 但资产未落地"。
               if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx 'latest-linux-critical.json'; then
@@ -436,7 +465,21 @@ jobs:
           fi
           rm -rf published && mkdir -p published
           gh release download "$TAG" --dir published --clobber
-          # 发布后再次绑定：标签仍指向同一候选提交，公开后的资产仍与 rc-record 一致。
+          # 本次接力写入的对端清单也必须保持摘要不变。
+          if [ -f peer-expected.json ]; then
+            node -e '
+              const fs = require("node:fs");
+              const { sha256File } = require("./scripts/release-governance/rc-record.mjs");
+              const expected = JSON.parse(fs.readFileSync("peer-expected.json", "utf8"));
+              const actual = sha256File(`published/${expected.name}`);
+              if (actual !== expected.sha256) {
+                console.error(`${expected.name} 与接力时的源摘要不一致，发布失败`);
+                process.exit(1);
+              }
+            '
+          fi
+          # 发布后再次绑定：标签仍指向同一候选提交，公开后的记录/回执必须与审批快照
+          # 逐字节一致（防止在复检与发布之间连同记录一起替换），再校验全部制品。
           gh release view "$TAG" --json isDraft,tagName,targetCommitish > published-release.json
           node scripts/release-governance/publish-identity.mjs \
             --tag "$TAG" \
@@ -444,6 +487,17 @@ jobs:
             --release-json published-release.json \
             --record published/rc-record.json \
             --out published-identity.json
+          node -e '
+            const { sha256File } = require("./scripts/release-governance/rc-record.mjs");
+            for (const name of ["rc-record.json", "install-verification.json"]) {
+              const before = sha256File(`approved/${name}`);
+              const after = sha256File(`published/${name}`);
+              if (before !== after) {
+                console.error(`${name} 与审批快照不一致：公开资产被替换，发布失败`);
+                process.exit(1);
+              }
+            }
+          '
           node scripts/release-governance/verify-draft.mjs \
             --tag "$TAG" \
             --channel windows \
@@ -452,7 +506,8 @@ jobs:
             --assets-dir published \
             --attestation published/install-verification.json \
             --manifest published/latest.json \
-            --platform windows-x86_64
+            --platform windows-x86_64 \
+            --allow-extra latest-linux-critical.json
           node scripts/verify-updater-manifest.mjs published/latest.json \
             --expect-version "$VERSION" \
             --require-platform windows-x86_64

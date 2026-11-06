@@ -68,7 +68,12 @@ test("正式发布：不自动创建/推送标签，标签缺失或指向别处�
     assert.doesNotMatch(source, /gh\s+release\s+create/, `${name} 不得在发布流程内创建 Release/标签`);
     assert.doesNotMatch(source, /git\/refs/, `${name} 不得直接写 refs 绕过标签保护`);
     assert.ok(source.includes("publish-identity.mjs"), `${name} 必须校验标签存在且绑定候选提交`);
-    assert.ok(source.includes("--verify-tag"), `${name} 必须禁止发布时顺带创建标签`);
+    // gh 的 --verify-tag 只有同时给了 --tag 才会真正检查远端标签；缺 --tag 时是空操作。
+    assert.match(
+      source,
+      /gh release edit "\$TAG" --tag "\$TAG" --draft=false --verify-tag/,
+      `${name} 必须用 --tag + --verify-tag 禁止发布时顺带创建标签`,
+    );
   }
 });
 
@@ -91,6 +96,7 @@ test("正式发布：审批后重新下载并校验全部 Draft 资产，再公�
       "install-verification.json",
       "sha256File",
       "verify-draft.mjs",
+      "release-notes.mjs",
     ]) {
       assert.ok(recheckStep.run.includes(marker), `${name} 发布前复检缺少：${marker}`);
     }
@@ -98,7 +104,14 @@ test("正式发布：审批后重新下载并校验全部 Draft 资产，再公�
     assert.match(recheckStep.run, /set -euo pipefail/, `${name} 复检必须失败关闭`);
 
     const postStep = steps[post];
-    for (const marker of ["publish-identity.mjs", "verify-draft.mjs", "published/rc-record.json"]) {
+    for (const marker of [
+      "publish-identity.mjs",
+      "verify-draft.mjs",
+      "published/rc-record.json",
+      "approved/${name}",
+      "--allow-extra",
+      "peer-expected.json",
+    ]) {
       assert.ok(postStep.run.includes(marker), `${name} 发布后复核缺少：${marker}`);
     }
   }
@@ -185,6 +198,26 @@ test("发布接力：只从已公开且非预发布的 Release 携带另一通�
       `${name} 的清单接力必须排除 Draft / 预发布`,
     );
     assert.ok(!source.includes("--jq '.[].tag_name'"), `${name} 仍会从 Draft 接力清单`);
+  }
+});
+
+test("发布接力：对端清单必须绑定源 Release 自己的 rc-record 摘要", () => {
+  const cases = {
+    "release-publish.yml": { channel: "linux-critical", name: "latest-linux-critical.json" },
+    "release-publish-linux.yml": { channel: "windows", name: "latest.json" },
+  };
+  for (const [file, { channel, name }] of Object.entries(cases)) {
+    const source = workflow(file);
+    const handoff = parseSteps(source).find((step) => step.name === "Channel hand-off (carry the other channel manifest)");
+    assert.ok(handoff, `${file} 缺少通道接力步骤`);
+    assert.ok(handoff.run.includes("verify-peer-manifest.mjs"), `${file} 接力清单必须校验源记录`);
+    assert.ok(handoff.run.includes("rc-record.json"), `${file} 接力必须下载源 Release 的 rc-record.json`);
+    assert.ok(handoff.run.includes(`--channel ${channel}`), `${file} 必须校验源通道`);
+    assert.ok(handoff.run.includes(`--name ${name}`), `${file} 必须校验对端清单名称`);
+    assert.ok(handoff.run.includes("--out handoff/peer-expected.json"), `${file} 必须记录接力清单的源摘要`);
+    const verifyAt = handoff.run.indexOf("verify-peer-manifest.mjs");
+    const uploadAt = handoff.run.indexOf("gh release upload");
+    assert.ok(verifyAt >= 0 && uploadAt > verifyAt, `${file} 必须先验证摘要再上传接力清单`);
   }
 });
 
@@ -379,6 +412,14 @@ test("场景 1/2：首次公开与已发布重跑走同一套资产校验，产�
     );
     // 两种状态（Draft / 已公开）都不会让产出步骤消失：它没有 if。
     assert.equal(draftAssetsProducer(steps).if, "");
+    // 已公开重跑才允许对端接力清单；首次公开的 Draft 不得夹带额外资产。
+    const producer = draftAssetsProducer(steps);
+    assert.ok(producer.run.includes("NEED_PUBLISH"), `${name} 资产校验必须按发布状态决定是否允许接力清单`);
+    assert.match(
+      producer.run,
+      /ALLOW_EXTRA=\(\)\s*\n\s*if \[ "\$NEED_PUBLISH" != "true" \]; then\s*\n\s*ALLOW_EXTRA\+=\(--allow-extra/,
+      `${name} 只有已公开重跑才允许携带接力清单，首次公开的 Draft 不得夹带`,
+    );
   }
 });
 

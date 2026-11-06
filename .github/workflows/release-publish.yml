@@ -53,7 +53,7 @@ jobs:
       actions: read # 读取 run 审批记录与安装证据 provenance
     steps:
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -315,7 +315,8 @@ jobs:
           TAG: ${{ steps.identity.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release view "$TAG" --json body --jq .body > draft-release-notes.md
+          # --jq 会额外追加 LF；快照将作为 --notes-file 回写，必须保留原始正文的字节。
+          gh release view "$TAG" --json body --template '{{.body}}' > draft-release-notes.md
           node scripts/release-governance/release-notes.mjs --check draft-release-notes.md
           # 更新弹窗显示的是清单 notes，不是 Release 正文。结构与内部信息仍是硬门禁；
           # 正文与清单必须一致；修改说明时须重跑候选。
@@ -367,7 +368,7 @@ jobs:
             }
           '
           # 正文也可能在上一次检查后被改写；发布前再取一次，先比对审批摘要再校验结构。
-          gh release view "$TAG" --json body --jq .body > release-recheck-notes.md
+          gh release view "$TAG" --json body --template '{{.body}}' > release-recheck-notes.md
           node -e '
             const fs = require("node:fs");
             const { sha256File } = require("./scripts/release-governance/rc-record.mjs");
@@ -469,6 +470,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
           VERSION: ${{ steps.identity.outputs.version }}
         run: |
           set -euo pipefail
@@ -481,7 +483,7 @@ jobs:
           gh release download "$TAG" --dir published --clobber
           # 已公开正文也必须与审批时一致（仅首次公开的本次运行有审批摘要）。
           if [ -f approved/release-notes.sha256 ]; then
-            gh release view "$TAG" --json body --jq .body > published-notes.md
+            gh release view "$TAG" --json body --template '{{.body}}' > published-notes.md
             node -e '
               const fs = require("node:fs");
               const { sha256File } = require("./scripts/release-governance/rc-record.mjs");

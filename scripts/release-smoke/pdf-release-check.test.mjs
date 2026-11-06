@@ -15,7 +15,12 @@ import {
   LEGACY_CURRENT_PAGE,
   LEGACY_PAGE_COUNT,
   LEGACY_READING_LOG,
+  MAX_PDF_COVER_BYTES,
+  MAX_PDF_COVER_EDGE,
+  MAX_PDF_COVER_PIXELS,
   PDF_CHECKS,
+  PDF_COVER_EDGE,
+  SCHEMA_VERSION,
   buildLegacyBackup,
   jpegDimensions,
   makePdfChecks,
@@ -29,6 +34,32 @@ const SCRIPT = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "pdf-release-check.mjs",
 );
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+test("发布校验常量必须与后端 db.rs / pdf.rs 保持一致（防止契约漂移）", () => {
+  const dbSource = fs.readFileSync(path.join(REPO_ROOT, "src-tauri", "src", "db.rs"), "utf8");
+  const dbMatch = dbSource.match(/pub const SCHEMA_VERSION:\s*i32\s*=\s*(\d+)/);
+  assert.ok(dbMatch, "db.rs 缺少 SCHEMA_VERSION");
+  assert.equal(
+    SCHEMA_VERSION,
+    Number(dbMatch[1]),
+    "scripts/release-smoke/pdf-release-check.mjs 的 SCHEMA_VERSION 已落后于 db.rs",
+  );
+
+  const pdfSource = fs.readFileSync(path.join(REPO_ROOT, "src-tauri", "src", "pdf.rs"), "utf8");
+  const number = (name, suffix = "") => {
+    const match = pdfSource.match(
+      new RegExp(`pub const ${name}:\\s*[^=]+=\\s*([0-9_*\\s]+)${suffix};`),
+    );
+    assert.ok(match, `pdf.rs 缺少 ${name}`);
+    // 常量可能写成算术表达式（如 2 * 1024 * 1024），用受限字符集求值。
+    return Number(Function(`"use strict"; return (${match[1].replaceAll("_", "")});`)());
+  };
+  assert.equal(PDF_COVER_EDGE, number("PDF_COVER_EDGE"), "PDF_COVER_EDGE 与后端不一致");
+  assert.equal(MAX_PDF_COVER_BYTES, number("MAX_PDF_COVER_BYTES"), "MAX_PDF_COVER_BYTES 与后端不一致");
+  assert.equal(MAX_PDF_COVER_EDGE, number("MAX_PDF_COVER_EDGE"), "MAX_PDF_COVER_EDGE 与后端不一致");
+  assert.equal(MAX_PDF_COVER_PIXELS, number("MAX_PDF_COVER_PIXELS"), "MAX_PDF_COVER_PIXELS 与后端不一致");
+});
 
 function tempDir(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `mr-pdf-release-${label}-`));

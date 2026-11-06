@@ -6,6 +6,76 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { inputBlock, parseSteps, workflow } from "./contract-helpers.mjs";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+
+for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+  test(`${name}：正文读取与发布后摘要校验保留原始字节，拒绝真实改写`, () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-publish-body-"));
+    try {
+      fs.mkdirSync(path.join(dir, "approved"));
+      fs.mkdirSync(path.join(dir, "scripts", "release-governance"), { recursive: true });
+      fs.copyFileSync(path.join(repoRoot, "scripts/release-governance/rc-record.mjs"),
+        path.join(dir, "scripts/release-governance/rc-record.mjs"));
+      // 外部 gh 边界：已用真实 gh 确认 --jq 给字符串追加 LF，而 --template 不追加。
+      // 不连接 GitHub、不执行 release edit；其余运行实际 workflow 的读取/摘要比较代码。
+      fs.writeFileSync(path.join(dir, "gh-fixture.cjs"), `
+        const fs = require("node:fs");
+        const args = process.argv.slice(2);
+        if (args[0] !== "release" || args[1] !== "view" || !args.includes("--json")) process.exit(90);
+        const body = JSON.parse(fs.readFileSync("body.json", "utf8")).body;
+        if (args.includes("--jq") && args[args.indexOf("--jq") + 1] === ".body") process.stdout.write(body + "\\n");
+        else if (args.includes("--template") && args[args.indexOf("--template") + 1] === "{{.body}}") process.stdout.write(body);
+        else process.exit(91);
+      `);
+      const steps = parseSteps(workflow(name));
+      const titles = ["Enforce bilingual release notes", "Re-check tag and Draft identity before publish", "Post-release verification"];
+      const reads = titles.map((title) => {
+        const step = steps.find((entry) => entry.name === title);
+        const line = step.run.split("\n").find((entry) => /gh release view .*--json body/.test(entry));
+        assert.ok(line, `${title} 必须读取正文`);
+        return line.trim();
+      });
+      const post = steps.find((entry) => entry.name === "Post-release verification").run;
+      const start = post.indexOf('if [ -f approved/release-notes.sha256 ]; then');
+      const end = post.indexOf("\nfi", start);
+      assert.ok(start >= 0 && end > start, "必须保留发布后正文摘要校验");
+      const guard = post.slice(start, end + 3);
+      const run = (script) => spawnSync("bash", ["-c", `set -euo pipefail\ngh() { node gh-fixture.cjs "$@"; }\n${script}`], {
+        cwd: dir, encoding: "utf8", timeout: 20_000,
+        env: { ...process.env, TAG: "v0.19.1" },
+      });
+      for (const body of ["English\n简体中文", "English\n简体中文\n", "English\n简体中文\n\n", "English\r\n简体中文\r\n"]) {
+        fs.writeFileSync(path.join(dir, "body.json"), JSON.stringify({ body }));
+        for (const read of reads) {
+          const result = run(read);
+          assert.equal(result.status, 0, result.stderr);
+          const output = read.match(/>\s*(\S+)$/)[1];
+          assert.equal(fs.readFileSync(path.join(dir, output), "utf8"), body, `${name}: ${read} 不得增删正文换行`);
+        }
+        fs.writeFileSync(path.join(dir, "approved/release-notes.sha256"), createHash("sha256").update(body).digest("hex") + "\n");
+        const same = run(guard);
+        assert.equal(same.status, 0, same.stderr);
+        // 不以 trim() 放宽审批绑定：正文改字和仅末尾新增 LF 都必须拒绝。
+        for (const changed of [body.replace("English", "Changed"), body + "\n"]) {
+          fs.writeFileSync(path.join(dir, "body.json"), JSON.stringify({ body: changed }));
+          const rejected = run(guard);
+          assert.equal(rejected.status, 1, rejected.stderr);
+          assert.match(rejected.stderr, /正文与审批快照不一致/);
+        }
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`${name}：发布后校验显式接收候选 COMMIT，不依赖前序 shell`, () => {
+    const source = workflow(name);
+    const section = source.split("      - name: Post-release verification")[1].split("        run: |")[0];
+    const binding = section.match(/^\s+COMMIT:\s*(.+)$/m)?.[1];
+    assert.equal(binding, "${{ steps.identity.outputs.commit }}", "独立 step 的严格 shell 需要显式候选提交输入");
+  });
+}
 
 test("候选阶段：固定提交先验证再检出并在写 Draft 前复核", () => {
   for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
@@ -866,10 +936,13 @@ test("qa-full：证据来源必须是实际检出的提交，且无效引用必�
 
 test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/P1 不得登记豁免", () => {
   const source = workflow("qa-l2.yml");
-  assert.match(
-    source,
-    /uses: \.\/\.github\/workflows\/qa-full\.yml/,
-    "L2 的 full 模式必须复用 qa-full，而不是另写一套全量 QA",
+  assert.ok(
+    !source.includes("uses: ./.github/workflows/qa-full.yml"),
+    "PR 的 L2 不得再调用 qa-full：发布证据只在候选阶段生成，PR 不再重复其 L1",
+  );
+  assert.ok(
+    !source.includes("L2 · full QA"),
+    "PR 的 L2 不得再有 full-qa job；full 模式由同一个 PR QA job 跑全量套件",
   );
   assert.match(
     source,
@@ -883,22 +956,18 @@ test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/
     "门禁必须读取与 head 绑定的证据",
   );
 
-  // 分层：先分类，再决定 full / targeted；gate 名称不变，Draft 之外 always 执行。
+  // 分层：先分类，再决定 suite；full/定向共用同一个 PR QA job，gate 名称不变。
   assert.match(source, /classify-qa-scope\.mjs/, "L2 必须按改动范围分类");
-  assert.match(
-    source,
-    /needs\.changes\.outputs\.mode == 'full'/,
-    "full 模式必须走 qa-full",
-  );
-  assert.match(
-    source,
-    /needs\.changes\.outputs\.mode != 'full'/,
-    "非 full 模式必须走定向 QA",
-  );
+  assert.match(source, /name: L2 · PR QA/, "full/定向必须共用 L2 · PR QA job");
   assert.match(
     source,
     /node tests\/qa\/run-qa\.mjs --suite=/,
     "定向 QA 必须显式传 --suite=",
+  );
+  assert.match(
+    source,
+    /node tests\/qa\/run-qa\.mjs\n\s*fi/,
+    "suite 为空（full）时必须回退到全量 QA",
   );
   assert.match(
     source,

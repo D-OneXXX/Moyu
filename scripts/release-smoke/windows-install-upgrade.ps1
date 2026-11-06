@@ -20,7 +20,7 @@
   - 只做安装/启动/数据存活检查，不做静默自动更新；
   - 所有数据目录必须显式隔离（MR_DATA_DIR / render_cache / online_cache / WebView2 profile）。
   - 提供 -PdfCheckScript 时额外验证 PDF 导入/渲染/翻页/缩放/封面、跨重启进度、
-    .mrbackup 导出/恢复（含旧版备份迁移）与 v2 数据库快照回滚；四项结果写入
+    .mrbackup 导出/恢复（含旧版备份迁移）与当前 schema 数据库快照回滚；四项结果写入
     证据的 checks.pdfReading / progressRestart / backupRestore / databaseRollback。
 
 .EXAMPLE
@@ -755,7 +755,7 @@ if ($pdfChecksRequested -and $newInstall) {
     Write-Step "PDF 数据库与封面缓存（应用关闭后只读校验）"
     $pdfDbOut = Join-Path $PdfEvidenceDir "pdf-db.json"
     $pdfDbStep = Invoke-NodeCheck -Script $PdfCheckScript `
-      -Label "library.db：format=pdf / page_count=4 / current_page=2 / user_version=2 / 封面 JPEG" `
+      -Label "library.db：format=pdf / page_count=4 / current_page=2 / user_version=3 / 封面 JPEG" `
       -OutPath $pdfDbOut -Arguments @("db", "--data-dir", $PdfDataDir, "--book-id", $pdfBookId,
         "--expect-page", "3", "--expect-count", "4", "--out", $pdfDbOut)
     Assert-True $pdfDbStep.Ok "PDF 数据库与封面缓存检查通过"
@@ -822,19 +822,19 @@ if ($pdfChecksRequested -and $newInstall) {
       $legacyRestoreOk = [bool]($legacyRestore -and $legacyRestore.Ok)
     }
     Assert-True ($legacyStep.Ok -and $legacyRestoreOk) `
-      "旧版备份可恢复：图片书与进度保留、quick_check 通过、user_version 升到 2"
+      "旧版备份可恢复：图片书与进度保留、quick_check 通过、user_version 升到 3"
 
     $backupRestoreOk = [bool]($pdfBackupOk -and $pdfRestoreOk -and $legacyStep.Ok -and $legacyRestoreOk)
 
-    Write-Step "回滚前快照 v2 数据库"
-    $pdfSnapshotPath = Join-Path $PdfEvidenceDir "v2-snapshot.db"
+    Write-Step "回滚前快照 schema v3 数据库"
+    $pdfSnapshotPath = Join-Path $PdfEvidenceDir "v3-snapshot.db"
     $pdfSnapshotEvidence = Join-Path $PdfEvidenceDir "pdf-db-snapshot.json"
     $pdfSnapshotStep = Invoke-NodeCheck -Script $PdfCheckScript `
       -Label "VACUUM INTO 快照（应用已关闭）" -OutPath $pdfSnapshotEvidence `
       -Arguments @("db-snapshot", "--data-dir", $PdfDataDir, "--out", $pdfSnapshotPath,
         "--evidence", $pdfSnapshotEvidence)
     $pdfSnapshotOk = [bool]$pdfSnapshotStep.Ok
-    Assert-True $pdfSnapshotOk "v2 数据库快照通过自检"
+    Assert-True $pdfSnapshotOk "schema v3 数据库快照通过自检"
   }
 }
 
@@ -866,7 +866,7 @@ if ($PreviousInstaller) {
 }
 
 if ($PreviousInstaller -and $pdfChecksRequested -and [bool]$pdfBookId) {
-  Write-Step "数据库回滚：旧版本打开 v2 库 → 快照回滚 → 装回候选版本"
+  Write-Step "数据库回滚：旧版本打开 schema v3 库 → 快照回滚 → 装回候选版本"
   $rollbackCompatOut = Join-Path $PdfEvidenceDir "pdf-rollback-compat.json"
   $rollbackCompatOk = $false
   $rollbackInstallState = Get-InstalledMangaReader
@@ -881,13 +881,13 @@ if ($PreviousInstaller -and $pdfChecksRequested -and [bool]$pdfBookId) {
     $rollbackCompatOk = [bool]($rollbackCompat -and $rollbackCompat.Ok)
   }
   Assert-True $rollbackCompatOk `
-    "回滚到旧版本后 list_books 不崩溃且 v2 库未被降级（schema=2 / quick_check ok）"
+    "回滚到旧版本后 list_books 不崩溃且 schema v3 库未被降级（schema=3 / quick_check ok）"
 
   $dbRestoreOk = $false
   if ($pdfSnapshotOk -and $pdfSnapshotPath -and (Test-Path $pdfSnapshotPath)) {
     $dbRestoreEvidence = Join-Path $PdfEvidenceDir "pdf-db-restore.json"
     $dbRestoreStep = Invoke-NodeCheck -Script $PdfCheckScript `
-      -Label "从 v2 快照回滚数据库（处理 -wal/-shm 并逐字节校验）" `
+      -Label "从 schema v3 快照回滚数据库（处理 -wal/-shm 并逐字节校验）" `
       -OutPath $dbRestoreEvidence -Arguments @("db-restore", "--data-dir", $PdfDataDir,
         "--snapshot", $pdfSnapshotPath, "--book-id", $pdfBookId,
         "--expect-current-page", "2", "--evidence", $dbRestoreEvidence)
@@ -921,7 +921,7 @@ if ($PreviousInstaller -and $pdfChecksRequested -and [bool]$pdfBookId) {
     $postRestoreDbOk = [bool]$postRestoreDbStep.Ok
   }
   Assert-True $postRestoreOk "恢复后的数据库被候选版本正确打开并停在第 3 页"
-  Assert-True $postRestoreDbOk "恢复后的数据库仍为 v2，页码/页数/封面完整"
+  Assert-True $postRestoreDbOk "恢复后的数据库仍为 v3，页码/页数/封面完整"
   $databaseRollbackOk = [bool]($pdfSnapshotOk -and $rollbackCompatOk -and $dbRestoreOk -and
     $postRestoreOk -and $postRestoreDbOk)
 }

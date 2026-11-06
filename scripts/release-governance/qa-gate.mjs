@@ -101,6 +101,46 @@ export function evaluateGate(defects, registry, { today = todayIso() } = {}) {
   return { ok: errors.length === 0, errors, notes, waivers };
 }
 
+/**
+ * 校验报告确实执行了声明的套件，并且来自期望的提交。
+ *
+ * 定向 QA 的风险不是“缺陷未登记”，而是“套件根本没跑却报绿”。
+ * `run-qa.mjs` 会在 `suiteCoverage.executed` 记录实际执行的套件；
+ * `buildCommit` 是实际检出的短 SHA（脏工作树会带 `-dirty`）。
+ */
+export function evaluateSuiteCoverage(
+  report,
+  { expectedSuites = [], expectedCommit = "" } = {},
+) {
+  const errors = [];
+  const executed = new Set(
+    Array.isArray(report?.suiteCoverage?.executed)
+      ? report.suiteCoverage.executed.map(String)
+      : [],
+  );
+  const expected = (Array.isArray(expectedSuites) ? expectedSuites : [])
+    .map(String)
+    .filter(Boolean);
+  const missing = expected.filter((suite) => !executed.has(suite));
+  if (missing.length > 0) {
+    errors.push(
+      `QA 报告缺少套件：${missing.join("、")}（实际执行：${[...executed].join("、") || "无"}）`,
+    );
+  }
+
+  if (expectedCommit) {
+    const buildCommit = String(report?.buildCommit ?? "");
+    const expectedShort = String(expectedCommit).slice(0, 12);
+    if (!buildCommit.startsWith(expectedShort) || buildCommit.includes("-dirty")) {
+      errors.push(
+        `QA 报告 buildCommit=${buildCommit || "UNKNOWN"} 与期望 ${expectedCommit} 不一致或来自脏工作树`,
+      );
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
 function main(argv) {
   const args = argv.slice(2);
   const readArg = (name, fallback = null) => {
@@ -111,6 +151,11 @@ function main(argv) {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const registryPath = readArg("--registry", path.join(here, "qa-known-issues.json"));
   const today = readArg("--today", todayIso());
+  const expectedSuites = String(readArg("--expect-suites", ""))
+    .split(",")
+    .map((suite) => suite.trim())
+    .filter(Boolean);
+  const expectedCommit = String(readArg("--expect-commit", "")).trim();
 
   if (!reportPath) {
     console.error("[qa-gate] 缺少 --report <latest.json>");
@@ -139,13 +184,20 @@ function main(argv) {
   const defects = Array.isArray(report.defects) ? report.defects : [];
   const checks = Array.isArray(report.checks) ? report.checks : [];
   const result = evaluateGate(defects, registry, { today });
+  const coverage = evaluateSuiteCoverage(report, {
+    expectedSuites,
+    expectedCommit,
+  });
+  const allErrors = [...coverage.errors, ...result.errors];
 
   console.log(`[qa-gate] 报告：${reportPath}`);
   console.log(`[qa-gate] 构建：${report.buildCommit ?? "UNKNOWN"}｜检查 ${checks.length} 项｜缺陷 ${defects.length} 项｜判定日期 ${today}`);
+  console.log(`[qa-gate] 覆盖：实际执行 ${[...(report.suiteCoverage?.executed ?? [])].join(",") || "UNKNOWN"}｜期望 ${expectedSuites.join(",") || "未声明"}`);
   for (const note of result.notes) console.log(`[qa-gate] 提示：${note}`);
+  for (const error of coverage.errors) console.error(`[qa-gate] 覆盖阻断：${error}`);
   for (const error of result.errors) console.error(`[qa-gate] 阻断：${error}`);
-  console.log(`[qa-gate] 结论：${result.ok ? "放行（未豁免缺陷为 0）" : "阻断"}`);
-  process.exitCode = result.ok ? 0 : 1;
+  console.log(`[qa-gate] 结论：${allErrors.length === 0 ? "放行（未豁免缺陷为 0）" : "阻断"}`);
+  process.exitCode = allErrors.length === 0 ? 0 : 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {

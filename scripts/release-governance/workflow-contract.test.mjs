@@ -719,12 +719,12 @@ test("qa-full：证据来源必须是实际检出的提交，且无效引用必�
   assert.match(source, /set -euo pipefail/, "解析步骤必须在严格模式下运行");
 });
 
-test("L2 门禁：qa-l2 对 PR head 跑完整 QA，并用登记表判定；P0/P1 不得登记豁免", () => {
+test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/P1 不得登记豁免", () => {
   const source = workflow("qa-l2.yml");
   assert.match(
     source,
     /uses: \.\/\.github\/workflows\/qa-full\.yml/,
-    "L2 必须复用 qa-full，而不是另写一套 QA",
+    "L2 的 full 模式必须复用 qa-full，而不是另写一套全量 QA",
   );
   assert.match(
     source,
@@ -736,6 +736,54 @@ test("L2 门禁：qa-l2 对 PR head 跑完整 QA，并用登记表判定；P0/P1
     source,
     /qa-evidence-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
     "门禁必须读取与 head 绑定的证据",
+  );
+
+  // 分层：先分类，再决定 full / targeted；gate 名称不变，Draft 之外 always 执行。
+  assert.match(source, /classify-qa-scope\.mjs/, "L2 必须按改动范围分类");
+  assert.match(
+    source,
+    /needs\.changes\.outputs\.mode == 'full'/,
+    "full 模式必须走 qa-full",
+  );
+  assert.match(
+    source,
+    /needs\.changes\.outputs\.mode != 'full'/,
+    "非 full 模式必须走定向 QA",
+  );
+  assert.match(
+    source,
+    /node tests\/qa\/run-qa\.mjs --suite=/,
+    "定向 QA 必须显式传 --suite=",
+  );
+  assert.match(
+    source,
+    /name: L2 · QA gate \(known-issues\)/,
+    "required check 名称必须保持 L2 · QA gate (known-issues)",
+  );
+  assert.ok(
+    !/^\s{4}paths:/m.test(source),
+    "不得在 workflow 级使用 paths 过滤：check 不会创建，required check 会卡在 Expected",
+  );
+  assert.match(
+    source,
+    /Checkout trusted base classifier/,
+    "分类器必须从 base 检出，不能由 PR head 自证范围",
+  );
+  assert.match(
+    source,
+    /--expect-suites/,
+    "gate 必须校验报告实际执行的套件，防止定向 QA 静默漏跑",
+  );
+  assert.match(
+    source,
+    /--expect-commit/,
+    "gate 必须校验报告来自 PR head，防止复用旧证据",
+  );
+  assert.match(source, /overwrite: true/, "定向证据重跑时必须覆盖旧 artifact");
+  assert.match(
+    source,
+    /if: always\(\) && github\.event\.pull_request\.draft == false/,
+    "Draft 不得产生可复用的绿色 gate；ready_for_review 后必须重跑",
   );
 
   // 登记表本身：字段完整、不得登记 P0/P1 豁免。
@@ -756,4 +804,29 @@ test("L2 门禁：qa-l2 对 PR head 跑完整 QA，并用登记表判定；P0/P1
     );
     assert.match(String(issue.reviewBy), /^\d{4}-\d{2}-\d{2}$/, `登记表条目 ${issue.id} 的 reviewBy 必须是日期`);
   }
+});
+
+test("发布证据：qa-full 不得被参数化为半套 QA", () => {
+  const source = workflow("qa-full.yml");
+  assert.ok(
+    !source.includes("--suite="),
+    "qa-full 必须始终跑全量 QA，不能接受 suite 参数；定向 QA 只能放在 PR 工作流",
+  );
+
+  const inputNames = (block) =>
+    [...String(block).matchAll(/^ {6}([a-z_]+):$/gm)].map((match) => match[1]);
+
+  const dispatchBlock = source.split("workflow_dispatch:")[1]?.split("workflow_call:")[0] ?? "";
+  assert.deepEqual(
+    inputNames(dispatchBlock),
+    ["ref"],
+    "qa-full 的 workflow_dispatch 只允许 ref 输入；否则半套手动 run 可能被候选误认为发布证据",
+  );
+
+  const callBlock = source.split("workflow_call:")[1]?.split("permissions:")[0] ?? "";
+  assert.deepEqual(
+    inputNames(callBlock),
+    ["ref"],
+    "qa-full 的 workflow_call 只允许 ref 输入；PR 定向 QA 只能留在 qa-l2",
+  );
 });

@@ -20,7 +20,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "候选标签（vX.Y.Z，必须已存在且指向 main 上的候选 Commit）"
+        description: "候选版本（vX.Y.Z，必须对应已有 Draft）"
+        required: true
+        type: string
+      source_commit:
+        description: "候选的完整 40 位 main 提交 SHA"
         required: true
         type: string
       previous_tag:
@@ -54,26 +58,32 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: main
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
 
       - name: Resolve candidate tag commit
         id: tag
         shell: bash
         env:
           TAG: ${{ inputs.tag }}
+          CANDIDATE_TAG: ${{ inputs.tag }}
+          CANDIDATE_COMMIT: ${{ inputs.source_commit }}
+          CANDIDATE_REQUIRE_DRAFT: 'true'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "候选标签必须形如 vX.Y.Z：$TAG" >&2
             exit 1
           fi
-          git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
-          COMMIT="$(git rev-list -n 1 "refs/tags/${TAG}")"
-          if ! printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "无法解析标签 Commit：$TAG" >&2
-            exit 1
-          fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          node scripts/release-governance/candidate-evidence.mjs
+          COMMIT="$CANDIDATE_COMMIT"
           echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
@@ -115,11 +125,6 @@ jobs:
             exit 1
           fi
           echo "升级基线：${PREVIOUS_TAG}（${PREVIOUS_VERSION}）→ ${EXPECTED_INSTALLER}"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
 
       - name: Download Draft assets
         shell: bash

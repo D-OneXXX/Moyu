@@ -26,6 +26,12 @@ test("missing tag and missing draft are separately established", () => {
   assert.deepEqual(run.calls[1][1].slice(0, 3), ["ls-remote", "--exit-code", "origin"]);
 });
 
+test("installation verification requires an existing draft", () => {
+  assert.throws(() => collectCandidateEvidence({ tag, commit, requireDraft: true, run: makeRun(ok(), absentTag, absentRelease) }), /candidate-draft-required/);
+  const draft = ok(JSON.stringify({ isDraft: true, tagName: tag, targetCommitish: commit }));
+  assert.equal(collectCandidateEvidence({ tag, commit, requireDraft: true, run: makeRun(ok(), absentTag, draft) }).draftExists, true);
+});
+
 test("annotated tags use the peeled commit instead of the tag object", () => {
   const refs = `${"b".repeat(40)}\trefs/tags/${tag}\n${commit}\trefs/tags/${tag}^{}\n`;
   const draft = ok(JSON.stringify({ isDraft: true, tagName: tag, targetCommitish: "main" }));
@@ -36,6 +42,7 @@ test("annotated tags use the peeled commit instead of the tag object", () => {
 
 test("network and authentication failures are never treated as missing", () => {
   assert.throws(() => collectCandidateEvidence({ tag, commit, run: makeRun(ok(), { status: 128, stdout: "", stderr: "network down" }, absentRelease) }), /candidate-tag-state-unknown/);
+  assert.throws(() => collectCandidateEvidence({ tag, commit, run: makeRun(ok(), { status: 2, stdout: "", stderr: "network down" }, absentRelease) }), /candidate-tag-state-unknown/);
   assert.throws(() => collectCandidateEvidence({ tag, commit, run: makeRun(ok(), absentTag, { status: 1, stdout: "", stderr: "HTTP 403" }) }), /candidate-release-state-invalid/);
   assert.throws(() => collectCandidateEvidence({ tag, commit, run: makeRun(ok(), absentTag, ok("not-json")) }), /candidate-release-state-invalid/);
 });

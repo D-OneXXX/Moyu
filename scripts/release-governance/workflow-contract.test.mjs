@@ -7,6 +7,40 @@ import { test } from "node:test";
 import { inputBlock, parseSteps, workflow } from "./contract-helpers.mjs";
 import { fileURLToPath } from "node:url";
 
+test("候选阶段：固定提交先验证再检出并在写 Draft 前复核", () => {
+  for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
+    const source = workflow(name);
+    assert.match(inputBlock(source, "source_commit"), /required:\s*true/);
+    const steps = parseSteps(source);
+    const index = (name) => steps.findIndex((step) => step.name === name);
+    const preflight = index("Validate requested candidate commit");
+    const checkout = index("Checkout verified candidate commit");
+    const recheck = index("Re-check candidate identity before Draft write");
+    const write = index(name === "release-candidate.yml" ? "Build signed NSIS bundle → Draft" : "Create or reuse Draft release");
+    assert.ok(preflight >= 0 && checkout > preflight && recheck > checkout && write > recheck, name);
+    assert.match(steps[preflight].run, /candidate-evidence\.mjs/);
+    assert.match(steps[recheck].run, /candidate-evidence\.mjs/);
+    assert.doesNotMatch(source, /git\s+push\s+[^\n]*refs\/tags/);
+    if (name === "release-candidate.yml") assert.match(source, /releaseCommitish:\s*\$\{\{ steps\.identity\.outputs\.commit \}\}/);
+    else assert.match(source, /gh release create "\$TAG" --target "\$COMMIT" --draft/);
+  }
+});
+
+test("安装验证：Draft 必须绑定固定提交且无需预建版本标签", () => {
+  for (const name of ["release-install-verify.yml", "release-install-verify-linux.yml"]) {
+    const source = workflow(name);
+    assert.match(inputBlock(source, "source_commit"), /required:\s*true/);
+    const steps = parseSteps(source);
+    const identity = steps.findIndex((step) => step.name === "Resolve candidate tag commit");
+    const download = steps.findIndex((step) => step.name === "Download Draft assets");
+    assert.ok(identity >= 0 && download > identity, name);
+    assert.match(steps[identity].run, /candidate-evidence\.mjs/);
+    assert.match(steps[identity].run, /COMMIT="\$CANDIDATE_COMMIT"/);
+    assert.match(source, /CANDIDATE_REQUIRE_DRAFT:\s*'true'/);
+    assert.doesNotMatch(steps[identity].run, /git fetch --no-tags origin "refs\/tags/);
+  }
+});
+
 
 test("release-candidate：候选阶段产出并回填 signature-verification.json", () => {
   const source = workflow("release-candidate.yml");

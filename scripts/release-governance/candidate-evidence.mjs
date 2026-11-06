@@ -4,7 +4,7 @@ import { classifyReleaseView } from "./release-guard.mjs";
 
 // Commands are executed without a shell. Callers must fetch origin/main and
 // its history first; an incomplete history fails ancestry validation closed.
-export function collectCandidateEvidence({ tag, commit, rehearsal = false, run = spawnSync }) {
+export function collectCandidateEvidence({ tag, commit, rehearsal = false, requireDraft = false, run = spawnSync }) {
   if (typeof tag !== "string" || !/^v[0-9A-Za-z.-]+$/.test(tag)) throw new Error("candidate-tag-invalid");
   if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) throw new Error("candidate-commit-invalid");
   const invoke = (program, args) => {
@@ -17,7 +17,7 @@ export function collectCandidateEvidence({ tag, commit, rehearsal = false, run =
   const baseRef = `refs/tags/${tag}`;
   const tagResult = invoke("git", ["ls-remote", "--exit-code", "origin", baseRef, `${baseRef}^{}`]);
   let tagState;
-  if (tagResult.status === 2 && !String(tagResult.stdout).trim()) {
+  if (tagResult.status === 2 && !String(tagResult.stdout).trim() && !String(tagResult.stderr).trim()) {
     tagState = { state: "missing" };
   } else if (tagResult.status === 0) {
     const rows = String(tagResult.stdout).trim().split(/\r?\n/).map((line) => line.split(/\s+/));
@@ -45,7 +45,9 @@ export function collectCandidateEvidence({ tag, commit, rehearsal = false, run =
     releaseState = { state: "missing" };
   } else throw new Error("candidate-release-state-invalid");
 
-  return validateCandidateIdentity({ tag, commit, onMain: ancestry.status === 0, tagState, releaseState, rehearsal });
+  const identity = validateCandidateIdentity({ tag, commit, onMain: ancestry.status === 0, tagState, releaseState, rehearsal });
+  if (requireDraft && !identity.draftExists) throw new Error("candidate-draft-required");
+  return identity;
 }
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replaceAll("\\", "/").split("/").pop())) {
@@ -54,6 +56,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replaceAll("\\",
       tag: process.env.CANDIDATE_TAG,
       commit: process.env.CANDIDATE_COMMIT,
       rehearsal: process.env.CANDIDATE_REHEARSAL === "true",
+      requireDraft: process.env.CANDIDATE_REQUIRE_DRAFT === "true",
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {

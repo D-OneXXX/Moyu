@@ -58,10 +58,17 @@ tests/qa/qa-knowledge-base.json
 # Internal documentation (kept locally, not published)
 /AGENTS.md
 /docs/ENGINEERING_WORKFLOW.md
+/docs/NON_INTRUSIVE_ENGINEERING.md
 /docs/PROJECT_STATE.md
 /docs/TECHNICAL.md
 /docs/TESTING.md
+/docs/W7_D2_REMEDIATION.md
 /docs/dev/
 
 # Local agent workspace (session memory and notes, kept locally, never published)
+/.qoder/
 /.workbuddy/
+/docs/superpowers/
+
+# Local audit notes (may contain sensitive evidence, never published)
+/docs/AUDIT_*

@@ -330,7 +330,21 @@ fn no_proxy_matches(host: &str, port: Option<u16>, rules: &[String]) -> bool {
     false
 }
 
-fn build_agent(proxy: Option<&str>) -> Result<ureq::Agent, OnlineError> {
+/// 直连 agent 的连接层解析器。
+///
+/// 返回的地址**就是 ureq 真正要连接的地址**（它不会再解析一次），且每个地址都过
+/// `validate_connection_addresses` 黑名单。因此「先解析校验、连接时再解析」的
+/// DNS 重绑定窗口在直连路径上不存在：攻击者域名第二次解析到私网也不会被连上。
+fn direct_resolver(
+    allow_loopback: bool,
+) -> impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static {
+    move |netloc: &str| {
+        let addresses: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
+        validate_connection_addresses(addresses, allow_loopback)
+    }
+}
+
+fn build_agent(proxy: Option<&str>, allow_loopback: bool) -> Result<ureq::Agent, OnlineError> {
     let mut builder = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
@@ -338,11 +352,7 @@ fn build_agent(proxy: Option<&str>) -> Result<ureq::Agent, OnlineError> {
         .redirects(0)
         .user_agent(ONLINE_UA);
     if proxy.is_none() {
-        let allow_loopback = allow_loopback_for_dev();
-        builder = builder.resolver(move |netloc: &str| {
-            let addresses: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-            validate_connection_addresses(addresses, allow_loopback)
-        });
+        builder = builder.resolver(direct_resolver(allow_loopback));
     }
     if let Some(proxy) = proxy {
         let p = ureq::Proxy::new(proxy).map_err(|e| OnlineError::Proxy(e.to_string()))?;
@@ -373,10 +383,11 @@ impl UreqTransport {
         let proxy = normalize_proxy(proxy)?;
         let headers = RequestHeaders::parse(headers)?;
         let no_proxy = parse_no_proxy(no_proxy_env().as_deref().unwrap_or_default());
-        let agent = build_agent(proxy.as_deref())?;
+        let allow_loopback = allow_loopback_for_dev();
+        let agent = build_agent(proxy.as_deref(), allow_loopback)?;
         // 只有真的配置了代理才需要直连分支；代理地址非法时上面已经拒绝。
         let direct_agent = if proxy.is_some() && !no_proxy.is_empty() {
-            Some(build_agent(None)?)
+            Some(build_agent(None, allow_loopback)?)
         } else {
             None
         };
@@ -390,7 +401,7 @@ impl UreqTransport {
             no_proxy,
             headers,
             assisted: None,
-            allow_loopback: allow_loopback_for_dev(),
+            allow_loopback,
         })
     }
 
@@ -762,6 +773,69 @@ mod tests {
     use std::net::TcpListener;
     use std::thread::JoinHandle;
 
+    /// 直连解析器：返回给 ureq 的地址就是校验通过的地址（netloc 形式的 IP 字面量
+    /// 不触发 DNS，测试可离线、确定），不存在「校验后再解析」的第二次机会。
+    #[test]
+    fn direct_resolver_returns_only_validated_connection_addresses() {
+        assert_eq!(
+            direct_resolver(false)("8.8.8.8:443").unwrap(),
+            vec!["8.8.8.8:443".parse().unwrap()]
+        );
+        for blocked in [
+            "127.0.0.1:80",
+            "[::1]:443",
+            "169.254.169.254:80",
+            "10.0.0.5:8080",
+            "192.168.1.1:443",
+            "0.0.0.0:443",
+        ] {
+            let err = direct_resolver(false)(blocked).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{blocked} 必须在连接层被拒绝"
+            );
+        }
+        // 回环只在 debug/QA 显式放行时可用。
+        assert!(direct_resolver(true)("127.0.0.1:80").is_ok());
+    }
+
+    /// 直连 agent 必须真的装上上面的解析器：即使本地有监听、目标可达，
+    /// 校验失败时也不得建立 TCP 连接（DNS 重绑定防线是否接线的回归点）。
+    #[test]
+    fn direct_agent_validates_the_address_it_actually_connects_to() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let agent = build_agent(None, false).unwrap();
+        assert!(agent.get(&format!("http://{address}/")).call().is_err());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "校验失败时不得发起 TCP 连接"
+        );
+
+        // 显式放行回环时才真正连上（对照组，排除环境因素）。
+        listener.set_nonblocking(false).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+        let agent = build_agent(None, true).unwrap();
+        let body = agent
+            .get(&format!("http://{address}/"))
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap();
+        assert_eq!(body, "ok");
+        server.join().unwrap();
+    }
+
     #[test]
     fn proxy_dns_rebinding_is_rejected_before_contacting_proxy() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -807,6 +881,62 @@ mod tests {
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    /// 本地隔离复现「仅 IPv6 目标」为什么必须 fail closed：
+    /// `url::Url::host_str()` 对 IPv6 带方括号，ureq 2.x 的 SOCKS 适配层
+    /// `Ipv6Addr::from_str("[…]")` 失败后按**域名**下发，代理只能去 DNS 解析
+    /// 这个带括号的串；我们也不会把未校验的域名交给代理重新解析。
+    /// 上游适配层支持 IPv6 ATYP 后，本用例会失败并提示移除 fail-closed 分支。
+    #[test]
+    fn socks5_upstream_cannot_express_bracketed_ipv6_targets() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut greeting = [0u8; 2];
+            socket.read_exact(&mut greeting).unwrap();
+            let mut methods = vec![0u8; greeting[1] as usize];
+            socket.read_exact(&mut methods).unwrap();
+            socket.write_all(&[5, 0]).unwrap();
+            let mut head = [0u8; 4];
+            socket.read_exact(&mut head).unwrap();
+            let mut dest = Vec::new();
+            match head[3] {
+                1 => {
+                    let mut buf = [0u8; 6];
+                    socket.read_exact(&mut buf).unwrap();
+                    dest.extend_from_slice(&buf);
+                }
+                3 => {
+                    let mut len = [0u8; 1];
+                    socket.read_exact(&mut len).unwrap();
+                    let mut buf = vec![0u8; len[0] as usize + 2];
+                    socket.read_exact(&mut buf).unwrap();
+                    dest.extend_from_slice(&buf);
+                }
+                4 => {
+                    let mut buf = [0u8; 18];
+                    socket.read_exact(&mut buf).unwrap();
+                    dest.extend_from_slice(&buf);
+                }
+                other => panic!("unexpected SOCKS ATYP {other}"),
+            }
+            (head[3], dest)
+        });
+        let proxy = ureq::Proxy::new(format!("socks5://{address}")).unwrap();
+        let agent = ureq::AgentBuilder::new().proxy(proxy).build();
+        let _ = agent.get("http://[2606:4700:4700::1111]/").call();
+        let (atyp, dest) = observed.join().unwrap();
+        let name = String::from_utf8_lossy(&dest[..dest.len().saturating_sub(2)]).to_string();
+        assert_eq!(atyp, 3, "ATYP 3 = 域名（而非 IPv6 0x04）");
+        assert!(
+            name.starts_with('['),
+            "上游把带括号的 IPv6 字面量当域名下发：{name}"
         );
     }
 
@@ -1370,6 +1500,21 @@ mod tests {
         };
         assert!(msg.contains("用户名或密码"), "{msg}");
         h.join().unwrap();
+    }
+
+    /// 重定向的每一跳都要重新校验：首跳成功不代表后续 hop 可以打到云元数据地址。
+    #[test]
+    fn redirect_hop_to_metadata_address_is_rejected() {
+        let (start_url, h) = spawn_hop(Some("http://169.254.169.254/latest/meta-data/".into()));
+        let mut t = UreqTransport::new("", "").unwrap();
+        t.allow_loopback = true;
+        let msg = match t.get(&start_url, 1024, None, None) {
+            Ok(_) => panic!("重定向到云元数据地址时必须报错"),
+            Err(OnlineError::Network(msg)) => msg,
+            Err(other) => panic!("unexpected error: {other}"),
+        };
+        h.join().unwrap();
+        assert!(msg.contains("online-blocked-address"), "{msg}");
     }
 
     #[test]

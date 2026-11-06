@@ -391,6 +391,22 @@ mod tests {
         );
     }
 
+    /// SOCKS5 代理**端点**可以是纯 IPv6（仅 IPv6 目标才是当前 fail-closed 的部分），
+    /// 归一化必须保留方括号，否则 `ureq::Proxy` 会把 `::1:1080` 解析失败。
+    #[test]
+    fn normalizes_ipv6_proxy_endpoints_with_brackets() {
+        assert_eq!(
+            normalize_proxy_value("socks5://[::1]:1080").as_deref(),
+            Some("socks5://[::1]:1080")
+        );
+        assert_eq!(
+            normalize_proxy_value("socks5://[2001:db8::5]:1080/probe").as_deref(),
+            Some("socks5://[2001:db8::5]:1080")
+        );
+        // 无方括号的 IPv6 端点不是合法 URL，必须拒绝而不是猜。
+        assert_eq!(normalize_proxy_value("socks5://::1:1080"), None);
+    }
+
     #[test]
     fn parses_proxy_server_entries() {
         assert_eq!(

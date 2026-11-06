@@ -262,15 +262,17 @@ export interface OnlineProbe {
 export interface OpdsConfigView {
   enabled: boolean;
   url: string;
-  username: string;
+  /** 本机是否已存账号；账号本身永不下发前端。 */
+  hasUsername: boolean;
+  /** 本机是否已存密码；密码本身永不下发前端。 */
   hasPassword: boolean;
 }
 
-/** 保存配置；password=null 保留原密码，空串表示清除。 */
+/** 保存配置；null 保留原值，空串表示清除。 */
 export interface OpdsConfigInput {
   enabled: boolean;
   url: string;
-  username: string;
+  username: string | null;
   password: string | null;
 }
 

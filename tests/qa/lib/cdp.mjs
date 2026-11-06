@@ -374,8 +374,9 @@ export class CdpPage {
   }
 
   async navigateHash(hash) {
-    await this.eval(
-      `(() => { location.hash = ${JSON.stringify(hash)}; return location.hash; })()`,
+    await this.callFunction(
+      "function(hash) { location.hash = hash; return location.hash; }",
+      [hash],
     );
   }
 

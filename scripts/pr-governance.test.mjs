@@ -79,6 +79,25 @@ test("validatePrMetadata accepts a compliant PR", () => {
   assert.deepEqual(validatePrMetadata(validMetadata()), []);
 });
 
+test("validatePrMetadata strips HTML comments before section checks", () => {
+  const commentOnly = validBody.replace(
+    "- npm run test:governance",
+    "<!-- 尚未填写 -->",
+  );
+  assert.ok(
+    validatePrMetadata(validMetadata({ body: commentOnly })).some((error) =>
+      error.includes("section:验证"),
+    ),
+    "只有注释的段落必须视为空",
+  );
+
+  const withComment = validBody.replace(
+    "- npm run test:governance",
+    "<!-- 说明 -->\n- npm run test:governance",
+  );
+  assert.deepEqual(validatePrMetadata(validMetadata({ body: withComment })), []);
+});
+
 test("validatePrMetadata skips automation PRs even without sections", () => {
   const errors = validatePrMetadata(
     validMetadata({

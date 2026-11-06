@@ -1263,6 +1263,19 @@ export function checkCsp(root, report) {
  * 签名 CI、主窗专属 capability，以及三个用户入口文件。
  * 只做静态契约检查，不启动应用；运行期行为由 Rust 单测 + 真机冒烟覆盖。
  */
+function isGitHubLatestEndpoint(endpoint) {
+  try {
+    const parsed = new URL(endpoint);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === "github.com" &&
+      parsed.pathname.endsWith("/latest.json")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function checkReleaseSurface(root, report) {
   const errors = [];
   const read = (relative) => {
@@ -1368,9 +1381,7 @@ export function checkReleaseSurface(root, report) {
     if (
       !endpoints.some(
         (endpoint) =>
-          typeof endpoint === "string" &&
-          endpoint.includes("github.com") &&
-          endpoint.endsWith("latest.json"),
+          typeof endpoint === "string" && isGitHubLatestEndpoint(endpoint),
       )
     ) {
       errors.push("plugins.updater.endpoints 缺少 GitHub latest.json");

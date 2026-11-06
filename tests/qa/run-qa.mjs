@@ -19,6 +19,7 @@ import {
   loadKnowledgeBase,
   note,
   record,
+  suiteCompletionCheck,
   summarize,
   updateKnowledgeBase,
   writeJsonReport,
@@ -173,13 +174,14 @@ async function runOne(report, ctx, suite) {
   report.suiteCoverage.executed.push(suite.id);
   try {
     await suite.run(ctx, report);
-    // This historical P0 was emitted only when the PDF suite threw. Confirm
-    // both relevant late-stage checks ran before recording its successful run.
-    if (suite.id === "pdf" && ["pdf:progress-persisted", "pdf:vanishing-source-during"].every(
-      (id) => report.checks.some((check) => check.id === id && check.status === "pass"),
-    )) {
-      record(report, { id: "pdf:crashed", suite: "pdf", layer: "infrastructure", title: "PDF 完整套件运行至结尾且未中断", pass: true });
-    }
+    // PDF 的历史 P0 只有在两个关键晚期检查都实际通过后才算完成；
+    // 其他套件只要未抛异常，就写入同 ID 的完成记录，关闭此前的 :crashed 条目。
+    const pdfCompletionConfirmed =
+      suite.id !== "pdf" ||
+      ["pdf:progress-persisted", "pdf:vanishing-source-during"].every((id) =>
+        report.checks.some((check) => check.id === id && check.status === "pass"),
+      );
+    if (pdfCompletionConfirmed) record(report, suiteCompletionCheck(suite));
   } catch (error) {
     fail(report, {
       id: `${suite.id}:crashed`,

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   loadKnowledgeBase,
+  suiteCompletionCheck,
   updateKnowledgeBase,
   writeMarkdownReport,
 } from "./report.mjs";
@@ -96,4 +97,40 @@ test("stale open defects are separated from the active backlog", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("suite completion check closes a previous :crashed ledger entry", () => {
+  const check = suiteCompletionCheck({ id: "architecture", title: "架构宪法回归" });
+  assert.equal(check.id, "architecture:crashed");
+  assert.equal(check.suite, "architecture");
+  assert.equal(check.pass, true);
+  assert.match(check.title, /架构宪法回归/);
+  assert.equal(
+    suiteCompletionCheck({ id: "pdf", title: "PDF 渲染、进度与安全策略" }).title,
+    "PDF 完整套件运行至结尾且未中断",
+  );
+
+  const kb = {
+    regressions: [{ testId: "architecture:crashed", source: "qa-run" }],
+    defects: [
+      {
+        id: "architecture:crashed",
+        testId: "architecture:crashed",
+        title: "架构宪法回归 执行中断",
+        severity: "P0",
+        status: "open",
+        lastSeen: "2026-11-06T20-53-36-431Z",
+      },
+    ],
+  };
+  updateKnowledgeBase(
+    kb,
+    {
+      runId: "2026-11-07T00-00-00-000Z",
+      checks: [{ id: "architecture:crashed", status: "pass" }],
+      defects: [],
+    },
+    { now: Date.parse("2026-11-07T00:00:00Z") },
+  );
+  assert.equal(kb.defects[0].status, "closed");
 });

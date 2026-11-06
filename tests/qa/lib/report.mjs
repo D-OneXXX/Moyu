@@ -57,6 +57,23 @@ export function markStaleDefects(
 }
 
 /**
+ * 套件成功执行至结尾时写入的完成记录：与 `${suite.id}:crashed` 同 ID，
+ * 让曾经崩溃过的台账条目在下一次成功运行后自动关闭。
+ */
+export function suiteCompletionCheck(suite) {
+  return {
+    id: `${suite.id}:crashed`,
+    suite: suite.id,
+    layer: "infrastructure",
+    title:
+      suite.id === "pdf"
+        ? "PDF 完整套件运行至结尾且未中断"
+        : `${suite.title || suite.id} 执行至结尾未中断`,
+    pass: true,
+  };
+}
+
+/**
  * `execution` 是 NON_INTRUSIVE_ENGINEERING §13 要求的执行记录
  * （级别 / 授权来源 / 进程 / 端口 / 清理结果 / 延后套件）。
  */

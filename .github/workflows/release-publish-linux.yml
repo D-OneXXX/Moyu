@@ -2,6 +2,8 @@ name: Publish release (Linux critical)
 
 # Phase 4 正式发布（Linux 高危补丁通道，与 Windows 通道完全独立）。
 # 只把**已存在的 Draft** 变成公开 Release，且必须先过人工审批与绑定校验。
+# 版本标签必须已由维护者在本轮授权后创建且指向候选提交；工作流不自动建标签，
+# 也不得用 GITHUB_TOKEN 绕过标签保护规则。
 #
 # 状态模型与 Windows 通道一致：published / need_publish / need_handoff / need_verify
 # 由 `scripts/release-governance/publish-state.mjs --channel linux` 判定。
@@ -37,16 +39,20 @@ jobs:
         with:
           node-version: 22
 
-      - name: Checkout published tag
+      # 候选 Draft 可以没有版本标签；正式发布阶段则必须已有维护者在**本轮授权后**
+      # 创建的标签。工作流不得用 GITHUB_TOKEN 建标签，也不得改保护规则或扩权。
+      - name: Checkout trusted main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: main
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Resolve release identity
+      - name: Resolve release identity from Draft
         id: identity
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -58,16 +64,29 @@ jobs:
             echo "Linux 高危通道标签必须形如 vX.Y.Z-linux-secN：$TAG" >&2
             exit 1
           fi
-          VERSION="$(node -p "require('./package.json').version")"
-          BASE="$(printf '%s' "$TAG" | sed -E 's/-linux-sec.*//')"
-          if [ "v${VERSION}" != "$BASE" ]; then
-            echo "标签 $TAG 的基础版本与 package.json v${VERSION} 不一致" >&2
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          rm -rf release-meta && mkdir -p release-meta
+          if ! gh release view "$TAG" --json isDraft,tagName,targetCommitish > release-meta/release.json 2>release-meta/release.err; then
+            echo "找不到 Release $TAG：必须先由 release-candidate-linux 工作流创建 Draft" >&2
+            sed -n '1,5p' release-meta/release.err >&2 || true
             exit 1
           fi
-          COMMIT="$(git rev-parse HEAD)"
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
-            echo "候选 Commit $COMMIT 不在 main 上，拒绝发布" >&2
+          if ! gh release download "$TAG" --pattern rc-record.json --dir release-meta --clobber; then
+            echo "Draft 缺少 rc-record.json：无法解析候选提交，拒绝发布" >&2
+            exit 1
+          fi
+          node scripts/release-governance/publish-identity.mjs \
+            --tag "$TAG" \
+            --channel linux-critical \
+            --release-json release-meta/release.json \
+            --record release-meta/rc-record.json \
+            --out release-meta/identity.json
+          COMMIT="$(node -p 'JSON.parse(require("node:fs").readFileSync("release-meta/identity.json","utf8")).commit')"
+          VERSION="$(node -p 'JSON.parse(require("node:fs").readFileSync("release-meta/identity.json","utf8")).version')"
+          git checkout --detach "$COMMIT"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "v${PACKAGE_VERSION}" != "v${VERSION}" ]; then
+            echo "候选提交 $COMMIT 的 package.json 版本 v${PACKAGE_VERSION} 与 RC 记录 v${VERSION} 不一致" >&2
             exit 1
           fi
           echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
@@ -132,6 +151,9 @@ jobs:
             --attestation draft-assets/install-verification.json \
             --manifest draft-assets/latest-linux-critical.json \
             --platform linux-x86_64
+          # 固化审批时看到的两份治理文件；发布前复检必须与这份快照逐字节一致。
+          rm -rf approved && mkdir -p approved
+          cp draft-assets/rc-record.json draft-assets/install-verification.json approved/
 
       # ---------- 强制验收：签名验证 + 真实安装/升级验证 ----------
       # 缺少任一证据、证据过期、版本/Commit/制品哈希/平台不一致，全部拒绝发布。
@@ -215,6 +237,53 @@ jobs:
           gh release download "$TAG" --pattern latest-linux-critical.json --dir pre-publish-notes --clobber
           node scripts/release-governance/release-notes.mjs \
             --check-manifest pre-publish-notes/latest-linux-critical.json --mode summary
+
+      # 审批之后、写入之前的竞态门禁（与 Windows 通道同一语义）：
+      # 标签 / Draft 目标 / 全部制品必须仍是审批时的那一组。
+      - name: Re-check tag and Draft identity before publish
+        if: steps.state.outputs.need_publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json isDraft,tagName,targetCommitish > release-recheck.json
+          node scripts/release-governance/publish-identity.mjs \
+            --tag "$TAG" \
+            --channel linux-critical \
+            --release-json release-recheck.json \
+            --record approved/rc-record.json \
+            --out release-recheck-identity.json
+          RECHECK_COMMIT="$(node -p 'JSON.parse(require("node:fs").readFileSync("release-recheck-identity.json","utf8")).commit')"
+          if [ "$RECHECK_COMMIT" != "$COMMIT" ]; then
+            echo "复检得到的候选提交 $RECHECK_COMMIT 与审批身份 $COMMIT 不一致，拒绝发布" >&2
+            exit 1
+          fi
+          rm -rf publish-recheck && mkdir -p publish-recheck
+          gh release download "$TAG" --dir publish-recheck --clobber
+          node -e '
+            const { sha256File } = require("./scripts/release-governance/rc-record.mjs");
+            for (const name of ["rc-record.json", "install-verification.json"]) {
+              const before = sha256File(`approved/${name}`);
+              const after = sha256File(`publish-recheck/${name}`);
+              if (before !== after) {
+                console.error(`${name} 在校验与发布之间发生变化，拒绝发布`);
+                process.exit(1);
+              }
+            }
+          '
+          node scripts/release-governance/verify-draft.mjs \
+            --tag "$TAG" \
+            --channel linux-critical \
+            --commit "$COMMIT" \
+            --record publish-recheck/rc-record.json \
+            --assets-dir publish-recheck \
+            --attestation publish-recheck/install-verification.json \
+            --manifest publish-recheck/latest-linux-critical.json \
+            --platform linux-x86_64
+
       - name: Publish the Draft
         if: steps.state.outputs.need_publish == 'true'
         shell: bash
@@ -223,6 +292,7 @@ jobs:
           TAG: ${{ steps.identity.outputs.tag }}
         run: |
           set -euo pipefail
+          # 标签必须已由维护者按授权流程创建；--verify-tag 禁止在这里顺带创建标签。
           gh release edit "$TAG" --draft=false --verify-tag --title "Moyu $TAG (Linux critical)"
 
       - name: Channel hand-off (carry the other channel manifest)
@@ -278,6 +348,23 @@ jobs:
           fi
           rm -rf published && mkdir -p published
           gh release download "$TAG" --dir published --clobber
+          # 发布后再次绑定：标签仍指向同一候选提交，公开后的资产仍与 rc-record 一致。
+          gh release view "$TAG" --json isDraft,tagName,targetCommitish > published-release.json
+          node scripts/release-governance/publish-identity.mjs \
+            --tag "$TAG" \
+            --channel linux-critical \
+            --release-json published-release.json \
+            --record published/rc-record.json \
+            --out published-identity.json
+          node scripts/release-governance/verify-draft.mjs \
+            --tag "$TAG" \
+            --channel linux-critical \
+            --commit "$COMMIT" \
+            --record published/rc-record.json \
+            --assets-dir published \
+            --attestation published/install-verification.json \
+            --manifest published/latest-linux-critical.json \
+            --platform linux-x86_64
           node scripts/verify-updater-manifest.mjs published/latest-linux-critical.json \
             --expect-version "$VERSION" \
             --require-platform linux-x86_64

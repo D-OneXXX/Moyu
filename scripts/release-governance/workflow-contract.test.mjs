@@ -42,6 +42,68 @@ test("安装验证：Draft 必须绑定固定提交且无需预建版本标签",
 });
 
 
+test("正式发布：从 Draft 的 RC 记录解析固定提交，不检出尚可能不存在的标签", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.doesNotMatch(
+      source,
+      /ref:\s*refs\/tags\/\$\{\{\s*inputs\.tag\s*\}\}/,
+      `${name} 不得在候选标签创建前检出标签`,
+    );
+    assert.match(source, /ref:\s*main\b/, `${name} 必须从受保护的 main 取得治理工具`);
+    assert.ok(source.includes("Resolve release identity from Draft"), `${name} 必须从 Draft 解析发布身份`);
+    assert.ok(source.includes("publish-identity.mjs"), `${name} 必须使用统一发布身份闸门`);
+    for (const marker of ["--release-json", "--record release-meta/rc-record.json", 'git checkout --detach "$COMMIT"']) {
+      assert.ok(source.includes(marker), `${name} 缺少发布身份标记：${marker}`);
+    }
+    assert.match(source, /rc-record\.json/, `${name} 必须从 Draft 的 RC 记录取得候选提交`);
+  }
+});
+
+test("正式发布：不自动创建/推送标签，标签缺失或指向别处必须失败关闭", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.doesNotMatch(source, /git\s+push[^\n]*refs\/tags/, `${name} 不得推送标签`);
+    assert.doesNotMatch(source, /git\s+tag\s/, `${name} 不得在发布流程内创建标签`);
+    assert.doesNotMatch(source, /gh\s+release\s+create/, `${name} 不得在发布流程内创建 Release/标签`);
+    assert.doesNotMatch(source, /git\/refs/, `${name} 不得直接写 refs 绕过标签保护`);
+    assert.ok(source.includes("publish-identity.mjs"), `${name} 必须校验标签存在且绑定候选提交`);
+    assert.ok(source.includes("--verify-tag"), `${name} 必须禁止发布时顺带创建标签`);
+  }
+});
+
+test("正式发布：审批后重新下载并校验全部 Draft 资产，再公开；发布后再次复核", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const steps = parseSteps(workflow(name));
+    const index = (title) => steps.findIndex((step) => step.name === title);
+    const notes = index("Enforce bilingual release notes");
+    const recheck = index("Re-check tag and Draft identity before publish");
+    const publish = index("Publish the Draft");
+    const post = index("Post-release verification");
+    assert.ok(notes >= 0 && recheck > notes && publish > recheck && post > publish, `${name} 发布步骤顺序异常`);
+
+    const recheckStep = steps[recheck];
+    for (const marker of [
+      "publish-identity.mjs",
+      "gh release download",
+      "--clobber",
+      "rc-record.json",
+      "install-verification.json",
+      "sha256File",
+      "verify-draft.mjs",
+    ]) {
+      assert.ok(recheckStep.run.includes(marker), `${name} 发布前复检缺少：${marker}`);
+    }
+    assert.match(recheckStep.run, /RECHECK_COMMIT[^\n]*COMMIT/, `${name} 必须比对复检得到的候选提交`);
+    assert.match(recheckStep.run, /set -euo pipefail/, `${name} 复检必须失败关闭`);
+
+    const postStep = steps[post];
+    for (const marker of ["publish-identity.mjs", "verify-draft.mjs", "published/rc-record.json"]) {
+      assert.ok(postStep.run.includes(marker), `${name} 发布后复核缺少：${marker}`);
+    }
+  }
+});
+
 test("release-candidate：候选阶段产出并回填 signature-verification.json", () => {
   const source = workflow("release-candidate.yml");
   const rc = source.indexOf("Build and upload RC record");
@@ -192,12 +254,12 @@ test("发布通道：已公开但缺清单必须可重跑补齐（Windows 与 Li
     );
 
     // 发布后校验不得被“已发布”短路，否则部分失败的重跑永远不会被检查。
-    const verifyAt = source.indexOf("Post-release verification");
-    const verifyBlock = source.slice(verifyAt, verifyAt + 1800);
-    assert.ok(!verifyBlock.includes("published != 'true'"), `${name} 的发布后校验不得跳过已公开状态`);
+    const verifyStep = parseSteps(source).find((step) => step.name === "Post-release verification");
+    assert.ok(verifyStep, `${name} 缺少发布后校验步骤`);
+    assert.ok(!verifyStep.run.includes("published != 'true'"), `${name} 的发布后校验不得跳过已公开状态`);
     const peer = channel === "windows" ? "latest-linux-critical.json" : "latest.json";
     assert.ok(
-      verifyBlock.includes(peer),
+      verifyStep.run.includes(peer),
       `${name} 的发布后校验必须确认另一通道清单 ${peer} 存在`,
     );
 

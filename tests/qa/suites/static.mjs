@@ -1567,10 +1567,15 @@ export function checkReleaseSurface(root, report) {
       "release-candidate-linux.yml 的 tauri build 必须带 --config src-tauri/tauri.linux.conf.json",
     );
   }
-  // 建 Draft 必须用 --verify-tag：不传 target_commitish，就不会触发对标签引用的写入尝试。
-  // 本仓库的 tag ruleset 没有任何豁免者，集成令牌一旦尝试写标签引用就会被拒。
-  if (linuxCandidateText && !/gh release create[^\n]*--verify-tag/.test(linuxCandidateText)) {
-    errors.push("release-candidate-linux.yml 必须用 gh release create --verify-tag（不传 target_commitish）");
+  // 无预建标签的 Draft 必须绑定完整固定提交，并在写入前重新验证远端状态；
+  // 步骤顺序和错误分支由 workflow-contract.test.mjs 进一步约束。
+  if (linuxCandidateText && (
+    !/gh release create "\$TAG" --target "\$COMMIT" --draft/.test(linuxCandidateText) ||
+    !linuxCandidateText.includes("Re-check candidate identity before Draft write") ||
+    !linuxCandidateText.includes("candidate-evidence.mjs") ||
+    !linuxCandidateText.includes("COMMIT: ${{ steps.identity.outputs.commit }}")
+  )) {
+    errors.push("release-candidate-linux.yml 的 Draft 必须绑定已验证提交并在写入前复核身份");
   }
   // AppImage 的 minisign 签名必须作为 Release 资产发布：清单里虽然内嵌了签名，
   // 但缺了 .sig 资产，用户就无法手动验签（Windows 通道同样发布 .exe.sig）。

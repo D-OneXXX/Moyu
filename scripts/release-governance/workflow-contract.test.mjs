@@ -946,13 +946,13 @@ test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/
   );
   assert.match(
     source,
-    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
-    "L2 必须对 PR 的 head 提交跑回归（短 SHA 不受支持）",
+    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.event\.merge_group\.head_sha \}\}/,
+    "L2 必须对 PR 的 head 提交跑回归（短 SHA 不受支持）；merge_group 回落到合并组 head_sha",
   );
   assert.match(source, /qa-gate\.mjs/, "L2 必须用登记表门禁判定，而不是直接看 QA 退出码");
   assert.match(
     source,
-    /qa-evidence-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
+    /qa-evidence-\$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.event\.merge_group\.head_sha \}\}/,
     "门禁必须读取与 head 绑定的证据",
   );
 
@@ -996,9 +996,10 @@ test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/
   assert.match(source, /overwrite: true/, "定向证据重跑时必须覆盖旧 artifact");
   assert.match(
     source,
-    /if: always\(\) && github\.event\.pull_request\.draft == false/,
-    "Draft 不得产生可复用的绿色 gate；ready_for_review 后必须重跑",
+    /if: always\(\) && \(github\.event_name == 'merge_group' \|\| github\.event\.pull_request\.draft == false\)/,
+    "Draft 不得产生可复用的绿色 gate；ready_for_review 后必须重跑；merge_group 必须照常执行",
   );
+  assert.match(source, /^\s{2}merge_group:/m, "L2 必须支持 merge_group，否则合并队列缺必需检查");
 
   // 登记表本身：字段完整、不得登记 P0/P1 豁免。
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");

@@ -928,7 +928,7 @@ mod tests {
             }
             (head[3], dest)
         });
-        let proxy = ureq::Proxy::new(&format!("socks5://{address}")).unwrap();
+        let proxy = ureq::Proxy::new(format!("socks5://{address}")).unwrap();
         let agent = ureq::AgentBuilder::new().proxy(proxy).build();
         let _ = agent.get("http://[2606:4700:4700::1111]/").call();
         let (atyp, dest) = observed.join().unwrap();

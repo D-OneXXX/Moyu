@@ -123,6 +123,7 @@ impl RequestHeaders {
 pub struct UreqTransport {
     agent: ureq::Agent,
     proxy: Option<String>,
+    resolver: Arc<HostResolver>,
     /// 代理配置存在且 NO_PROXY 命中时使用的直连 agent。
     direct_agent: Option<ureq::Agent>,
     /// 进程环境里的 NO_PROXY 规则（逗号/空白分隔，已去除 scheme/path）。
@@ -134,6 +135,8 @@ pub struct UreqTransport {
     /// 仅 debug 测试/QA 通过环境变量放行回环；release 恒为 false。
     allow_loopback: bool,
 }
+
+type HostResolver = dyn Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync;
 
 struct RawResponse {
     status: u16,
@@ -380,6 +383,9 @@ impl UreqTransport {
         Ok(Self {
             agent,
             proxy,
+            resolver: Arc::new(|host, port| {
+                (host, port).to_socket_addrs().map(|addrs| addrs.collect())
+            }),
             direct_agent,
             no_proxy,
             headers,
@@ -446,8 +452,7 @@ impl UreqTransport {
             return Ok(());
         }
         let port = target.port_or_known_default().unwrap_or(443);
-        let addrs = (host, port)
-            .to_socket_addrs()
+        let addrs = (self.resolver)(host, port)
             .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
         let mut saw = false;
         for addr in addrs {
@@ -497,10 +502,8 @@ impl UreqTransport {
             })?;
             let host = host.trim_start_matches('[').trim_end_matches(']');
             let port = target.port_or_known_default().unwrap_or(443);
-            let addresses: Vec<SocketAddr> = (host, port)
-                .to_socket_addrs()
-                .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?
-                .collect();
+            let addresses = (self.resolver)(host, port)
+                .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
             let addresses =
                 validate_connection_addresses(addresses, self.allow_loopback).map_err(|_| {
                     OnlineError::Network("目标地址不允许访问（online-blocked-address）".into())
@@ -758,6 +761,33 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread::JoinHandle;
+
+    #[test]
+    fn proxy_dns_rebinding_is_rejected_before_contacting_proxy() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut transport = UreqTransport::new(&format!("http://{address}"), "").unwrap();
+        transport.no_proxy.clear();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        transport.resolver = Arc::new(move |_, port| {
+            let ip = if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                "8.8.8.8"
+            } else {
+                "192.168.1.1"
+            };
+            Ok(vec![SocketAddr::new(ip.parse().unwrap(), port)])
+        });
+        let target = url::Url::parse("http://rebind.example/page").unwrap();
+        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 
     #[test]
     fn http_proxy_receives_validated_ip_and_original_host() {

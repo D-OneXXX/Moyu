@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadKnowledgeBase, updateKnowledgeBase } from "./report.mjs";
+import {
+  loadKnowledgeBase,
+  updateKnowledgeBase,
+  writeMarkdownReport,
+} from "./report.mjs";
 
 test("missing knowledge base starts empty; malformed data fails without overwriting it", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "moyu-kb-"));
@@ -25,4 +29,71 @@ test("only an executed passing QA case closes its own finding; failures reopen i
   assert.deepEqual(kb.defects.map((d) => d.status), ["closed", "open", "open"]);
   updateKnowledgeBase(kb, {runId: "second", checks: [{id: "a", status: "fail"}], defects: [{id: "a", severity: "P1"}]});
   assert.equal(kb.defects[0].status, "open");
+});
+
+test("stale open defects are separated from the active backlog", () => {
+  const kb = {
+    schema: 1,
+    updatedAt: null,
+    regressions: [],
+    defects: [
+      {
+        id: "old-p0",
+        testId: "old-p0",
+        title: "old",
+        severity: "P0",
+        status: "open",
+        lastSeen: "2026-10-01T00-00-00-000Z",
+      },
+      {
+        id: "recent-p1",
+        testId: "recent-p1",
+        title: "recent",
+        severity: "P1",
+        status: "open",
+        lastSeen: "2026-11-06T00-00-00-000Z",
+      },
+      {
+        id: "closed-p0",
+        testId: "closed-p0",
+        title: "closed",
+        severity: "P0",
+        status: "closed",
+        lastSeen: "2026-10-01T00-00-00-000Z",
+      },
+    ],
+  };
+  updateKnowledgeBase(
+    kb,
+    { runId: "2026-11-07T00-00-00-000Z", checks: [], defects: [] },
+    { now: Date.parse("2026-11-07T00:00:00Z"), staleAfterDays: 7 },
+  );
+  assert.equal(kb.defects[0].stale, true);
+  assert.equal(kb.defects[1].stale, false);
+  assert.equal(kb.defects[2].stale, undefined);
+
+  const report = {
+    runId: "2026-11-07T00-00-00-000Z",
+    appVersion: "0.0.0",
+    buildCommit: "test",
+    startedAt: "2026-11-07T00:00:00Z",
+    finishedAt: "2026-11-07T00:01:00Z",
+    checks: [],
+    defects: [],
+    notes: [],
+    knowledgeBase: {},
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "moyu-report-"));
+  try {
+    const file = path.join(dir, "report.md");
+    writeMarkdownReport(report, file, kb);
+    const text = fs.readFileSync(file, "utf8");
+    const [active, stale] = text.split("### 陈旧台账");
+    assert.match(text, /静态审计 backlog：1 条/);
+    assert.match(text, /陈旧待复验：1 条/);
+    assert.doesNotMatch(active, /old-p0/);
+    assert.match(stale, /old-p0/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

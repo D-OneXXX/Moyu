@@ -16,6 +16,7 @@ import {
   LEGACY_PAGE_COUNT,
   LEGACY_READING_LOG,
   PDF_CHECKS,
+  SCHEMA_VERSION,
   buildLegacyBackup,
   jpegDimensions,
   makePdfChecks,
@@ -29,6 +30,18 @@ const SCRIPT = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "pdf-release-check.mjs",
 );
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+test("SCHEMA_VERSION 必须与后端 db.rs 保持一致（防止发布验证契约漂移）", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "src-tauri", "src", "db.rs"), "utf8");
+  const match = source.match(/pub const SCHEMA_VERSION:\s*i32\s*=\s*(\d+)/);
+  assert.ok(match, "db.rs 缺少 SCHEMA_VERSION");
+  assert.equal(
+    SCHEMA_VERSION,
+    Number(match[1]),
+    "scripts/release-smoke/pdf-release-check.mjs 的 SCHEMA_VERSION 已落后于 db.rs",
+  );
+});
 
 function tempDir(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `mr-pdf-release-${label}-`));

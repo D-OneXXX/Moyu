@@ -13,7 +13,7 @@
  *                  → 真实按钮缩放 +25% → 书库封面 <img> 与封面缓存文件。
  *   db             --data-dir <应用数据目录> --book-id <id> --expect-page 3 --expect-count 4 --out <json>
  *                  应用关闭后只读打开 library.db：format=pdf / page_count / current_page /
- *                  quick_check / user_version=2 / 封面缓存 JPEG 合法性 / 凭据残留。
+ *                  quick_check / user_version=3 / 封面缓存 JPEG 合法性 / 凭据残留。
  *   restart        --port <p> --book-id <id> --expect-page 3 --out <json>
  *                  真实进程重启后打开阅读器：恢复页码仍为 3 且画布已解码。
  *   backup-export  --port <p> --dest <path> --book-id <id> --out <json>
@@ -27,7 +27,7 @@
  *                  .mrbackup：真实 zip + 合法 manifest（计数/表/列与 backup.rs 一致）。
  *   verify-legacy  --port <p> --data-dir <dir> --source <path> --book-id <id> --out <json>
  *                  在**另一个**隔离 profile 里恢复旧备份：图片书与进度保留、
- *                  quick_check 通过、user_version 升到 2、format 落回 image。
+ *                  quick_check 通过、user_version 升到 3、format 落回 image。
  *   db-snapshot    --data-dir <dir> --out <snapshot.db> [--evidence <json>]
  *                  VACUUM INTO 安全快照（应用关闭时）。
  *   db-restore     --data-dir <dir> --snapshot <snapshot.db> [--book-id <id>]
@@ -35,7 +35,7 @@
  *                  处理 -wal/-shm 后原子回滚，并做逐字节完整性校验。
  *   rollback-compat --port <p> --data-dir <dir> --out <json>
  *                  旧版本（0.17.2）已安装并运行：list_books 必须返回数组不抛错，
- *                  且 v2 库 user_version 仍为 2、quick_check 通过。
+ *                  且当前 schema 库 user_version 仍为 3、quick_check 通过。
  *
  * 坐标说明（与产品一致，**不得**臆造）：`books.current_page` 是 0 基页索引
  * （见 `src/features/pdf/../pages/Reader.tsx` 的 `applyRestore` 与
@@ -82,8 +82,8 @@ export const RESULT_KIND = "manga-reader.pdf-release-check";
 export const PDF_PAGE_COUNT = 4;
 /** 阅读器目标页（1 基）。落库 current_page = 2。 */
 export const TARGET_READER_PAGE = 3;
-/** 后端 `db::SCHEMA_VERSION`（PDF-1 起为 2）。 */
-export const SCHEMA_VERSION = 2;
+/** 后端 `db::SCHEMA_VERSION`（W3 起为 3；与 `src-tauri/src/db.rs` 一致）。 */
+export const SCHEMA_VERSION = 3;
 export const BACKUP_FORMAT = "mangareader-backup";
 export const BACKUP_SCHEMA = 1;
 /** 与 `src-tauri/src/pdf.rs::PDF_COVER_EDGE` 一致。 */
@@ -1765,7 +1765,7 @@ async function cmdRollbackCompat(args) {
     try {
       result.quickCheck = quickCheckOf(db);
       result.schemaVersion = userVersionOf(db);
-      // 旧版本绝不能把 v2 库降级：user_version 必须仍是 2。
+      // 旧版本绝不能把当前 schema 库降级：user_version 必须仍是 3。
       if (result.schemaVersion !== SCHEMA_VERSION) {
         result.problems.push(`schema-version:${result.schemaVersion}`);
       }

@@ -5,12 +5,15 @@ name: PR governance
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review]
+  # merge queue 的合并组没有 pull_request 元数据：入队前 PR 阶段已经校验过
+  # issue 链接与分支命名，这里只负责让同名必需检查在 merge_group 上产出成功。
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-governance-${{ github.event.pull_request.number }}
+  group: pr-governance-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -18,18 +21,27 @@ jobs:
     name: PR governance (issue link + branch naming)
     runs-on: ubuntu-22.04
     steps:
+      # merge_group 下没有 pull_request payload：直接通过，保持检查名与 PR 阶段一致。
+      - name: Merge queue passthrough
+        if: github.event_name == 'merge_group'
+        run: |
+          echo "merge_group: PR 阶段已校验 issue 链接与分支命名，这里只透传同一必需检查名。"
+
       - name: Checkout trusted base
+        if: github.event_name != 'merge_group'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: github.event_name != 'merge_group'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
       - name: Validate PR metadata
+        if: github.event_name != 'merge_group'
         run: |
           if [ ! -f scripts/pr-governance.mjs ]; then
             echo "Bootstrap: script is not on base yet; skipping until this workflow is merged."

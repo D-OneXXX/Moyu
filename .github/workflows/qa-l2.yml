@@ -2,7 +2,7 @@ name: QA L2 (PR regression gate)
 
 # 分层 QA 门禁说明（三层，互不冒充）：
 #
-#   L1 快速门禁（ci-windows-check / ci-linux-check）：类型检查、静态 QA、发布治理契约、构建。
+#   L1 快速门禁（ci.yml 的 Linux / Windows 两条 leg）：类型检查、静态 QA、发布治理契约、构建。
 #      —— 必须通过，分钟级。
 #   L2 PR 回归（本工作流）：按改动范围选择套件。
 #      —— 纯文档/演示/治理元数据只跑 static；小型前端跑 static+visual+architecture；
@@ -33,13 +33,17 @@ name: QA L2 (PR regression gate)
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # merge queue：在合并组提交上重跑同名门禁。合并组没有 pull_request 元数据，
+  # 因此下面的 base/head 一律回落到 merge_group 的 base_sha / head_sha，
+  # 并且跳过 draft 判定（入队的前提就是非 Draft）。
+  merge_group:
 
 permissions:
   contents: read
   actions: read # 下载本 run 的 QA 证据
 
 concurrency:
-  group: qa-l2-${{ github.event.pull_request.number }}
+  group: qa-l2-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -56,7 +60,7 @@ jobs:
       - name: Checkout trusted base classifier
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -64,9 +68,9 @@ jobs:
         id: scope
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DRAFT: ${{ github.event.pull_request.draft }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          DRAFT: ${{ github.event.pull_request.draft || false }}
         run: |
           set -euo pipefail
           write_full() {
@@ -117,18 +121,19 @@ jobs:
     needs: changes
     # 所有非 Draft 模式共用：full 时 suite 为空，直接跑全量套件；
     # 定向模式只跑相关 suite。本 job 不跑 L1，避免与 Windows/Linux check 重复。
-    if: needs.changes.result == 'success' && github.event.pull_request.draft == false
+    # merge_group 没有 draft 概念：入队即代表 PR 已 ready_for_review。
+    if: needs.changes.result == 'success' && (github.event_name == 'merge_group' || github.event.pull_request.draft == false)
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
       - name: Checkout PR head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -170,7 +175,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qa-evidence-${{ github.event.pull_request.head.sha }}
+          name: qa-evidence-${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           if-no-files-found: warn
           retention-days: 14
           overwrite: true
@@ -187,13 +192,14 @@ jobs:
     needs: [changes, pr-qa]
     # Draft 不跑 L2：required check 保持 skipped（Draft 不可合并）；
     # 标记 ready_for_review 会重新触发本工作流并重新计算范围。
-    if: always() && github.event.pull_request.draft == false
+    # merge_group 下没有 draft 字段，必须照常执行（否则合并组会缺这个必需检查）。
+    if: always() && (github.event_name == 'merge_group' || github.event.pull_request.draft == false)
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout trusted base gate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           persist-credentials: false
 
       # 证据是本门禁的输入，必须能取到；取不到就让下一步判定"缺证据 → 阻断"。
@@ -204,7 +210,7 @@ jobs:
         run: |
           gh run download "${{ github.run_id }}" \
             --repo "${{ github.repository }}" \
-            --name "qa-evidence-${{ github.event.pull_request.head.sha }}" \
+            --name "qa-evidence-${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" \
             --dir qa-evidence
 
       - name: QA gate
@@ -212,7 +218,7 @@ jobs:
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           SUITE: ${{ needs.changes.outputs.suite }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           EXPECTED_SUITES="$SUITE"
@@ -230,7 +236,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           MODE: ${{ needs.changes.outputs.mode }}
           SUITE: ${{ needs.changes.outputs.suite }}
           CHANGES_RESULT: ${{ needs.changes.result }}

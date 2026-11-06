@@ -11,7 +11,10 @@ Closes #
 
 ## 验证
 
-执行级别（按 `docs/NON_INTRUSIVE_ENGINEERING.md`）：
+<!-- 执行级别按 AGENTS.md §1.5；L2 · QA gate 会按改动路径自动选套件，此处只做人工核对。 -->
+<!-- 常用命令：npm run test:governance / npm run version:check / npm run test:version / npx tsc --noEmit / npm run build / cargo test --lib / node tests/qa/run-qa.mjs -->
+
+执行级别：
 
 - [ ] L0 离线分析（只读代码/文档、静态推理）
 - [ ] L1 后台执行（单测、`tsc`、构建、静态 QA、治理脚本）

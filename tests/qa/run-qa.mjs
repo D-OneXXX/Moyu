@@ -9,6 +9,11 @@ import { startQaApp } from "./lib/app.mjs";
 import { createQaFixtures } from "./lib/fixtures.mjs";
 import { startOnlineFixture } from "./lib/online-fixture.mjs";
 import {
+  E2E_SUITE_IDS,
+  classifyQaExecution,
+  formatAuthorizationError,
+} from "./lib/execution-level.mjs";
+import {
   createReport,
   fail,
   loadKnowledgeBase,
@@ -46,17 +51,7 @@ const ONLY = process.argv.find((arg) => arg.startsWith("--suite="))?.split("=")[
 /** --suite=a,b 可一次跑多个套件（同一应用实例），用于跨套件串扰排查。 */
 const ONLY_LIST = ONLY ? ONLY.split(",").map((name) => name.trim()).filter(Boolean) : null;
 /** 需要拉起隔离应用（而不是只跑静态检查）的 suite 白名单。 */
-const E2E_SUITES = new Set([
-  "visual",
-  "reader",
-  "pdf",
-  "online",
-  "opds",
-  "cache",
-  "privacy",
-  "chaos",
-  "architecture",
-]);
+const E2E_SUITES = new Set(E2E_SUITE_IDS);
 
 function latestGitCommit() {
   try {
@@ -201,17 +196,36 @@ async function runOne(report, ctx, suite) {
 }
 
 async function main() {
+  // 授权门必须在 cleanArtifacts()、构建校验与启动应用之前执行：
+  // 未授权的 L3 运行不得留下产物、拉起 Vite/Tauri，也不得静默降级成 L2。
+  const wantsE2E = !ONLY_LIST || ONLY_LIST.some((name) => E2E_SUITES.has(name));
+  const execution = classifyQaExecution({
+    e2e: wantsE2E,
+    env: process.env,
+    cdpPort: CDP_PORT,
+  });
+  if (!execution.authorization.granted) {
+    console.error(formatAuthorizationError(execution));
+    process.exitCode = 2;
+    return;
+  }
+
   cleanArtifacts();
   const report = createReport({
     root: ROOT,
     artifactDir: ARTIFACT_ROOT,
     appVersion: version(),
     buildCommit: latestGitCommit(),
+    execution,
   });
   report.suiteCoverage = { planned: ["static", ...E2E_SUITES], executed: [] };
-  const runsE2e = !ONLY_LIST || ONLY_LIST.some((name) => E2E_SUITES.has(name));
-  note(report, runsE2e ? "执行级别：L2，隔离 CDP；宿主桌面交互未覆盖" : "执行级别：L1，后台 CLI；未启动桌面或 CDP");
-  if (runsE2e) note(report, `计划 CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}；进程和端口须结合运行日志核对`);
+  note(
+    report,
+    `执行级别：${execution.level}（${execution.backgroundOrInteractive}）；授权来源：${
+      execution.authorization.source
+    }；授权：${execution.authorization.granted ? "granted" : "missing"}`,
+  );
+  if (wantsE2E) note(report, `计划 CDP 端口：${CDP_PORT}；隔离数据：${DATA_DIR}`);
 
   buildCheck(report);
 
@@ -230,6 +244,7 @@ async function main() {
     // Start before the app so the debug-only Telegram origin override can be
     // injected into the app environment. Production builds ignore it.
     onlineFixture = await startOnlineFixture();
+    if (report.execution) report.execution.ports.push(onlineFixture.port);
     ctx = await startQaApp({
       root: ROOT,
       artifactDir: ARTIFACT_ROOT,
@@ -317,14 +332,19 @@ async function main() {
       fix: "确保 cargo build 与 Vite 正常后重试",
     });
   } finally {
+    // 清理结果必须如实写进报告：任何一步失败都让 cleanup 变成 failed，
+    // 不能用“已清理”掩盖仍然在跑的 Vite/Tauri/夹具进程。
+    let cleanupFailure = null;
     if (ctx) {
       await ctx.close().catch((error) => {
+        cleanupFailure ??= `app/vite: ${error.message}`;
         fail(report, { id: "qa:cleanup-app", suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离应用清理失败", details: error.message });
       });
       await new Promise((resolve) => setTimeout(resolve, 900));
     }
     if (onlineFixture) {
       await onlineFixture.close().catch((error) => {
+        cleanupFailure ??= `online fixture: ${error.message}`;
         fail(report, { id: "qa:cleanup-fixture", suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离服务清理失败", details: error.message });
       });
     }
@@ -338,10 +358,18 @@ async function main() {
             retryDelay: 250,
           });
         } catch (error) {
+          cleanupFailure ??= `${path.relative(ROOT, target)}: ${error.message}`;
           fail(report, { id: `qa:cleanup-data:${path.basename(target)}`, suite: "infrastructure", layer: "infrastructure", severity: "P1", title: "隔离数据清理失败", details: error.message });
         }
       }
     } else note(report, "按 --keep-data 保留本次隔离数据");
+    if (report.execution) {
+      report.execution.cleanup = KEEP_DATA
+        ? "retained-by-request"
+        : cleanupFailure
+          ? `failed: ${cleanupFailure}`
+          : "completed";
+    }
   }
 
   finalize(report);

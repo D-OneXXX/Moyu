@@ -904,7 +904,7 @@ mod tests {
             original_host: "localhost".into(),
             tls: Arc::new(client_config),
         });
-        let proxy = ureq::Proxy::new(&format!("http://{address}")).unwrap();
+        let proxy = ureq::Proxy::new(format!("http://{address}")).unwrap();
         let agent = ureq::AgentBuilder::new()
             .proxy(proxy)
             .tls_connector(connector)

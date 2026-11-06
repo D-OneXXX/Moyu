@@ -1,0 +1,2 @@
+Temporary check: verifies the rewritten branch protection gates.
+This file is never merged.

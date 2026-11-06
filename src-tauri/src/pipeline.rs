@@ -46,6 +46,11 @@ pub const MAX_SAFE_TEXTURE_H: u32 = 8192;
 pub const MAX_SLICE_H: u32 = 4096;
 
 /// 源图像素数上限：防御畸形/恶意头部导致的巨额分配（返回错误而不是 OOM 崩溃）。
+///
+/// 注意：JPEG 有 IDCT 缩放解码、非交错 PNG 有逐带解码，**WebP / GIF / 交错 PNG
+/// 只能整图解码**——这些格式的峰值 ≈ 源栅格（RGB 3B/px、RGBA 4B/px）+ 输出栅格，
+/// 上限由本常量兜住（160M px × 4B ≈ 640MB，仅极端输入才会触及）。
+/// 解码后立刻转 RGB 再缩放（见 `render_raw_with`），不再额外分配一份 RGBA 缩放副本。
 const MAX_SOURCE_PIXELS: u64 = 160_000_000;
 /// Web requests materialize a complete logical page at once. Bound both the
 /// tile plan and the accumulated encoded output before caching any of it.
@@ -193,12 +198,37 @@ fn clamp_texture_safe(rgb: image::RgbImage) -> Result<image::RgbImage, BackendEr
     if nw == w && nh == h {
         return Ok(rgb);
     }
-    Ok(image::imageops::resize(
-        &rgb,
-        nw,
-        nh,
-        image::imageops::FilterType::Triangle,
-    ))
+    Ok(resize_rgb_bounded(&rgb, nw, nh))
+}
+
+/// `imageops::resize` 的 Rgba32F 中间副本（16B/px）预算。
+///
+/// `image::imageops::resize` 内部先做一遍垂直采样并整页保留 **f32 RGBA** 中间栅格
+/// （源宽 × 输出高 × 16B）：2000×9000 的 RGBA 源渲染到 1820×8192 时实测多分配
+/// 262MB、峰值 379MB；160M px 的极端输入会放大到 GB 级。
+/// 超过本预算的降采样改用盒式面积平均（只分配输出栅格）。
+const RESIZE_INTERMEDIATE_BUDGET: usize = 96 * 1024 * 1024;
+
+/// 有界降采样：
+/// - 中间副本在预算内 → `imageops::resize`（Triangle），既有输出逐像素不变；
+/// - 超预算 → `imageops::thumbnail`（盒式面积平均）：只分配输出栅格，无整页
+///   f32 中间副本，也不会像「分带缩放」那样在接缝处引入亚像素相位差
+///   （面板硬边会被切成深浅不一的行）。
+fn resize_rgb_bounded(src: &image::RgbImage, tw: u32, th: u32) -> image::RgbImage {
+    let (sw, sh) = (src.width(), src.height());
+    if sw == 0 || sh == 0 || tw == 0 || th == 0 {
+        return image::imageops::resize(
+            src,
+            tw.max(1),
+            th.max(1),
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    let intermediate = u64::from(sw) * u64::from(th) * 16;
+    if intermediate <= RESIZE_INTERMEDIATE_BUDGET as u64 {
+        return image::imageops::resize(src, tw, th, image::imageops::FilterType::Triangle);
+    }
+    image::imageops::thumbnail(src, tw, th)
 }
 
 /// 解码单页并按需降采样，重编码为 JPEG dataURL。
@@ -246,12 +276,28 @@ fn render_raw_with(
     // 目标尺寸直接落到纹理安全线内：避免先缩放成超限大图再压扁（省一份峰值内存）。
     let (tw, th) = fit_size(sw, sh, max_w, max_h);
     let (fw, fh) = safe_fit(tw, th);
-    let img = if fw == sw && fh == sh {
-        img
+    // 8 位 RGB/RGBA 先原地转 RGB 再缩放：非 JPEG 只能整图解码，旧顺序
+    // 「缩放成 RGBA 副本 → 再转 RGB」会让 4B/px 的副本和输出同时存活；
+    // 灰度/16 位/调色板仍保持「先缩放再转 RGB」，避免整图 3B/px 转换副本。
+    let rgb = if matches!(
+        img,
+        image::DynamicImage::ImageRgb8(_) | image::DynamicImage::ImageRgba8(_)
+    ) {
+        let rgb = into_rgb(img);
+        if fw == sw && fh == sh {
+            rgb
+        } else {
+            resize_rgb_bounded(&rgb, fw, fh)
+        }
     } else {
-        img.resize_exact(fw, fh, image::imageops::FilterType::Triangle)
+        let scaled = if fw == sw && fh == sh {
+            img
+        } else {
+            img.resize_exact(fw, fh, image::imageops::FilterType::Triangle)
+        };
+        into_rgb(scaled)
     };
-    finish_render_with(into_rgb(img), sw, sh, encode_data_url)
+    finish_render_with(rgb, sw, sh, encode_data_url)
 }
 
 /// 长图专用：IDCT 缩放解码到不超过目标宽的最大 1/2^k 档，再精确缩放到目标尺寸。
@@ -281,7 +327,7 @@ fn render_tall_jpeg_with(
     let rgb = if raster.width() == fw && raster.height() == fh {
         raster
     } else {
-        image::imageops::resize(&raster, fw, fh, image::imageops::FilterType::Triangle)
+        resize_rgb_bounded(&raster, fw, fh)
     };
     finish_render_with(rgb, sw, sh, encode_data_url)
 }
@@ -751,6 +797,85 @@ fn render_band_tile(
 mod tests {
     use super::*;
 
+    /// 线程内峰值内存统计（只在测试构建安装）。
+    ///
+    /// 审计报告把「非 JPEG 巨图峰值 0.5–1.1 GB」标为 INFERRED；这里用一个
+    /// 只统计**当前线程**存活分配量的 `GlobalAlloc` 包装，把单页渲染的峰值
+    /// 变成可复现数字（并行测试各线程独立计数，互不污染）。
+    /// `realloc` 按「先减旧、再加新」记账，瞬时重叠不重复计入。
+    mod peak_mem {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static LIVE: Cell<usize> = const { Cell::new(0) };
+            static PEAK: Cell<usize> = const { Cell::new(0) };
+        }
+
+        fn add(bytes: usize) {
+            let _ = LIVE.try_with(|live| {
+                let now = live.get() + bytes;
+                live.set(now);
+                let _ = PEAK.try_with(|peak| {
+                    if now > peak.get() {
+                        peak.set(now);
+                    }
+                });
+            });
+        }
+
+        fn sub(bytes: usize) {
+            let _ = LIVE.try_with(|live| live.set(live.get().saturating_sub(bytes)));
+        }
+
+        pub struct PeakAllocator;
+
+        unsafe impl GlobalAlloc for PeakAllocator {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                let ptr = System.alloc(layout);
+                if !ptr.is_null() {
+                    add(layout.size());
+                }
+                ptr
+            }
+
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                let ptr = System.alloc_zeroed(layout);
+                if !ptr.is_null() {
+                    add(layout.size());
+                }
+                ptr
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                sub(layout.size());
+                System.dealloc(ptr, layout)
+            }
+
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+                let new_ptr = System.realloc(ptr, layout, new_size);
+                if !new_ptr.is_null() {
+                    sub(layout.size());
+                    add(new_size);
+                }
+                new_ptr
+            }
+        }
+
+        pub fn reset() {
+            let _ = LIVE.try_with(|live| live.set(0));
+            let _ = PEAK.try_with(|peak| peak.set(0));
+        }
+
+        pub fn peak() -> usize {
+            let live = LIVE.with(|live| live.get());
+            PEAK.with(|peak| peak.get()).max(live)
+        }
+    }
+
+    #[global_allocator]
+    static QA_PEAK_ALLOCATOR: peak_mem::PeakAllocator = peak_mem::PeakAllocator;
+
     #[test]
     fn rgba_to_rgb_reuses_buffer_and_preserves_existing_conversion() {
         let input =
@@ -1219,6 +1344,137 @@ mod tests {
         assert!(page.data_url.starts_with("data:image/jpeg;base64,"));
     }
 
+    /* ---------------- 非 JPEG 巨图 / 极端尺寸 / 单页纹理上限 ---------------- */
+
+    /// 测试用 RGBA PNG（透明通道会让 `into_rgb` 走原地压缩分支）。
+    fn rgba_page(w: u32, h: u32) -> RawPage {
+        use image::ImageEncoder as _;
+        let img = image::RgbaImage::from_fn(w, h, |x, y| {
+            image::Rgba([
+                ((y as u64 * 255) / h as u64) as u8,
+                (x % 256) as u8,
+                90,
+                ((y % 251) as u8).max(1),
+            ])
+        });
+        let mut buf = Vec::new();
+        image::codecs::png::PngEncoder::new_with_quality(
+            &mut buf,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::Adaptive,
+        )
+        .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+        .unwrap();
+        RawPage {
+            bytes: buf,
+            ext: "png".into(),
+        }
+    }
+
+    /// 无损 WebP（`image` 只支持 lossless 编码），用于验证「无逐带解码」格式的回退。
+    fn webp_page(w: u32, h: u32) -> RawPage {
+        use image::ImageEncoder as _;
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([((y as u64 * 255) / h as u64) as u8, 128, (x % 256) as u8])
+        });
+        let mut buf = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut buf)
+            .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        RawPage {
+            bytes: buf,
+            ext: "webp".into(),
+        }
+    }
+
+    /// WebP 没有 IDCT/逐带解码：超长 WebP 只能整图解码，但切片几何与单页钳制
+    /// 仍必须与 JPEG/PNG 完全一致（防止「非 JPEG 走另一套几何」的回退缺口）。
+    #[test]
+    fn tall_webp_falls_back_to_full_decode_with_identical_geometry() {
+        let (w, h) = (240u32, 9000u32);
+        let raw = webp_page(w, h);
+        assert_eq!(decoded_format(&raw).unwrap(), ImageFormat::WebP);
+
+        let (tiles, pages) = render_webtoon_tiles(&raw, w).unwrap();
+        assert_eq!(tiles, webtoon_tile_count(w, h, w));
+        assert_eq!(pages.len() as u32, tiles);
+        assert!(pages.iter().all(|p| p.height <= WEBTOON_TILE_H));
+        assert!(pages.iter().all(|p| p.width == w));
+        assert_eq!(pages.iter().map(|p| p.height).sum::<u32>(), h);
+        assert!(pages
+            .iter()
+            .all(|p| p.orig_width == w && p.orig_height == h));
+
+        let page = render_raw(&raw, Some(w), None).unwrap();
+        assert_eq!(page.height, MAX_SAFE_TEXTURE_H);
+        assert_eq!((page.orig_width, page.orig_height), (w, h));
+    }
+
+    /// 宽幅巨图（宽 > 安全线）：单页路径必须等比压到安全线以内并如实上报源尺寸。
+    #[test]
+    fn wide_giant_single_page_is_scaled_into_safe_texture() {
+        let raw = ultra_tall_page(20_000, 400);
+        let page = render_raw(&raw, None, None).unwrap();
+        assert_eq!(page.width, MAX_SAFE_TEXTURE_H);
+        assert_eq!(page.height, 164);
+        assert_eq!((page.orig_width, page.orig_height), (20_000, 400));
+
+        // 请求更窄时按请求宽等比缩小，且不会被安全线二次压扁。
+        let page = render_raw(&raw, Some(1000), None).unwrap();
+        assert_eq!((page.width, page.height), (1000, 20));
+    }
+
+    /// 单页 `max_height` 先于纹理安全线生效；超过安全线时以安全线为准。
+    #[test]
+    fn single_page_honours_max_height_before_texture_clamp() {
+        let raw = ultra_tall_page(400, 9000);
+        let page = render_raw(&raw, None, Some(2000)).unwrap();
+        assert_eq!((page.width, page.height), (89, 2000));
+        assert_eq!((page.orig_width, page.orig_height), (400, 9000));
+
+        let page = render_raw(&raw, None, Some(20_000)).unwrap();
+        assert_eq!(page.height, MAX_SAFE_TEXTURE_H);
+        assert_eq!(page.width, 364);
+    }
+
+    /// 安全线边界：正好压线不缩，极端长宽比两侧都等比收敛到 ≥1px。
+    #[test]
+    fn safe_fit_boundaries_cover_extreme_aspects() {
+        assert_eq!(safe_fit(8192, 8192), (8192, 8192));
+        assert_eq!(safe_fit(400, 8192), (400, 8192));
+        assert_eq!(safe_fit(20000, 400), (8192, 164));
+        assert_eq!(safe_fit(100000, 1), (8192, 1));
+        let (w, h) = safe_fit(1, 100000);
+        assert_eq!((w, h), (1, 8192));
+        // 输出永远不超过安全线，且任一边都 ≥1px（不会产生 0 尺寸画布）。
+        for (w, h) in [(1u32, 65_000u32), (65_000, 1), (12_000, 12_000)] {
+            let (nw, nh) = safe_fit(w, h);
+            assert!(nw <= MAX_SAFE_TEXTURE_H && nh <= MAX_SAFE_TEXTURE_H);
+            assert!(nw >= 1 && nh >= 1);
+        }
+    }
+
+    /// 极端几何下单片源带超过逐带缓冲预算时，PNG 流式解码必须回退整图解码，
+    /// 而不是把原本可读的书直接判成超限。
+    #[test]
+    fn png_band_streaming_bails_out_when_a_band_exceeds_the_buffer_budget() {
+        let (w, h) = (3000u32, 7500u32);
+        let raw = ultra_tall_page(w, h);
+        // 单片 = 整页 7500 行 × 3000 × 3B ≈ 67MB > 64MB 逐带预算。
+        let plan = TilePlan::build(h, 1);
+        assert!(
+            render_tall_png_rows(&raw, (w, h), w, h, &plan, false, None)
+                .unwrap()
+                .is_none(),
+            "超大源带必须回退整图解码"
+        );
+        // 正常分片（ceil(7500/2048) = 4 片）仍走流式解码并覆盖整高。
+        let (tiles, pages) = render_webtoon_tiles(&raw, w).unwrap();
+        assert_eq!(tiles, 4);
+        assert_eq!(pages.len() as u32, tiles);
+        assert_eq!(pages.iter().map(|p| p.height).sum::<u32>(), h);
+    }
+
     /// 极端/畸形输入必须返回可读错误，不得 panic。
     #[test]
     fn pipeline_rejects_invalid_input_without_panic() {
@@ -1239,5 +1495,72 @@ mod tests {
         };
         assert!(render_raw(&empty, Some(800), Some(800)).is_err());
         assert!(render_webtoon_tiles(&empty, 800).is_err());
+    }
+
+    /// 有界降采样：预算内必须与 `imageops::resize` 逐像素一致（既有输出不变）；
+    /// 超预算的巨图退到盒式面积平均——不得出现「逐行均值突变」式接缝。
+    #[test]
+    fn bounded_downscale_switches_filter_only_above_the_memory_budget() {
+        // 预算内：与 resize 完全一致。
+        let small = image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8, y as u8, 7]));
+        assert_eq!(
+            resize_rgb_bounded(&small, 32, 24),
+            image::imageops::resize(&small, 32, 24, image::imageops::FilterType::Triangle)
+        );
+
+        // 超预算：中间副本 1000×8192×16 ≈ 131MB > 96MB → 盒式降采样。
+        let (sw, sh) = (1000u32, 9000u32);
+        let giant = image::RgbImage::from_fn(sw, sh, |x, y| {
+            image::Rgb([
+                ((y as u64 * 255) / sh as u64) as u8,
+                ((y as u64 * 255) / sh as u64) as u8,
+                (x % 256) as u8,
+            ])
+        });
+        let (tw, th) = (920u32, 8192u32);
+        assert!(u64::from(sw) * u64::from(th) * 16 > RESIZE_INTERMEDIATE_BUDGET as u64);
+        let bounded = resize_rgb_bounded(&giant, tw, th);
+        assert_eq!(bounded, image::imageops::thumbnail(&giant, tw, th));
+        assert_eq!(bounded.dimensions(), (tw, th));
+
+        // 无接缝：逐行灰度均值与 Triangle 参考的差处处有界（接缝会表现为单行跳变）。
+        let reference =
+            image::imageops::resize(&giant, tw, th, image::imageops::FilterType::Triangle);
+        let mut worst = 0f64;
+        for y in 0..th {
+            let row_mean = |img: &image::RgbImage| -> f64 {
+                let sum: u64 = (0..tw).map(|x| img.get_pixel(x, y)[0] as u64).sum();
+                sum as f64 / tw as f64
+            };
+            worst = worst.max((row_mean(&bounded) - row_mean(&reference)).abs());
+        }
+        assert!(worst <= 2.0, "逐行均值偏差过大（疑似接缝）：{worst}");
+    }
+
+    /// 非 JPEG 巨图（RGBA PNG 2000×9000）单页渲染的**实测**峰值内存必须有界：
+    /// 源栅格（4B/px）+ 输出栅格（3B/px）+ 有界降采样中间带 + 编码缓冲。
+    /// 回归点：`imageops::resize` 的 Rgba32F 中间副本（16B/px）曾被整页保留，
+    /// 同一张图实测峰值 379MB；分带降采样后须降到 ~150MB。
+    #[test]
+    fn tall_rgba_single_page_peak_memory_stays_bounded() {
+        const W: u32 = 2000;
+        const H: u32 = 9000;
+        let raw = rgba_page(W, H);
+        let source_bytes = (W as usize) * (H as usize) * 4;
+
+        peak_mem::reset();
+        let page = render_raw(&raw, None, None).unwrap();
+        let peak = peak_mem::peak();
+
+        assert_eq!(page.height, MAX_SAFE_TEXTURE_H);
+        let output_bytes = (page.width as usize) * (page.height as usize) * 3;
+        // 审计证据：`--nocapture` 可见实测峰值（修复前同一张图 379MB）。
+        println!("peak={peak} bytes (source={source_bytes}, output={output_bytes})");
+        // 余量 = 编码缓冲 + 分配器开销（实测 111MB ≈ 源 69MB + 输出 43MB + 1.6MB）。
+        let budget = source_bytes + output_bytes + 16 * 1024 * 1024;
+        assert!(
+            peak <= budget,
+            "峰值 {peak} 字节超过预算 {budget}（源 {source_bytes} + 输出 {output_bytes}）"
+        );
     }
 }

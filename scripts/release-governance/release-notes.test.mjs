@@ -552,7 +552,7 @@ test("发布说明：双语结构与内部信息门禁在两条通道上同时�
     assert.ok(publish > gate, `${name} 的说明门禁必须先于公开发布步骤`);
     const block = source.slice(gate, publish);
     assert.ok(
-      block.includes("--json body --jq .body"),
+      block.includes("--json body --template '{{.body}}'"),
       `${name} 必须校验 Draft 的真实正文，而不是 workflow 输入`,
     );
     assert.ok(

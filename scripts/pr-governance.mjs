@@ -34,6 +34,24 @@ export function isAutomationPr({ authorLogin, headRefName } = {}) {
   );
 }
 
+/** 逐段扫描并移除 HTML 注释，避免单次正则留下嵌套注释片段。 */
+function stripHtmlComments(value) {
+  let output = "";
+  let index = 0;
+  while (index < value.length) {
+    const open = value.indexOf("<!--", index);
+    if (open === -1) {
+      output += value.slice(index);
+      break;
+    }
+    output += value.slice(index, open);
+    const close = value.indexOf("-->", open + 4);
+    if (close === -1) break;
+    index = close + 3;
+  }
+  return output;
+}
+
 function sectionContent(body, patterns) {
   const headings = [...String(body || "").matchAll(/^##\s+(.+?)\s*$/gm)];
   for (const [index, heading] of headings.entries()) {
@@ -41,10 +59,7 @@ function sectionContent(body, patterns) {
     if (!patterns.some((pattern) => pattern.test(title))) continue;
     const start = heading.index + heading[0].length;
     const end = index + 1 < headings.length ? headings[index + 1].index : body.length;
-    const content = body
-      .slice(start, end)
-      .replace(/<!--[\s\S]*?-->/g, "")
-      .trim();
+    const content = stripHtmlComments(body.slice(start, end)).trim();
     if (content) return true;
   }
   return false;

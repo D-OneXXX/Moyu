@@ -188,7 +188,10 @@ async function connectReadyApp(cdpPort) {
   } catch (firstError) {
     for (const url of DEV_URLS) {
       await page
-        .eval(`setTimeout(() => { location.href = ${JSON.stringify(url)}; }, 60); true`)
+        .callFunction(
+          "function(url) { setTimeout(() => { location.href = url; }, 60); return true; }",
+          [url],
+        )
         .catch(() => {});
       await sleep(1500);
       page = await connectMain(cdpPort);

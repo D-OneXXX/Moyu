@@ -100,8 +100,9 @@ async function checkLegacyRoutes(ctx, report) {
     const consoleMark = watcher.consoleErrors.length;
     let redirected = false;
     try {
-      await page.eval(
-        `(() => { location.hash = ${JSON.stringify(route)}; return location.hash; })()`,
+      await page.callFunction(
+        "function(route) { location.hash = route; return location.hash; }",
+        [route],
       );
       await page.waitFor('location.hash === "#/"', {
         timeout: 8000,

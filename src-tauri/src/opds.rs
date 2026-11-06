@@ -1180,6 +1180,36 @@ pub(crate) fn convert_rar_to_cbz(src: &Path, dest: &Path) -> Result<(), BackendE
 mod tests {
     use super::*;
 
+    /// 读取完整 HTTP 请求头。Windows 的 `set_read_timeout` 会以 `WouldBlock`
+    /// 表示超时（而不是 `TimedOut`），因此两种错误都必须重试到测试截止时间。
+    fn read_http_request(
+        stream: &mut std::net::TcpStream,
+        deadline: std::time::Instant,
+    ) -> Vec<u8> {
+        use std::io::Read;
+        let mut request = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(count) => request.extend_from_slice(&buf[..count]),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if std::time::Instant::now() >= deadline {
+                        panic!("mock request read timed out: {error}");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("mock request read failed: {error}"),
+            }
+        }
+        request
+    }
+
     #[test]
     fn cbr_page_buffer_rejects_oversized_output_during_write() {
         let mut page = BoundedPageBuffer {
@@ -1227,7 +1257,7 @@ mod tests {
 
     #[test]
     fn isolated_http_server_serves_catalog_cover_and_cbz_after_same_origin_redirect() {
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::net::TcpListener;
         use std::time::Instant;
         let mut png = std::io::Cursor::new(Vec::new());
@@ -1263,15 +1293,7 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut request = Vec::new();
-                let mut buf = [0; 1024];
-                while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
-                    let count = stream.read(&mut buf).unwrap();
-                    if count == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buf[..count]);
-                }
+                let request = read_http_request(&mut stream, deadline);
                 let text = std::str::from_utf8(&request).unwrap();
                 assert!(text.to_ascii_lowercase().contains(
                     "authorization: basic dXNlcjpwYXNz"
@@ -2058,15 +2080,10 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut request = Vec::new();
-                let mut buf = [0; 1024];
-                while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
-                    let count = stream.read(&mut buf).unwrap();
-                    if count == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buf[..count]);
-                }
+                let request = read_http_request(
+                    &mut stream,
+                    std::time::Instant::now() + Duration::from_secs(10),
+                );
                 let text = std::str::from_utf8(&request).unwrap();
                 assert!(text.to_ascii_lowercase().contains(
                     "authorization: basic dXNlcjpwYXNz"

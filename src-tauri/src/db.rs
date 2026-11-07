@@ -8,7 +8,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use chrono::Local;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use chrono::{Local, NaiveDateTime, TimeZone};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
@@ -790,6 +792,91 @@ pub fn list_books_page(
         row_to_book,
     )?;
     rows.map(|row| row.map_err(BackendError::from)).collect()
+}
+
+/// 桌面书库分页（ADR-018）：按 `(last_opened_at, id)` 稳定游标，搜索 title+path。
+///
+/// 与 Web [`list_books_page`] 镜像同一套「空时间戳边界」处理，但排序字段改为
+/// `last_opened_at`、搜索字段补上 `path`，保持桌面 `list_books` 既有语义不变。
+/// 调用方取 `limit + 1` 行用于判断 `nextCursor`；参数校验在命令层完成。
+pub fn list_books_page_desktop(
+    conn: &Connection,
+    query: Option<&str>,
+    cursor_last_opened: Option<&str>,
+    cursor_id: Option<&str>,
+    limit: u32,
+) -> Result<Vec<BookRow>, BackendError> {
+    let like = query.map(|q| format!("%{}%", q.trim()));
+    let mut stmt = conn.prepare(
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+         FROM books
+         WHERE removed=0
+           AND (?1 IS NULL OR title LIKE ?1 OR path LIKE ?1)
+           AND (
+             ?2 IS NULL
+             OR (?2 = '' AND last_opened_at = '' AND id > ?3)
+             OR last_opened_at < ?2
+             OR (last_opened_at = ?2 AND id > ?3)
+           )
+         ORDER BY last_opened_at DESC, id ASC
+         LIMIT ?4",
+    )?;
+    let rows = stmt.query_map(
+        params![like, cursor_last_opened, cursor_id, i64::from(limit) + 1],
+        row_to_book,
+    )?;
+    rows.map(|row| row.map_err(BackendError::from)).collect()
+}
+
+/// 书库分页游标：1 字节标志 + 可选 8 字节本地时间戳 + 32 字节书 id（base64url，无填充）。
+///
+/// `timestamp` 由调用方指定排序字段（Web 用 `updated_at`，桌面用 `last_opened_at`）；
+/// 空时间戳是「新导入未打开」的真实状态，必须保留独立分支，不能塌缩成 epoch 键。
+pub(crate) fn encode_book_cursor(timestamp: &str, id: &str) -> Option<String> {
+    let id_bytes = hex::decode(id).ok()?;
+    if id_bytes.len() != 32 {
+        return None;
+    }
+    let mut raw = Vec::with_capacity(41);
+    if timestamp.is_empty() {
+        raw.push(0);
+    } else {
+        let seconds = NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")
+            .ok()
+            .and_then(|naive| Local.from_local_datetime(&naive).earliest())
+            .map(|value| value.timestamp())
+            .unwrap_or(0);
+        raw.push(1);
+        raw.extend_from_slice(&seconds.to_be_bytes());
+    }
+    raw.extend_from_slice(&id_bytes);
+    Some(URL_SAFE_NO_PAD.encode(raw))
+}
+
+/// 解码游标为 `(timestamp, id)`；拒绝 >64 字符、错误标志位、错误长度、非法 id 与填充变体。
+pub(crate) fn decode_book_cursor(raw: &str) -> Option<(String, String)> {
+    if raw.len() > 64 {
+        return None;
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let (timestamp, id_bytes) = match (bytes.first().copied()?, bytes.len()) {
+        (0, 33) => (String::new(), &bytes[1..]),
+        (1, 41) => {
+            let seconds = i64::from_be_bytes(bytes[1..9].try_into().ok()?);
+            let value = Local.timestamp_opt(seconds, 0).single()?;
+            (value.format("%Y-%m-%d %H:%M:%S").to_string(), &bytes[9..])
+        }
+        _ => return None,
+    };
+    let id = hex::encode(id_bytes);
+    if id.len() != 64
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    Some((timestamp, id))
 }
 
 /// 书库列表（不含已移除的软删书）。
@@ -3332,5 +3419,257 @@ mod tests {
         assert_eq!(current_page, 5);
         assert_eq!(current_rev, rev);
         assert_eq!(conflict_at, row.updated_at);
+    }
+
+    // ---------- 桌面书库分页（ADR-018 / Issue #227）----------
+
+    fn books_window_id(seed: char) -> String {
+        seed.to_string().repeat(64)
+    }
+
+    /// 经 `db::open` 打开的唯一临时库（WAL 落盘），返回路径以便收尾清理。
+    fn books_window_db(tag: &str) -> (PathBuf, Connection) {
+        let path = unique_temp_db(tag);
+        let conn = open(&path).expect("打开临时库");
+        init_schema(&conn).expect("建表");
+        (path, conn)
+    }
+
+    fn books_window_insert(
+        conn: &Connection,
+        id: &str,
+        title: &str,
+        path: &str,
+        last_opened_at: &str,
+        removed: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO books(id, path, title, last_opened_at, removed)
+             VALUES(?1,?2,?3,?4,?5)",
+            params![id, path, title, last_opened_at, removed],
+        )
+        .expect("插入书目");
+    }
+
+    /// 混合时间戳（含空串）与软删书的固定夹具。
+    fn books_window_seed(conn: &Connection) {
+        books_window_insert(
+            conn,
+            &books_window_id('a'),
+            "Alpha",
+            "C:/lib/Alpha.zip",
+            "2026-11-03 12:00:00",
+            0,
+        );
+        books_window_insert(
+            conn,
+            &books_window_id('b'),
+            "Beta",
+            "C:/lib/secret/Beta.cbz",
+            "2026-11-03 11:00:00",
+            0,
+        );
+        books_window_insert(
+            conn,
+            &books_window_id('c'),
+            "Gamma",
+            "C:/lib/c.cbz",
+            "2026-11-03 11:00:00",
+            0,
+        );
+        books_window_insert(conn, &books_window_id('d'), "Delta", "C:/lib/d.cbz", "", 0);
+        books_window_insert(conn, &books_window_id('e'), "Echo", "C:/lib/e.cbz", "", 0);
+        books_window_insert(
+            conn,
+            &books_window_id('f'),
+            "Removed",
+            "C:/lib/f.cbz",
+            "2026-11-04 09:00:00",
+            1,
+        );
+    }
+
+    /// 模拟命令层：游标编解码 + 逐页翻页，收集全部 id。
+    fn books_window_collect(conn: &Connection, query: Option<&str>, limit: u32) -> Vec<String> {
+        let mut cursor: Option<String> = None;
+        let mut seen = Vec::new();
+        loop {
+            let (cursor_ts, cursor_id) = match &cursor {
+                Some(raw) => {
+                    let (ts, id) = decode_book_cursor(raw).expect("游标必须可解码");
+                    (Some(ts), Some(id))
+                }
+                None => (None, None),
+            };
+            let mut rows = list_books_page_desktop(
+                conn,
+                query,
+                cursor_ts.as_deref(),
+                cursor_id.as_deref(),
+                limit,
+            )
+            .expect("分页查询");
+            let has_more = rows.len() > limit as usize;
+            rows.truncate(limit as usize);
+            for row in &rows {
+                seen.push(row.id.clone());
+            }
+            if !has_more {
+                break;
+            }
+            cursor = rows
+                .last()
+                .and_then(|row| encode_book_cursor(&row.last_opened_at, &row.id));
+            assert!(cursor.is_some(), "末行必须能编码出下一页游标");
+        }
+        seen
+    }
+
+    #[test]
+    fn books_window_first_page_orders_by_last_opened_at_desc() {
+        let (path, conn) = books_window_db("books-window-first");
+        books_window_seed(&conn);
+
+        // limit=3 → 返回 limit+1=4 行，第 4 行仅供 has_more 判定。
+        let rows = list_books_page_desktop(&conn, None, None, None, 3).expect("首页");
+        assert_eq!(rows.len(), 4, "须多取一行用于判断 nextCursor");
+        assert_eq!(
+            rows.iter()
+                .take(3)
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                books_window_id('a').as_str(),
+                books_window_id('b').as_str(),
+                books_window_id('c').as_str()
+            ],
+            "last_opened_at DESC, id ASC；软删书不得出现"
+        );
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn books_window_cursor_pagination_has_no_gaps_or_duplicates() {
+        let (path, conn) = books_window_db("books-window-paging");
+        books_window_seed(&conn);
+
+        let all = books_window_collect(&conn, None, 2);
+        assert_eq!(
+            all,
+            vec![
+                books_window_id('a'),
+                books_window_id('b'),
+                books_window_id('c'),
+                books_window_id('d'),
+                books_window_id('e'),
+            ],
+            "跨非空→空时间戳边界逐页翻页必须无重无漏"
+        );
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn books_window_empty_last_opened_at_boundary_is_stable() {
+        let (path, conn) = books_window_db("books-window-empty");
+        for seed in ['a', 'b', 'c', 'd'] {
+            books_window_insert(
+                &conn,
+                &books_window_id(seed),
+                &format!("Book {seed}"),
+                &format!("C:/lib/{seed}.cbz"),
+                "",
+                0,
+            );
+        }
+        let empty_only = books_window_collect(&conn, None, 1);
+        assert_eq!(
+            empty_only,
+            vec![
+                books_window_id('a'),
+                books_window_id('b'),
+                books_window_id('c'),
+                books_window_id('d'),
+            ],
+            "全空时间戳区间须按 id ASC 稳定前进"
+        );
+
+        books_window_insert(
+            &conn,
+            &books_window_id('e'),
+            "Opened",
+            "C:/lib/e.cbz",
+            "2026-11-03 10:00:00",
+            0,
+        );
+        let mixed = books_window_collect(&conn, None, 2);
+        assert_eq!(
+            mixed,
+            vec![
+                books_window_id('e'),
+                books_window_id('a'),
+                books_window_id('b'),
+                books_window_id('c'),
+                books_window_id('d'),
+            ],
+            "非空行在前，翻页进入空时间戳区间不得漏行或重行"
+        );
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn books_window_search_matches_title_and_path() {
+        let (path, conn) = books_window_db("books-window-search");
+        books_window_seed(&conn);
+
+        let by_title =
+            list_books_page_desktop(&conn, Some("Alpha"), None, None, 10).expect("title");
+        assert_eq!(by_title.len(), 1);
+        assert_eq!(by_title[0].id, books_window_id('a'));
+
+        let by_path = list_books_page_desktop(&conn, Some("secret"), None, None, 10).expect("path");
+        assert_eq!(by_path.len(), 1);
+        assert_eq!(
+            by_path[0].id,
+            books_window_id('b'),
+            "path 必须参与搜索（ADR-018：区别于 Web 的 title-only）"
+        );
+
+        let injection =
+            list_books_page_desktop(&conn, Some("' OR 1=1 --"), None, None, 10).expect("injection");
+        assert!(injection.is_empty(), "LIKE 参数化不得扩大结果集");
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn books_window_limit_probe_row_is_bounded() {
+        let (path, conn) = books_window_db("books-window-limit");
+        books_window_seed(&conn);
+
+        let rows = list_books_page_desktop(&conn, None, None, None, 100).expect("大 limit");
+        assert_eq!(rows.len(), 5, "无更多数据时不得凭空多出 probe 行");
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn books_window_invalid_cursor_decode_is_rejected() {
+        for invalid in ["not-a-cursor", "", "AAAA", &"a".repeat(65), "===="] {
+            assert!(
+                decode_book_cursor(invalid).is_none(),
+                "非法游标必须被拒绝：{invalid:?}"
+            );
+        }
+
+        let raw = encode_book_cursor("2026-11-03 11:00:00", &books_window_id('b'))
+            .expect("非空时间戳游标");
+        assert!(raw.len() <= 64, "游标不得超过 64 字符");
+        let (ts, id_back) = decode_book_cursor(&raw).expect("合法游标");
+        assert_eq!(id_back, books_window_id('b'));
+        assert!(!ts.is_empty());
+
+        let raw_empty = encode_book_cursor("", &books_window_id('d')).expect("空时间戳游标");
+        assert!(raw_empty.len() <= 64);
+        let (ts_empty, id_empty) = decode_book_cursor(&raw_empty).expect("空时间戳游标");
+        assert_eq!(ts_empty, "", "空时间戳是真实状态，不得塌缩成 epoch");
+        assert_eq!(id_empty, books_window_id('d'));
     }
 }

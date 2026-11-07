@@ -1191,6 +1191,26 @@ pub async fn get_page(
     Ok(to_page_image(index, rendered))
 }
 
+/// 每书预取世代表：新页请求 bump 该书世代，在途预取批次据此短路。
+/// 按 book_id 分桶，避免翻 A 书时误伤 B 书；`OnceLock` 延后初始化，规模随已读书有界。
+static PREFETCH_EPOCHS: std::sync::OnceLock<
+    parking_lot::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
+> = std::sync::OnceLock::new();
+
+fn prefetch_epoch(book_id: &str) -> Arc<std::sync::atomic::AtomicU64> {
+    PREFETCH_EPOCHS
+        .get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .entry(book_id.to_string())
+        .or_default()
+        .clone()
+}
+
+/// 纯守卫：任务捕获的世代与当前世代一致才允许继续解码/写缓存。
+pub(crate) fn prefetch_is_current(captured: u64, current: u64) -> bool {
+    captured == current
+}
+
 /// 服务端邻页预取：主请求落地后，后台把邻页灌进 L1/L2，
 /// 翻页不依赖前端 idle 回调时机（P0 手感：命中翻页零等待）。
 /// 本地读盘廉价，预取 ±1/±2；在线走网络，只预取 +1/+2（不向前回读）。
@@ -1202,8 +1222,13 @@ fn prefetch_neighbors(
     w: u32,
     h: u32,
 ) {
+    use std::sync::atomic::Ordering;
+
     let st = state.inner().clone();
     let book = book_id.to_string();
+    // 每次新页请求都 bump 该书世代：此前在途的预取批次立即作废。
+    let epoch = prefetch_epoch(&book);
+    let captured = epoch.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     tauri::async_runtime::spawn_blocking(move || {
         let cache_epoch = st.refresh_epoch();
         let handle = match st.source_handle_for_book(&book) {
@@ -1219,6 +1244,10 @@ fn prefetch_neighbors(
                 continue;
             }
             let t = target as u32;
+            // 世代短路（解码前）：新页请求已取代本批次，停止后续读盘/解码。
+            if !prefetch_is_current(captured, epoch.load(Ordering::SeqCst)) {
+                break;
+            }
             if st.cache.get_page(&book, t, w, h).is_some() {
                 continue;
             }
@@ -1233,6 +1262,10 @@ fn prefetch_neighbors(
                 .get(&book, t, w, h)
                 .map(|bytes| assembled_page(bytes, 0, 0))
                 .unwrap_or_else(|| {
+                    // 解码前再确认一次世代：挡住 L2 探测期间到达的新页请求。
+                    if !prefetch_is_current(captured, epoch.load(Ordering::SeqCst)) {
+                        return Err(BackendError::Msg("预取已被新页请求取代".into()));
+                    }
                     handle.read_raw(t as usize).and_then(|raw| {
                         let p = pipeline::render_raw(&raw, mw, mh)?;
                         st.cache_if_current(cache_epoch, || {
@@ -1243,8 +1276,11 @@ fn prefetch_neighbors(
                 });
             if let Ok(p) = page {
                 let written = p.bytes.len();
-                st.cache_if_current(cache_epoch, || st.cache.put_page(&book, t, w, h, p));
-                st.note_cache_write(written);
+                // 写缓存前最后确认：过期任务不得灌 L1，也不得触发 trim 压力计数。
+                if prefetch_is_current(captured, epoch.load(Ordering::SeqCst)) {
+                    st.cache_if_current(cache_epoch, || st.cache.put_page(&book, t, w, h, p));
+                    st.note_cache_write(written);
+                }
             }
             st.prefetching.lock().remove(&key);
         }
@@ -3549,6 +3585,14 @@ pub async fn opds_download_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefetch_epoch_guard_rejects_stale_and_accepts_current() {
+        assert!(prefetch_is_current(7, 7));
+        assert!(!prefetch_is_current(7, 8));
+        assert!(!prefetch_is_current(8, 7));
+        assert!(prefetch_is_current(0, 0));
+    }
 
     #[test]
     fn short_book_reference_handles_unicode_boundaries() {

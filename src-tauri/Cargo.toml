@@ -31,7 +31,8 @@ unrar-rs = { version = "0.15", default-features = false, features = ["crypto-rus
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 png = "0.18"
 # 条漫长图：IDCT 缩放解码（>8000px 高的 JPEG 按显示宽度解码，全分辨率栅格不进内存）
-jpeg-decoder = "0.3"
+# ADR-035：只用串行解码，关闭默认 rayon 特性（unrar-rs 的 rayon 残余另记）。
+jpeg-decoder = { version = "0.3", default-features = false }
 lru = "0.19"
 parking_lot = "0.13"
 base64 = "0.22"

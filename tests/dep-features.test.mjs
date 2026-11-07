@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const cargo = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
 const state = readFileSync(new URL("../src-tauri/src/state.rs", import.meta.url), "utf8");
 
-test("sysinfo/chrono/tokio use minimal features", () => {
-  for (const dep of ["sysinfo", "chrono", "tokio"]) {
+test("sysinfo/chrono/tokio/jpeg-decoder use minimal features", () => {
+  for (const dep of ["sysinfo", "chrono", "tokio", "jpeg-decoder"]) {
     const line = cargo
       .split("\n")
       .find((l) => l.startsWith(dep + " =") || l.startsWith(dep + "="));

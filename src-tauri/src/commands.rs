@@ -940,6 +940,36 @@ pub async fn list_books_page(
     .await
 }
 
+/// ADR-032 冻结契约：书库合集计数（camelCase IPC）。
+///
+/// 只做一次 SQLite 分组聚合，不逐书 `symlink_metadata`、不解析 `meta_json`、
+/// 不返回 `BookInfo`；`seriesCounts` / `localSeriesCounts` 为 `seriesId -> 章节数`。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStats {
+    pub total_books: u32,
+    pub series_counts: std::collections::BTreeMap<String, u32>,
+    pub local_series_counts: std::collections::BTreeMap<String, u32>,
+}
+
+/// 书库合集计数（ADR-032）：搜索/筛选不再是取全量列表的理由。
+#[tauri::command]
+pub async fn library_stats(state: State<'_, Arc<AppState>>) -> Result<LibraryStats, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let counts = st
+            .db
+            .with(|conn| db::library_stats(conn).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(LibraryStats {
+            total_books: counts.total_books,
+            series_counts: counts.series_counts,
+            local_series_counts: counts.local_series_counts,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn list_books(
     state: State<'_, Arc<AppState>>,
@@ -5397,5 +5427,30 @@ mod tests {
             object.get("nextCursor").and_then(|v| v.as_str()),
             Some("abc")
         );
+    }
+
+    /// ADR-032 冻结契约：IPC 字段必须是 camelCase 的
+    /// `totalBooks` / `seriesCounts` / `localSeriesCounts`，前端 `api.libraryStats()`
+    /// 直接按这些键消费；字段名漂移在编译期与静态守卫都无法发现。
+    #[test]
+    fn library_stats_serializes_camel_case_contract_fields() {
+        let mut counts = std::collections::BTreeMap::new();
+        counts.insert("series-1".to_string(), 3u32);
+        let value = serde_json::to_value(LibraryStats {
+            total_books: 7,
+            series_counts: counts.clone(),
+            local_series_counts: counts,
+        })
+        .expect("LibraryStats 必须可序列化");
+        let object = value.as_object().expect("必须是 JSON 对象");
+        for key in ["totalBooks", "seriesCounts", "localSeriesCounts"] {
+            assert!(object.contains_key(key), "必须输出 camelCase 字段 {key}");
+        }
+        for key in ["total_books", "series_counts", "local_series_counts"] {
+            assert!(!object.contains_key(key), "不得泄漏 snake_case 字段 {key}");
+        }
+        assert_eq!(object["totalBooks"].as_u64(), Some(7));
+        assert_eq!(object["seriesCounts"]["series-1"].as_u64(), Some(3));
+        assert_eq!(object["localSeriesCounts"]["series-1"].as_u64(), Some(3));
     }
 }

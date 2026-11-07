@@ -1027,7 +1027,7 @@ pub fn dashboard_series(conn: &Connection) -> Result<Vec<DashboardSeriesRow>, Ba
          ORDER BY last_opened_at DESC, id ASC
          LIMIT 20",
     )?;
-    let mut rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map([], |row| {
         Ok(DashboardSeriesRow {
             id: row.get(0)?,
             title: row.get(1)?,

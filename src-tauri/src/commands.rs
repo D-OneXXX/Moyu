@@ -1228,6 +1228,9 @@ pub async fn get_page(
     max_height: Option<u32>,
 ) -> Result<PageImage, String> {
     let cache_epoch = state.refresh_epoch();
+    // 每书预取世代在请求入口即 bump（L1 查表之前）：L1 命中同样要作废
+    // 此前在途的预取批次。世代与 refresh_epoch（清单/设置刷新失效）相互独立。
+    let (prefetch_epoch, prefetch_captured) = bump_prefetch_epoch(state.inner(), &book_id);
     // Bound caller-supplied cache dimensions while preserving 0/None as the
     // existing unconstrained sentinel and retaining smaller requested sizes.
     let max_width = max_width.map(|value| value.min(8192));
@@ -1301,9 +1304,8 @@ pub async fn get_page(
             .cache
             .put_page(&book_id, index, w, h, rendered.clone());
     });
-    // 新页请求在主取页侧 bump 该书世代：此前在途的预取批次立即作废。
-    // 世代与 refresh_epoch（清单/设置刷新失效）相互独立。
-    let (prefetch_epoch, prefetch_captured) = bump_prefetch_epoch(state.inner(), &book_id);
+    // 非命中路径把入口处捕获的世代透传给预取批次：若期间已有更新的页请求
+    // bump 过世代，本批次会在第一次守卫处立即短路。
     prefetch_neighbors(
         &state,
         &book_id,
@@ -1317,15 +1319,16 @@ pub async fn get_page(
     Ok(to_page_image(index, rendered))
 }
 
-/// 在主取页请求侧 bump 每书预取世代，返回世代句柄与捕获值供预取任务使用。
-/// 任务捕获的是 bump 之后的新值，故不会被自身 bump 立即判为过期；
-/// 只有后续新页请求再次 bump 才会让在途批次短路。
-fn bump_prefetch_epoch(
-    state: &AppState,
+/// 请求入口 bump 每书预取世代，返回世代句柄与本次捕获值。
+/// `get_page` 在 L1 查表**之前**调用它：L1 命中是毫秒级返回，也必须作废
+/// 此前在途的预取批次，否则旧批次会继续解码/写缓存已过期的邻页。
+fn begin_page_request(
+    epochs: &parking_lot::Mutex<
+        std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>,
+    >,
     book_id: &str,
 ) -> (Arc<std::sync::atomic::AtomicU64>, u64) {
-    let epoch = state
-        .prefetch_epochs
+    let epoch = epochs
         .lock()
         .entry(book_id.to_string())
         .or_default()
@@ -1334,6 +1337,16 @@ fn bump_prefetch_epoch(
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         .wrapping_add(1);
     (epoch, captured)
+}
+
+/// 在主取页请求侧 bump 每书预取世代，返回世代句柄与捕获值供预取任务使用。
+/// 任务捕获的是 bump 之后的新值，故不会被自身 bump 立即判为过期；
+/// 只有后续新页请求再次 bump 才会让在途批次短路。
+fn bump_prefetch_epoch(
+    state: &AppState,
+    book_id: &str,
+) -> (Arc<std::sync::atomic::AtomicU64>, u64) {
+    begin_page_request(&state.prefetch_epochs, book_id)
 }
 
 /// 纯守卫：任务捕获的世代与当前世代一致才允许继续解码/写缓存。
@@ -3728,6 +3741,25 @@ mod tests {
         assert!(!prefetch_is_current(7, 8));
         assert!(!prefetch_is_current(8, 7));
         assert!(prefetch_is_current(0, 0));
+    }
+
+    /// 请求入口世代语义：连续两次 bump 后，旧请求捕获的世代必须判为过期
+    /// （这正是 L1 命中也要 bump 的依据）；世代按书隔离，互不干扰。
+    #[test]
+    fn page_request_bump_stales_previous_captured_epoch() {
+        use std::sync::atomic::Ordering;
+        let epochs = parking_lot::Mutex::new(std::collections::HashMap::new());
+        let (handle, first) = begin_page_request(&epochs, "book-a");
+        let (again, second) = begin_page_request(&epochs, "book-a");
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert!(std::sync::Arc::ptr_eq(&handle, &again), "同书共用世代句柄");
+        assert_eq!(handle.load(Ordering::SeqCst), second);
+        assert!(!prefetch_is_current(first, second), "旧捕获必须作废");
+        assert!(prefetch_is_current(second, second), "新请求自身有效");
+        let (_, other_book) = begin_page_request(&epochs, "book-b");
+        assert_eq!(other_book, 1, "世代按书隔离");
+        assert!(!prefetch_is_current(second, other_book));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { connectRecovery, connectMain, waitForTarget } from "../lib/cdp.mjs";
+import { CdpPage, connectRecovery, connectMain, waitForTarget } from "../lib/cdp.mjs";
 import { invoke } from "../lib/app.mjs";
 import { classifyRecoveryClose, isCdpTimeoutError } from "../lib/reliability.mjs";
 import { fail, note, ok } from "../lib/report.mjs";
@@ -92,6 +92,41 @@ async function waitForRecovery(ctx, timeout = 16_000) {
     )
     .catch(() => {});
   return { page, target };
+}
+
+/**
+ * Issue #238：第二次冻结必须拿到一个**全新**的恢复窗口。
+ * 用户关闭恢复窗后产品有 30s 冷却（#116），旧 target 也可能短暂残留；
+ * 复用到旧页面会让 "Enter safe mode" 点击落空。这里按 target id 排除旧窗，
+ * 最多等 45s（30s 冷却 + 启动余量），拿到后走与 waitForRecovery 相同的就绪等待。
+ */
+async function waitForFreshRecovery(ctx, excludedTargetId, timeout = 45_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const targets = await targetsOnPort(ctx);
+    const target = targets.find(
+      (entry) =>
+        entry.url.includes("recovery.html") && entry.id !== excludedTargetId,
+    );
+    if (target) {
+      const page = await CdpPage.connect(target, ctx.cdpPort);
+      await page.waitFor('document.body.innerText.length > 20', {
+        timeout: 12_000,
+        label: "fresh recovery rendered",
+      });
+      await page
+        .waitFor(
+          `!document.body.innerText.includes("Loading") && !document.body.innerText.includes("加载中")`,
+          { timeout: 12_000, label: "fresh recovery context loaded" },
+        )
+        .catch(() => {});
+      return { page, target };
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    "第二次冻结未出现新的恢复窗口（恢复窗关闭冷却可能仍在生效，Issue #238）",
+  );
 }
 
 /**
@@ -377,6 +412,8 @@ export async function runChaosSuite(ctx, report) {
 
   note(report, "chaos stage: freeze");
   // ---------- Freeze → independent recovery → user-authorized reload ----------
+  // Issue #238：记录上一阶段恢复窗 target；安全模式阶段必须等待全新窗口。
+  let lastRecoveryTargetId = null;
   let freezeStage = "reconnect-before-freeze";
   try {
     await ctx.reconnectMain();
@@ -393,6 +430,7 @@ export async function runChaosSuite(ctx, report) {
     // 6s 是产品判定阈值；Windows 冷启动/杀软扫描下恢复窗 target 暴露
     // 可能再花几秒，给 CDP 发现留 12s，仍由窗口内容断言 6s 判定是否生效。
     const recovery = await waitForRecovery(ctx, 12000);
+    lastRecoveryTargetId = recovery.target?.id ?? null;
     freezeStage = "assert-recovery";
     const body = await recovery.page.eval("document.body.innerText");
     const autoRestarted = mainAfter && mainBefore && mainAfter.id !== mainBefore.id;
@@ -489,11 +527,32 @@ export async function runChaosSuite(ctx, report) {
         location: "tests/qa/lib/app.mjs",
       });
     }
+    const safeMainBefore = (await targetsOnPort(ctx)).find(
+      (target) =>
+        target.url.includes("localhost:1420/") &&
+        !target.url.includes("recovery.html"),
+    );
     await freezeMain(ctx.page);
     await sleep(7200);
-    const recovery = await waitForRecovery(ctx, 12000);
+    // Issue #238：排除上一阶段已关闭的恢复窗，等待产品在冷却后新开一扇窗；
+    // 旧 target 若残留也不再被误用。
+    const recovery = await waitForFreshRecovery(
+      ctx,
+      lastRecoveryTargetId,
+      45_000,
+    );
     await recovery.page.clickText("Enter safe mode");
-    await sleep(3000);
+    // 点击必须真正重建主窗：等新的 main target 出现，把笼统的 CDP 超时
+    // 变成可诊断的失败（未重建 / 命令未到达）。
+    await waitForTarget(
+      ctx.cdpPort,
+      (target) =>
+        target.url.includes("localhost:1420/") &&
+        !target.url.includes("recovery.html") &&
+        target.id !== safeMainBefore?.id,
+      { timeout: 20_000 },
+    );
+    await sleep(500);
     await ctx.reconnectMain();
     await ctx.page.waitFor(
       "document.documentElement.dataset.safeMode === 'true'",

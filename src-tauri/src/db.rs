@@ -958,6 +958,32 @@ pub fn library_stats(conn: &Connection) -> Result<LibraryCounts, BackendError> {
     Ok(counts)
 }
 
+/// ADR-034：「继续阅读」候选：最近打开、已开始且未读完的一本。
+///
+/// 与 `list_books` 的 `last_opened_at DESC` 口径一致，但在 SQL 层限幅到 1 行，
+/// 避免为挑一本书而加载并序列化整个书库。`local_only` 供安全模式使用；
+/// 同时间戳按 `id ASC` 确定性选择（旧前端依赖未定义行序）。
+pub fn last_read_book(
+    conn: &Connection,
+    local_only: bool,
+) -> Result<Option<BookRow>, BackendError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+         FROM books
+         WHERE removed=0
+           AND current_page > 0
+           AND current_page + 1 < page_count
+           AND (?1 = 0 OR source_type = 'local')
+         ORDER BY last_opened_at DESC, id ASC
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![i64::from(local_only)], row_to_book)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
 /// 进度是否**真的**发生变化（比较两个被持久化的字段）。
 ///
 /// `set_progress` 与 `set_progress_cas` **必须共用**这一判定：
@@ -3799,6 +3825,83 @@ mod tests {
                 !stats.series_counts.contains_key(""),
                 "空 series_id 不是合法键"
             );
+        }
+        cleanup_db_files(&path);
+    }
+
+    /// ADR-034：继续阅读只取「最近打开、已开始且未读完」的一本；
+    /// 已读完、未开始、软删与（local_only 时）在线书必须排除。
+    #[test]
+    fn last_read_picks_most_recent_unfinished_and_filters_removed_local() {
+        let path = unique_temp_db("last-read");
+        {
+            let conn = open(&path).expect("打开临时库");
+            init_schema(&conn).expect("建表");
+            for (id, title) in [
+                ("old", "旧"),
+                ("new", "新"),
+                ("done", "读完"),
+                ("ns", "未开始"),
+                ("gone", "已删"),
+            ] {
+                upsert_book(&conn, id, &format!("p/{id}"), title, 100).unwrap();
+            }
+            upsert_online_book(
+                &conn,
+                "online",
+                "http://x/o",
+                "在线",
+                100,
+                "generic_manga",
+                "{}",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE books SET current_page=10, last_opened_at='2026-11-01T00:00:00+08:00' WHERE id='old'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE books SET current_page=10, last_opened_at='2026-11-05T00:00:00+08:00' WHERE id='new'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE books SET current_page=10, last_opened_at='2026-11-06T00:00:00+08:00' WHERE id='online'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE books SET current_page=99, last_opened_at='2026-11-07T00:00:00+08:00' WHERE id='done'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE books SET last_opened_at='2026-11-07T00:00:00+08:00' WHERE id='ns'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE books SET current_page=10, last_opened_at='2026-11-08T00:00:00+08:00' WHERE id='gone'",
+                [],
+            )
+            .unwrap();
+            soft_remove_books(&conn, &["gone".to_string()]).unwrap();
+
+            let all = last_read_book(&conn, false).unwrap().expect("应命中在线书");
+            assert_eq!(all.id, "online", "全库口径取最近打开的未读完书");
+            let local = last_read_book(&conn, true).unwrap().expect("应命中本地书");
+            assert_eq!(local.id, "new", "local_only 排除在线书");
+            assert_eq!(local.current_page, 10);
+
+            // 平局时按 id 升序确定性选择（旧实现依赖未定义行序）。
+            conn.execute(
+                "UPDATE books SET current_page=10, last_opened_at='2026-11-05T00:00:00+08:00' WHERE id='old'",
+                [],
+            )
+            .unwrap();
+            let tie = last_read_book(&conn, true).unwrap().expect("平局候选");
+            assert_eq!(tie.id, "new", "new < old，按 id ASC 取第一");
         }
         cleanup_db_files(&path);
     }

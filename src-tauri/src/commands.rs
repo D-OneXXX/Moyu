@@ -970,6 +970,25 @@ pub async fn library_stats(state: State<'_, Arc<AppState>>) -> Result<LibrarySta
     .await
 }
 
+/// ADR-034：「继续阅读」轻量查询：只取最近打开、已开始且未读完的一本，
+/// 替代 AppShell 每次路由变化都取全量 `listBooks()` 的做法。
+#[tauri::command]
+pub async fn get_last_read(
+    state: State<'_, Arc<AppState>>,
+    local_only: Option<bool>,
+) -> Result<Option<BookInfo>, String> {
+    let st = state.inner().clone();
+    let local_only = local_only.unwrap_or(false);
+    blocking(move || {
+        let row = st
+            .db
+            .with(|conn| db::last_read_book(conn, local_only).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(row.map(to_book_info))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn list_books(
     state: State<'_, Arc<AppState>>,

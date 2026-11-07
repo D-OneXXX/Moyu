@@ -107,19 +107,13 @@ export default function AppShell() {
 
   useEffect(() => {
     let alive = true;
+    // ADR-034：只取「最近打开、未读完」的一本，避免每次导航加载全量书库。
     api
-      .listBooks()
+      .getLastRead(safeMode)
       .then(
-        (list) => {
+        (book) => {
           if (!alive) return;
-          setLastRead(
-            list.find(
-              (book) =>
-                (book.sourceType === "local" || !safeMode) &&
-                book.currentPage > 0 &&
-                book.currentPage + 1 < book.pageCount,
-            ) ?? null,
-          );
+          setLastRead(book);
         },
         () => {
           /* 书库命令失败时“继续阅读”保持禁用 */

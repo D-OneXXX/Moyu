@@ -413,6 +413,9 @@ export const api = {
     }),
   // ADR-032：合集计数聚合（seriesId -> 章节数），替代搜索态全量 listBooks()。
   libraryStats: () => invoke<LibraryStats>("library_stats"),
+  // ADR-034：「继续阅读」轻量查询（最近打开、已开始且未读完的一本）。
+  getLastRead: (localOnly = false) =>
+    invoke<BookInfo | null>("get_last_read", { localOnly }),
   getBook: (bookId: string) =>
     invoke<BookInfo>("get_book", { bookId }),
   listEntries: (bookId: string) =>

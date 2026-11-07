@@ -581,6 +581,7 @@ pub fn run() {
             commands::list_books,
             commands::list_books_page,
             commands::library_stats,
+            commands::get_last_read,
             commands::get_book,
             commands::relocate_book,
             open_with::take_pending_open,

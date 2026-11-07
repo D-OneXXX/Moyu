@@ -333,8 +333,6 @@ pub struct AppState {
     pub assisted_sessions: Arc<AssistedSessionRegistry>,
     pub db: DbSlot,
     pub cache: ImageCache,
-    /// 阶段三:OCR/翻译共用一个连接池化的 HTTP 客户端。
-    pub http: reqwest::Client,
     /// 常开源句柄池（book_id → 已打开的 zip/目录），热路径免重复开卷。
     pub sources: Mutex<HashMap<String, Arc<SourceHandle>>>,
     /// 源句柄代际：清单/设置/删除变化时递增，防止旧数据打开的新句柄插回池中。
@@ -383,7 +381,6 @@ impl AppState {
             assisted_sessions: Arc::new(AssistedSessionRegistry::new()),
             db: DbSlot::new(),
             cache: ImageCache::new(),
-            http: reqwest::Client::new(),
             sources: Mutex::new(HashMap::new()),
             source_epoch: AtomicU64::new(0),
             refresh_epoch: AtomicU64::new(0),

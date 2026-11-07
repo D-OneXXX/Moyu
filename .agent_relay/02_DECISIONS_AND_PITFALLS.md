@@ -280,5 +280,6 @@
 - 以 `origin/main`（`ad78bbc` 公开源码快照）为基线，建立 `.agent_relay/` 五文件。
 - 移除对 `AGENTS.md`、内部 QA 套件、发布工作流与生成状态文件的依赖；公开仓文档只引用公开仓可见文件。
 - GitHub Issue：#225；分支：`chore/225-relay-public`。
+- PR #231：首轮必需检查全部通过（Analyze / CodeQL / PR governance / build + rust check）；mergeStateStatus CLEAN；本次 01 更新后重跑。
 - 提交格式采用“Conventional 主题 + `[RELAY]` 正文”。
 - 本轮仅新增控制面文档，不改业务代码。

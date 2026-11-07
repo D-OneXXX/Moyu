@@ -1852,6 +1852,9 @@ pub async fn get_webtoon_tile(
         st.note_cache_write(written);
         // 仅对所请求的这一片按需编码 data URL：整页物化阶段不再为全部切片
         // 预生成 base64（bytes-only），前端 PageImage.dataUrl 契约保持不变。
+        // 顺序关键：本补生成位于 blocking 闭包内，rendered 带 data_url 后才会在
+        // 下方写回 L1（put_tile）；若放到 to_page_image 或 L1 回写之后，L1 会缓存
+        // 空 dataUrl，后续滚动命中将返回黑块。单次请求只在此编码 1 次。
         let mut requested = pages.into_iter().nth(tile as usize).expect("切片在界内");
         requested.data_url = requested.data_url_from_bytes();
         Ok(requested)

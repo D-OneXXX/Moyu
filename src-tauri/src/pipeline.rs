@@ -1008,11 +1008,10 @@ mod tests {
         assert_eq!(pages.len() as u32, tiles);
         let total: u32 = pages.iter().map(|p| p.height).sum();
         assert_eq!(total, 5000, "切片应无缝覆盖整高（无重叠无缝隙）");
-        // 整页物化只保留 bytes+dims；data URL 由 get_webtoon_tile 请求路径按需生成。
+        // 整页物化只保留 bytes+dims（不预生成 base64），成品为 JPEG 字节；
+        // data URL 由 get_webtoon_tile 请求路径按需生成（同 asset_renders_* 范式）。
         assert!(pages.iter().all(|p| p.data_url.is_empty()));
-        assert!(pages.iter().all(|p| p
-            .data_url_from_bytes()
-            .starts_with("data:image/jpeg;base64,")));
+        assert!(pages.iter().all(|p| p.bytes.starts_with(&[0xFF, 0xD8])));
     }
 
     #[test]
@@ -1172,11 +1171,10 @@ mod tests {
         assert_eq!(disp_h, h);
         assert_eq!(total, disp_h, "切片高度之和必须等于显示高度");
         assert!(pages.iter().all(|p| p.width == w));
-        // 整页物化只保留 bytes+dims；data URL 由 get_webtoon_tile 请求路径按需生成。
+        // 整页物化只保留 bytes+dims（不预生成 base64），成品为 JPEG 字节；
+        // data URL 由 get_webtoon_tile 请求路径按需生成（同 asset_renders_* 范式）。
         assert!(pages.iter().all(|p| p.data_url.is_empty()));
-        assert!(pages.iter().all(|p| p
-            .data_url_from_bytes()
-            .starts_with("data:image/jpeg;base64,")));
+        assert!(pages.iter().all(|p| p.bytes.starts_with(&[0xFF, 0xD8])));
     }
 
     /// 切片必须首尾相接、顺序正确：逐片解码回来比对首尾行与源图渐变。
@@ -1633,5 +1631,27 @@ mod tests {
             requested,
             format!("data:image/jpeg;base64,{}", B64.encode(&pages[0].bytes))
         );
+    }
+
+    /// WS3 characterization（**非 RED**）：按需生成的 data_url 与旧预生成逐字节一致，
+    /// 且 bytes-only 路径的成品字节与预生成路径完全相同——证明「tile 仅 bytes+dims +
+    /// 请求路径按需编码」不改变 IPC `PageImage.dataUrl` 的内容与输出像素。
+    #[test]
+    fn webtoon_tile_data_url_from_bytes_matches_preencoded() {
+        let raw = ultra_tall_page(64, 5000);
+        // 旧：显式打开 encode_data_url 的预生成路径（对照基线行为）。
+        let (_, pre) = render_webtoon_tiles_asset(&raw, 64, true).unwrap();
+        // 新：桌面入口只保留 bytes+dims。
+        let (_, tiles) = render_webtoon_tiles(&raw, 64).unwrap();
+        assert_eq!(pre.len(), tiles.len());
+        for (old, tile) in pre.iter().zip(tiles.iter()) {
+            assert!(tile.data_url.is_empty(), "桌面 tile 不预生成 base64");
+            assert_eq!(tile.bytes, old.bytes, "成品字节必须与预生成路径一致");
+            assert_eq!(
+                tile.data_url_from_bytes(),
+                old.data_url,
+                "按需生成的 data_url 必须与旧预生成逐字节一致（IPC 契约不变）"
+            );
+        }
     }
 }

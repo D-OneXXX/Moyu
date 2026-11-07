@@ -1187,23 +1187,39 @@ pub async fn get_page(
             .cache
             .put_page(&book_id, index, w, h, rendered.clone());
     });
-    prefetch_neighbors(&state, &book_id, is_online, index, w, h);
+    // 新页请求在主取页侧 bump 该书世代：此前在途的预取批次立即作废。
+    // 世代与 refresh_epoch（清单/设置刷新失效）相互独立。
+    let (prefetch_epoch, prefetch_captured) = bump_prefetch_epoch(state.inner(), &book_id);
+    prefetch_neighbors(
+        &state,
+        &book_id,
+        is_online,
+        index,
+        w,
+        h,
+        prefetch_epoch,
+        prefetch_captured,
+    );
     Ok(to_page_image(index, rendered))
 }
 
-/// 每书预取世代表：新页请求 bump 该书世代，在途预取批次据此短路。
-/// 按 book_id 分桶，避免翻 A 书时误伤 B 书；`OnceLock` 延后初始化，规模随已读书有界。
-static PREFETCH_EPOCHS: std::sync::OnceLock<
-    parking_lot::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
-> = std::sync::OnceLock::new();
-
-fn prefetch_epoch(book_id: &str) -> Arc<std::sync::atomic::AtomicU64> {
-    PREFETCH_EPOCHS
-        .get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+/// 在主取页请求侧 bump 每书预取世代，返回世代句柄与捕获值供预取任务使用。
+/// 任务捕获的是 bump 之后的新值，故不会被自身 bump 立即判为过期；
+/// 只有后续新页请求再次 bump 才会让在途批次短路。
+fn bump_prefetch_epoch(
+    state: &AppState,
+    book_id: &str,
+) -> (Arc<std::sync::atomic::AtomicU64>, u64) {
+    let epoch = state
+        .prefetch_epochs
         .lock()
         .entry(book_id.to_string())
         .or_default()
-        .clone()
+        .clone();
+    let captured = epoch
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        .wrapping_add(1);
+    (epoch, captured)
 }
 
 /// 纯守卫：任务捕获的世代与当前世代一致才允许继续解码/写缓存。
@@ -1221,14 +1237,13 @@ fn prefetch_neighbors(
     index: u32,
     w: u32,
     h: u32,
+    epoch: Arc<std::sync::atomic::AtomicU64>,
+    captured: u64,
 ) {
     use std::sync::atomic::Ordering;
 
     let st = state.inner().clone();
     let book = book_id.to_string();
-    // 每次新页请求都 bump 该书世代：此前在途的预取批次立即作废。
-    let epoch = prefetch_epoch(&book);
-    let captured = epoch.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     tauri::async_runtime::spawn_blocking(move || {
         let cache_epoch = st.refresh_epoch();
         let handle = match st.source_handle_for_book(&book) {

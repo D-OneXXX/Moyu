@@ -344,6 +344,10 @@ pub struct AppState {
     refresh_cache_gate: Mutex<()>,
     /// 邻页预取在途标记，防止快速翻页时重复渲染同一页。
     pub prefetching: Mutex<HashSet<(String, u32, u32, u32)>>,
+    /// 每书预取世代（book_id → AtomicU64）：新页请求 bump，在途任务据此短路。
+    /// 与 refresh_epoch（清单/设置刷新失效）相互独立，不复用其语义。
+    #[allow(clippy::type_complexity)]
+    pub prefetch_epochs: Mutex<HashMap<String, Arc<AtomicU64>>>,
     /// 条漫切片"整页物化"全局锁：一次只解码一张长图到显示宽度，
     /// 切完所有片立即释放栅格（峰值内存 = 单张缩放后栅格）。
     pub tile_lock: Mutex<()>,
@@ -389,6 +393,7 @@ impl AppState {
             refresh_epoch: AtomicU64::new(0),
             refresh_cache_gate: Mutex::new(()),
             prefetching: Mutex::new(HashSet::new()),
+            prefetch_epochs: Mutex::new(HashMap::new()),
             tile_lock: Mutex::new(()),
             webtoon_layouts: Mutex::new(HashMap::new()),
             render: RenderCache::new(default_render_root()),

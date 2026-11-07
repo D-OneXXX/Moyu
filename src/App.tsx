@@ -1,4 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Navigate,
   Route,
@@ -8,7 +14,6 @@ import {
   useParams,
 } from "react-router-dom";
 import { Loader2 } from "lucide-react";
-import Reader from "./pages/Reader";
 import AppShell from "./components/shell/AppShell";
 import {
   WorkspaceProvider,
@@ -18,6 +23,25 @@ import { useSafeMode } from "./features/safeMode/SafeModeContext";
 import OpenWithBridge from "./features/openWith/OpenWithBridge";
 import { DropImportProvider } from "./features/import/DropImportProvider";
 import { useI18n } from "./i18n";
+
+/** 阅读器是最重的页面：按需加载，避免进入书库首屏包。 */
+const Reader = lazy(() => import("./pages/Reader"));
+
+/** 路由懒加载期间的通用占位，文案统一走 t() 且保持胶囊视觉。 */
+function RouteFallback() {
+  const { t } = useI18n();
+  return (
+    <div
+      className="grid h-screen w-full place-items-center bg-background text-sm text-muted-foreground"
+      aria-busy="true"
+    >
+      <span className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 shadow-hard-sm">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        {t("common.loading")}
+      </span>
+    </div>
+  );
+}
 
 /** 阅读路由：key 绑定 bookId，切页签时强制卸载旧 Reader（释放图片/条漫 DOM）。 */
 function ReaderRoute() {
@@ -121,12 +145,14 @@ function AppRoutes() {
 
   if (immersive) {
     return (
-      <Routes>
-        <Route path="/reader/:id" element={<ReaderRoute />} />
-        {/* immersive 分支兜底："/reader/xxx/yyy" 之类多级路径不会命中 :id，
-            用通配路由静默送回书库首页，避免出现未匹配路由导致的空白页。 */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/reader/:id" element={<ReaderRoute />} />
+          {/* immersive 分支兜底："/reader/xxx/yyy" 之类多级路径不会命中 :id，
+              用通配路由静默送回书库首页，避免出现未匹配路由导致的空白页。 */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     );
   }
 

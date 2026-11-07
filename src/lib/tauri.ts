@@ -33,6 +33,12 @@ export interface BookInfo {
   nextUrl?: string | null;
 }
 
+/** ADR-018 冻结契约：桌面书库分页结果（游标 =(last_opened_at,id) base64url）。 */
+export interface BooksPage {
+  items: BookInfo[];
+  nextCursor: string | null;
+}
+
 /** 在线图片提纯：被剔除的页面（保留原顺序，恢复时插回）。 */
 export interface FilteredPage {
   url: string;
@@ -382,6 +388,18 @@ export const api = {
     invoke<RemoveResult>("remove_books", { ids, deleteSourceFiles }),
   listBooks: (query?: string) =>
     invoke<BookInfo[]>("list_books", { query: query ?? null }),
+  // ADR-018：桌面书库分页，保持 last_opened_at 排序与 title+path 搜索。
+  // 后端实现由 WS2 提供；此处仅冻结 invoke 参数与 limit 默认值。
+  listBooksPage: (args: {
+    query?: string | null;
+    cursor?: string | null;
+    limit?: number;
+  } = {}) =>
+    invoke<BooksPage>("list_books_page", {
+      query: args.query ?? null,
+      cursor: args.cursor ?? null,
+      limit: args.limit ?? 60,
+    }),
   getBook: (bookId: string) =>
     invoke<BookInfo>("get_book", { bookId }),
   listEntries: (bookId: string) =>

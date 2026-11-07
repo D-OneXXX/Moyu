@@ -5257,4 +5257,47 @@ mod tests {
             );
         }
     }
+
+    /// ADR-018 裁定 limit 为「校验拒绝」而非「钳制」：连 u32::MAX 也必须带稳定码拒绝。
+    #[test]
+    fn books_page_limit_rejects_u32_max_with_stable_code() {
+        let err = validate_books_page_params(None, None, Some(u32::MAX)).unwrap_err();
+        assert!(err.contains("invalid-page-limit"), "实际：{err}");
+    }
+
+    /// query 长度按字符数判定：129 个中文字符（String::len() 为 387 字节）必须拒绝，
+    /// 128 个中文字符必须接受，防止按字节误判。
+    #[test]
+    fn books_page_query_counts_chars_not_bytes() {
+        let at_limit = "漫".repeat(128);
+        assert!(validate_books_page_params(Some(&at_limit), None, None).is_ok());
+        let over = "漫".repeat(129);
+        let err = validate_books_page_params(Some(&over), None, None).unwrap_err();
+        assert!(err.contains("invalid-page-query"), "实际：{err}");
+    }
+
+    /// 契约级回归守卫：WS5 的 api.listBooksPage 消费 `nextCursor`，字段名漂移
+    /// 在编译期与静态守卫都无法发现，必须在序列化层断言（ADR-018 / ADR-022）。
+    #[test]
+    fn books_page_serializes_camel_case_contract_fields() {
+        let value = serde_json::to_value(BooksPage {
+            items: Vec::new(),
+            next_cursor: Some("abc".to_string()),
+        })
+        .expect("BooksPage 必须可序列化");
+        let object = value.as_object().expect("必须是 JSON 对象");
+        assert!(object.contains_key("items"), "必须输出 items");
+        assert!(
+            object.contains_key("nextCursor"),
+            "必须输出 camelCase 的 nextCursor 供 WS5 消费"
+        );
+        assert!(
+            !object.contains_key("next_cursor"),
+            "不得泄漏 snake_case 字段名"
+        );
+        assert_eq!(
+            object.get("nextCursor").and_then(|v| v.as_str()),
+            Some("abc")
+        );
+    }
 }

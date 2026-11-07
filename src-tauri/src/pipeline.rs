@@ -80,6 +80,17 @@ pub struct RenderedPage {
     pub bytes: Vec<u8>,
 }
 
+impl RenderedPage {
+    /// 按需把成品字节编码为 data URL（请求路径用）。
+    ///
+    /// 条漫 `render_webtoon_tiles` 整页物化只保留 bytes + dims，不预生成
+    /// base64；`get_webtoon_tile` 仅在返回所请求切片时调用本方法编码一次，
+    /// 前端 `PageImage.dataUrl` 的内容与契约保持不变。
+    pub fn data_url_from_bytes(&self) -> String {
+        format!("data:{};base64,{}", self.mime, B64.encode(&self.bytes))
+    }
+}
+
 fn decoded_format(raw: &RawPage) -> Result<ImageFormat, BackendError> {
     // 先信扩展名（zip 条目名可信度高），无扩展名再嗅探魔数。
     let by_ext = match raw.ext.as_str() {
@@ -484,6 +495,9 @@ fn split_even(total: u32, n: usize) -> Vec<u32> {
 ///   也不是降采样后的显示尺寸）。这样 L1（刚渲染）与 L2（磁盘命中）对
 ///   `get_webtoon_layout` 的源尺寸口径完全一致。调用方（`get_webtoon_tile`）
 ///   只按 `(index, tile)` 取片，页码语义始终由 `index` 保持。
+/// - **base64 按需**：桌面整页物化不为全部切片预生成 `data_url`（仅 bytes + dims），
+///   由 `get_webtoon_tile` 在返回所请求切片时经 `RenderedPage::data_url_from_bytes`
+///   编码一次；前端 `PageImage.dataUrl` 契约与内容不变。
 pub fn render_webtoon_tiles(
     raw: &RawPage,
     max_w: u32,
@@ -491,7 +505,8 @@ pub fn render_webtoon_tiles(
     render_webtoon_tiles_with(
         raw,
         max_w,
-        true,
+        // 桌面路径不再为全部切片预生成 base64；仅保留成品字节 + 尺寸。
+        false,
         Some((MAX_WEBTOON_WEB_TILES, MAX_WEBTOON_WEB_ENCODED_BYTES)),
     )
 }
@@ -730,6 +745,8 @@ fn work_row_at(disp_row: u32, work_h: u32, disp_h: u32) -> u32 {
 /// 内存友好：源行区间超过 `MAX_SLICE_H` 时切成多条源带，**逐带缩放后立刻拼进
 /// 切片缓冲**——任意时刻只多活「一条源带（≤ MAX_SLICE_H 行）+ 一张切片栅格」，
 /// 不会同时持有「原图 + 整图缩放副本 + 全部切片栅格」。
+/// 零拷贝：`crop_imm` 的 `SubImage` 经 `&*` deref 成 `SubImageInner` 视图直接喂给
+/// `resize`，不再 `to_image()` 物化一条源带副本（输出像素见 golden 等价测试）。
 fn render_band_tile(
     work: &image::RgbImage,
     w0: u32,
@@ -748,9 +765,9 @@ fn render_band_tile(
     if src_h == 0 {
         // 极端比例下源行缺失：用相邻单行拉伸兜底（绝不 panic）。
         let row = w0.min(rh.saturating_sub(1));
-        let crop = image::imageops::crop_imm(work, 0, row, ww, 1).to_image();
+        let crop = image::imageops::crop_imm(work, 0, row, ww, 1);
         return Ok(image::imageops::resize(
-            &crop,
+            &*crop,
             tw,
             disp_h,
             image::imageops::FilterType::Triangle,
@@ -758,9 +775,9 @@ fn render_band_tile(
     }
     if src_h <= MAX_SLICE_H {
         // 单带：裁出这一条源带后直接缩放（不产生整图副本）。
-        let crop = image::imageops::crop_imm(work, 0, w0, ww, src_h).to_image();
+        let crop = image::imageops::crop_imm(work, 0, w0, ww, src_h);
         return Ok(image::imageops::resize(
-            &crop,
+            &*crop,
             tw,
             disp_h,
             image::imageops::FilterType::Triangle,
@@ -779,9 +796,9 @@ fn render_band_tile(
     let mut dy = 0u32;
     let mut sy = w0;
     for c in 0..n {
-        let crop = image::imageops::crop_imm(work, 0, sy, ww, src_parts[c]).to_image();
+        let crop = image::imageops::crop_imm(work, 0, sy, ww, src_parts[c]);
         let scaled = image::imageops::resize(
-            &crop,
+            &*crop,
             tw,
             disp_parts[c],
             image::imageops::FilterType::Triangle,
@@ -991,9 +1008,11 @@ mod tests {
         assert_eq!(pages.len() as u32, tiles);
         let total: u32 = pages.iter().map(|p| p.height).sum();
         assert_eq!(total, 5000, "切片应无缝覆盖整高（无重叠无缝隙）");
-        assert!(pages
-            .iter()
-            .all(|p| p.data_url.starts_with("data:image/jpeg;base64,")));
+        // 整页物化只保留 bytes+dims；data URL 由 get_webtoon_tile 请求路径按需生成。
+        assert!(pages.iter().all(|p| p.data_url.is_empty()));
+        assert!(pages.iter().all(|p| p
+            .data_url_from_bytes()
+            .starts_with("data:image/jpeg;base64,")));
     }
 
     #[test]
@@ -1153,9 +1172,11 @@ mod tests {
         assert_eq!(disp_h, h);
         assert_eq!(total, disp_h, "切片高度之和必须等于显示高度");
         assert!(pages.iter().all(|p| p.width == w));
-        assert!(pages
-            .iter()
-            .all(|p| p.data_url.starts_with("data:image/jpeg;base64,")));
+        // 整页物化只保留 bytes+dims；data URL 由 get_webtoon_tile 请求路径按需生成。
+        assert!(pages.iter().all(|p| p.data_url.is_empty()));
+        assert!(pages.iter().all(|p| p
+            .data_url_from_bytes()
+            .starts_with("data:image/jpeg;base64,")));
     }
 
     /// 切片必须首尾相接、顺序正确：逐片解码回来比对首尾行与源图渐变。
@@ -1561,6 +1582,56 @@ mod tests {
         assert!(
             peak <= budget,
             "峰值 {peak} 字节超过预算 {budget}（源 {source_bytes} + 输出 {output_bytes}）"
+        );
+    }
+
+    /// WS3 characterization（**非 RED**）：零拷贝视图缩放与物化副本缩放逐像素等价。
+    ///
+    /// 这是 `render_band_tile` 从 `crop_imm(..).to_image()` 改为 `&*crop_imm(..)`
+    /// （`SubImage` deref 到 `SubImageInner` 的 `GenericImageView` 零拷贝视图）时
+    /// 「输出像素不变」的安全网：改动前后都应 PASS，不得用作 RED 证据。
+    #[test]
+    fn band_tile_zero_copy_equiv() {
+        use image::imageops::FilterType;
+        let src = image::RgbImage::from_fn(37, 53, |x, y| {
+            image::Rgb([(x * 5) as u8, (y * 3) as u8, ((x + y) * 2) as u8])
+        });
+        let (x0, y0, cw, ch) = (5u32, 7u32, 23u32, 31u32);
+        let (tw, th) = (17u32, 11u32);
+        // 旧：`crop_imm(..).to_image()` 先物化一份源带副本，再 resize。
+        let materialized = image::imageops::crop_imm(&src, x0, y0, cw, ch).to_image();
+        let old = image::imageops::resize(&materialized, tw, th, FilterType::Triangle);
+        // 新：`&*crop_imm(..)` 直接把 SubImageInner 视图喂给 resize，零物化。
+        let view = image::imageops::crop_imm(&src, x0, y0, cw, ch);
+        let new = image::imageops::resize(&*view, tw, th, FilterType::Triangle);
+        assert_eq!(old, new, "零拷贝视图与物化副本的 resize 输出必须逐像素相等");
+        // 顺带覆盖放大与不变尺寸，排除只在缩小路径等价的巧合。
+        let up = image::imageops::resize(&*view, 41, 47, FilterType::Triangle);
+        let up_ref = image::imageops::resize(&materialized, 41, 47, FilterType::Triangle);
+        assert_eq!(up, up_ref);
+    }
+
+    /// WS3 RED/GREEN：`render_webtoon_tiles` 整页物化时不再为全部切片预生成
+    /// base64（仅 bytes + dims），data URL 改由 `get_webtoon_tile` 请求路径
+    /// 只对所请求的那一页按需生成。IPC `PageImage.dataUrl` 契约不变。
+    #[test]
+    fn webtoon_tiles_bytes_only() {
+        let raw = ultra_tall_page(64, 5000);
+        let (tiles, pages) = render_webtoon_tiles(&raw, 64).unwrap();
+        assert_eq!(pages.len() as u32, tiles);
+        // 新形状：tiles 不携带预生成 base64，只保留成品字节与尺寸。
+        assert!(
+            pages.iter().all(|p| p.data_url.is_empty()),
+            "整页物化不得为全部切片预生成 base64"
+        );
+        assert!(pages.iter().all(|p| !p.bytes.is_empty()));
+        assert!(pages.iter().all(|p| p.width > 0 && p.height > 0));
+        // 新访问器：请求路径按需把所请求切片编码为 data URL。
+        let requested = pages.first().unwrap().data_url_from_bytes();
+        assert!(requested.starts_with("data:image/jpeg;base64,"));
+        assert_eq!(
+            requested,
+            format!("data:image/jpeg;base64,{}", B64.encode(&pages[0].bytes))
         );
     }
 }

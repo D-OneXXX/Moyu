@@ -1850,7 +1850,11 @@ pub async fn get_webtoon_tile(
             });
         }
         st.note_cache_write(written);
-        Ok(pages.into_iter().nth(tile as usize).expect("切片在界内"))
+        // 仅对所请求的这一片按需编码 data URL：整页物化阶段不再为全部切片
+        // 预生成 base64（bytes-only），前端 PageImage.dataUrl 契约保持不变。
+        let mut requested = pages.into_iter().nth(tile as usize).expect("切片在界内");
+        requested.data_url = requested.data_url_from_bytes();
+        Ok(requested)
     })
     .await
     {

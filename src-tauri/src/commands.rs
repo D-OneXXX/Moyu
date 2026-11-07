@@ -831,17 +831,131 @@ pub async fn remove_books(
     })
 }
 
+/// 桌面书库分页返回体（ADR-018 冻结契约；WS5 消费）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BooksPage {
+    pub items: Vec<BookInfo>,
+    pub next_cursor: Option<String>,
+}
+
+/// 参数校验失败的稳定错误码（kebab-case，附在文案尾部供前端本地化）。
+const ERR_INVALID_PAGE_LIMIT: &str = "invalid-page-limit";
+const ERR_INVALID_PAGE_QUERY: &str = "invalid-page-query";
+const ERR_INVALID_PAGE_CURSOR: &str = "invalid-page-cursor";
+
+const BOOKS_PAGE_DEFAULT_LIMIT: u32 = 60;
+const BOOKS_PAGE_MAX_LIMIT: u32 = 100;
+const BOOKS_PAGE_MAX_QUERY_CHARS: usize = 128;
+
+#[derive(Debug)]
+struct BooksPageParams {
+    query: Option<String>,
+    cursor_last_opened: Option<String>,
+    cursor_id: Option<String>,
+    limit: u32,
+}
+
+/// 命令层参数校验（纯函数，可单测）：limit 默认 60 / 1..=100，query ≤128 字符，
+/// 游标 ≤64 字符且可解码；失败返回带稳定错误码的中文文案。
+fn validate_books_page_params(
+    query: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<BooksPageParams, String> {
+    let limit = limit.unwrap_or(BOOKS_PAGE_DEFAULT_LIMIT);
+    if !(1..=BOOKS_PAGE_MAX_LIMIT).contains(&limit) {
+        return Err(format!(
+            "书库分页参数无效：limit 需在 1..=100（{ERR_INVALID_PAGE_LIMIT}）"
+        ));
+    }
+    let query = query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if query
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > BOOKS_PAGE_MAX_QUERY_CHARS)
+    {
+        return Err(format!(
+            "书库分页参数无效：query 不得超过 128 字符（{ERR_INVALID_PAGE_QUERY}）"
+        ));
+    }
+    let (cursor_last_opened, cursor_id) = match cursor {
+        Some(raw) => {
+            let (timestamp, id) = db::decode_book_cursor(raw).ok_or_else(|| {
+                format!("书库分页参数无效：游标非法（{ERR_INVALID_PAGE_CURSOR}）")
+            })?;
+            (Some(timestamp), Some(id))
+        }
+        None => (None, None),
+    };
+    Ok(BooksPageParams {
+        query,
+        cursor_last_opened,
+        cursor_id,
+        limit,
+    })
+}
+
+/// 桌面书库分页（ADR-018）：`last_opened_at DESC, id ASC`，title+path 搜索，
+/// `(last_opened_at, id)` base64url 游标；阻塞工作整体移入 `spawn_blocking`。
+#[tauri::command]
+pub async fn list_books_page(
+    state: State<'_, Arc<AppState>>,
+    query: Option<String>,
+    cursor: Option<String>,
+    limit: Option<u32>,
+) -> Result<BooksPage, String> {
+    let params = validate_books_page_params(query.as_deref(), cursor.as_deref(), limit)?;
+    let st = state.inner().clone();
+    blocking(move || {
+        // 只把 SQL 放在 DbSlot 锁内；symlink_metadata 与 meta_json 解析在锁外。
+        let mut rows = st
+            .db
+            .with(|conn| {
+                db::list_books_page_desktop(
+                    conn,
+                    params.query.as_deref(),
+                    params.cursor_last_opened.as_deref(),
+                    params.cursor_id.as_deref(),
+                    params.limit,
+                )
+                .map_err(err)
+            })
+            .map_err(BackendError::Msg)?;
+        let has_more = rows.len() > params.limit as usize;
+        rows.truncate(params.limit as usize);
+        let next_cursor = if has_more {
+            rows.last()
+                .and_then(|row| db::encode_book_cursor(&row.last_opened_at, &row.id))
+        } else {
+            None
+        };
+        Ok(BooksPage {
+            items: rows.into_iter().map(to_book_info).collect(),
+            next_cursor,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn list_books(
     state: State<'_, Arc<AppState>>,
     query: Option<String>,
 ) -> Result<Vec<BookInfo>, String> {
-    // 只把 SQL 放在 DbSlot 锁内：逐本 symlink_metadata 与 meta_json 解析在锁外，
-    // 大书库列表不会拖住阅读器的高频 set_progress。
-    let rows = state
-        .db
-        .with(|conn| db::list_books(conn, query.as_deref()).map_err(err))?;
-    Ok(rows.into_iter().map(to_book_info).collect())
+    // 行为不变，但 SQL 与逐本 symlink_metadata / meta_json 解析整体移入
+    // spawn_blocking，不再占用 async 执行器线程。
+    let st = state.inner().clone();
+    blocking(move || {
+        let rows = st
+            .db
+            .with(|conn| db::list_books(conn, query.as_deref()).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(rows.into_iter().map(to_book_info).collect())
+    })
+    .await
 }
 
 /// 单书查询（阅读器打开直达上次页，避免全量 `list_books`）。
@@ -5102,5 +5216,45 @@ mod tests {
         let pdf = db::get_book(&conn, "p1").unwrap().unwrap();
         assert_eq!(clamp_reading_page(&pdf, 3), 3);
         assert_eq!(clamp_reading_page(&pdf, 99), 3, "页数已知后必须钳制");
+    }
+
+    // ---------- 桌面书库分页命令参数校验（ADR-018 / Issue #227）----------
+
+    #[test]
+    fn books_page_limit_defaults_to_60_and_rejects_zero_and_101() {
+        assert_eq!(
+            validate_books_page_params(None, None, None).unwrap().limit,
+            60,
+            "limit 缺省必须是 60"
+        );
+        assert!(validate_books_page_params(None, None, Some(1)).is_ok());
+        assert!(validate_books_page_params(None, None, Some(100)).is_ok());
+        for bad in [0u32, 101] {
+            let err = validate_books_page_params(None, None, Some(bad)).unwrap_err();
+            assert!(
+                err.contains("invalid-page-limit"),
+                "limit {bad} 必须返回稳定错误码，实际：{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn books_page_query_over_128_chars_is_rejected() {
+        let at_limit = "a".repeat(128);
+        assert!(validate_books_page_params(Some(&at_limit), None, None).is_ok());
+        let over = "a".repeat(129);
+        let err = validate_books_page_params(Some(&over), None, None).unwrap_err();
+        assert!(err.contains("invalid-page-query"), "实际：{err}");
+    }
+
+    #[test]
+    fn books_page_invalid_cursor_returns_stable_code() {
+        for invalid in ["not-a-cursor", "", "AAAA", &"a".repeat(65)] {
+            let err = validate_books_page_params(None, Some(invalid), None).unwrap_err();
+            assert!(
+                err.contains("invalid-page-cursor"),
+                "游标 {invalid:?} 必须返回稳定错误码，实际：{err}"
+            );
+        }
     }
 }

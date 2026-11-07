@@ -579,6 +579,7 @@ pub fn run() {
             commands::import_books,
             commands::remove_books,
             commands::list_books,
+            commands::list_books_page,
             commands::get_book,
             commands::relocate_book,
             open_with::take_pending_open,

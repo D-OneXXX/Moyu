@@ -3665,6 +3665,10 @@ mod tests {
         let (ts, id_back) = decode_book_cursor(&raw).expect("合法游标");
         assert_eq!(id_back, books_window_id('b'));
         assert!(!ts.is_empty());
+        assert!(
+            decode_book_cursor(&format!("{raw}==")).is_none(),
+            "合法游标追加 padding 必须被 URL_SAFE_NO_PAD 拒绝"
+        );
 
         let raw_empty = encode_book_cursor("", &books_window_id('d')).expect("空时间戳游标");
         assert!(raw_empty.len() <= 64);

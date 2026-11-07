@@ -39,6 +39,17 @@ export interface BooksPage {
   nextCursor: string | null;
 }
 
+/**
+ * ADR-032 冻结契约：书库合集计数（一次分组聚合，不含 BookInfo）。
+ * `seriesCounts` / `localSeriesCounts` 为 `seriesId -> 章节数`；
+ * 无合集（NULL/空 seriesId）的书只计入 `totalBooks`。
+ */
+export interface LibraryStats {
+  totalBooks: number;
+  seriesCounts: Record<string, number>;
+  localSeriesCounts: Record<string, number>;
+}
+
 /** 在线图片提纯：被剔除的页面（保留原顺序，恢复时插回）。 */
 export interface FilteredPage {
   url: string;
@@ -400,6 +411,8 @@ export const api = {
       cursor: args.cursor ?? null,
       limit: args.limit ?? 60,
     }),
+  // ADR-032：合集计数聚合（seriesId -> 章节数），替代搜索态全量 listBooks()。
+  libraryStats: () => invoke<LibraryStats>("library_stats"),
   getBook: (bookId: string) =>
     invoke<BookInfo>("get_book", { bookId }),
   listEntries: (bookId: string) =>

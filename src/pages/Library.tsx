@@ -23,6 +23,7 @@ import {
   api,
   type BookInfo,
   type Dashboard,
+  type LibraryStats,
 } from "@/lib/tauri";
 import { sourceDisplay } from "@/lib/sourceDisplay";
 import { LIBRARY_REFRESH_EVENT } from "@/lib/events";
@@ -104,6 +105,8 @@ export default function LibraryPage() {
   const [sortMode, setSortMode] = useState<SortMode>("recentOpened");
   const [sourceFilter, setSourceFilter] = useState(readSourceFilter);
   const [dash, setDash] = useState<Dashboard | null>(null);
+  // ADR-032：后端聚合的合集计数；命令失败时为 null，回落本地已加载页计数。
+  const [stats, setStats] = useState<LibraryStats | null>(null);
   const [books, setBooks] = useState<BookInfo[]>([]);
   const [allBooks, setAllBooks] = useState<BookInfo[]>([]);
   const [query, setQuery] = useState("");
@@ -167,21 +170,21 @@ export default function LibraryPage() {
     setLoadingMore(false);
     loadingMoreRef.current = false;
     try {
-      const [d, page, all] = await Promise.all([
+      const [d, page, libraryStats] = await Promise.all([
         api.getDashboard(),
         api.listBooksPage(
           q.length > 0
             ? { query: q, limit: PAGE_SIZE }
             : { limit: PAGE_SIZE },
         ),
-        q.length > 0
-          ? api.listBooks().catch(() => null)
-          : Promise.resolve(null),
+        // ADR-032：合集计数走一次分组聚合，搜索态不再取全库列表。
+        api.libraryStats().catch(() => null),
       ]);
       setDash(d);
       setBooks(page.items);
       setCursor(page.nextCursor);
-      setAllBooks(all ?? page.items);
+      setStats(libraryStats);
+      setAllBooks(page.items);
     } catch (e) {
       setLoadError(localizeBackendError(e));
       notifyError("list_books_page", e);
@@ -227,19 +230,33 @@ export default function LibraryPage() {
     [allBooks, safeMode],
   );
 
-  // 合集计数始终取「未按来源过滤」的全量列表（搜索时另取全库），
-  // 这样筛选在线/本地不会改变合集总话数。
-  const displayBooks = useMemo(() => {
+  // ADR-032：合集计数优先用后端聚合映射（全局口径，搜索/筛选不改变总话数）；
+  // `safeMode` 取全局本地口径 `localSeriesCounts`。命令不可用时回落到
+  // 已加载页的本地计数，保证旧后端/离线仍能显示。
+  const seriesCounts = useMemo(() => {
     const counts = new Map<string, number>();
+    const remote = stats
+      ? safeMode
+        ? stats.localSeriesCounts
+        : stats.seriesCounts
+      : null;
+    if (remote) {
+      // 后端已把 series_id trim 并丢弃空白键，这里直接按映射取值。
+      for (const [sid, count] of Object.entries(remote)) counts.set(sid, count);
+      return counts;
+    }
     for (const book of accessibleAllBooks) {
       const sid = book.seriesId?.trim();
       if (sid) counts.set(sid, (counts.get(sid) ?? 0) + 1);
     }
+    return counts;
+  }, [stats, safeMode, accessibleAllBooks]);
 
+  const displayBooks = useMemo(() => {
     if (!groupSeries) {
       return visibleBooks.map((book) => {
         const sid = book.seriesId?.trim();
-        return { book, seriesCount: sid ? counts.get(sid) ?? 1 : 1 };
+        return { book, seriesCount: sid ? seriesCounts.get(sid) ?? 1 : 1 };
       });
     }
 
@@ -263,10 +280,10 @@ export default function LibraryPage() {
       const sid = key.startsWith("series:") ? key.slice("series:".length) : "";
       return {
         book: group.book,
-        seriesCount: sid ? counts.get(sid) ?? group.filteredCount : 1,
+        seriesCount: sid ? seriesCounts.get(sid) ?? group.filteredCount : 1,
       };
     });
-  }, [visibleBooks, groupSeries, sortMode, accessibleAllBooks]);
+  }, [visibleBooks, groupSeries, sortMode, seriesCounts]);
 
   // 追加下一页：游标驱动，search 重置由 reload 完成；loadingMoreRef 防止
   // 哨兵在单页在途期间重复触发。
@@ -281,9 +298,8 @@ export default function LibraryPage() {
         limit: PAGE_SIZE,
       });
       setBooks((prev) => [...prev, ...page.items]);
-      setAllBooks((prev) =>
-        debounced.length > 0 ? prev : [...prev, ...page.items],
-      );
+      // ADR-032：`allBooks` 统一为「已加载页」累积（搜索态也只累积搜索页）。
+      setAllBooks((prev) => [...prev, ...page.items]);
       setCursor(page.nextCursor);
     } catch (e) {
       notifyError("list_books_page", e);
@@ -696,7 +712,7 @@ export default function LibraryPage() {
 
   const totalBooks = safeMode
     ? accessibleAllBooks.length
-    : dash?.totalBooks ?? allBooks.length;
+    : dash?.totalBooks ?? stats?.totalBooks ?? allBooks.length;
   const readingCount = dash?.reading ?? 0;
   const todayPages = dash?.todayPages ?? 0;
   const emptyMessage =

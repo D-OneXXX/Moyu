@@ -5,6 +5,7 @@
 //!
 //! `id` 为路径的 SHA-256 hex（稳定、可跨扫描复用，保留进度）。
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -903,6 +904,58 @@ pub fn list_books(conn: &Connection, query: Option<&str>) -> Result<Vec<BookRow>
         out.push(r?);
     }
     Ok(out)
+}
+
+/// 书库合集计数聚合结果（ADR-032 数据层）。
+///
+/// 不含任何 IPC 序列化契约；命令层 [`crate::commands::LibraryStats`] 负责
+/// camelCase 输出。`series_id` 位于 `meta_json`（`StoredMeta.series_id`，JSON 键
+/// `series_id`），因此聚合用 SQLite JSON1 的 `json_extract`，不做逐书解析。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LibraryCounts {
+    /// 未软删的书总数（含无合集的书）。
+    pub total_books: u32,
+    /// `series_id -> 章节数`；NULL / 空白 `series_id` 不进入映射。
+    pub series_counts: BTreeMap<String, u32>,
+    /// 仅 `source_type='local'` 的 `series_id -> 章节数`（安全模式口径）。
+    pub local_series_counts: BTreeMap<String, u32>,
+}
+
+/// 书库合集计数（ADR-032）：一次分组聚合，不逐书 `symlink_metadata`、
+/// 不解析 `meta_json`、不序列化 `BookInfo`。
+///
+/// 口径：`removed=0` 的每一行都计入 `total_books`；`series_id` 非空的行才进入
+/// `series_counts`，其中 `source_type='local'` 同时进入 `local_series_counts`。
+pub fn library_stats(conn: &Connection) -> Result<LibraryCounts, BackendError> {
+    let mut stmt = conn.prepare(
+        "SELECT source_type, json_extract(meta_json,'$.series_id') AS sid, COUNT(*)
+         FROM books
+         WHERE removed=0
+         GROUP BY source_type, sid",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut counts = LibraryCounts::default();
+    while let Some(row) = rows.next()? {
+        let source_type: String = row.get(0)?;
+        let sid: Option<String> = row.get(1)?;
+        let chunk: i64 = row.get(2)?;
+        let chunk = u32::try_from(chunk).unwrap_or(u32::MAX);
+        counts.total_books = counts.total_books.saturating_add(chunk);
+        // 与前端既有口径一致：空白 series_id 视为「无合集」，只计入 total。
+        let Some(sid) = sid
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let series = counts.series_counts.entry(sid.clone()).or_insert(0);
+        *series = series.saturating_add(chunk);
+        if source_type == "local" {
+            let local = counts.local_series_counts.entry(sid).or_insert(0);
+            *local = local.saturating_add(chunk);
+        }
+    }
+    Ok(counts)
 }
 
 /// 进度是否**真的**发生变化（比较两个被持久化的字段）。
@@ -3675,5 +3728,78 @@ mod tests {
         let (ts_empty, id_empty) = decode_book_cursor(&raw_empty).expect("空时间戳游标");
         assert_eq!(ts_empty, "", "空时间戳是真实状态，不得塌缩成 epoch");
         assert_eq!(id_empty, books_window_id('d'));
+    }
+
+    /// ADR-032 契约：合集计数由一次分组聚合产出，不逐书 stat / 解析 meta_json。
+    /// 覆盖：同系列 local+online、无系列、空 series_id、软删排除。
+    #[test]
+    fn library_stats_groups_series_and_excludes_removed() {
+        let path = unique_temp_db("library-stats");
+        let series_meta =
+            r#"{"schema":1,"manifestHash":"h","fetchedAt":"t","pages":[],"series_id":"series-1"}"#;
+        {
+            let conn = open(&path).expect("打开临时库");
+            init_schema(&conn).expect("建表");
+            // 同系列两本本地 + 一本在线。
+            upsert_book(&conn, "l1", "p/l1", "本地一", 1).unwrap();
+            upsert_book(&conn, "l2", "p/l2", "本地二", 1).unwrap();
+            conn.execute(
+                "UPDATE books SET meta_json=?1 WHERE id IN ('l1','l2')",
+                params![series_meta],
+            )
+            .unwrap();
+            upsert_online_book(
+                &conn,
+                "o1",
+                "http://x/o1",
+                "在线一",
+                1,
+                "generic_manga",
+                series_meta,
+            )
+            .unwrap();
+            // 无系列（meta_json 缺省 '{}'）与空 series_id：只计入 total。
+            upsert_book(&conn, "solo", "p/solo", "单本", 1).unwrap();
+            upsert_book(&conn, "blank", "p/blank", "空系列", 1).unwrap();
+            conn.execute(
+                "UPDATE books SET meta_json=?1 WHERE id='blank'",
+                params![
+                    r#"{"schema":1,"manifestHash":"h","fetchedAt":"t","pages":[],"series_id":""}"#
+                ],
+            )
+            .unwrap();
+            // 软删：必须整体排除（total 与两个映射都不计）。
+            upsert_book(&conn, "gone", "p/gone", "已移除", 1).unwrap();
+            conn.execute(
+                "UPDATE books SET meta_json=?1 WHERE id='gone'",
+                params![series_meta],
+            )
+            .unwrap();
+            soft_remove_books(&conn, &["gone".to_string()]).unwrap();
+
+            let stats = library_stats(&conn).expect("聚合");
+            assert_eq!(stats.total_books, 5, "每本未删除书都计入 totalBooks");
+            assert_eq!(
+                stats.series_counts.get("series-1"),
+                Some(&3),
+                "local×2 + online×1 同系列合并计数"
+            );
+            assert_eq!(
+                stats.local_series_counts.get("series-1"),
+                Some(&2),
+                "本地映射只含 source_type='local'"
+            );
+            assert_eq!(
+                stats.series_counts.len(),
+                1,
+                "无系列与空 series_id 不得进入映射"
+            );
+            assert_eq!(stats.local_series_counts.len(), 1);
+            assert!(
+                !stats.series_counts.contains_key(""),
+                "空 series_id 不是合法键"
+            );
+        }
+        cleanup_db_files(&path);
     }
 }

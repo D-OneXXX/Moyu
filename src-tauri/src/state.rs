@@ -694,28 +694,18 @@ impl AppState {
         if total >= TRIGGER_BYTES {
             self.cache_pressure.store(0, Ordering::Relaxed);
             // 单飞：已有 trim 线程在跑则跳过，避免并发淘汰争抢磁盘与重复清零。
-            if try_acquire_trim(&TRIM_IN_FLIGHT) {
-                let state = self.clone();
-                // 用 Builder 取得 Result：线程创建失败时必须显式释放资格，
-                // 否则单飞标志会永久卡死（spawn 本身 panic 不会触发 guard）。
-                if std::thread::Builder::new()
-                    .spawn(move || {
-                        // RAII 保证正常结束与 panic（unwind）都释放资格。
-                        let _guard = TrimFlightGuard(&TRIM_IN_FLIGHT);
-                        state.trim_disk_cache();
-                    })
-                    .is_err()
-                {
-                    release_trim(&TRIM_IN_FLIGHT);
-                }
-            }
+            let state = self.clone();
+            spawn_trim_task(&TRIM_IN_FLIGHT, move || {
+                state.trim_disk_cache();
+            });
         }
     }
 
     /// 后台执行统一淘汰，避免设置保存/翻页路径被大目录扫描阻塞。
+    /// 单飞：已有 trim 在跑时直接跳过（它跑完即回到软上限，重复排队无收益）。
     pub fn trim_disk_cache_async(self: &Arc<Self>) {
         let state = self.clone();
-        std::thread::spawn(move || {
+        spawn_trim_task(&TRIM_IN_FLIGHT, move || {
             let removed = state.trim_disk_cache();
             if removed > 0 {
                 crate::logging::log_error(
@@ -776,6 +766,30 @@ impl Drop for TrimFlightGuard {
     fn drop(&mut self) {
         release_trim(self.0);
     }
+}
+
+/// 单飞 spawn 助手：取得 trim 资格后在新线程执行 `task`，由 `TrimFlightGuard`
+/// 保证正常结束与 panic（unwind）都释放资格。已有 trim 在跑则直接跳过并返回
+/// false；线程创建失败时显式释放资格（spawn 失败不会运行闭包，guard 不会生成），
+/// 同样返回 false——绝不让单飞标志永久卡死。
+pub(crate) fn spawn_trim_task(
+    flag: &'static AtomicBool,
+    task: impl FnOnce() + Send + 'static,
+) -> bool {
+    if !try_acquire_trim(flag) {
+        return false;
+    }
+    if std::thread::Builder::new()
+        .spawn(move || {
+            let _guard = TrimFlightGuard(flag);
+            task();
+        })
+        .is_err()
+    {
+        release_trim(flag);
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1340,5 +1354,27 @@ mod tests {
         assert_eq!(winners, 1);
         release_trim(&flag);
         assert!(try_acquire_trim(&flag));
+    }
+
+    /// 单飞 spawn 助手：首个任务在飞时第二次必须拒绝；任务结束（RAII guard
+    /// drop）后资格必须释放，允许下一次 trim 进入。
+    #[test]
+    fn spawn_trim_task_is_single_flight_and_releases_on_completion() {
+        use super::spawn_trim_task;
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        assert!(spawn_trim_task(&FLAG, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        started_rx.recv().unwrap();
+        assert!(!spawn_trim_task(&FLAG, || {}), "in-flight must reject");
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !spawn_trim_task(&FLAG, || {}) {
+            assert!(std::time::Instant::now() < deadline, "flag never released");
+            std::thread::yield_now();
+        }
     }
 }

@@ -984,6 +984,64 @@ pub fn last_read_book(
     }
 }
 
+/// 仪表盘计数（Issue #236）：一次 SQL 求未软删总数与「在读」数。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DashboardCounts {
+    pub total_books: u32,
+    pub reading: u32,
+}
+
+/// 仪表盘「最近在读」行：只含渲染所需字段，不解析 meta_json。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashboardSeriesRow {
+    pub id: String,
+    pub title: String,
+    pub current_page: u32,
+    pub page_count: u32,
+}
+
+/// 仪表盘聚合计数：与 `list_books(None)` 的 `removed=0` 口径一致，
+/// 但不再把全表物化为 `BookRow`（Issue #236）。
+pub fn dashboard_counts(conn: &Connection) -> Result<DashboardCounts, BackendError> {
+    let (total, reading): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN current_page > 0 AND current_page + 1 < page_count THEN 1 ELSE 0 END), 0)
+         FROM books
+         WHERE removed=0",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(DashboardCounts {
+        total_books: u32::try_from(total).unwrap_or(u32::MAX),
+        reading: u32::try_from(reading).unwrap_or(u32::MAX),
+    })
+}
+
+/// 最近在读系列：`last_opened_at DESC, id ASC` 限 20 本；
+/// 只读 id/title/current_page/page_count，不加载 path/meta_json（Issue #236）。
+pub fn dashboard_series(conn: &Connection) -> Result<Vec<DashboardSeriesRow>, BackendError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, current_page, page_count
+         FROM books
+         WHERE removed=0 AND current_page > 0
+         ORDER BY last_opened_at DESC, id ASC
+         LIMIT 20",
+    )?;
+    let mut rows = stmt.query_map([], |row| {
+        Ok(DashboardSeriesRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            current_page: row.get::<_, i64>(2)?.max(0) as u32,
+            page_count: row.get::<_, i64>(3)?.max(0) as u32,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 /// 进度是否**真的**发生变化（比较两个被持久化的字段）。
 ///
 /// `set_progress` 与 `set_progress_cas` **必须共用**这一判定：
@@ -3902,6 +3960,63 @@ mod tests {
             .unwrap();
             let tie = last_read_book(&conn, true).unwrap().expect("平局候选");
             assert_eq!(tie.id, "new", "new < old，按 id ASC 取第一");
+        }
+        cleanup_db_files(&path);
+    }
+
+    /// 仪表盘聚合：一次 SQL 计数 + 限量系列，不再加载全表（Issue #236）。
+    #[test]
+    fn dashboard_aggregates_counts_and_series_without_full_table() {
+        let path = unique_temp_db("dashboard-aggregate");
+        {
+            let conn = open(&path).expect("打开临时库");
+            init_schema(&conn).expect("建表");
+            let empty = dashboard_counts(&conn).expect("空库计数");
+            assert_eq!((empty.total_books, empty.reading), (0, 0));
+            assert!(dashboard_series(&conn).expect("空库系列").is_empty());
+
+            for i in 0..25u32 {
+                let id = format!("b{i:02}");
+                upsert_book(&conn, &id, &format!("p/{id}"), &format!("书{i}"), 100).unwrap();
+                conn.execute(
+                    "UPDATE books SET current_page=10, last_opened_at=?1 WHERE id=?2",
+                    params![format!("2026-11-{:02}T00:00:00+08:00", i + 1), id],
+                )
+                .unwrap();
+            }
+            // 读完：reading 排除、total 计入；last_opened_at 较早，不进前 20。
+            upsert_book(&conn, "done", "p/done", "读完", 100).unwrap();
+            conn.execute(
+                "UPDATE books SET current_page=99, last_opened_at='2026-10-31T00:00:00+08:00' WHERE id='done'",
+                [],
+            )
+            .unwrap();
+            // 未开始：total 计入；reading 与 series 排除。
+            upsert_book(&conn, "ns", "p/ns", "未开始", 100).unwrap();
+            conn.execute(
+                "UPDATE books SET last_opened_at='2026-12-02T00:00:00+08:00' WHERE id='ns'",
+                [],
+            )
+            .unwrap();
+            // 软删：全部排除。
+            upsert_book(&conn, "gone", "p/gone", "已删", 100).unwrap();
+            conn.execute(
+                "UPDATE books SET current_page=10, last_opened_at='2026-12-03T00:00:00+08:00' WHERE id='gone'",
+                [],
+            )
+            .unwrap();
+            soft_remove_books(&conn, &["gone".to_string()]).unwrap();
+
+            let counts = dashboard_counts(&conn).expect("计数");
+            assert_eq!(counts.total_books, 27, "25 在读 + 读完 + 未开始；软删排除");
+            assert_eq!(counts.reading, 25, "只有已开始未读完计入 reading");
+
+            let series = dashboard_series(&conn).expect("系列");
+            assert_eq!(series.len(), 20, "最多 20 本");
+            assert_eq!(series[0].id, "b24", "最近打开优先");
+            assert_eq!(series[19].id, "b05", "第 20 本为 b05");
+            assert!(series.iter().all(|row| row.current_page > 0));
+            assert!(series.iter().all(|row| row.id != "ns" && row.id != "gone"));
         }
         cleanup_db_files(&path);
     }

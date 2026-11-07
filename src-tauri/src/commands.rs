@@ -1845,12 +1845,8 @@ pub async fn clear_temp_cache(state: State<'_, Arc<AppState>>) -> Result<ClearCa
 #[tauri::command]
 pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
     state.db.with(|conn| {
-        let rows = db::list_books(conn, None).map_err(err)?;
-        let total_books = rows.len() as u32;
-        let reading = rows
-            .iter()
-            .filter(|b| b.current_page > 0 && b.current_page + 1 < b.page_count)
-            .count() as u32;
+        // Issue #236：计数与最近在读改为 SQL 聚合，不再加载全表 BookRow。
+        let counts = db::dashboard_counts(conn).map_err(err)?;
         let today_pages = db::today_pages(conn).map_err(err)?;
         // 182 天：覆盖前端热力图的 26 周视图（此前 90 天，左半边永远空白）。
         let heat = db::heatmap(conn, 182).map_err(err)?;
@@ -1858,10 +1854,9 @@ pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard,
             .into_iter()
             .map(|(date, count)| HeatDay { date, count })
             .collect();
-        let series = rows
+        let series = db::dashboard_series(conn)
+            .map_err(err)?
             .into_iter()
-            .filter(|b| b.current_page > 0)
-            .take(20)
             .map(|b| SeriesProgress {
                 book_id: b.id,
                 title: b.title,
@@ -1870,8 +1865,8 @@ pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard,
             })
             .collect();
         Ok(Dashboard {
-            total_books,
-            reading,
+            total_books: counts.total_books,
+            reading: counts.reading,
             today_pages,
             heatmap,
             series,

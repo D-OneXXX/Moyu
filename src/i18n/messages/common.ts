@@ -107,6 +107,9 @@ const zhCN = {
   "dbRecovery.filterName": "Moyu 备份",
   "cache.writeFailed":
     "缓存写入失败：磁盘可能已满；阅读不受影响，请到设置中清理缓存或释放磁盘空间。",
+  "error.pageInvalidLimit": "分页条数超出允许范围（1–100）",
+  "error.pageInvalidQuery": "搜索关键词过长（最多 128 字）",
+  "error.pageInvalidCursor": "分页游标无效或已过期，请重新加载书库",
   "error.requestFailed": "调用 {cmd} 失败",
   "error.backendGeneric": "操作失败；详情已写入本地日志。",
   "error.archiveDisguisedRar": "该文件实际是 RAR 压缩包（仅改了后缀名），请转换为标准无密码 ZIP/CBZ 后再导入",
@@ -297,6 +300,9 @@ const zhTW: CommonMessages = {
   "dbRecovery.filterName": "Moyu 備份",
   "cache.writeFailed":
     "快取寫入失敗：磁碟可能已滿；閱讀不受影響，請到設定中清理快取或釋放磁碟空間。",
+  "error.pageInvalidLimit": "分頁筆數超出允許範圍（1–100）",
+  "error.pageInvalidQuery": "搜尋關鍵詞過長（最多 128 字）",
+  "error.pageInvalidCursor": "分頁游標無效或已過期，請重新載入書庫",
   "error.requestFailed": "呼叫 {cmd} 失敗",
   "error.backendGeneric": "操作失敗；詳情已寫入本機日誌。",
   "error.archiveDisguisedRar": "該檔案實際是 RAR 壓縮包（僅改了副檔名），請轉換為標準無密碼 ZIP/CBZ 後再匯入",
@@ -489,6 +495,9 @@ const en: CommonMessages = {
   "dbRecovery.filterName": "Moyu backup",
   "cache.writeFailed":
     "Cache write failed. The disk may be full; reading is unaffected. Clear the cache or free disk space in Settings.",
+  "error.pageInvalidLimit": "Page size is outside the allowed range (1-100).",
+  "error.pageInvalidQuery": "Search query is too long (128 characters max).",
+  "error.pageInvalidCursor": "The pagination cursor is invalid or expired. Reload the library.",
   "error.requestFailed": "Request failed: {cmd}",
   "error.backendGeneric": "The operation failed. Details were written to the local log.",
   "error.archiveDisguisedRar": "This file is actually a RAR archive with a renamed extension. Please convert it to a standard, unencrypted ZIP/CBZ and import again.",
@@ -694,6 +703,9 @@ const es: CommonMessages = {
   "dbRecovery.filterName": "Copia de Moyu",
   "cache.writeFailed":
     "Falló la escritura en caché. El disco puede estar lleno; la lectura no se ve afectada. Borra la caché o libera espacio en Ajustes.",
+  "error.pageInvalidLimit": "El tamaño de página está fuera del rango permitido (1-100).",
+  "error.pageInvalidQuery": "La búsqueda supera el límite de 128 caracteres.",
+  "error.pageInvalidCursor": "El cursor de paginación no es válido o ha caducado. Recarga la biblioteca.",
   "error.requestFailed": "Error al llamar a {cmd}",
   "error.backendGeneric": "La operación falló. Los detalles se guardaron en el registro local.",
   "error.archiveDisguisedRar": "Este archivo es en realidad un comprimido RAR con la extensión renombrada. Conviértelo a un ZIP/CBZ estándar sin contraseña e impórtalo de nuevo.",
@@ -917,6 +929,9 @@ const ja: CommonMessages = {
   "dbRecovery.filterName": "Moyu バックアップ",
   "cache.writeFailed":
     "キャッシュの書き込みに失敗しました。ディスクが満杯の可能性があります。読書には影響しません。設定でキャッシュを消去するか、空き容量を確保してください。",
+  "error.pageInvalidLimit": "ページ件数が許容範囲（1〜100）を超えています。",
+  "error.pageInvalidQuery": "検索キーワードが長すぎます（最大 128 文字）。",
+  "error.pageInvalidCursor": "ページカーソルが無効または期限切れです。書庫を再読み込みしてください。",
   "error.requestFailed": "{cmd} の呼び出しに失敗しました",
   "error.backendGeneric": "操作に失敗しました。詳細はローカルログに記録しました。",
   "error.archiveDisguisedRar": "このファイルは実は拡張子を変えただけの RAR 圧縮ファイルです。パスワードなしの標準 ZIP/CBZ に変換してから読み込んでください。",
@@ -1134,6 +1149,9 @@ const ko: CommonMessages = {
   "dbRecovery.filterName": "Moyu 백업",
   "cache.writeFailed":
     "캐시 쓰기에 실패했습니다. 디스크가 가득 찼을 수 있습니다. 읽기에는 영향이 없습니다. 설정에서 캐시를 지우거나 디스크 공간을 확보하세요.",
+  "error.pageInvalidLimit": "페이지 크기가 허용 범위(1~100)를 벗어났습니다.",
+  "error.pageInvalidQuery": "검색어가 너무 깁니다(최대 128자).",
+  "error.pageInvalidCursor": "페이지 커서가 유효하지 않거나 만료되었습니다. 서재를 다시 불러오세요.",
   "error.requestFailed": "{cmd} 호출 실패",
   "error.backendGeneric": "작업에 실패했습니다. 자세한 내용은 로컬 로그에 기록했습니다.",
   "error.archiveDisguisedRar": "이 파일은 확장자만 바꾼 RAR 압축 파일입니다. 암호 없는 표준 ZIP/CBZ로 변환한 뒤 다시 가져오세요.",

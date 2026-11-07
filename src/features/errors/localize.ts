@@ -121,6 +121,9 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "device-limit", key: "error.webAccessDeviceLimit" },
   { code: "pairing-rate-limited", key: "error.webAccessRateLimited" },
   { code: "invalid-parameter", key: "error.webAccessInvalidParameter" },
+  { code: "invalid-page-limit", key: "error.pageInvalidLimit" },
+  { code: "invalid-page-query", key: "error.pageInvalidQuery" },
+  { code: "invalid-page-cursor", key: "error.pageInvalidCursor" },
 ];
 
 /**

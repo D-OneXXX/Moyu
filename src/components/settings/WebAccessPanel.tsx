@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import qrcode from "qrcode-generator";
 import {
   AlertTriangle,
@@ -127,12 +127,14 @@ function FingerprintBlock({
 
 function ClaimRow({
   claim,
+  nowMs,
   busy,
   busyTarget,
   onApprove,
   onDeny,
 }: {
   claim: PendingClaimView;
+  nowMs: number;
   busy: string | null;
   busyTarget: string | null;
   onApprove: (claim: PendingClaimView) => void;
@@ -141,6 +143,11 @@ function ClaimRow({
   const { t, formatDateTime } = useI18n();
   const approving = busy === "approve" && busyTarget === claim.claimId;
   const denying = busy === "deny" && busyTarget === claim.claimId;
+  const secondsLeft = Math.max(
+    0,
+    Math.ceil((claim.expiresAtUnixMs - nowMs) / 1000),
+  );
+  const expired = secondsLeft === 0;
   return (
     <li className="rounded-xl border border-border bg-card/60 p-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -150,6 +157,11 @@ function ClaimRow({
         </span>
         <Badge variant="warning" className="whitespace-nowrap">
           {t("settings.webAccess.unverifiedDevice")}
+        </Badge>
+        <Badge variant={expired ? "warning" : "muted"} className="whitespace-nowrap">
+          {expired
+            ? t("settings.webAccess.claimExpired")
+            : t("settings.webAccess.claimExpiresIn", { seconds: secondsLeft })}
         </Badge>
       </div>
       <p className="mt-1 break-all text-xs leading-relaxed text-muted-foreground">
@@ -177,7 +189,7 @@ function ClaimRow({
             claim.deviceName,
             t,
           )}`}
-          disabled={busy !== null}
+          disabled={busy !== null || expired}
           onClick={() => onApprove(claim)}
         >
           {approving ? (
@@ -192,7 +204,7 @@ function ClaimRow({
           variant="pill"
           size="pill-sm"
           className="whitespace-nowrap"
-          aria-label={`${t("settings.webAccess.deny")}: ${displayDeviceName(
+          aria-label={`${t("settings.webAccess.cancelRequest")}: ${displayDeviceName(
             claim.deviceName,
             t,
           )}`}
@@ -204,7 +216,7 @@ function ClaimRow({
           ) : (
             <X className="size-3.5" />
           )}
-          {t("settings.webAccess.deny")}
+          {t("settings.webAccess.cancelRequest")}
         </Button>
       </div>
     </li>
@@ -233,7 +245,9 @@ export default function WebAccessPanel() {
     busyTarget,
     error,
     refresh,
+    refreshPairing,
     start,
+    cancelStart,
     stop,
     startPairing,
     cancelPairing,
@@ -263,20 +277,43 @@ export default function WebAccessPanel() {
   const pairingWindow = pairing?.window ?? null;
   const pairingUrl = pairingWindow?.url ?? null;
   const pairingExpiresAt = pairingWindow?.expiresAtUnixMs ?? null;
+  const claims = pairing?.claims ?? [];
+  const hasPairingWindowCountdown =
+    !isPlain && pairingExpiresAt !== null && pairingExpiresAt > 0;
+  const hasClaimCountdown = claims.length > 0;
 
-  // Local countdown only: this timer never talks to the backend.
-  useLayoutEffect(() => {
-    if (pairingExpiresAt === null || isPlain) return;
+  // Local countdown only: this timer never talks to the backend and is always
+  // cleared when no pairing window or pending request needs it.
+  useEffect(() => {
+    if (!hasPairingWindowCountdown && !hasClaimCountdown) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [pairingExpiresAt, isPlain]);
+  }, [hasClaimCountdown, hasPairingWindowCountdown]);
 
   const secondsLeft =
-    pairingExpiresAt === null
+    !hasPairingWindowCountdown || pairingExpiresAt === null
       ? 0
       : Math.max(0, Math.ceil((pairingExpiresAt - nowMs) / 1000));
-  const pairingExpired = !isPlain && pairingExpiresAt !== null && secondsLeft === 0;
+  const pairingExpired = hasPairingWindowCountdown && secondsLeft === 0;
+
+  const refreshedExpiredClaimsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const activeIds = new Set(claims.map((claim) => claim.claimId));
+    for (const claimId of refreshedExpiredClaimsRef.current) {
+      if (!activeIds.has(claimId)) refreshedExpiredClaimsRef.current.delete(claimId);
+    }
+    const newlyExpired = claims.filter(
+      (claim) =>
+        claim.expiresAtUnixMs <= nowMs &&
+        !refreshedExpiredClaimsRef.current.has(claim.claimId),
+    );
+    if (newlyExpired.length === 0) return;
+    for (const claim of newlyExpired) {
+      refreshedExpiredClaimsRef.current.add(claim.claimId);
+    }
+    void refreshPairing();
+  }, [claims, nowMs, refreshPairing]);
 
   const qrImage = useMemo(() => {
     if (!pairingUrl || pairingExpired) return null;
@@ -315,7 +352,7 @@ export default function WebAccessPanel() {
     phase === "enabled" ||
     phase === "stopping" ||
     (phase === "error" && status?.bindAddress != null);
-  const claims = pairing?.claims ?? [];
+  const canCancelStart = phase === "starting";
   // While enabled the pairing snapshot is authoritative; the status snapshot
   // only refreshes on state events, which claim creation does not emit.
   const pendingCount =
@@ -331,6 +368,12 @@ export default function WebAccessPanel() {
     setApproveClaim(null);
     if (claim) void approve(claim.claimId);
   };
+
+  const approveConfirmMessage = approveClaim
+    ? `${t("settings.webAccess.approveConfirmMessage", {
+        name: displayDeviceName(approveClaim.deviceName, t),
+      })}${isPlain ? ` ${t("settings.webAccess.approvePlainHttpWarning")}` : ""}`
+    : undefined;
 
   const onRevokeConfirm = () => {
     const device = revokeDevice;
@@ -562,7 +605,25 @@ export default function WebAccessPanel() {
                     )}
                   </select>
                 </label>
-                {canStop ? (
+                {canCancelStart ? (
+                  <Button
+                    type="button"
+                    variant="pill-danger"
+                    size="pill-sm"
+                    className="whitespace-nowrap"
+                    disabled={busy !== null && busy !== "start"}
+                    onClick={cancelStart}
+                  >
+                    {busy === "start-cancel" || busy === "stop" ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <X className="size-3.5" />
+                    )}
+                    {busy === "start-cancel" || busy === "stop"
+                      ? t("settings.webAccess.cancelingStart")
+                      : t("settings.webAccess.cancelStart")}
+                  </Button>
+                ) : canStop ? (
                   <Button
                     type="button"
                     variant="pill-danger"
@@ -590,17 +651,16 @@ export default function WebAccessPanel() {
                       busy !== null ||
                       loading ||
                       safeModeActive ||
-                      !selectedIp ||
-                      phase === "starting"
+                      !selectedIp
                     }
                     onClick={onStart}
                   >
-                    {busy === "start" || phase === "starting" ? (
+                    {busy === "start" ? (
                       <Loader2 className="size-3.5 animate-spin" />
                     ) : (
                       <Play className="size-3.5" />
                     )}
-                    {busy === "start" || phase === "starting"
+                    {busy === "start"
                       ? t("settings.webAccess.starting")
                       : t("settings.webAccess.start")}
                   </Button>
@@ -745,9 +805,10 @@ export default function WebAccessPanel() {
                       <ClaimRow
                         key={claim.claimId}
                         claim={claim}
+                        nowMs={nowMs}
                         busy={busy}
                         busyTarget={busyTarget}
-                        onApprove={(claim) => isPlain ? void approve(claim.claimId) : setApproveClaim(claim)}
+                        onApprove={(claim) => setApproveClaim(claim)}
                         onDeny={(claimId) => void deny(claimId)}
                       />
                     ))}
@@ -859,9 +920,7 @@ export default function WebAccessPanel() {
       {approveClaim ? (
         <ConfirmDialog
           title={t("settings.webAccess.approveConfirmTitle")}
-          message={t("settings.webAccess.approveConfirmMessage", {
-            name: displayDeviceName(approveClaim.deviceName, t),
-          })}
+          message={approveConfirmMessage}
           confirmText={t("settings.webAccess.approve")}
           tone="primary"
           onConfirm={onApproveConfirm}

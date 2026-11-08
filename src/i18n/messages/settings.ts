@@ -40,6 +40,12 @@ const zhCN = {
   "settings.language.label": "显示语言",
 
   "settings.theme.title": "外观主题",
+  "settings.tray.title": "窗口与托盘",
+  "settings.tray.description":
+    "局域网阅读运行时可关闭主窗口到系统托盘，后台继续提供阅读服务。",
+  "settings.tray.closeToTray": "关闭主窗口时最小化到托盘",
+  "settings.tray.closeToTrayHint":
+    "开启后，点击关闭（×）只隐藏窗口；从托盘菜单可彻底退出。",
   "settings.theme.description":
     "选择界面配色；切换会立即生效，并同步到本地偏好与数据库。",
   "settings.theme.groupLabel": "主题模式",
@@ -384,7 +390,11 @@ const zhCN = {
   "settings.webAccess.cancelStart": "取消启动",
   "settings.webAccess.cancelingStart": "正在取消…",
   "settings.webAccess.devicesTitle": "已配对设备",
-  "settings.webAccess.devicesEmpty": "还没有已配对设备。",
+  "settings.webAccess.devicesEmpty": "还没有已配对设备。设备完成配对批准并打开阅读页后会自动出现在这里。",
+  "settings.webAccess.deviceIp": "局域网地址：{ip}",
+  "settings.webAccess.deviceLastActive": "最近活跃：{date}",
+  "settings.webAccess.devicesMemoryNote":
+    "会话只保存在内存中：停止局域网服务或退出程序后，所有设备会自动断开并清空。",
   "settings.webAccess.deviceIssued": "签发：{date}",
   "settings.webAccess.deviceExpires": "到期：{date}",
   "settings.webAccess.revoke": "撤销",
@@ -436,6 +446,12 @@ const zhTW: SettingsMessages = {
   "settings.language.label": "顯示語言",
 
   "settings.theme.title": "外觀主題",
+  "settings.tray.title": "視窗與系統匣",
+  "settings.tray.description":
+    "區域網路閱讀執行時可將主視窗關閉至系統匣，背景繼續提供閱讀服務。",
+  "settings.tray.closeToTray": "關閉主視窗時最小化到系統匣",
+  "settings.tray.closeToTrayHint":
+    "開啟後，點擊關閉（×）只會隱藏視窗；可從系統匣選單徹底結束。",
   "settings.theme.description":
     "選擇介面配色；切換會立即生效，並同步到本機偏好與資料庫。",
   "settings.theme.groupLabel": "主題模式",
@@ -782,7 +798,11 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.cancelStart": "取消啟動",
   "settings.webAccess.cancelingStart": "正在取消…",
   "settings.webAccess.devicesTitle": "已配對裝置",
-  "settings.webAccess.devicesEmpty": "還沒有已配對裝置。",
+  "settings.webAccess.devicesEmpty": "還沒有已配對裝置。裝置完成配對批准並開啟閱讀頁後會自動出現在這裡。",
+  "settings.webAccess.deviceIp": "區域網路位址：{ip}",
+  "settings.webAccess.deviceLastActive": "最近活躍：{date}",
+  "settings.webAccess.devicesMemoryNote":
+    "工作階段只保存在記憶體中：停止區域網路服務或結束程式後，所有裝置會自動斷開並清空。",
   "settings.webAccess.deviceIssued": "簽發：{date}",
   "settings.webAccess.deviceExpires": "到期：{date}",
   "settings.webAccess.revoke": "撤銷",
@@ -832,6 +852,12 @@ const en: SettingsMessages = {
   "settings.language.label": "Display language",
 
   "settings.theme.title": "Appearance",
+  "settings.tray.title": "Window & tray",
+  "settings.tray.description":
+    "While LAN reading is running, closing the main window can keep it in the system tray and keep serving pages in the background.",
+  "settings.tray.closeToTray": "Minimize to tray when closing the main window",
+  "settings.tray.closeToTrayHint":
+    "When enabled, the close (×) button only hides the window; quit from the tray menu to exit completely.",
   "settings.theme.description":
     "Choose the interface palette. Changes apply instantly and sync to local preferences and the database.",
   "settings.theme.groupLabel": "Theme mode",
@@ -1192,7 +1218,12 @@ const en: SettingsMessages = {
   "settings.webAccess.cancelStart": "Cancel start",
   "settings.webAccess.cancelingStart": "Canceling…",
   "settings.webAccess.devicesTitle": "Paired devices",
-  "settings.webAccess.devicesEmpty": "No devices are paired yet.",
+  "settings.webAccess.devicesEmpty":
+    "No devices are paired yet. A device appears here right after its pairing is approved and it opens the reader.",
+  "settings.webAccess.deviceIp": "LAN address: {ip}",
+  "settings.webAccess.deviceLastActive": "Last active: {date}",
+  "settings.webAccess.devicesMemoryNote":
+    "Sessions live in memory only: stopping the LAN service or quitting the app disconnects and clears every device.",
   "settings.webAccess.deviceIssued": "Issued: {date}",
   "settings.webAccess.deviceExpires": "Expires: {date}",
   "settings.webAccess.revoke": "Revoke",
@@ -1242,6 +1273,13 @@ const es: SettingsMessages = {
   "settings.language.label": "Idioma mostrado",
 
   "settings.theme.title": "Apariencia",
+  "settings.tray.title": "Ventana y bandeja",
+  "settings.tray.description":
+    "Con la lectura LAN en marcha, cerrar la ventana principal puede mantenerla en la bandeja del sistema y seguir sirviendo páginas en segundo plano.",
+  "settings.tray.closeToTray":
+    "Minimizar a la bandeja al cerrar la ventana principal",
+  "settings.tray.closeToTrayHint":
+    "Si se activa, el botón cerrar (×) solo oculta la ventana; sal del menú de la bandeja para terminar del todo.",
   "settings.theme.description":
     "Elige la paleta de la interfaz. El cambio se aplica al instante y se sincroniza con las preferencias locales y la base de datos.",
   "settings.theme.groupLabel": "Modo de tema",
@@ -1617,7 +1655,11 @@ const es: SettingsMessages = {
   "settings.webAccess.cancelingStart": "Cancelando…",
   "settings.webAccess.devicesTitle": "Dispositivos vinculados",
   "settings.webAccess.devicesEmpty":
-    "Todavía no hay dispositivos vinculados.",
+    "Todavía no hay dispositivos vinculados. Un dispositivo aparece aquí en cuanto se aprueba su vinculación y abre el lector.",
+  "settings.webAccess.deviceIp": "Dirección LAN: {ip}",
+  "settings.webAccess.deviceLastActive": "Última actividad: {date}",
+  "settings.webAccess.devicesMemoryNote":
+    "Las sesiones solo viven en memoria: al detener el servicio LAN o salir de la aplicación, todos los dispositivos se desconectan y se borran.",
   "settings.webAccess.deviceIssued": "Emitido: {date}",
   "settings.webAccess.deviceExpires": "Caduca: {date}",
   "settings.webAccess.revoke": "Revocar",
@@ -1667,6 +1709,12 @@ const ja: SettingsMessages = {
   "settings.language.label": "表示言語",
 
   "settings.theme.title": "外観テーマ",
+  "settings.tray.title": "ウィンドウとトレイ",
+  "settings.tray.description":
+    "LAN リーディングの実行中は、メインウィンドウを閉じてもシステムトレイに残してバックグラウンドで配信を続けられます。",
+  "settings.tray.closeToTray": "メインウィンドウを閉じるときにトレイへ最小化",
+  "settings.tray.closeToTrayHint":
+    "有効にすると、閉じる（×）はウィンドウを隠すだけになります。完全に終了するにはトレイメニューから終了してください。",
   "settings.theme.description":
     "配色を選択します。切り替えはすぐに反映され、ローカル設定とデータベースに同期されます。",
   "settings.theme.groupLabel": "テーマモード",
@@ -2040,7 +2088,11 @@ const ja: SettingsMessages = {
   "settings.webAccess.cancelingStart": "中止しています…",
   "settings.webAccess.devicesTitle": "ペアリング済み端末",
   "settings.webAccess.devicesEmpty":
-    "ペアリング済みの端末はまだありません。",
+    "ペアリング済みの端末はまだありません。ペアリング承認後にリーダーを開くと、ここに表示されます。",
+  "settings.webAccess.deviceIp": "LAN アドレス：{ip}",
+  "settings.webAccess.deviceLastActive": "最終アクティブ：{date}",
+  "settings.webAccess.devicesMemoryNote":
+    "セッションはメモリ内だけに保持されます。LAN サービスを停止するかアプリを終了すると、すべての端末が切断され消去されます。",
   "settings.webAccess.deviceIssued": "発行：{date}",
   "settings.webAccess.deviceExpires": "有効期限：{date}",
   "settings.webAccess.revoke": "取り消す",
@@ -2090,6 +2142,12 @@ const ko: SettingsMessages = {
   "settings.language.label": "표시 언어",
 
   "settings.theme.title": "외형 테마",
+  "settings.tray.title": "창 및 트레이",
+  "settings.tray.description":
+    "LAN 읽기가 실행 중일 때 기본 창을 닫아도 시스템 트레이에 남아 백그라운드에서 계속 제공할 수 있습니다.",
+  "settings.tray.closeToTray": "기본 창을 닫을 때 트레이로 최소화",
+  "settings.tray.closeToTrayHint":
+    "활성화하면 닫기(×)는 창을 숨기기만 합니다. 완전히 종료하려면 트레이 메뉴에서 종료하세요.",
   "settings.theme.description":
     "인터페이스 색상을 선택합니다. 변경은 즉시 적용되며 로컬 환경설정과 데이터베이스에 동기화됩니다.",
   "settings.theme.groupLabel": "테마 모드",
@@ -2454,7 +2512,12 @@ const ko: SettingsMessages = {
   "settings.webAccess.cancelStart": "시작 취소",
   "settings.webAccess.cancelingStart": "취소 중…",
   "settings.webAccess.devicesTitle": "페어링된 기기",
-  "settings.webAccess.devicesEmpty": "아직 페어링된 기기가 없습니다.",
+  "settings.webAccess.devicesEmpty":
+    "아직 페어링된 기기가 없습니다. 페어링 승인 후 리더를 열면 여기에 표시됩니다.",
+  "settings.webAccess.deviceIp": "LAN 주소: {ip}",
+  "settings.webAccess.deviceLastActive": "최근 활동: {date}",
+  "settings.webAccess.devicesMemoryNote":
+    "세션은 메모리에만 보관됩니다. LAN 서비스를 중지하거나 앱을 종료하면 모든 기기가 연결 해제되고 지워집니다.",
   "settings.webAccess.deviceIssued": "발급: {date}",
   "settings.webAccess.deviceExpires": "만료: {date}",
   "settings.webAccess.revoke": "취소",

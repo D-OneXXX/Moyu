@@ -4,6 +4,7 @@ import { localizeBackendError } from "@/features/errors/localize";
 import { recordBreadcrumb } from "@/features/resilience";
 import { webAccessApi } from "./api";
 import {
+  WEB_ACCESS_DEVICES_EVENT,
   WEB_ACCESS_PAIRING_EVENT,
   WEB_ACCESS_STATE_EVENT,
   type DeviceView,
@@ -290,6 +291,23 @@ export function useWebAccess() {
     [refreshDevices, refreshPairing],
   );
 
+  /**
+   * A session was committed by `/consume` or revoked (desktop button or the
+   * web client's own DELETE). The event carries no payload; re-read both the
+   * list and the status (deviceCount) exactly once.
+   */
+  const onDevicesChanged = useCallback(() => {
+    void refreshDevices();
+    void webAccessApi
+      .status()
+      .then((next) => {
+        if (mountedRef.current) setStatus(next);
+      })
+      .catch(() => {
+        /* status will be refreshed on the next explicit action */
+      });
+  }, [refreshDevices]);
+
   useEffect(() => {
     mountedRef.current = true;
     void refresh();
@@ -297,6 +315,7 @@ export function useWebAccess() {
     let disposed = false;
     let unlistenState: UnlistenFn | undefined;
     let unlistenPairing: UnlistenFn | undefined;
+    let unlistenDevices: UnlistenFn | undefined;
 
     const registerState = async () => {
       try {
@@ -328,16 +347,30 @@ export function useWebAccess() {
       }
     };
 
+    const registerDevices = async () => {
+      try {
+        const off = await listen(WEB_ACCESS_DEVICES_EVENT, () => {
+          if (!disposed) onDevicesChanged();
+        });
+        if (disposed) off();
+        else unlistenDevices = off;
+      } catch {
+        /* Not inside Tauri (browser preview); snapshots still load on click. */
+      }
+    };
+
     void registerState();
     void registerPairing();
+    void registerDevices();
 
     return () => {
       disposed = true;
       mountedRef.current = false;
       unlistenState?.();
       unlistenPairing?.();
+      unlistenDevices?.();
     };
-  }, [onPairingEvent, onStateEvent, refresh]);
+  }, [onDevicesChanged, onPairingEvent, onStateEvent, refresh]);
 
   const clearError = useCallback(() => setError(null), []);
 

@@ -436,6 +436,12 @@ impl PairingState {
             .map(|claim| claim.device_name.clone())
     }
 
+    /// Claim-time peer IPv4, captured by the HTTP layer from the socket (never
+    /// a header). Only the desktop device list renders it.
+    pub(crate) fn claim_source_ip_locked(&self, claim_id: &str) -> Option<Ipv4Addr> {
+        self.claims.get(claim_id).map(|claim| claim.source_ip)
+    }
+
     fn deny_locked(&mut self, claim_id: &str, now: Instant) -> Result<(), PairingError> {
         let (pairing_id, state) = match self.claims.get(claim_id) {
             Some(claim) => (claim.pairing_id.clone(), claim.state),

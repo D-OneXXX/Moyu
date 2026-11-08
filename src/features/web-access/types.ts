@@ -57,8 +57,15 @@ export interface PairingStateView {
 }
 
 export interface DeviceView {
-  id: string;
+  /** Session id used by revoke; never a token or hash. */
+  sessionId: string;
   deviceName: string;
+  /** Parsed from the consume-time User-Agent (`iOS Safari`, `Android Chrome`…). */
+  platform: string;
+  /** Claim-time private IPv4; null only for sessions issued by tests. */
+  sourceIp: string | null;
+  createdAtUnixMs: number;
+  lastActiveAtUnixMs: number;
   issuedAtUnixMs: number;
   expiresAtUnixMs: number;
   absoluteExpiresAtUnixMs: number;
@@ -76,3 +83,7 @@ export interface PairingEventView {
 /** Event names emitted by the Rust runtime (UI wake-up only). */
 export const WEB_ACCESS_STATE_EVENT = "web-access-state";
 export const WEB_ACCESS_PAIRING_EVENT = "web-access-pairing-event";
+/** Payload-free wake-up: a session was committed or revoked. */
+export const WEB_ACCESS_DEVICES_EVENT = "web-access-devices-changed";
+/** Tray start/stop failure; payload is a backend message with a stable code. */
+export const WEB_ACCESS_TRAY_ERROR_EVENT = "web-access-tray-error";

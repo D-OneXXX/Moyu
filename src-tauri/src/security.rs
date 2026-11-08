@@ -147,7 +147,19 @@ pub async fn security_audit(
     let isolation = audit_isolation(&app);
     let proxy = state.settings.lock().online_proxy.clone();
     let network = audit_network(&proxy);
-    let storage = audit_storage(&app, state.inner());
+    // Disk byte totals enumerate cache directories; keep that work off the
+    // async command executor while preserving a fail-closed audit result.
+    let storage_app = app.clone();
+    let storage_state = state.inner().clone();
+    let storage = tokio::task::spawn_blocking(move || audit_storage(&storage_app, &storage_state))
+        .await
+        .unwrap_or(StorageAudit {
+            status: SecurityStatus::Fail,
+            memory_cache_bytes: 0,
+            disk_cache_bytes: 0,
+            live_webviews: 0,
+            session_headers_in_memory: session_headers_in_memory(state.inner()),
+        });
 
     let overall = [
         update.status,
@@ -176,13 +188,7 @@ pub async fn clear_online_traces(
     app: tauri::AppHandle,
     state: tauri::State<'_, std::sync::Arc<crate::AppState>>,
 ) -> Result<ClearTracesResult, String> {
-    let before = cache_totals(state.inner());
-
-    state.cache.clear_pages();
-    state.cache.clear_thumbs();
-    state.webtoon_layouts.lock().clear();
-    state.render.clear_all();
-    state.online_cache.clear_all();
+    let cache_state = state.inner().clone();
     *state.session_online_headers.lock() = None;
     // 辅助会话（受控 WebView 验证后的 UA/用户自备请求头）同样只驻留内存，
     // 清理在线痕迹时必须一起作废。
@@ -190,7 +196,21 @@ pub async fn clear_online_traces(
     // 池中的 transport 仍可能内嵌旧 Cookie/请求头；必须整体作废，
     // 否则清理后继续阅读会复用已清除凭据的句柄。
     state.invalidate_sources();
-    state.trim_disk_cache();
+
+    // Both disk cache clearing and LRU trimming enumerate/delete files. Keep
+    // the full cache operation on Tokio's blocking pool.
+    let before = tokio::task::spawn_blocking(move || {
+        let before = cache_totals(&cache_state);
+        cache_state.cache.clear_pages();
+        cache_state.cache.clear_thumbs();
+        cache_state.webtoon_layouts.lock().clear();
+        cache_state.render.clear_all();
+        cache_state.online_cache.clear_all();
+        cache_state.trim_disk_cache();
+        before
+    })
+    .await
+    .map_err(|_| "无法清理在线缓存（cache-clear-failed）".to_string())?;
 
     let windows = app.webview_windows();
     let mut webviews_cleared: u32 = 0;
@@ -203,7 +223,10 @@ pub async fn clear_online_traces(
         return Err("无法清除 WebView 浏览数据".to_string());
     }
 
-    let after = cache_totals(state.inner());
+    let after_state = state.inner().clone();
+    let after = tokio::task::spawn_blocking(move || cache_totals(&after_state))
+        .await
+        .map_err(|_| "无法清理在线缓存（cache-clear-failed）".to_string())?;
     let bytes_freed = before
         .0
         .saturating_add(before.1)
@@ -475,14 +498,18 @@ fn cache_totals(state: &AppState) -> (u64, u64) {
     )
 }
 
-fn read_storage_evidence(app: &AppHandle, state: &AppState) -> (u64, u64, u32, bool) {
-    let (memory_cache_bytes, disk_cache_bytes) = cache_totals(state);
-    let live_webviews = app.webview_windows().len().min(u32::MAX as usize) as u32;
-    let session_headers_in_memory = state
+fn session_headers_in_memory(state: &AppState) -> bool {
+    state
         .session_online_headers
         .lock()
         .as_deref()
-        .is_some_and(|headers| !headers.trim().is_empty());
+        .is_some_and(|headers| !headers.trim().is_empty())
+}
+
+fn read_storage_evidence(app: &AppHandle, state: &AppState) -> (u64, u64, u32, bool) {
+    let (memory_cache_bytes, disk_cache_bytes) = cache_totals(state);
+    let live_webviews = app.webview_windows().len().min(u32::MAX as usize) as u32;
+    let session_headers_in_memory = session_headers_in_memory(state);
     (
         memory_cache_bytes,
         disk_cache_bytes,
@@ -514,7 +541,7 @@ fn audit_storage(app: &AppHandle, state: &AppState) -> StorageAudit {
             memory_cache_bytes: 0,
             disk_cache_bytes: 0,
             live_webviews: 0,
-            session_headers_in_memory: false,
+            session_headers_in_memory: session_headers_in_memory(state),
         },
     }
 }

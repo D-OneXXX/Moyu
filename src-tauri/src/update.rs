@@ -38,6 +38,24 @@ const CHUNK_WAIT: Duration = Duration::from_millis(750);
 /// 连续约 5 分钟收不到数据视为下载停滞（配合 10 分钟总超时）。
 const MAX_IDLE_WAITS: u32 = 400;
 const UPDATE_DIR_NAME: &str = "mangareader-updates";
+
+/// 共享系统临时目录下的更新子目录名。
+///
+/// Unix 上附加有效 UID，避免另一个系统用户预建的目录（sticky /tmp 下当前
+/// 用户无法删除）把本用户的更新通道永久卡死；Windows 临时目录本就按用户
+/// 隔离，保持原名。
+fn update_dir_name() -> String {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        format!("{UPDATE_DIR_NAME}-{euid}")
+    }
+    #[cfg(not(unix))]
+    {
+        UPDATE_DIR_NAME.to_string()
+    }
+}
 const PENDING_INSTALL_FILE: &str = "pending-install.json";
 const FALLBACK_FILE_STEM: &str = "MangaReader-update";
 
@@ -1056,7 +1074,7 @@ fn verify_manifest_signature_with(
 /// 非目录、拒绝非当前用户所有（Linux），并在 Unix 上收紧到 0700 后读回验证。
 /// 任何校验/创建失败都返回错误，绝不带着可疑目录继续下载。
 fn prepare_update_dir(base: &Path) -> Result<PathBuf, String> {
-    let dir = base.join(UPDATE_DIR_NAME);
+    let dir = base.join(update_dir_name());
     match std::fs::symlink_metadata(&dir) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1137,7 +1155,7 @@ fn cleanup_older_than(dir: &Path, now: SystemTime, max_age: Duration) -> usize {
 /// `.old-appimage` 备份只在替换失败时用于回滚，能走到下一次启动说明
 /// 新版本已成功运行，旧备份可以安全删除。
 pub fn cleanup_stale_artifacts() {
-    let dir = std::env::temp_dir().join(UPDATE_DIR_NAME);
+    let dir = std::env::temp_dir().join(update_dir_name());
     let removed = cleanup_older_than(&dir, SystemTime::now(), STALE_UPDATE_AGE);
     if removed > 0 {
         crate::logging::log_error("update", &format!("已清理 {removed} 个陈旧更新临时文件"));
@@ -1155,7 +1173,7 @@ pub fn cleanup_stale_artifacts() {
 
 fn pending_install_path() -> Result<PathBuf, String> {
     Ok(std::env::temp_dir()
-        .join(UPDATE_DIR_NAME)
+        .join(update_dir_name())
         .join(PENDING_INSTALL_FILE))
 }
 
@@ -1975,12 +1993,25 @@ fn verify_and_spawn_install(stored: &StoredArtifact) -> Result<(), String> {
         .path
         .parent()
         .ok_or_else(|| "更新安装包路径无效".to_string())?;
-    let canonical_root = std::fs::canonicalize(&update_root)
-        .map_err(|err| format!("无法定位更新缓存目录：{err}"))?;
-    let canonical_parent =
-        std::fs::canonicalize(parent).map_err(|err| format!("无法定位更新安装包目录：{err}"))?;
+    let canonical_root = match std::fs::canonicalize(&update_root) {
+        Ok(path) => path,
+        Err(err) => {
+            // 临时目录可能已被系统清理（Storage Sense / tmpfiles.d）。与
+            // NotFound 分支一致，清掉 ready 让用户重新下载，而不是永久卡住。
+            clear_ready_path(&stored.path);
+            return Err(format!("无法定位更新缓存目录，请重新下载：{err}"));
+        }
+    };
+    let canonical_parent = match std::fs::canonicalize(parent) {
+        Ok(path) => path,
+        Err(err) => {
+            clear_ready_path(&stored.path);
+            return Err(format!("无法定位更新安装包目录，请重新下载：{err}"));
+        }
+    };
     if canonical_parent != canonical_root {
-        return Err("更新安装包不在受控临时目录，已拒绝安装".to_string());
+        clear_ready_path(&stored.path);
+        return Err("更新安装包不在受控临时目录，请重新下载".to_string());
     }
 
     match std::fs::metadata(&stored.path) {
@@ -2661,7 +2692,7 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
         let base = unique_update_dir_base("symlink");
         let target = base.join("attacker-target");
         std::fs::create_dir_all(&target).unwrap();
-        std::os::unix::fs::symlink(&target, base.join(UPDATE_DIR_NAME)).unwrap();
+        std::os::unix::fs::symlink(&target, base.join(update_dir_name())).unwrap();
         let error = prepare_update_dir(&base).expect_err("符号链接目录必须拒绝");
         assert!(error.contains("符号链接"), "{error}");
         std::fs::remove_dir_all(&base).ok();
@@ -2672,7 +2703,7 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
     fn update_dir_tightens_permissions_to_0700() {
         use std::os::unix::fs::PermissionsExt;
         let base = unique_update_dir_base("perm");
-        let dir = base.join(UPDATE_DIR_NAME);
+        let dir = base.join(update_dir_name());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
         let prepared = prepare_update_dir(&base).expect("普通目录应通过校验");
@@ -2685,7 +2716,7 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
     #[test]
     fn update_dir_rejects_non_directory_path() {
         let base = unique_update_dir_base("file");
-        std::fs::write(base.join(UPDATE_DIR_NAME), b"not-a-dir").unwrap();
+        std::fs::write(base.join(update_dir_name()), b"not-a-dir").unwrap();
         let error = prepare_update_dir(&base).expect_err("同名文件必须拒绝");
         assert!(error.contains("不是目录"), "{error}");
         std::fs::remove_dir_all(&base).ok();

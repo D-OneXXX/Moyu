@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   BookOpen,
@@ -9,6 +15,7 @@ import {
   Gauge,
   Globe2,
   HardDrive,
+  Image as ImageIcon,
   Info,
   Keyboard,
   Loader2,
@@ -16,6 +23,7 @@ import {
   Moon,
   Palette,
   RefreshCw,
+  RotateCcw,
   Save,
   ScanLine,
   ShieldCheck,
@@ -23,6 +31,7 @@ import {
   Sun,
   Trash2,
   TrendingUp,
+  Upload,
   Wifi,
   type LucideIcon,
 } from "lucide-react";
@@ -78,6 +87,16 @@ import SupportPanel from "@/components/settings/SupportPanel";
 import OnlineFilterPanel from "@/components/settings/OnlineFilterPanel";
 import OpdsPanel from "@/components/settings/OpdsPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
+import AppBrandIcon from "@/components/shell/AppBrandIcon";
+import { useBrandIcon } from "@/features/brand/BrandIconProvider";
+import {
+  BRAND_ICON_PRESETS,
+  CustomBrandIconError,
+  loadCustomBrandIcon,
+  type BrandIconPreset,
+  type BrandIconSelection,
+  type CustomBrandIconErrorCode,
+} from "@/features/brand/brandIcon";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { recordBreadcrumb } from "@/features/resilience";
 import ErrorState from "@/components/ErrorState";
@@ -128,6 +147,20 @@ const THEME_OPTIONS: ReadonlyArray<{
     icon: Moon,
   },
 ];
+
+const BRAND_ICON_LABEL_KEYS: Record<BrandIconPreset, MessageKey> = {
+  book: "settings.brandIcon.presetBook",
+  fish: "settings.brandIcon.presetFish",
+  moon: "settings.brandIcon.presetMoon",
+  wave: "settings.brandIcon.presetWave",
+};
+
+const BRAND_ICON_ERROR_KEYS: Record<CustomBrandIconErrorCode, MessageKey> = {
+  type: "settings.brandIcon.errorType",
+  size: "settings.brandIcon.errorSize",
+  dimension: "settings.brandIcon.errorDimension",
+  read: "settings.brandIcon.errorRead",
+};
 
 function normalizeTheme(value: string): ThemeMode {
   return value === "light" || value === "dark" || value === "system"
@@ -285,6 +318,13 @@ export default function SettingsPage() {
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [dashLoading, setDashLoading] = useState(true);
   const [dashError, setDashError] = useState<string | null>(null);
+  const {
+    selection: brandIcon,
+    setSelection: setBrandIcon,
+    reset: resetBrandIcon,
+  } = useBrandIcon();
+  const [brandIconBusy, setBrandIconBusy] = useState(false);
+  const brandIconInputRef = useRef<HTMLInputElement | null>(null);
 
   // 最近一次成功读/写数据库的完整设置；保存时作为底稿保留隐藏字段。
   const loadedRef = useRef<Settings | null>(null);
@@ -305,6 +345,42 @@ export default function SettingsPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
   }
+
+  const applyBrandIcon = useCallback(
+    (next: BrandIconSelection) => {
+      if (!setBrandIcon(next)) {
+        toast(t("settings.brandIcon.errorSave"));
+        return;
+      }
+      // 仅记录动作类型；绝不把自定义 data URL 写进操作轨迹。
+      recordBreadcrumb("settingsChange");
+    },
+    [setBrandIcon, t],
+  );
+
+  const onBrandIconFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || brandIconBusy) return;
+    setBrandIconBusy(true);
+    try {
+      applyBrandIcon(await loadCustomBrandIcon(file));
+    } catch (error) {
+      const code =
+        error instanceof CustomBrandIconError ? error.code : "read";
+      toast(t(BRAND_ICON_ERROR_KEYS[code]));
+    } finally {
+      setBrandIconBusy(false);
+    }
+  };
+
+  const onResetBrandIcon = () => {
+    if (!resetBrandIcon()) {
+      toast(t("settings.brandIcon.errorSave"));
+      return;
+    }
+    recordBreadcrumb("settingsChange");
+  };
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current;
@@ -815,6 +891,104 @@ export default function SettingsPage() {
               </div>
               <p className="text-xs text-muted-foreground">
                 {t("settings.theme.systemNote")}
+              </p>
+            </SettingsSection>
+
+            <SettingsSection
+              icon={ImageIcon}
+              title={t("settings.brandIcon.title")}
+              description={t("settings.brandIcon.description")}
+            >
+              <input
+                ref={brandIconInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="sr-only"
+                aria-label={t("settings.brandIcon.upload")}
+                onChange={onBrandIconFile}
+              />
+              <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-background/60 px-3 py-3">
+                <AppBrandIcon className="size-10" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">
+                    {t("settings.brandIcon.current")}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {brandIcon.kind === "custom"
+                      ? t("settings.brandIcon.customActive")
+                      : t(BRAND_ICON_LABEL_KEYS[brandIcon.preset])}
+                  </p>
+                </div>
+              </div>
+              <div
+                role="group"
+                aria-label={t("settings.brandIcon.groupLabel")}
+                className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
+              >
+                {BRAND_ICON_PRESETS.map((preset) => {
+                  const active =
+                    brandIcon.kind === "preset" && brandIcon.preset === preset;
+                  return (
+                    <Button
+                      key={preset}
+                      type="button"
+                      aria-pressed={active}
+                      variant={active ? "pill-primary" : "pill"}
+                      size="pill"
+                      className="h-auto w-full min-w-0 items-center justify-start gap-2 rounded-2xl px-4 py-3 text-left"
+                      onClick={() => applyBrandIcon({ kind: "preset", preset })}
+                      disabled={brandIconBusy || saving}
+                    >
+                      <AppBrandIcon
+                        selection={{ kind: "preset", preset }}
+                        className="size-9"
+                      />
+                      <span className="min-w-0 font-semibold">
+                        {t(BRAND_ICON_LABEL_KEYS[preset])}
+                      </span>
+                      {active ? (
+                        <Check className="ml-auto size-4 shrink-0" />
+                      ) : null}
+                    </Button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="pill"
+                  onClick={() => brandIconInputRef.current?.click()}
+                  disabled={brandIconBusy || saving}
+                >
+                  <Upload className="size-4" />
+                  {t(
+                    brandIcon.kind === "custom"
+                      ? "settings.brandIcon.replace"
+                      : "settings.brandIcon.upload",
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="pill"
+                  onClick={onResetBrandIcon}
+                  disabled={
+                    brandIconBusy ||
+                    saving ||
+                    (brandIcon.kind === "preset" &&
+                      brandIcon.preset === "book")
+                  }
+                >
+                  <RotateCcw className="size-4" />
+                  {t("settings.brandIcon.reset")}
+                </Button>
+                {brandIconBusy ? (
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                ) : null}
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t("settings.brandIcon.hint")}
               </p>
             </SettingsSection>
 

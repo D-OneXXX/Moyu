@@ -49,6 +49,28 @@ const zhCN = {
   "settings.theme.systemNote":
     "「跟随系统」会随操作系统的深浅色自动切换。",
 
+  "settings.brandIcon.title": "品牌图标",
+  "settings.brandIcon.description":
+    "选择内置图标或上传自己的图片；切换后顶栏立即更新。",
+  "settings.brandIcon.current": "当前图标",
+  "settings.brandIcon.groupLabel": "品牌图标选择",
+  "settings.brandIcon.presetBook": "开卷",
+  "settings.brandIcon.presetFish": "墨鱼",
+  "settings.brandIcon.presetMoon": "夜读",
+  "settings.brandIcon.presetWave": "潮汐",
+  "settings.brandIcon.upload": "选择自定义图标",
+  "settings.brandIcon.replace": "更换自定义图标",
+  "settings.brandIcon.reset": "恢复默认",
+  "settings.brandIcon.customActive": "自定义图标",
+  "settings.brandIcon.hint":
+    "图标只保存在本机，不会上传或写入日志。支持 PNG / JPEG / WebP，文件不超过 200 KiB，单边不超过 1024 px。",
+  "settings.brandIcon.errorType": "请选择 PNG、JPEG 或 WebP 图片。",
+  "settings.brandIcon.errorSize": "图片不能超过 200 KiB。",
+  "settings.brandIcon.errorDimension": "图片单边不能超过 1024 px。",
+  "settings.brandIcon.errorRead": "无法读取这张图片，请换一张。",
+  "settings.brandIcon.errorSave":
+    "无法保存图标偏好，请检查本机存储权限。",
+
   "settings.experimental.webtoonTitle": "条漫模式",
   "settings.experimental.webtoonDescription":
     "韩漫长条纵向连续滚动，在单页 / 双页之外提供第三版式。",
@@ -438,6 +460,28 @@ const zhTW: SettingsMessages = {
   "settings.theme.systemNote":
     "「跟隨系統」會隨作業系統的深淺色自動切換。",
 
+  "settings.brandIcon.title": "品牌圖示",
+  "settings.brandIcon.description":
+    "選擇內建圖示或上傳自己的圖片；切換後頂欄立即更新。",
+  "settings.brandIcon.current": "目前圖示",
+  "settings.brandIcon.groupLabel": "品牌圖示選擇",
+  "settings.brandIcon.presetBook": "開卷",
+  "settings.brandIcon.presetFish": "墨魚",
+  "settings.brandIcon.presetMoon": "夜讀",
+  "settings.brandIcon.presetWave": "潮汐",
+  "settings.brandIcon.upload": "選擇自訂圖示",
+  "settings.brandIcon.replace": "更換自訂圖示",
+  "settings.brandIcon.reset": "恢復預設",
+  "settings.brandIcon.customActive": "自訂圖示",
+  "settings.brandIcon.hint":
+    "圖示只保存在本機，不會上傳或寫入日誌。支援 PNG / JPEG / WebP，檔案不超過 200 KiB，單邊不超過 1024 px。",
+  "settings.brandIcon.errorType": "請選擇 PNG、JPEG 或 WebP 圖片。",
+  "settings.brandIcon.errorSize": "圖片不能超過 200 KiB。",
+  "settings.brandIcon.errorDimension": "圖片單邊不能超過 1024 px。",
+  "settings.brandIcon.errorRead": "無法讀取這張圖片，請換一張。",
+  "settings.brandIcon.errorSave":
+    "無法保存圖示偏好，請檢查本機儲存權限。",
+
   "settings.experimental.webtoonTitle": "條漫模式",
   "settings.experimental.webtoonDescription":
     "韓漫長條縱向連續捲動，在單頁 / 雙頁之外提供第三種版面。",
@@ -826,6 +870,30 @@ const en: SettingsMessages = {
   "settings.theme.darkHint": "Midnight cockpit",
   "settings.theme.systemNote":
     "“System” follows your operating system's light and dark appearance automatically.",
+
+  "settings.brandIcon.title": "Brand icon",
+  "settings.brandIcon.description":
+    "Pick a built-in icon or upload your own image. Changes appear in the top bar immediately.",
+  "settings.brandIcon.current": "Current icon",
+  "settings.brandIcon.groupLabel": "Brand icon selection",
+  "settings.brandIcon.presetBook": "Open book",
+  "settings.brandIcon.presetFish": "Ink fish",
+  "settings.brandIcon.presetMoon": "Night read",
+  "settings.brandIcon.presetWave": "Tide",
+  "settings.brandIcon.upload": "Choose custom icon",
+  "settings.brandIcon.replace": "Replace custom icon",
+  "settings.brandIcon.reset": "Restore default",
+  "settings.brandIcon.customActive": "Custom icon",
+  "settings.brandIcon.hint":
+    "The icon stays on this device and is never uploaded or written to logs. PNG / JPEG / WebP, up to 200 KiB, max 1024 px per side.",
+  "settings.brandIcon.errorType": "Choose a PNG, JPEG or WebP image.",
+  "settings.brandIcon.errorSize": "The image must be 200 KiB or smaller.",
+  "settings.brandIcon.errorDimension":
+    "Each side must be 1024 px or smaller.",
+  "settings.brandIcon.errorRead":
+    "Could not read this image. Try another file.",
+  "settings.brandIcon.errorSave":
+    "Could not save the icon preference. Check local storage permissions.",
 
   "settings.experimental.webtoonTitle": "Webtoon mode",
   "settings.experimental.webtoonDescription":
@@ -1229,6 +1297,30 @@ const es: SettingsMessages = {
   "settings.theme.darkHint": "Cabina nocturna",
   "settings.theme.systemNote":
     "«Sistema» sigue automáticamente el modo claro u oscuro del sistema operativo.",
+
+  "settings.brandIcon.title": "Icono de marca",
+  "settings.brandIcon.description":
+    "Elige un icono integrado o sube tu propia imagen. El cambio aparece al instante en la barra superior.",
+  "settings.brandIcon.current": "Icono actual",
+  "settings.brandIcon.groupLabel": "Selección del icono de marca",
+  "settings.brandIcon.presetBook": "Libro abierto",
+  "settings.brandIcon.presetFish": "Pez tinta",
+  "settings.brandIcon.presetMoon": "Lectura nocturna",
+  "settings.brandIcon.presetWave": "Marea",
+  "settings.brandIcon.upload": "Elegir icono personalizado",
+  "settings.brandIcon.replace": "Cambiar icono personalizado",
+  "settings.brandIcon.reset": "Restaurar predeterminado",
+  "settings.brandIcon.customActive": "Icono personalizado",
+  "settings.brandIcon.hint":
+    "El icono permanece en este dispositivo y nunca se sube ni se escribe en los registros. PNG / JPEG / WebP, hasta 200 KiB y 1024 px por lado.",
+  "settings.brandIcon.errorType": "Elige una imagen PNG, JPEG o WebP.",
+  "settings.brandIcon.errorSize": "La imagen no puede superar 200 KiB.",
+  "settings.brandIcon.errorDimension":
+    "Cada lado debe medir 1024 px o menos.",
+  "settings.brandIcon.errorRead":
+    "No se pudo leer esta imagen. Prueba con otro archivo.",
+  "settings.brandIcon.errorSave":
+    "No se pudo guardar el icono. Revisa los permisos de almacenamiento local.",
 
   "settings.experimental.webtoonTitle": "Modo webtoon",
   "settings.experimental.webtoonDescription":
@@ -1648,6 +1740,30 @@ const ja: SettingsMessages = {
   "settings.theme.systemNote":
     "「システム」は OS のライト / ダークに合わせて自動で切り替わります。",
 
+  "settings.brandIcon.title": "ブランドアイコン",
+  "settings.brandIcon.description":
+    "内蔵アイコンを選ぶか、画像をアップロードします。変更は上部バーにすぐ反映されます。",
+  "settings.brandIcon.current": "現在のアイコン",
+  "settings.brandIcon.groupLabel": "ブランドアイコンの選択",
+  "settings.brandIcon.presetBook": "開いた本",
+  "settings.brandIcon.presetFish": "墨魚",
+  "settings.brandIcon.presetMoon": "夜読み",
+  "settings.brandIcon.presetWave": "潮汐",
+  "settings.brandIcon.upload": "カスタムアイコンを選択",
+  "settings.brandIcon.replace": "カスタムアイコンを変更",
+  "settings.brandIcon.reset": "既定に戻す",
+  "settings.brandIcon.customActive": "カスタムアイコン",
+  "settings.brandIcon.hint":
+    "アイコンはこの端末にのみ保存され、アップロードやログ出力は行いません。PNG / JPEG / WebP、200 KiB 以下、各辺 1024 px 以下。",
+  "settings.brandIcon.errorType":
+    "PNG、JPEG、WebP の画像を選択してください。",
+  "settings.brandIcon.errorSize": "画像は 200 KiB 以下にしてください。",
+  "settings.brandIcon.errorDimension": "各辺は 1024 px 以下にしてください。",
+  "settings.brandIcon.errorRead":
+    "この画像を読み取れません。別のファイルをお試しください。",
+  "settings.brandIcon.errorSave":
+    "アイコン設定を保存できません。ローカルストレージの権限を確認してください。",
+
   "settings.experimental.webtoonTitle": "Webtoon モード",
   "settings.experimental.webtoonDescription":
     "縦長作品を途切れず縦スクロール。単ページ / 見開きに続く第 3 のレイアウトです。",
@@ -2063,6 +2179,30 @@ const ko: SettingsMessages = {
   "settings.theme.darkHint": "한밤의 콕핏",
   "settings.theme.systemNote":
     "「시스템」은 운영체제의 라이트/다크 모드를 자동으로 따릅니다.",
+
+  "settings.brandIcon.title": "브랜드 아이콘",
+  "settings.brandIcon.description":
+    "내장 아이콘을 선택하거나 직접 이미지를 업로드하세요. 변경 사항은 상단 바에 즉시 반영됩니다.",
+  "settings.brandIcon.current": "현재 아이콘",
+  "settings.brandIcon.groupLabel": "브랜드 아이콘 선택",
+  "settings.brandIcon.presetBook": "펼친 책",
+  "settings.brandIcon.presetFish": "먹물고기",
+  "settings.brandIcon.presetMoon": "밤 읽기",
+  "settings.brandIcon.presetWave": "조수",
+  "settings.brandIcon.upload": "사용자 아이콘 선택",
+  "settings.brandIcon.replace": "사용자 아이콘 변경",
+  "settings.brandIcon.reset": "기본값 복원",
+  "settings.brandIcon.customActive": "사용자 아이콘",
+  "settings.brandIcon.hint":
+    "아이콘은 이 기기에만 저장되며 업로드되거나 로그에 기록되지 않습니다. PNG / JPEG / WebP, 200 KiB 이하, 각 변 1024 px 이하.",
+  "settings.brandIcon.errorType":
+    "PNG, JPEG 또는 WebP 이미지를 선택하세요.",
+  "settings.brandIcon.errorSize": "이미지는 200 KiB 이하여야 합니다.",
+  "settings.brandIcon.errorDimension": "각 변은 1024 px 이하여야 합니다.",
+  "settings.brandIcon.errorRead":
+    "이미지를 읽을 수 없습니다. 다른 파일을 선택하세요.",
+  "settings.brandIcon.errorSave":
+    "아이콘 설정을 저장할 수 없습니다. 로컬 저장소 권한을 확인하세요.",
 
   "settings.experimental.webtoonTitle": "웹툰 모드",
   "settings.experimental.webtoonDescription":

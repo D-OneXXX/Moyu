@@ -1883,6 +1883,7 @@ export function checkStorageWhitelist(root, report) {
 
   // 非存储用途的 mr-* 标识（事件名 / 状态名 / 广播名），不属于 localStorage 键。
   const nonStorage = new Set([
+    "mr-brand-icon-change",
     "mr-focus-library-search",
     "mr-online-handoff-state",
     "mr-online-last-test-updated",

@@ -40,6 +40,7 @@ use super::pairing::{ClaimIssued, ClaimState, PairingError};
 use super::progress_write::{ProgressHttp, WebProgressWrite};
 use super::secret::random_hex;
 use super::session::SessionIssued;
+use super::session_auth::session_cookie_header;
 
 pub(crate) const HEALTH_PATH: &str = "/api/health";
 pub(crate) const CLAIM_ROUTE: &str = "/api/pair/claim";
@@ -47,10 +48,8 @@ pub(crate) const CLAIM_POLL_PREFIX: &str = "/api/pair/claim/";
 pub(crate) const CONSUME_SUFFIX: &str = "/consume";
 
 pub(crate) const CLAIM_COOKIE: &str = "moyu_claim";
-pub(crate) const SESSION_COOKIE: &str = "moyus_session";
 const CLAIM_COOKIE_PATH: &str = "/api/pair/claim";
 const CLAIM_COOKIE_MAX_AGE: u64 = 120;
-const SESSION_COOKIE_MAX_AGE: u64 = 2_592_000;
 pub(crate) const MAX_CLAIM_BODY_BYTES: usize = 4096;
 
 /// A read-only status poll may wait this long for `pending` to change. The
@@ -604,12 +603,6 @@ fn claim_cookie_header(secret: &str) -> String {
 fn clear_claim_cookie_header() -> String {
     format!(
         "{CLAIM_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path={CLAIM_COOKIE_PATH}; Max-Age=0"
-    )
-}
-
-fn session_cookie_header(token: &str) -> String {
-    format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}"
     )
 }
 

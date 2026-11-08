@@ -197,6 +197,8 @@
 | P-028 | 自动抓取、后台批量爬虫、验证码破解 | 合规与封禁风险 |
 | P-029 | 在公开仓文档中引用 `AGENTS.md`、内部 QA 套件或发布工作流 | 公开快照文件缺失，文档自洽性破坏 |
 | P-030 | 把完整历史或内部工程文件推到公开仓 | 暴露内部治理、破坏公开快照边界 |
+| P-031 | 在 `storageSanitizer` 的 `KEY_RULES` 里没登记的 localStorage 键 | 启动即被当未知键删除，用户选择「保存了但重启就没」；皮肤偏好曾长期命中此坑 |
+| P-032 | 直接改写 EXE 的 PE 资源来换图标 | 破坏 Minisign 签名与官方 Updater，升级链断裂 |
 
 ---
 
@@ -283,3 +285,33 @@
 - PR #231：首轮必需检查全部通过（Analyze / CodeQL / PR governance / build + rust check）；mergeStateStatus CLEAN；本次 01 更新后重跑。
 - 提交格式采用“Conventional 主题 + `[RELAY]` 正文”。
 - 本轮仅新增控制面文档，不改业务代码。
+
+### 2026-11-08 · Task 3 / Task 7（品牌冻结 + 系统级图标 + 画框包裹式换肤）
+
+#### ADR-033 · 系统级图标走 Shell Link，绝不改写 EXE 资源
+- 日期：2026-11-08
+- 状态：ACCEPTED
+- 背景：用户要换的是桌面快捷方式、任务栏与托盘的系统级图标。最直觉的做法是改写 EXE 的 PE 图标资源，但发布产物带 Minisign 签名，官方 Updater 会校验它——改资源等于让升级链断掉。
+- 决策：新增 `src-tauri/src/desktop_icon.rs`。后端校验图片魔数与 2 MiB 上限，用 `image` 的 ICO 编码器生成 16/32/48/256 多尺寸 `active.ico` 存到 `<app_data_dir>/icons/`，再用 Windows Shell Link COM（`IShellLinkW` + `IPersistFile`）把桌面与开始菜单的 `.lnk` 图标位置指向该文件，随后 `SHChangeNotify(SHCNE_ASSOCCHANGED)` 刷新桌面图标缓存，并同步 `WebviewWindow::set_icon` 与 `TrayIcon::set_icon`。EXE 一个字节都不动。
+- 放弃方案：改写 PE 资源；用自制的 `.lnk` 二进制解析器（不碰 COM）；给快捷方式做图标缓存预热。
+- 后果：`windows` crate 只新增 `Win32_System_Com` + `Win32_UI_Shell` 两个 feature（该 crate 本就是既有 Windows 专用依赖，无新第三方包，Cargo.lock 不变）；非 Windows 平台降级为「只更新窗口与托盘」并如实上报不支持；`image` 启用 `ico` feature（内含 bmp 解码，无新第三方包）。
+
+#### ADR-034 · 画框包裹式换肤：整窗画布 + 内嵌视窗，禁用漂浮挂件
+- 日期：2026-11-08
+- 状态：ACCEPTED
+- 背景：旧的「角色挂件」装饰层把美术摆在内容之上，天然存在遮挡列表与文字的风险；用户要求改成「整片窗口是一张主题画布，功能区是内嵌视窗」。
+- 决策：删除 `ThemeDecorationLayer` 与全部 `mr-decoration-*` 槽位，改为 `SkinCanvasFrame`（100vw × 100vh 画布：背景层 + 外框层，均 `pointer-events: none`）与 `ContentViewport`（`--mr-skin-viewport-inset` 控制内缩、圆角、毛玻璃叠加层与画框投影）两层骨架。美术只画在画布上，视窗压在其上，因此角色与插画只能出现在视窗外围，永远压不到内容。沉浸式阅读路由不挂载视窗，天然全屏无边距。
+- 放弃方案：继续用绝对定位挂件槽位；用 `clip-path` / `mask` 在视窗上方开洞（合成层差异大，且失败时可能盖住内容）；把背景图直接铺在内容容器上（失去画框层次）。
+- 后果：皮肤 token 统一收敛到 `--mr-skin-*`；素材只有两条合法通道（`public/skins/` 随包静态文件、后端校验后的 `data:` URL），生产 CSP `img-src 'self' data:` 不变；`Skin Viewport Guard` 用无头 Chrome 断言顶栏、搜索框、书库卡片在非零内缩下仍完全可见可点击，且阅读路由恢复全屏。
+
+#### ADR-035 · 左上角品牌标识冻结在 0.19.1 原版；应用图标偏好只作用在系统级图标
+- 日期：2026-11-08
+- 状态：ACCEPTED
+- 背景：品牌图标偏好原先同时驱动左上角 UI 标识与托盘。用户明确要求左上角保持 0.19.1 发布版的原版图形（纯内联 SVG、固定配色、不可替换），可替换能力只留给系统级图标。
+- 决策：`AppBrandIcon` 改为纯展示组件（不再读取偏好上下文），`BrandLogo` 固定渲染 `moyu` 预设——即 v0.19.1 的原始路径与配色逐字照搬；偏好模型改称「应用图标」，只驱动桌面快捷方式、任务栏与托盘。品牌展示名收敛为单一常量 `BRAND_DISPLAY_NAME`，新增 `static:release-surface` 守卫（`scripts/release-surface.mjs`，Vite 配置加载时也执行一次）同时守住升级身份锚点与六语品牌名。
+- 放弃方案：保留左上角的动态替换；只靠文案约定而不做守卫；把守卫只放在 CI 而不放在构建入口。
+- 后果：`settings.brandIcon.*` 命名空间整体迁移为 `settings.desktopIcon.*`（六语同步）；`mr-brand-icon` 偏好值上限从 200 KiB 放宽到 2 MiB，与后端校验同口径。
+
+#### 附带修复
+- `storageSanitizer` 补登 `mr-skin` 键规则：此前皮肤偏好每次启动都被当未知键删除，用户的皮肤选择根本存不住（命中 P-031）。
+- `src-tauri/src/skin.rs` 未改动；自定义整页背景仍走「后端校验 → data: URL」通道。

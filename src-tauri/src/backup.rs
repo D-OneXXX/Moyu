@@ -61,6 +61,7 @@ const BACKUP_SETTING_KEYS: &[&str] = &[
     "disk_cache_budget_mb",
     "library_dir",
     "experimental_webtoon",
+    "feature_webtoon",
 ];
 
 /// 恢复时必须存在且会被复制的表。
@@ -228,6 +229,10 @@ pub async fn export_backup(
     dest_path: String,
     preferences_json: Option<String>,
 ) -> Result<BackupExportResult, String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Backup,
+    )?;
     let db_path = state.db_path();
     let dest = PathBuf::from(dest_path);
     tokio::task::spawn_blocking(move || {
@@ -248,6 +253,10 @@ pub async fn import_backup(
     source_path: String,
     allow_skipped: Option<bool>,
 ) -> Result<BackupRestoreResult, String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Backup,
+    )?;
     let db_path = state.db_path();
     let source = PathBuf::from(source_path);
     let allow_skipped = allow_skipped.unwrap_or(false);

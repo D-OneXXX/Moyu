@@ -31,6 +31,7 @@ import { platformKind } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { recordBreadcrumb } from "@/features/resilience";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
+import { useFeatureEnabled } from "@/features/features";
 import { enterSafeMode } from "@/features/safeMode/api";
 import {
   privacyApi,
@@ -229,6 +230,7 @@ function PathCapsule({ path }: { path: string }) {
 export default function PrivacyPanel() {
   const { t, locale, formatDateTime } = useI18n();
   const { active: safeModeActive, refresh: refreshSafeMode } = useSafeMode();
+  const webAccessEnabled = useFeatureEnabled("webAccess");
   const [enteringSafeMode, setEnteringSafeMode] = useState(false);
   const [audit, setAudit] = useState<SecurityAudit | null>(null);
   const [loading, setLoading] = useState(false);
@@ -374,11 +376,19 @@ export default function PrivacyPanel() {
 
   return (
     <div className="space-y-4">
-      <WebAccessPanel />
-      <details className="rounded-2xl border border-border bg-card p-4">
-        <summary className="cursor-pointer text-sm font-semibold">{t("settings.webAccess.startSecure")}</summary>
-        <div className="mt-3"><CaDistributionPanel /></div>
-      </details>
+      {webAccessEnabled ? (
+        <>
+          <WebAccessPanel />
+          <details className="rounded-2xl border border-border bg-card p-4">
+            <summary className="cursor-pointer text-sm font-semibold">
+              {t("settings.webAccess.startSecure")}
+            </summary>
+            <div className="mt-3">
+              <CaDistributionPanel />
+            </div>
+          </details>
+        </>
+      ) : null}
       <SettingsSection
         icon={ShieldCheck}
         title={t("privacy.statement.title")}

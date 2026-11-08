@@ -822,7 +822,7 @@ pub fn diagnostics_collect(
         reader_page: context.reader_page,
         network_mode: if proxy.is_empty() { "direct" } else { "proxy" }.to_string(),
         proxy_scheme,
-        online_enabled: settings.experimental_online,
+        online_enabled: settings.features.online,
         safe_mode: context.safe_mode,
         cache_write_failures: crate::cache_health::failures(),
     };
@@ -903,7 +903,14 @@ pub fn diagnostics_sanitize_description(
 
 /// Write the exact Markdown the user previewed. Explicit click only; no upload.
 #[tauri::command]
-pub fn diagnostics_export(markdown: String) -> Result<String, String> {
+pub fn diagnostics_export(
+    state: tauri::State<'_, Arc<AppState>>,
+    markdown: String,
+) -> Result<String, String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Diagnostics,
+    )?;
     if markdown.trim().is_empty() {
         return Err("诊断内容为空".to_string());
     }

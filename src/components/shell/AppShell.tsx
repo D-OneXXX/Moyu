@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Navigate,
   Route,
@@ -9,15 +17,37 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
-  isOnlineEnabled,
   onExperimentalChange,
   type BookInfo,
 } from "@/lib/tauri";
+import {
+  readFeatureFlags,
+  type FeatureFlags,
+} from "@/features/features";
 import { toast, Toaster } from "@/components/Toast";
-import { translate } from "@/i18n";
+import { translate, useI18n } from "@/i18n";
+import { Loader2 } from "lucide-react";
 import Library from "@/pages/Library";
-import SettingsPage from "@/pages/Settings";
-import Browser from "@/pages/Browser";
+
+/** 非首屏路由按需加载；书库首页保持静态以保证首屏最快。 */
+const SettingsPage = lazy(() => import("@/pages/Settings"));
+const Browser = lazy(() => import("@/pages/Browser"));
+
+/** 懒加载路由的占位，文案走 t() 且保持胶囊视觉。 */
+function ShellRouteFallback() {
+  const { t } = useI18n();
+  return (
+    <div
+      className="grid min-h-[60vh] w-full place-items-center bg-background text-sm text-muted-foreground"
+      aria-busy="true"
+    >
+      <span className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 shadow-hard-sm">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        {t("common.loading")}
+      </span>
+    </div>
+  );
+}
 import { useWorkspace } from "@/features/workspace/WorkspaceContext";
 import {
   FOCUS_LIBRARY_SEARCH_EVENT,
@@ -34,7 +64,8 @@ export default function AppShell() {
   const ws = useWorkspace();
   const { active: safeMode } = useSafeMode();
   const [lastRead, setLastRead] = useState<BookInfo | null>(null);
-  const [onlineOn, setOnlineOn] = useState(isOnlineEnabled());
+  const [features, setFeatures] = useState<FeatureFlags>(readFeatureFlags);
+  const onlineOn = features.online;
   const [onlineProxy, setOnlineProxy] = useState<string | null>(null);
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsError, setSettingsError] = useState(false);
@@ -56,7 +87,7 @@ export default function AppShell() {
         (settings) => {
           if (!alive) return;
           setOnlineProxy(settings.onlineProxy);
-          setOnlineOn(isOnlineEnabled());
+          setFeatures(settings.features);
           setSettingsReady(true);
           setSettingsError(false);
         },
@@ -69,7 +100,7 @@ export default function AppShell() {
     };
     void load();
     const off = onExperimentalChange(() => {
-      setOnlineOn(isOnlineEnabled());
+      setFeatures(readFeatureFlags());
       void load();
     });
     return () => {
@@ -80,19 +111,13 @@ export default function AppShell() {
 
   useEffect(() => {
     let alive = true;
+    // ADR-034：只取「最近打开、未读完」的一本，避免每次导航加载全量书库。
     api
-      .listBooks()
+      .getLastRead(safeMode)
       .then(
-        (list) => {
+        (book) => {
           if (!alive) return;
-          setLastRead(
-            list.find(
-              (book) =>
-                (book.sourceType === "local" || !safeMode) &&
-                book.currentPage > 0 &&
-                book.currentPage + 1 < book.pageCount,
-            ) ?? null,
-          );
+          setLastRead(book);
         },
         () => {
           /* 书库命令失败时“继续阅读”保持禁用 */
@@ -214,6 +239,7 @@ export default function AppShell() {
         lastRead={lastRead}
         onlineProxy={onlineProxy}
         onlineOn={onlineOn}
+        browserEnabled={features.browser}
         settingsReady={settingsReady}
         settingsError={settingsError}
         libraryBadge={libraryBadge}
@@ -224,14 +250,21 @@ export default function AppShell() {
         className="relative w-full min-w-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
       >
         <div key={loc.pathname} className="view-fade min-h-full">
-          <Routes location={loc}>
-            <Route path="/" element={<Library />} />
-            <Route path="/browser" element={<Browser />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            {/* 通配兜底：已下线/未知路由静默 replace 回书库首页，
-                避免历史栈残留废弃 URL 导致返回即白屏（AGENTS.md §2.1）。 */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <Suspense fallback={<ShellRouteFallback />}>
+            <Routes location={loc}>
+              <Route path="/" element={<Library />} />
+              <Route
+                path="/browser"
+                element={
+                  features.browser ? <Browser /> : <Navigate to="/" replace />
+                }
+              />
+              <Route path="/settings" element={<SettingsPage />} />
+              {/* 通配兜底：已下线/未知路由静默 replace 回书库首页，
+                  避免历史栈残留废弃 URL 导致返回即白屏（AGENTS.md §2.1）。 */}
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
         </div>
       </main>
       <Toaster />

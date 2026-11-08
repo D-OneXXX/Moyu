@@ -265,6 +265,16 @@ const KEY_RULES: Record<string, Rule> = {
   // 实验性开关镜像（lib/tauri.ts）：只认 "1"。
   "mr-exp-wt": flagRule("实验性条漫开关"),
   "mr-exp-online": flagRule("实验性在线直读开关"),
+  // 功能总开关镜像（src/features/features.ts）：只认 "0"/"1"。
+  "mr-feature-webtoon": flagRule("条漫功能开关"),
+  "mr-feature-online": flagRule("在线直读功能开关"),
+  "mr-feature-browser": flagRule("内置浏览器功能开关"),
+  "mr-feature-pdf": flagRule("PDF 阅读功能开关"),
+  "mr-feature-opds": flagRule("OPDS 功能开关"),
+  "mr-feature-web-access": flagRule("局域网访问功能开关"),
+  "mr-feature-updates": flagRule("应用更新功能开关"),
+  "mr-feature-backup": flagRule("备份恢复功能开关"),
+  "mr-feature-diagnostics": flagRule("诊断导出功能开关"),
   // 多页签运行时开关（features/workspace）：只有 "0" 有意义，其余写法删除后回到默认开启。
   "mr-tabs": flagRule("多页签开关"),
   // 阅读版式 / 方向（pages/Reader.tsx loadPrefs）。

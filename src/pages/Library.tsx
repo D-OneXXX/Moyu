@@ -23,9 +23,11 @@ import {
   api,
   type BookInfo,
   type Dashboard,
+  type LibraryStats,
 } from "@/lib/tauri";
 import { sourceDisplay } from "@/lib/sourceDisplay";
 import { LIBRARY_REFRESH_EVENT } from "@/lib/events";
+import { libraryWindow } from "@/lib/libraryWindow";
 import { Button } from "@/components/ui/button";
 import BookCard from "@/components/BookCard";
 import BookDetailSheet from "@/components/BookDetailSheet";
@@ -35,6 +37,10 @@ import ErrorState from "@/components/ErrorState";
 import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
+import {
+  isFeatureEnabled,
+  useFeatureEnabled,
+} from "@/features/features";
 import LibraryFilters, {
   type SortMode,
   type SourceFilter,
@@ -47,8 +53,14 @@ import OpdsBrowserDialog from "@/components/library/OpdsBrowserDialog";
 
 const GROUP_KEY = "mr-library-group-series";
 const FILTER_KEY = "mr-library-source-filter";
-/** 书库渐进窗口：首屏 60 张，滚动/点击再追加，避免几千卡片同时挂载。 */
+/** ADR-018：书库分页每页 60 本；DOM 只渲染视口附近的行。 */
 const PAGE_SIZE = 60;
+/** 网格列间距（与 grid gap-4 一致）与卡片非封面部分的估算高度。 */
+const GRID_GAP = 16;
+const CARD_CHROME = 88;
+const FALLBACK_ROW_HEIGHT = 320;
+/** 视口上下各多渲染的行数，吸收行高估算误差与快速滚动。 */
+const OVERSCAN_ROWS = 3;
 
 interface CtxMenuState {
   x: number;
@@ -92,19 +104,32 @@ export default function LibraryPage() {
   const ws = useWorkspace();
   const { t, locale, formatNumber } = useI18n();
   const { active: safeMode } = useSafeMode();
+  const opdsEnabled = useFeatureEnabled("opds");
   const [groupSeries, setGroupSeries] = useState(readGrouping);
   // 方案 C：默认「最近打开」（后端按 last_opened_at 排序）；可切「最近阅读」。
   const [sortMode, setSortMode] = useState<SortMode>("recentOpened");
   const [sourceFilter, setSourceFilter] = useState(readSourceFilter);
   const [dash, setDash] = useState<Dashboard | null>(null);
+  // ADR-032：后端聚合的合集计数；命令失败时为 null，回落本地已加载页计数。
+  const [stats, setStats] = useState<LibraryStats | null>(null);
   const [books, setBooks] = useState<BookInfo[]>([]);
   const [allBooks, setAllBooks] = useState<BookInfo[]>([]);
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
+  // ADR-018 分页游标：null 表示已到末页；search 变化时 reload 覆盖为首页游标。
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadingMoreRef = useRef(false);
   const loadMoreRef = useRef<HTMLDivElement>(null);
+  // 窗口化：滚动位置 + 网格列数/单行高度（ResizeObserver 实测宽度估算）。
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [scroll, setScroll] = useState({ top: 0, viewport: 600 });
+  const [metrics, setMetrics] = useState({
+    columns: 2,
+    rowHeight: FALLBACK_ROW_HEIGHT,
+  });
 
   // 详情 Sheet：保留书籍快照，列表刷新时用最新数据覆盖展示。
   const [selectedBook, setSelectedBook] = useState<BookInfo | null>(null);
@@ -147,18 +172,28 @@ export default function LibraryPage() {
   const reload = useCallback(async (q: string) => {
     setLoading(true);
     setLoadError(null);
+    setLoadingMore(false);
+    loadingMoreRef.current = false;
     try {
-      const [d, list, all] = await Promise.all([
+      const [d, page, libraryStats] = await Promise.all([
         api.getDashboard(),
-        api.listBooks(q.length > 0 ? q : undefined),
-        q.length > 0 ? api.listBooks().catch(() => null) : Promise.resolve(null),
+        api.listBooksPage(
+          q.length > 0
+            ? { query: q, limit: PAGE_SIZE }
+            : { limit: PAGE_SIZE },
+        ),
+        // ADR-032：合集计数走一次分组聚合，搜索态不再取全库列表。
+        api.libraryStats().catch(() => null),
       ]);
       setDash(d);
-      setBooks(list);
-      setAllBooks(all ?? list);
+      setBooks(page.items);
+      setCursor(page.nextCursor);
+      setStats(libraryStats);
+      setAllBooks(page.items);
     } catch (e) {
       setLoadError(localizeBackendError(e));
-      notifyError("list_books", e);
+      notifyError("list_books_page", e);
+      setCursor(null);
     } finally {
       setLoading(false);
     }
@@ -200,19 +235,33 @@ export default function LibraryPage() {
     [allBooks, safeMode],
   );
 
-  // 合集计数始终取「未按来源过滤」的全量列表（搜索时另取全库），
-  // 这样筛选在线/本地不会改变合集总话数。
-  const displayBooks = useMemo(() => {
+  // ADR-032：合集计数优先用后端聚合映射（全局口径，搜索/筛选不改变总话数）；
+  // `safeMode` 取全局本地口径 `localSeriesCounts`。命令不可用时回落到
+  // 已加载页的本地计数，保证旧后端/离线仍能显示。
+  const seriesCounts = useMemo(() => {
     const counts = new Map<string, number>();
+    const remote = stats
+      ? safeMode
+        ? stats.localSeriesCounts
+        : stats.seriesCounts
+      : null;
+    if (remote) {
+      // 后端已把 series_id trim 并丢弃空白键，这里直接按映射取值。
+      for (const [sid, count] of Object.entries(remote)) counts.set(sid, count);
+      return counts;
+    }
     for (const book of accessibleAllBooks) {
       const sid = book.seriesId?.trim();
       if (sid) counts.set(sid, (counts.get(sid) ?? 0) + 1);
     }
+    return counts;
+  }, [stats, safeMode, accessibleAllBooks]);
 
+  const displayBooks = useMemo(() => {
     if (!groupSeries) {
       return visibleBooks.map((book) => {
         const sid = book.seriesId?.trim();
-        return { book, seriesCount: sid ? counts.get(sid) ?? 1 : 1 };
+        return { book, seriesCount: sid ? seriesCounts.get(sid) ?? 1 : 1 };
       });
     }
 
@@ -236,40 +285,134 @@ export default function LibraryPage() {
       const sid = key.startsWith("series:") ? key.slice("series:".length) : "";
       return {
         book: group.book,
-        seriesCount: sid ? counts.get(sid) ?? group.filteredCount : 1,
+        seriesCount: sid ? seriesCounts.get(sid) ?? group.filteredCount : 1,
       };
     });
-  }, [visibleBooks, groupSeries, sortMode, accessibleAllBooks]);
+  }, [visibleBooks, groupSeries, sortMode, seriesCounts]);
 
-  // 搜索 / 来源筛选 / 合集模式变化后回到首屏窗口。
+  // 追加下一页：游标驱动，search 重置由 reload 完成；loadingMoreRef 防止
+  // 哨兵在单页在途期间重复触发。
+  const loadNextPage = useCallback(async () => {
+    if (cursor === null || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const page = await api.listBooksPage({
+        query: debounced.length > 0 ? debounced : null,
+        cursor,
+        limit: PAGE_SIZE,
+      });
+      setBooks((prev) => [...prev, ...page.items]);
+      // ADR-032：`allBooks` 统一为「已加载页」累积（搜索态也只累积搜索页）。
+      setAllBooks((prev) => [...prev, ...page.items]);
+      setCursor(page.nextCursor);
+    } catch (e) {
+      notifyError("list_books_page", e);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [cursor, debounced]);
+
+  // 网格列数与单行高度：ResizeObserver 读实际宽度，按 3:4 封面估算行高；
+  // overscan 吸收估算误差，避免硬编码响应式断点。
   useEffect(() => {
-    setVisibleLimit(PAGE_SIZE);
-  }, [debounced, sourceFilter, groupSeries, safeMode]);
+    const grid = gridRef.current;
+    if (!grid || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const cols = Math.max(
+        1,
+        getComputedStyle(grid)
+          .gridTemplateColumns.split(" ")
+          .filter(Boolean).length,
+      );
+      const cardW = (grid.clientWidth - (cols - 1) * GRID_GAP) / cols;
+      const rowH = cardW * (4 / 3) + CARD_CHROME + GRID_GAP;
+      setMetrics({
+        columns: cols,
+        rowHeight: rowH > 0 ? rowH : FALLBACK_ROW_HEIGHT,
+      });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(grid);
+    measure();
+    return () => observer.disconnect();
+  }, [displayBooks.length, loading, loadError]);
 
-  const hasMore = displayBooks.length > visibleLimit;
-  const shownBooks = useMemo(
-    () => displayBooks.slice(0, visibleLimit),
-    [displayBooks, visibleLimit],
+  // 滚动位置：AppShell 的 <main> 是真实滚动容器，向上查找最近的
+  // overflow-y 容器；rAF 节流，避免每个 scroll 事件都同步 setState。
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    let scroller: HTMLElement | null = grid.parentElement;
+    while (scroller) {
+      const oy = getComputedStyle(scroller).overflowY;
+      if (oy === "auto" || oy === "scroll") break;
+      scroller = scroller.parentElement;
+    }
+    const scrollTarget: EventTarget = scroller ?? window;
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const gridTop = grid.getBoundingClientRect().top;
+        if (scroller) {
+          const rect = scroller.getBoundingClientRect();
+          setScroll({
+            top: Math.max(0, rect.top - gridTop),
+            viewport: scroller.clientHeight,
+          });
+        } else {
+          setScroll({
+            top: Math.max(0, -gridTop),
+            viewport: window.innerHeight,
+          });
+        }
+      });
+    };
+    scrollTarget.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    update();
+    return () => {
+      cancelAnimationFrame(frame);
+      scrollTarget.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [displayBooks.length, loading, loadError]);
+
+  const rowCount = Math.ceil(displayBooks.length / metrics.columns);
+  const { start, end } = libraryWindow(
+    scroll.top,
+    scroll.viewport,
+    metrics.rowHeight,
+    OVERSCAN_ROWS,
+    rowCount,
+  );
+  const itemStart = start * metrics.columns;
+  const itemEnd = Math.min(displayBooks.length, end * metrics.columns);
+  const windowedBooks = useMemo(
+    () => displayBooks.slice(itemStart, itemEnd),
+    [displayBooks, itemStart, itemEnd],
   );
 
-  // 底部哨兵接近视口时自动追加一页；按钮仍保留为键盘/读屏的显式入口。
+  const hasMore = cursor !== null;
+
+  // 底部哨兵接近视口时自动追加下一页；按钮仍保留为键盘/读屏的显式入口。
   useEffect(() => {
-    if (!hasMore) return;
+    if (!hasMore || loading) return;
     const node = loadMoreRef.current;
     if (!node || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
-          setVisibleLimit((limit) =>
-            Math.min(limit + PAGE_SIZE, displayBooks.length),
-          );
+          void loadNextPage();
         }
       },
       { rootMargin: "600px 0px" },
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [hasMore, displayBooks.length, visibleLimit]);
+  }, [hasMore, loading, loadNextPage]);
 
   const checkedBooks = useMemo(
     () => visibleBooks.filter((book) => checkedIds.has(book.id)),
@@ -432,7 +575,9 @@ export default function LibraryPage() {
         filters: [
           {
             name: translate("import.filesFilter"),
-            extensions: ["zip", "cbz", "pdf"],
+            extensions: ["zip", "cbz", "pdf"].filter(
+              (ext) => ext !== "pdf" || isFeatureEnabled("pdf"),
+            ),
           },
         ],
       });
@@ -574,7 +719,7 @@ export default function LibraryPage() {
 
   const totalBooks = safeMode
     ? accessibleAllBooks.length
-    : dash?.totalBooks ?? allBooks.length;
+    : dash?.totalBooks ?? stats?.totalBooks ?? allBooks.length;
   const readingCount = dash?.reading ?? 0;
   const todayPages = dash?.todayPages ?? 0;
   const emptyMessage =
@@ -639,7 +784,7 @@ export default function LibraryPage() {
               <Plus />
               {t("library.addBooks")}
             </Button>
-            {!safeMode ? (
+            {!safeMode && opdsEnabled ? (
               <Button
                 variant="pill"
                 size="pill"
@@ -722,8 +867,21 @@ export default function LibraryPage() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-              {shownBooks.map(({ book, seriesCount }) => (
+            <div
+              ref={gridRef}
+              className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+            >
+              {start > 0 && (
+                <div
+                  data-window-spacer
+                  aria-hidden
+                  style={{
+                    gridColumn: "1 / -1",
+                    height: start * metrics.rowHeight,
+                  }}
+                />
+              )}
+              {windowedBooks.map(({ book, seriesCount }) => (
                 <BookCard
                   key={book.id}
                   book={book}
@@ -744,21 +902,28 @@ export default function LibraryPage() {
                   deferSelect
                 />
               ))}
+              {end < rowCount && (
+                <div
+                  data-window-spacer
+                  aria-hidden
+                  style={{
+                    gridColumn: "1 / -1",
+                    height: (rowCount - end) * metrics.rowHeight,
+                  }}
+                />
+              )}
             </div>
             {hasMore && (
               <div className="mt-6 flex justify-center">
                 <Button
                   variant="pill"
                   size="pill"
-                  onClick={() =>
-                    setVisibleLimit((limit) =>
-                      Math.min(limit + PAGE_SIZE, displayBooks.length),
-                    )
-                  }
+                  disabled={loadingMore}
+                  onClick={() => void loadNextPage()}
                 >
                   <Plus />
                   {t("library.loadMore", {
-                    count: formatNumber(displayBooks.length - visibleLimit),
+                    count: formatNumber(PAGE_SIZE),
                   })}
                 </Button>
               </div>
@@ -895,7 +1060,7 @@ export default function LibraryPage() {
       />
 
       <OpdsBrowserDialog
-        open={opdsOpen}
+        open={opdsEnabled && opdsOpen}
         onOpenChange={setOpdsOpen}
         onOpenBook={(book) => openReader(book.id)}
         onGoSettings={() => nav("/settings?tab=network")}

@@ -333,8 +333,6 @@ pub struct AppState {
     pub assisted_sessions: Arc<AssistedSessionRegistry>,
     pub db: DbSlot,
     pub cache: ImageCache,
-    /// 阶段三:OCR/翻译共用一个连接池化的 HTTP 客户端。
-    pub http: reqwest::Client,
     /// 常开源句柄池（book_id → 已打开的 zip/目录），热路径免重复开卷。
     pub sources: Mutex<HashMap<String, Arc<SourceHandle>>>,
     /// 源句柄代际：清单/设置/删除变化时递增，防止旧数据打开的新句柄插回池中。
@@ -344,6 +342,10 @@ pub struct AppState {
     refresh_cache_gate: Mutex<()>,
     /// 邻页预取在途标记，防止快速翻页时重复渲染同一页。
     pub prefetching: Mutex<HashSet<(String, u32, u32, u32)>>,
+    /// 每书预取世代（book_id → AtomicU64）：新页请求 bump，在途任务据此短路。
+    /// 与 refresh_epoch（清单/设置刷新失效）相互独立，不复用其语义。
+    #[allow(clippy::type_complexity)]
+    pub prefetch_epochs: Mutex<HashMap<String, Arc<AtomicU64>>>,
     /// 条漫切片"整页物化"全局锁：一次只解码一张长图到显示宽度，
     /// 切完所有片立即释放栅格（峰值内存 = 单张缩放后栅格）。
     pub tile_lock: Mutex<()>,
@@ -383,12 +385,12 @@ impl AppState {
             assisted_sessions: Arc::new(AssistedSessionRegistry::new()),
             db: DbSlot::new(),
             cache: ImageCache::new(),
-            http: reqwest::Client::new(),
             sources: Mutex::new(HashMap::new()),
             source_epoch: AtomicU64::new(0),
             refresh_epoch: AtomicU64::new(0),
             refresh_cache_gate: Mutex::new(()),
             prefetching: Mutex::new(HashSet::new()),
+            prefetch_epochs: Mutex::new(HashMap::new()),
             tile_lock: Mutex::new(()),
             webtoon_layouts: Mutex::new(HashMap::new()),
             render: RenderCache::new(default_render_root()),
@@ -691,17 +693,19 @@ impl AppState {
             .saturating_add(bytes as u64);
         if total >= TRIGGER_BYTES {
             self.cache_pressure.store(0, Ordering::Relaxed);
+            // 单飞：已有 trim 线程在跑则跳过，避免并发淘汰争抢磁盘与重复清零。
             let state = self.clone();
-            std::thread::spawn(move || {
+            spawn_trim_task(&TRIM_IN_FLIGHT, move || {
                 state.trim_disk_cache();
             });
         }
     }
 
     /// 后台执行统一淘汰，避免设置保存/翻页路径被大目录扫描阻塞。
+    /// 单飞：已有 trim 在跑时直接跳过（它跑完即回到软上限，重复排队无收益）。
     pub fn trim_disk_cache_async(self: &Arc<Self>) {
         let state = self.clone();
-        std::thread::spawn(move || {
+        spawn_trim_task(&TRIM_IN_FLIGHT, move || {
             let removed = state.trim_disk_cache();
             if removed > 0 {
                 crate::logging::log_error(
@@ -739,6 +743,53 @@ impl AppState {
     pub fn db_error_code(&self) -> Option<String> {
         self.db_error.lock().clone()
     }
+}
+
+/// trim 单飞标志：进程内同一时刻只允许一个 trim 线程在跑。
+static TRIM_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// 尝试取得 trim 资格（CAS false→true）；已有线程在跑时返回 false。
+pub(crate) fn try_acquire_trim(flag: &AtomicBool) -> bool {
+    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// 释放 trim 资格。
+pub(crate) fn release_trim(flag: &AtomicBool) {
+    flag.store(false, Ordering::Release);
+}
+
+/// RAII：trim 线程 panic（unwind）时也会释放资格，避免单飞永久卡死。
+struct TrimFlightGuard(&'static AtomicBool);
+
+impl Drop for TrimFlightGuard {
+    fn drop(&mut self) {
+        release_trim(self.0);
+    }
+}
+
+/// 单飞 spawn 助手：取得 trim 资格后在新线程执行 `task`，由 `TrimFlightGuard`
+/// 保证正常结束与 panic（unwind）都释放资格。已有 trim 在跑则直接跳过并返回
+/// false；线程创建失败时显式释放资格（spawn 失败不会运行闭包，guard 不会生成），
+/// 同样返回 false——绝不让单飞标志永久卡死。
+pub(crate) fn spawn_trim_task(
+    flag: &'static AtomicBool,
+    task: impl FnOnce() + Send + 'static,
+) -> bool {
+    if !try_acquire_trim(flag) {
+        return false;
+    }
+    if std::thread::Builder::new()
+        .spawn(move || {
+            let _guard = TrimFlightGuard(flag);
+            task();
+        })
+        .is_err()
+    {
+        release_trim(flag);
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1293,5 +1344,37 @@ mod tests {
         );
         registry.clear();
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn trim_single_flight_allows_exactly_one_winner() {
+        use super::{release_trim, try_acquire_trim};
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let winners = (0..16).filter(|_| try_acquire_trim(&flag)).count();
+        assert_eq!(winners, 1);
+        release_trim(&flag);
+        assert!(try_acquire_trim(&flag));
+    }
+
+    /// 单飞 spawn 助手：首个任务在飞时第二次必须拒绝；任务结束（RAII guard
+    /// drop）后资格必须释放，允许下一次 trim 进入。
+    #[test]
+    fn spawn_trim_task_is_single_flight_and_releases_on_completion() {
+        use super::spawn_trim_task;
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        assert!(spawn_trim_task(&FLAG, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        started_rx.recv().unwrap();
+        assert!(!spawn_trim_task(&FLAG, || {}), "in-flight must reject");
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !spawn_trim_task(&FLAG, || {}) {
+            assert!(std::time::Instant::now() < deadline, "flag never released");
+            std::thread::yield_now();
+        }
     }
 }

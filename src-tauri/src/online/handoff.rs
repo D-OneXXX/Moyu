@@ -452,9 +452,11 @@ pub(crate) fn process_handoff_value(
     value: &serde_json::Value,
     allow_session_headers: bool,
 ) -> Result<Vec<crate::BookInfo>, HandoffError> {
-    if !state.settings.lock().experimental_online {
-        return Err(HandoffError::BadRequest("在线直读未开启".into()));
-    }
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Online,
+    )
+    .map_err(HandoffError::BadRequest)?;
     // 用户显式提供的会话头：受开关控制；**只登记到该 origin 的辅助会话**，
     // 绝不写进全局会话槽——全局槽会随「当前书同 origin」下发，
     // 那样上一站点的凭据会被带到下一站点。
@@ -608,9 +610,10 @@ pub fn start_browser_handoff(
 ) -> Result<HandoffStatus, String> {
     crate::resilience::ensure_online_allowed()?;
     let state = app.state::<Arc<AppState>>().inner().clone();
-    if !state.settings.lock().experimental_online {
-        return Err("在线直读未开启".into());
-    }
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Online,
+    )?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(|e| format!("启动本地回调失败：{e}"))?;
     let port = listener
@@ -642,7 +645,7 @@ pub fn start_browser_handoff(
             listener,
             thread_token,
             thread_cancel.clone(),
-            move || enabled_state.settings.lock().experimental_online,
+            move || enabled_state.settings.lock().features.online,
             move |value| {
                 let books = process_handoff_value(&import_state, &value, allow_session_headers)?;
                 import_state.add_handoff_received(&received_flag, books.len() as u32);
@@ -693,10 +696,14 @@ pub fn get_browser_handoff_status(
     Ok(current_handoff_status(&state))
 }
 
+pub(crate) fn stop_handoff(app: &AppHandle, state: &Arc<AppState>) {
+    stop_handoff_state(state);
+    let _ = app.emit("online-handoff-stopped", ());
+}
+
 #[tauri::command]
 pub fn stop_browser_handoff(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    stop_handoff_state(state.inner());
-    let _ = app.emit("online-handoff-stopped", ());
+    stop_handoff(&app, state.inner());
     Ok(())
 }
 
@@ -732,7 +739,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("打开内存数据库");
         crate::db::init_schema(&conn).expect("初始化表结构");
         st.db.set(conn);
-        st.settings.lock().experimental_online = true;
+        st.settings.lock().features.online = true;
         st
     }
 

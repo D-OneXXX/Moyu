@@ -3,10 +3,15 @@
  * Owned by the settings conversion. All six objects must stay in sync.
  */
 const zhCN = {
-  "settings.demo.title": "互动演示",
-  "settings.demo.description": "体验示例书库与阅读布局。示例内容不会自动导入。",
-  "settings.demo.open": "打开演示",
-  "settings.demo.close": "关闭演示",
+  "settings.features.title": "功能开关",
+  "settings.features.description":
+    "每项功能可独立开启或关闭；关闭后入口隐藏，后端调用会被拒绝。更改立即生效。",
+  "settings.features.managedInGeneral": "由「功能开关」统一控制",
+  "settings.features.browser.description":
+    "用于站点验证与下载导入的辅助浏览器。关闭后顶栏入口隐藏。",
+  "settings.features.pdf.title": "PDF 阅读",
+  "settings.features.pdf.description":
+    "本地 PDF 的读取与渲染。关闭后已有 PDF 仍保留，打开时会提示功能已关闭。",
   "settings.page.eyebrow": "偏好设置",
   "settings.page.description": "外观、在线源、阅读统计与缓存都在这台设备上管理。",
   "settings.page.localFirst": "本地优先",
@@ -44,14 +49,9 @@ const zhCN = {
   "settings.theme.systemNote":
     "「跟随系统」会随操作系统的深浅色自动切换。",
 
-  "settings.experimental.title": "实验性功能",
-  "settings.experimental.description":
-    "默认关闭。开关切换会立即写入设置，不需要再点保存。",
   "settings.experimental.webtoonTitle": "条漫模式",
   "settings.experimental.webtoonDescription":
     "韩漫长条纵向连续滚动，在单页 / 双页之外提供第三版式。",
-  "settings.experimental.note":
-    "切换只更新这个开关，不会顺带保存本页其他未保存的修改。",
 
   "settings.toast.featureOn": "{feature}已开启",
   "settings.toast.featureOff": "{feature}已关闭",
@@ -391,10 +391,15 @@ const zhCN = {
 type SettingsMessages = { [K in keyof typeof zhCN]: string };
 
 const zhTW: SettingsMessages = {
-  "settings.demo.title": "互動示範",
-  "settings.demo.description": "體驗示範書庫與閱讀版面。示範內容不會自動匯入。",
-  "settings.demo.open": "開啟示範",
-  "settings.demo.close": "關閉示範",
+  "settings.features.title": "功能開關",
+  "settings.features.description":
+    "每項功能可獨立開啟或關閉；關閉後入口隱藏，後端呼叫會被拒絕。變更立即生效。",
+  "settings.features.managedInGeneral": "由「功能開關」統一控制",
+  "settings.features.browser.description":
+    "用於站點驗證與下載匯入的輔助瀏覽器。關閉後頂欄入口隱藏。",
+  "settings.features.pdf.title": "PDF 閱讀",
+  "settings.features.pdf.description":
+    "本機 PDF 的讀取與渲染。關閉後既有 PDF 仍保留，開啟時會提示功能已關閉。",
   "settings.page.eyebrow": "偏好設定",
   "settings.page.description":
     "外觀、線上來源、閱讀統計與快取都在這台裝置上管理。",
@@ -433,14 +438,9 @@ const zhTW: SettingsMessages = {
   "settings.theme.systemNote":
     "「跟隨系統」會隨作業系統的深淺色自動切換。",
 
-  "settings.experimental.title": "實驗性功能",
-  "settings.experimental.description":
-    "預設關閉。開關切換會立即寫入設定，不需要再按儲存。",
   "settings.experimental.webtoonTitle": "條漫模式",
   "settings.experimental.webtoonDescription":
     "韓漫長條縱向連續捲動，在單頁 / 雙頁之外提供第三種版面。",
-  "settings.experimental.note":
-    "切換只會更新這個開關，不會順帶儲存本頁其他未儲存的修改。",
 
   "settings.toast.featureOn": "{feature}已開啟",
   "settings.toast.featureOff": "{feature}已關閉",
@@ -780,10 +780,15 @@ const zhTW: SettingsMessages = {
 };
 
 const en: SettingsMessages = {
-  "settings.demo.title": "Interactive demo",
-  "settings.demo.description": "Explore a sample library and reading layouts. Samples are not imported automatically.",
-  "settings.demo.open": "Open demo",
-  "settings.demo.close": "Close demo",
+  "settings.features.title": "Feature switches",
+  "settings.features.description":
+    "Enable or disable each feature independently. Turning one off hides its entry points and blocks backend calls. Changes apply immediately.",
+  "settings.features.managedInGeneral": "Managed by Feature switches",
+  "settings.features.browser.description":
+    "Auxiliary browser for site verification and download import. Turning it off hides the top-bar entry.",
+  "settings.features.pdf.title": "PDF reading",
+  "settings.features.pdf.description":
+    "Local PDF reading and rendering. Existing PDFs remain in the library, but opening one shows a disabled notice.",
   "settings.page.eyebrow": "Preferences",
   "settings.page.description":
     "Appearance, online sources, reading stats and cache are managed on this device.",
@@ -822,14 +827,9 @@ const en: SettingsMessages = {
   "settings.theme.systemNote":
     "“System” follows your operating system's light and dark appearance automatically.",
 
-  "settings.experimental.title": "Experimental features",
-  "settings.experimental.description":
-    "Off by default. Toggling writes to settings immediately; no save is needed.",
   "settings.experimental.webtoonTitle": "Webtoon mode",
   "settings.experimental.webtoonDescription":
     "Continuous vertical scrolling for long-strip comics, a third layout beyond single and double page.",
-  "settings.experimental.note":
-    "Toggling only updates this switch; other unsaved changes on this page are not saved.",
 
   "settings.toast.featureOn": "{feature} enabled",
   "settings.toast.featureOff": "{feature} disabled",
@@ -1183,10 +1183,15 @@ const en: SettingsMessages = {
 };
 
 const es: SettingsMessages = {
-  "settings.demo.title": "Demo interactiva",
-  "settings.demo.description": "Explora una biblioteca de muestra y los modos de lectura. Las muestras no se importan automáticamente.",
-  "settings.demo.open": "Abrir demo",
-  "settings.demo.close": "Cerrar demo",
+  "settings.features.title": "Interruptores de funciones",
+  "settings.features.description":
+    "Activa o desactiva cada función de forma independiente. Al desactivarla se ocultan sus entradas y se bloquean las llamadas al backend. Los cambios se aplican al instante.",
+  "settings.features.managedInGeneral": "Gestionado por Interruptores de funciones",
+  "settings.features.browser.description":
+    "Navegador auxiliar para verificación de sitios e importación de descargas. Al desactivarlo se oculta la entrada de la barra superior.",
+  "settings.features.pdf.title": "Lectura de PDF",
+  "settings.features.pdf.description":
+    "Lectura y renderizado de PDF locales. Los PDF existentes permanecen en la biblioteca, pero al abrirlos se muestra un aviso de función desactivada.",
   "settings.page.eyebrow": "Preferencias",
   "settings.page.description":
     "La apariencia, las fuentes en línea, las estadísticas y la caché se gestionan en este dispositivo.",
@@ -1225,14 +1230,9 @@ const es: SettingsMessages = {
   "settings.theme.systemNote":
     "«Sistema» sigue automáticamente el modo claro u oscuro del sistema operativo.",
 
-  "settings.experimental.title": "Funciones experimentales",
-  "settings.experimental.description":
-    "Desactivadas por defecto. Cada interruptor se guarda al instante; no hace falta guardar.",
   "settings.experimental.webtoonTitle": "Modo webtoon",
   "settings.experimental.webtoonDescription":
     "Desplazamiento vertical continuo para cómics de tira larga, un tercer diseño además de página única y doble.",
-  "settings.experimental.note":
-    "Cambiar este interruptor no guarda otros cambios sin guardar de esta página.",
 
   "settings.toast.featureOn": "Se activó «{feature}»",
   "settings.toast.featureOff": "Se desactivó «{feature}»",
@@ -1601,10 +1601,15 @@ const es: SettingsMessages = {
 };
 
 const ja: SettingsMessages = {
-  "settings.demo.title": "体験デモ",
-  "settings.demo.description": "サンプル本棚と読み方を体験できます。サンプルは自動で取り込まれません。",
-  "settings.demo.open": "デモを開く",
-  "settings.demo.close": "デモを閉じる",
+  "settings.features.title": "機能スイッチ",
+  "settings.features.description":
+    "各機能を個別にオン・オフできます。オフにすると入口が非表示になり、バックエンド呼び出しは拒否されます。変更は即時反映されます。",
+  "settings.features.managedInGeneral": "「機能スイッチ」で管理",
+  "settings.features.browser.description":
+    "サイト検証とダウンロード取り込み用の補助ブラウザー。オフにすると上部バーの入口が非表示になります。",
+  "settings.features.pdf.title": "PDF 閲覧",
+  "settings.features.pdf.description":
+    "ローカル PDF の読み取りと描画。オフにしても既存の PDF は残りますが、開くと機能が無効である旨が表示されます。",
   "settings.page.eyebrow": "環境設定",
   "settings.page.description":
     "外観、オンラインソース、読書統計、キャッシュはこのデバイスで管理されます。",
@@ -1643,14 +1648,9 @@ const ja: SettingsMessages = {
   "settings.theme.systemNote":
     "「システム」は OS のライト / ダークに合わせて自動で切り替わります。",
 
-  "settings.experimental.title": "実験的機能",
-  "settings.experimental.description":
-    "既定ではオフです。スイッチの切り替えはすぐに設定へ保存され、保存操作は不要です。",
   "settings.experimental.webtoonTitle": "Webtoon モード",
   "settings.experimental.webtoonDescription":
     "縦長作品を途切れず縦スクロール。単ページ / 見開きに続く第 3 のレイアウトです。",
-  "settings.experimental.note":
-    "このスイッチのみを更新し、このページの他の未保存の変更は保存しません。",
 
   "settings.toast.featureOn": "{feature}をオンにしました",
   "settings.toast.featureOff": "{feature}をオフにしました",
@@ -2017,10 +2017,15 @@ const ja: SettingsMessages = {
 };
 
 const ko: SettingsMessages = {
-  "settings.demo.title": "인터랙티브 데모",
-  "settings.demo.description": "샘플 서재와 읽기 방식을 체험하세요. 샘플은 자동으로 가져오지 않습니다.",
-  "settings.demo.open": "데모 열기",
-  "settings.demo.close": "데모 닫기",
+  "settings.features.title": "기능 스위치",
+  "settings.features.description":
+    "각 기능을 독립적으로 켜고 끌 수 있습니다. 끄면 진입점이 숨겨지고 백엔드 호출이 거부됩니다. 변경 사항은 즉시 적용됩니다.",
+  "settings.features.managedInGeneral": "기능 스위치에서 관리",
+  "settings.features.browser.description":
+    "사이트 확인과 다운로드 가져오기에 쓰는 보조 브라우저입니다. 끄면 상단 표시줄의 진입점이 숨겨집니다.",
+  "settings.features.pdf.title": "PDF 읽기",
+  "settings.features.pdf.description":
+    "로컬 PDF 읽기와 렌더링. 끄더라도 기존 PDF는 서재에 남지만 열면 기능이 꺼져 있다는 안내가 표시됩니다.",
   "settings.page.eyebrow": "환경설정",
   "settings.page.description":
     "외형, 온라인 소스, 읽기 통계와 캐시를 이 기기에서 관리합니다.",
@@ -2059,14 +2064,9 @@ const ko: SettingsMessages = {
   "settings.theme.systemNote":
     "「시스템」은 운영체제의 라이트/다크 모드를 자동으로 따릅니다.",
 
-  "settings.experimental.title": "실험적 기능",
-  "settings.experimental.description":
-    "기본적으로 꺼져 있습니다. 스위치를 바꾸면 즉시 설정에 기록되며 저장할 필요가 없습니다.",
   "settings.experimental.webtoonTitle": "웹툰 모드",
   "settings.experimental.webtoonDescription":
     "세로로 긴 작품을 끊김 없이 스크롤하는, 단일/양면 페이지에 이은 세 번째 레이아웃입니다.",
-  "settings.experimental.note":
-    "이 스위치만 갱신하며, 이 페이지의 다른 저장되지 않은 변경 사항은 저장하지 않습니다.",
 
   "settings.toast.featureOn": "{feature} 켜짐",
   "settings.toast.featureOff": "{feature} 꺼짐",

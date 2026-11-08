@@ -72,6 +72,7 @@ import {
   useFeatureEnabled,
 } from "../features/features";
 import { useGlobalShortcuts } from "../features/shortcuts/useGlobalShortcuts";
+import { requestScrollRestore } from "@/features/scroll/useScrollRestoration";
 import { useAppVisible, isAppVisible } from "../features/performance/visibility";
 import { localizeBackendError, localizeStableErrorCode } from "../features/errors/localize";
 import {
@@ -256,6 +257,11 @@ export default function Reader() {
   const { id = "" } = useParams();
   const bookId = decodeURIComponent(id);
   const nav = useNavigate();
+  // 退出阅读器回书库：显式请求恢复书库滚动位置（AppShell 在阅读期间是卸载的）。
+  const backToLibrary = useCallback(() => {
+    requestScrollRestore("/");
+    backToLibrary();
+  }, [nav]);
   const ws = useWorkspace();
   const { t } = useI18n();
   const { active: safeMode } = useSafeMode();
@@ -1388,7 +1394,7 @@ export default function Reader() {
             setShortcutsOpen(false);
             setMoreOpen(false);
           } else {
-            nav("/");
+            backToLibrary();
           }
           break;
         case "?":
@@ -1950,7 +1956,7 @@ export default function Reader() {
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 {t("safeMode.readerOnlineBlockedBody")}
               </p>
-              <Button variant="pill" size="pill-sm" onClick={() => nav("/")}>
+              <Button variant="pill" size="pill-sm" onClick={() => backToLibrary()}>
                 <ArrowLeft className="size-3.5" /> {t("reader.backToLibrary")}
               </Button>
             </div>
@@ -1959,7 +1965,7 @@ export default function Reader() {
           <div className="reader-center">
             <div className="reader-err">
               <PixelPet mode="empty" message={t("reader.missingBook")} />
-              <Button variant="pill" size="pill-sm" onClick={() => nav("/")}>
+              <Button variant="pill" size="pill-sm" onClick={() => backToLibrary()}>
                 <ArrowLeft className="size-3.5" /> {t("reader.backToLibrary")}
               </Button>
             </div>
@@ -1980,7 +1986,7 @@ export default function Reader() {
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 {localizeStableErrorCode(pdfError)}
               </p>
-              <Button variant="pill" size="pill-sm" onClick={() => nav("/")}>
+              <Button variant="pill" size="pill-sm" onClick={() => backToLibrary()}>
                 <ArrowLeft className="size-3.5" /> {t("reader.backToLibrary")}
               </Button>
             </div>
@@ -2002,7 +2008,7 @@ export default function Reader() {
                     : t("reader.emptyBook")
                 }
               />
-              <Button variant="pill" size="pill-sm" onClick={() => nav("/")}>
+              <Button variant="pill" size="pill-sm" onClick={() => backToLibrary()}>
                 <ArrowLeft className="size-3.5" /> {t("reader.backToLibrary")}
               </Button>
             </div>
@@ -2134,7 +2140,7 @@ export default function Reader() {
             </div>
           ) : undefined
         }
-        onBack={() => nav("/")}
+        onBack={() => backToLibrary()}
         onZoom={(factor) => {
           if (mode === "webtoon") {
             applyWtWidth(wtWidth * factor);

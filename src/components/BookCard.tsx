@@ -309,7 +309,9 @@ export default function BookCard({
         <h3 className="truncate text-sm font-bold tracking-tight text-foreground">
           {book.title}
         </h3>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">{sub}</p>
+        <p className="mt-0.5 truncate text-xs tabular-nums text-muted-foreground">
+          {sub}
+        </p>
         <div className="mt-2 flex items-center gap-2">
           <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
             <div

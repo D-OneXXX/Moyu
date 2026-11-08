@@ -806,25 +806,33 @@ async fn start_tls_server_inner(
     }
 
     let manager = Arc::new(CaManager::with_clock(config.ca_root, clock.clone()));
-    // Full CA health check; an uninitialized or damaged CA fails before bind.
-    let status = manager.status()?;
     let san_ips = select_san_ips(config.san_ips)?;
-    let leaf = manager.issue_leaf(LEAF_DNS, &san_ips)?;
-    // A root rotation can land between the health check and issuance. Never
-    // advertise the old root fingerprint for a leaf signed by the new root.
-    let after = manager.status()?;
-    if after.root_fingerprint_sha256 != status.root_fingerprint_sha256 {
-        return Err(WebAccessError::RootChangePending);
-    }
-    let server_config = Arc::new(build_server_config(&leaf)?);
-    let serving = ServingCertificate {
-        config: server_config,
-        leaf_fingerprint_sha256: leaf.fingerprint_sha256,
-        leaf_not_after: leaf.not_after,
-        root_fingerprint_sha256: after.root_fingerprint_sha256,
-        root_generation: after.root_generation,
-        intermediate_generation: after.intermediate_generation,
-    };
+    let startup_san_ips = san_ips.clone();
+    // CA health checks, signing, and rustls key material construction touch
+    // disk and perform CPU work; keep them off the async command/runtime thread.
+    let start_manager = Arc::clone(&manager);
+    let serving = tokio::task::spawn_blocking(move || -> WebAccessResult<ServingCertificate> {
+        // Full CA health check; an uninitialized or damaged CA fails before bind.
+        let status = start_manager.status()?;
+        let leaf = start_manager.issue_leaf(LEAF_DNS, &startup_san_ips)?;
+        // A root rotation can land between the health check and issuance. Never
+        // advertise the old root fingerprint for a leaf signed by the new root.
+        let after = start_manager.status()?;
+        if after.root_fingerprint_sha256 != status.root_fingerprint_sha256 {
+            return Err(WebAccessError::RootChangePending);
+        }
+        let server_config = Arc::new(build_server_config(&leaf)?);
+        Ok(ServingCertificate {
+            config: server_config,
+            leaf_fingerprint_sha256: leaf.fingerprint_sha256,
+            leaf_not_after: leaf.not_after,
+            root_fingerprint_sha256: after.root_fingerprint_sha256,
+            root_generation: after.root_generation,
+            intermediate_generation: after.intermediate_generation,
+        })
+    })
+    .await
+    .map_err(|_| WebAccessError::ServerJoin)??;
 
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;

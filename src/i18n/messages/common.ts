@@ -114,6 +114,9 @@ const zhCN = {
   "error.pageInvalidCursor": "分页游标无效或已过期，请重新加载书库",
   "error.requestFailed": "调用 {cmd} 失败",
   "error.backendGeneric": "操作失败；详情已写入本地日志。",
+  "error.cacheClearFailed": "无法清理在线缓存，请重试。（cache-clear-failed）",
+  "error.safeModeUnavailable": "无法读取安全模式状态，在线与浏览器功能已暂停。（safe-mode-unavailable）",
+  "error.blockingTaskFailed": "后台操作未完成，请重试。（blocking-task-failed）",
   "error.featureDisabled": "该功能已在设置中关闭（feature-disabled）",
   "feature.disabled.title": "功能已关闭",
   "feature.disabled.description":
@@ -314,6 +317,9 @@ const zhTW: CommonMessages = {
   "error.pageInvalidCursor": "分頁游標無效或已過期，請重新載入書庫",
   "error.requestFailed": "呼叫 {cmd} 失敗",
   "error.backendGeneric": "操作失敗；詳情已寫入本機日誌。",
+  "error.cacheClearFailed": "無法清理線上快取，請重試。（cache-clear-failed）",
+  "error.safeModeUnavailable": "無法讀取安全模式狀態，線上與瀏覽器功能已暫停。（safe-mode-unavailable）",
+  "error.blockingTaskFailed": "背景操作未完成，請重試。（blocking-task-failed）",
   "error.featureDisabled": "該功能已在設定中關閉（feature-disabled）",
   "feature.disabled.title": "功能已關閉",
   "feature.disabled.description":
@@ -516,6 +522,9 @@ const en: CommonMessages = {
   "error.pageInvalidCursor": "The pagination cursor is invalid or expired. Reload the library.",
   "error.requestFailed": "Request failed: {cmd}",
   "error.backendGeneric": "The operation failed. Details were written to the local log.",
+  "error.cacheClearFailed": "Could not clear the online cache. Try again. (cache-clear-failed)",
+  "error.safeModeUnavailable": "Safe mode status is unavailable; online and browser functions are blocked. (safe-mode-unavailable)",
+  "error.blockingTaskFailed": "The background operation did not finish. Try again. (blocking-task-failed)",
   "error.featureDisabled": "This feature is turned off in Settings (feature-disabled).",
   "feature.disabled.title": "Feature disabled",
   "feature.disabled.description":
@@ -731,6 +740,9 @@ const es: CommonMessages = {
   "error.pageInvalidCursor": "El cursor de paginación no es válido o ha caducado. Recarga la biblioteca.",
   "error.requestFailed": "Error al llamar a {cmd}",
   "error.backendGeneric": "La operación falló. Los detalles se guardaron en el registro local.",
+  "error.cacheClearFailed": "No se pudo borrar la caché en línea. Inténtalo de nuevo. (cache-clear-failed)",
+  "error.safeModeUnavailable": "No se pudo leer el estado del modo seguro; se bloquearon las funciones en línea y del navegador. (safe-mode-unavailable)",
+  "error.blockingTaskFailed": "La operación en segundo plano no terminó. Inténtalo de nuevo. (blocking-task-failed)",
   "error.featureDisabled": "Esta función está desactivada en Ajustes (feature-disabled).",
   "feature.disabled.title": "Función desactivada",
   "feature.disabled.description":
@@ -964,6 +976,9 @@ const ja: CommonMessages = {
   "error.pageInvalidCursor": "ページカーソルが無効または期限切れです。書庫を再読み込みしてください。",
   "error.requestFailed": "{cmd} の呼び出しに失敗しました",
   "error.backendGeneric": "操作に失敗しました。詳細はローカルログに記録しました。",
+  "error.cacheClearFailed": "オンラインキャッシュを消去できませんでした。もう一度お試しください。（cache-clear-failed）",
+  "error.safeModeUnavailable": "セーフモードの状態を読み取れないため、オンライン機能とブラウザー機能を停止しました。（safe-mode-unavailable）",
+  "error.blockingTaskFailed": "バックグラウンド処理が完了しませんでした。もう一度お試しください。（blocking-task-failed）",
   "error.featureDisabled": "この機能は設定でオフになっています（feature-disabled）。",
   "feature.disabled.title": "機能はオフです",
   "feature.disabled.description":
@@ -1191,6 +1206,9 @@ const ko: CommonMessages = {
   "error.pageInvalidCursor": "페이지 커서가 유효하지 않거나 만료되었습니다. 서재를 다시 불러오세요.",
   "error.requestFailed": "{cmd} 호출 실패",
   "error.backendGeneric": "작업에 실패했습니다. 자세한 내용은 로컬 로그에 기록했습니다.",
+  "error.cacheClearFailed": "온라인 캐시를 지우지 못했습니다. 다시 시도하세요. (cache-clear-failed)",
+  "error.safeModeUnavailable": "안전 모드 상태를 읽을 수 없어 온라인 및 브라우저 기능을 차단했습니다. (safe-mode-unavailable)",
+  "error.blockingTaskFailed": "백그라운드 작업이 완료되지 않았습니다. 다시 시도하세요. (blocking-task-failed)",
   "error.featureDisabled": "이 기능은 설정에서 꺼져 있습니다(feature-disabled).",
   "feature.disabled.title": "기능이 꺼져 있습니다",
   "feature.disabled.description":

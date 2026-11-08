@@ -49,6 +49,15 @@ browser WebView
 - `DbSlot` guards are held only while reading or writing SQLite. Large metadata parsing,
   sorting, and filesystem checks run after an owned row snapshot leaves the lock, but remain
   inside `spawn_blocking`.
+- Synchronous filesystem, SQLite, and image decode work is dispatched through Tokio's
+  `spawn_blocking` pool from commands and lifecycle callbacks. Tauri setup waits for required
+  startup work; exit caps Web Access stop and WAL checkpoint waits at ten seconds each.
+- Browser download destination callbacks only construct a sanitized path with a process-local
+  sequence and randomized suffix in memory; the WebView API provides no asynchronous exclusive
+  reservation hook. The download directory is prepared before the browser window opens, and
+  file validation, import, and permission changes run on the blocking pool. The local handoff
+  listener keeps a dedicated thread for its synchronous socket loop and sends chapter parsing
+  and database writes to the blocking pool.
 - Schema versions move forward only; migrations and startup checks are part of the boot path.
 - Rendered pages and online images share a bounded disk cache under `app_cache_dir`. Cache
   cleanup removes derived data only, never `library.db` or reading progress.

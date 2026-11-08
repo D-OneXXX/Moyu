@@ -772,10 +772,9 @@ impl Drop for TrimFlightGuard {
     }
 }
 
-/// 单飞 spawn 助手：取得 trim 资格后在新线程执行 `task`，由 `TrimFlightGuard`
-/// 保证正常结束与 panic（unwind）都释放资格。已有 trim 在跑则直接跳过并返回
-/// false；线程创建失败时显式释放资格（spawn 失败不会运行闭包，guard 不会生成），
-/// 同样返回 false——绝不让单飞标志永久卡死。
+/// 单飞 spawn 助手：取得 trim 资格后在 Tokio blocking pool 执行 `task`，由 `TrimFlightGuard`
+/// 保证正常结束与 panic（unwind）都释放资格。已有 trim 在跑则直接返回 false；
+/// 成功提交到 Tauri 管理的 Tokio blocking pool 时返回 true。
 pub(crate) fn spawn_trim_task(
     flag: &'static AtomicBool,
     task: impl FnOnce() + Send + 'static,
@@ -783,16 +782,10 @@ pub(crate) fn spawn_trim_task(
     if !try_acquire_trim(flag) {
         return false;
     }
-    if std::thread::Builder::new()
-        .spawn(move || {
-            let _guard = TrimFlightGuard(flag);
-            task();
-        })
-        .is_err()
-    {
-        release_trim(flag);
-        return false;
-    }
+    let _task = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = TrimFlightGuard(flag);
+        task();
+    });
     true
 }
 
@@ -1366,13 +1359,18 @@ mod tests {
     fn spawn_trim_task_is_single_flight_and_releases_on_completion() {
         use super::spawn_trim_task;
         static FLAG: AtomicBool = AtomicBool::new(false);
+        let caller_thread = std::thread::current().id();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<std::thread::ThreadId>();
         assert!(spawn_trim_task(&FLAG, move || {
-            started_tx.send(()).unwrap();
+            started_tx.send(std::thread::current().id()).unwrap();
             release_rx.recv().unwrap();
         }));
-        started_rx.recv().unwrap();
+        let worker_thread = started_rx.recv().unwrap();
+        assert_ne!(
+            caller_thread, worker_thread,
+            "trim work must run on a worker"
+        );
         assert!(!spawn_trim_task(&FLAG, || {}), "in-flight must reject");
         release_tx.send(()).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

@@ -3,6 +3,15 @@
  * Owned by the settings conversion. All six objects must stay in sync.
  */
 const zhCN = {
+  "settings.features.title": "功能开关",
+  "settings.features.description":
+    "每项功能可独立开启或关闭；关闭后入口隐藏，后端调用会被拒绝。更改立即生效。",
+  "settings.features.managedInGeneral": "由「功能开关」统一控制",
+  "settings.features.browser.description":
+    "用于站点验证与下载导入的辅助浏览器。关闭后顶栏入口隐藏。",
+  "settings.features.pdf.title": "PDF 阅读",
+  "settings.features.pdf.description":
+    "本地 PDF 的读取与渲染。关闭后已有 PDF 仍保留，打开时会提示功能已关闭。",
   "settings.demo.title": "互动演示",
   "settings.demo.description": "体验示例书库与阅读布局。示例内容不会自动导入。",
   "settings.demo.open": "打开演示",
@@ -391,6 +400,15 @@ const zhCN = {
 type SettingsMessages = { [K in keyof typeof zhCN]: string };
 
 const zhTW: SettingsMessages = {
+  "settings.features.title": "功能開關",
+  "settings.features.description":
+    "每項功能可獨立開啟或關閉；關閉後入口隱藏，後端呼叫會被拒絕。變更立即生效。",
+  "settings.features.managedInGeneral": "由「功能開關」統一控制",
+  "settings.features.browser.description":
+    "用於站點驗證與下載匯入的輔助瀏覽器。關閉後頂欄入口隱藏。",
+  "settings.features.pdf.title": "PDF 閱讀",
+  "settings.features.pdf.description":
+    "本機 PDF 的讀取與渲染。關閉後既有 PDF 仍保留，開啟時會提示功能已關閉。",
   "settings.demo.title": "互動示範",
   "settings.demo.description": "體驗示範書庫與閱讀版面。示範內容不會自動匯入。",
   "settings.demo.open": "開啟示範",
@@ -780,6 +798,15 @@ const zhTW: SettingsMessages = {
 };
 
 const en: SettingsMessages = {
+  "settings.features.title": "Feature switches",
+  "settings.features.description":
+    "Enable or disable each feature independently. Turning one off hides its entry points and blocks backend calls. Changes apply immediately.",
+  "settings.features.managedInGeneral": "Managed by Feature switches",
+  "settings.features.browser.description":
+    "Auxiliary browser for site verification and download import. Turning it off hides the top-bar entry.",
+  "settings.features.pdf.title": "PDF reading",
+  "settings.features.pdf.description":
+    "Local PDF reading and rendering. Existing PDFs remain in the library, but opening one shows a disabled notice.",
   "settings.demo.title": "Interactive demo",
   "settings.demo.description": "Explore a sample library and reading layouts. Samples are not imported automatically.",
   "settings.demo.open": "Open demo",
@@ -1183,6 +1210,15 @@ const en: SettingsMessages = {
 };
 
 const es: SettingsMessages = {
+  "settings.features.title": "Interruptores de funciones",
+  "settings.features.description":
+    "Activa o desactiva cada función de forma independiente. Al desactivarla se ocultan sus entradas y se bloquean las llamadas al backend. Los cambios se aplican al instante.",
+  "settings.features.managedInGeneral": "Gestionado por Interruptores de funciones",
+  "settings.features.browser.description":
+    "Navegador auxiliar para verificación de sitios e importación de descargas. Al desactivarlo se oculta la entrada de la barra superior.",
+  "settings.features.pdf.title": "Lectura de PDF",
+  "settings.features.pdf.description":
+    "Lectura y renderizado de PDF locales. Los PDF existentes permanecen en la biblioteca, pero al abrirlos se muestra un aviso de función desactivada.",
   "settings.demo.title": "Demo interactiva",
   "settings.demo.description": "Explora una biblioteca de muestra y los modos de lectura. Las muestras no se importan automáticamente.",
   "settings.demo.open": "Abrir demo",
@@ -1601,6 +1637,15 @@ const es: SettingsMessages = {
 };
 
 const ja: SettingsMessages = {
+  "settings.features.title": "機能スイッチ",
+  "settings.features.description":
+    "各機能を個別にオン・オフできます。オフにすると入口が非表示になり、バックエンド呼び出しは拒否されます。変更は即時反映されます。",
+  "settings.features.managedInGeneral": "「機能スイッチ」で管理",
+  "settings.features.browser.description":
+    "サイト検証とダウンロード取り込み用の補助ブラウザー。オフにすると上部バーの入口が非表示になります。",
+  "settings.features.pdf.title": "PDF 閲覧",
+  "settings.features.pdf.description":
+    "ローカル PDF の読み取りと描画。オフにしても既存の PDF は残りますが、開くと機能が無効である旨が表示されます。",
   "settings.demo.title": "体験デモ",
   "settings.demo.description": "サンプル本棚と読み方を体験できます。サンプルは自動で取り込まれません。",
   "settings.demo.open": "デモを開く",
@@ -2017,6 +2062,15 @@ const ja: SettingsMessages = {
 };
 
 const ko: SettingsMessages = {
+  "settings.features.title": "기능 스위치",
+  "settings.features.description":
+    "각 기능을 독립적으로 켜고 끌 수 있습니다. 끄면 진입점이 숨겨지고 백엔드 호출이 거부됩니다. 변경 사항은 즉시 적용됩니다.",
+  "settings.features.managedInGeneral": "기능 스위치에서 관리",
+  "settings.features.browser.description":
+    "사이트 확인과 다운로드 가져오기에 쓰는 보조 브라우저입니다. 끄면 상단 표시줄의 진입점이 숨겨집니다.",
+  "settings.features.pdf.title": "PDF 읽기",
+  "settings.features.pdf.description":
+    "로컬 PDF 읽기와 렌더링. 끄더라도 기존 PDF는 서재에 남지만 열면 기능이 꺼져 있다는 안내가 표시됩니다.",
   "settings.demo.title": "인터랙티브 데모",
   "settings.demo.description": "샘플 서재와 읽기 방식을 체험하세요. 샘플은 자동으로 가져오지 않습니다.",
   "settings.demo.open": "데모 열기",

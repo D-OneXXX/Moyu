@@ -14,6 +14,13 @@ use crate::db;
 use crate::AppState;
 
 const BROWSER_LABEL: &str = "browser";
+
+/// 关闭辅助浏览器窗；窗口不存在时静默忽略。
+pub(crate) fn close_browser_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(BROWSER_LABEL) {
+        let _ = window.close();
+    }
+}
 const BROWSER_TITLE: &str = "Moyu 浏览器";
 const BROWSER_WIDTH: f64 = 1200.0;
 const BROWSER_HEIGHT: f64 = 820.0;

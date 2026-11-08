@@ -61,6 +61,7 @@ const BACKUP_SETTING_KEYS: &[&str] = &[
     "disk_cache_budget_mb",
     "library_dir",
     "experimental_webtoon",
+    "feature_webtoon",
 ];
 
 /// 恢复时必须存在且会被复制的表。

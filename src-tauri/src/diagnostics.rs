@@ -822,7 +822,7 @@ pub fn diagnostics_collect(
         reader_page: context.reader_page,
         network_mode: if proxy.is_empty() { "direct" } else { "proxy" }.to_string(),
         proxy_scheme,
-        online_enabled: settings.experimental_online,
+        online_enabled: settings.features.online,
         safe_mode: context.safe_mode,
         cache_write_failures: crate::cache_health::failures(),
     };

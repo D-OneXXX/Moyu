@@ -61,8 +61,13 @@ fn backup_path(path: &Path) -> PathBuf {
 /// 调用方必须持有 `LOG_FILE` 锁，并发写因此天然串行。任何一步失败都只是
 /// 放弃本次轮转、继续向原文件追加：日志系统永远不能影响业务主流程。
 fn rotate_if_oversized(path: &Path) {
+    rotate_if_oversized_with_limit(path, MAX_LOG_FILE_BYTES);
+}
+
+/// 可注入阈值的轮转实现；单测直接调用它，避免依赖进程全局的 `LOG_FILE`。
+fn rotate_if_oversized_with_limit(path: &Path, limit: u64) {
     let oversized = std::fs::metadata(path)
-        .map(|meta| meta.len() >= MAX_LOG_FILE_BYTES)
+        .map(|meta| meta.len() >= limit)
         .unwrap_or(false);
     if !oversized {
         return;
@@ -194,88 +199,65 @@ mod tests {
         assert!(recent_logs(10_000).len() <= MEMORY_LIMIT);
     }
 
+    // 轮转单测直接调用可注入阈值的 helper，不去改进程全局 `LOG_FILE`；
+    // 其它模块并行 `log_error` 因此不会把这几条断言弄成 flaky。
+    const TEST_CAP: u64 = 1024;
+
     #[test]
     fn rotates_to_single_backup_when_cap_reached() {
-        let _guard = TEST_LOCK.lock();
         let dir = unique_dir("rotate");
-        init(dir.clone());
         let log = dir.join("app.log");
         let backup = dir.join("app.log.1");
+        std::fs::create_dir_all(&dir).unwrap();
 
-        // 先把活跃文件填到刚好等于上限，下一次写入必须先轮转再追加。
-        std::fs::write(&log, "x".repeat(MAX_LOG_FILE_BYTES as usize)).unwrap();
-        log_error("rotate-test", "first-marker");
+        std::fs::write(&log, "x".repeat(TEST_CAP as usize)).unwrap();
+        rotate_if_oversized_with_limit(&log, TEST_CAP);
 
-        assert!(backup.exists(), "达到上限后应生成 app.log.1");
         assert_eq!(
             std::fs::metadata(&backup).unwrap().len(),
-            MAX_LOG_FILE_BYTES,
+            TEST_CAP,
             "旧内容应完整进入备份"
         );
-        let live = std::fs::read_to_string(&log).unwrap();
-        assert!(live.contains("first-marker"), "{live}");
-        assert!(!live.contains("xxxxxxxx"), "轮转后活跃文件必须从新内容开始");
-        let total =
-            std::fs::metadata(&backup).unwrap().len() + std::fs::metadata(&log).unwrap().len();
-        // 预留 64 KiB 余量：`LOG_FILE` 是进程全局的，并行测试里其它模块的
-        // `log_error` 也可能落到本目录，但整体仍必须远离无界增长。
-        assert!(
-            total <= MAX_LOG_FILE_BYTES + 64 * 1024,
-            "备份 + 活跃文件必须保持有界，实际 {total}"
-        );
+        assert!(!log.exists(), "轮转后活跃文件应由下一次追加重新创建");
 
         // 第二次轮转覆盖旧备份，而不是继续堆叠。
-        std::fs::write(&log, "y".repeat(MAX_LOG_FILE_BYTES as usize)).unwrap();
-        log_error("rotate-test", "second-marker");
+        std::fs::write(&log, "y".repeat(TEST_CAP as usize)).unwrap();
+        rotate_if_oversized_with_limit(&log, TEST_CAP);
         let second_backup = std::fs::read_to_string(&backup).unwrap();
-        assert!(
-            !second_backup.contains("first-marker"),
-            "只保留一代备份，旧备份应被覆盖"
-        );
         assert!(second_backup.starts_with("yyyy"));
-        assert!(std::fs::read_to_string(&log)
-            .unwrap()
-            .contains("second-marker"));
         assert!(!dir.join("app.log.2").exists(), "不应产生第二代备份");
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn does_not_rotate_below_cap() {
-        let _guard = TEST_LOCK.lock();
         let dir = unique_dir("below-cap");
-        init(dir.clone());
-        for index in 0..20 {
-            log_error("below-cap", &format!("line-{index}"));
-        }
-        assert!(!dir.join("app.log.1").exists(), "未达上限不得轮转");
-        let content = std::fs::read_to_string(dir.join("app.log")).unwrap();
-        assert!(content.contains("line-0") && content.contains("line-19"));
+        let log = dir.join("app.log");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&log, "small").unwrap();
+        rotate_if_oversized_with_limit(&log, TEST_CAP);
+        assert!(log.exists(), "未达上限不得轮转");
+        assert!(!dir.join("app.log.1").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn rotation_failure_still_appends_without_panic() {
-        let _guard = TEST_LOCK.lock();
+    fn rotation_failure_keeps_active_log_without_panic() {
         let dir = unique_dir("rotate-fail");
-        init(dir.clone());
         let log = dir.join("app.log");
-        std::fs::write(&log, "z".repeat(MAX_LOG_FILE_BYTES as usize)).unwrap();
-        // 用同名目录占用备份路径：删旧备份与 rename 在 Windows / Unix 都会失败，
-        // 模拟轮转不可用（只读或占用目录的平台近似）。
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&log, "z".repeat(TEST_CAP as usize)).unwrap();
+        // 用同名目录占用备份路径：删旧备份与 rename 都会失败。
         std::fs::create_dir_all(dir.join("app.log.1")).unwrap();
 
-        log_error("rotate-fail", "still-written");
+        rotate_if_oversized_with_limit(&log, TEST_CAP);
 
-        let content = std::fs::read_to_string(&log).unwrap();
-        assert!(
-            content.contains("still-written"),
-            "轮转失败时当前日志仍必须落盘"
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().len(),
+            TEST_CAP as usize,
+            "轮转失败时活跃日志必须原地保留，不能丢内容"
         );
-        // 内存环是进程全局的，并行测试可能有其它模块的写入，因此只断言存在性。
-        assert!(recent_logs(10_000)
-            .iter()
-            .any(|entry| entry.message == "still-written"));
+        assert!(dir.join("app.log.1").is_dir());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

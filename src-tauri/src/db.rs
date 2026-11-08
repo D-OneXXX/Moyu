@@ -582,10 +582,10 @@ pub fn upsert_online_book(
             page_count=excluded.page_count,
             last_opened_at=?5,
             removed=0, source_type=excluded.source_type, meta_json=excluded.meta_json,
-            current_page=MIN(books.current_page, excluded.page_count - 1),
-            updated_at=CASE WHEN MIN(books.current_page, excluded.page_count - 1) <> books.current_page
+            current_page=CASE WHEN excluded.page_count > 0 THEN MIN(books.current_page, excluded.page_count - 1) ELSE books.current_page END,
+            updated_at=CASE WHEN excluded.page_count > 0 AND books.current_page >= excluded.page_count
                             THEN ?5 ELSE books.updated_at END,
-            progress_rev=books.progress_rev + CASE WHEN MIN(books.current_page, excluded.page_count - 1) <> books.current_page
+            progress_rev=books.progress_rev + CASE WHEN excluded.page_count > 0 AND books.current_page >= excluded.page_count
                             THEN 1 ELSE 0 END",
         params![
             id,
@@ -1717,11 +1717,13 @@ pub fn delete_filter_rules(conn: &Connection, ids: &[String]) -> Result<(), Back
 
 /// 重置本地自学习：规则、站点档案与事件全部清空（不影响书库/阅读进度）。
 pub fn clear_filter_learning(conn: &Connection) -> Result<(), BackendError> {
-    conn.execute_batch(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
         "DELETE FROM online_filter_rules;
          DELETE FROM online_filter_profiles;
          DELETE FROM online_filter_events;",
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -2326,6 +2328,42 @@ mod tests {
             .unwrap()
             .iter()
             .any(|b| b.id == "o1"));
+    }
+
+    #[test]
+    fn online_upsert_unknown_page_count_preserves_progress_and_revision() {
+        let conn = mem();
+        upsert_online_book(&conn, "o1", "http://x/a", "A", 5, "generic_manga", "{}").unwrap();
+        set_progress(&conn, "o1", 4, Some(0.5)).unwrap();
+        let before: (i64, i64, String) = conn
+            .query_row(
+                "SELECT current_page, progress_rev, updated_at FROM books WHERE id='o1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        upsert_online_book(&conn, "o1", "http://x/a", "A", 0, "generic_manga", "{}").unwrap();
+        let after: (i64, i64, String) = conn
+            .query_row(
+                "SELECT current_page, progress_rev, updated_at FROM books WHERE id='o1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn clear_filter_learning_rolls_back_when_a_delete_fails() {
+        let conn = mem();
+        conn.execute_batch("INSERT INTO online_filter_rules(id, host, action, source, pattern_json, reason, created_at, hits) VALUES ('r', 'example.com', 'block', 'user', '{}', '', '', 0);
+            CREATE TRIGGER reject_profile_delete BEFORE DELETE ON online_filter_profiles BEGIN SELECT RAISE(ABORT, 'injected'); END;
+            INSERT INTO online_filter_profiles(host, uses, updated_at) VALUES ('example.com', 0, '');").unwrap();
+        assert!(clear_filter_learning(&conn).is_err());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM online_filter_rules", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

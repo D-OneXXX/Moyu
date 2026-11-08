@@ -24,6 +24,7 @@ import { toast } from "@/components/Toast";
 import { localizeStableErrorCode } from "@/features/errors/localize";
 import { useI18n, type MessageKey } from "@/i18n";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
+import { useAppVisible } from "@/features/performance/visibility";
 import { useWebAccess } from "@/features/web-access/useWebAccess";
 import type {
   DeviceView,
@@ -235,6 +236,8 @@ function ClaimRow({
 export default function WebAccessPanel() {
   const { t, formatDateTime } = useI18n();
   const { active: safeModeActive } = useSafeMode();
+  // 最小化/隐藏到托盘时暂停 1s 倒计时；恢复可见后重新对时。
+  const appVisible = useAppVisible();
   const {
     status,
     addresses,
@@ -283,13 +286,15 @@ export default function WebAccessPanel() {
   const hasClaimCountdown = claims.length > 0;
 
   // Local countdown only: this timer never talks to the backend and is always
-  // cleared when no pairing window or pending request needs it.
+  // cleared when no pairing window or pending request needs it — or while the
+  // window is minimized/hidden (防静默态每秒唤醒)。
   useEffect(() => {
+    if (!appVisible) return;
     if (!hasPairingWindowCountdown && !hasClaimCountdown) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [hasClaimCountdown, hasPairingWindowCountdown]);
+  }, [appVisible, hasClaimCountdown, hasPairingWindowCountdown]);
 
   const secondsLeft =
     !hasPairingWindowCountdown || pairingExpiresAt === null

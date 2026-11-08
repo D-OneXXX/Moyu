@@ -48,6 +48,7 @@ import {
 import {
   isSoloCover,
   isWideSolo,
+  progressPageFor,
   spreadFor,
   stepPage,
   type Direction,
@@ -71,6 +72,7 @@ import {
   useFeatureEnabled,
 } from "../features/features";
 import { useGlobalShortcuts } from "../features/shortcuts/useGlobalShortcuts";
+import { useAppVisible, isAppVisible } from "../features/performance/visibility";
 import { localizeBackendError, localizeStableErrorCode } from "../features/errors/localize";
 import {
   computePdfTarget,
@@ -259,6 +261,8 @@ export default function Reader() {
   const { active: safeMode } = useSafeMode();
   const webtoonEnabled = useFeatureEnabled("webtoon");
   const pdfEnabled = useFeatureEnabled("pdf");
+  // 主窗最小化/隐藏时暂停布局重算与预取解码，恢复可见后补一次。
+  const appVisible = useAppVisible();
   // 本次挂载的会话快照（页签切回时恢复页码/版式/方向/条漫位置）；只在首次渲染取一次。
   const initialSnapRef = useRef(ws.getSnapshot(bookId));
   const [tabsMenuOpen, setTabsMenuOpen] = useState(false);
@@ -404,10 +408,14 @@ export default function Reader() {
   const spread = spreadFor(page, n, mode, prefs.dir, spreadOptions);
   const solo = isSoloCover(spread, mode, prefs.dir, spreadOptions);
   const wideSolo = isWideSolo(spread, mode, pageDims);
+  // 进度页 = 落库用的 current_page：末屏跨页组包含最后一页时收敛到
+  // page_count-1（否则双页模式永远差一页）。`page` 仍是翻页锚点。
+  const progressPage = progressPageFor(page, n, mode, prefs.dir, spreadOptions);
   const canPrev =
     n > 0 && stepPage(page, n, mode, prefs.dir, -1, spreadOptions) !== page;
-  const canNext =
-    n > 0 && stepPage(page, n, mode, prefs.dir, 1, spreadOptions) !== page;
+  // 末屏跨页组已包含最后一页：progressPage 到达 n-1 即无下一页，
+  // 避免「同一屏再点一次」的空翻页。
+  const canNext = n > 0 && progressPage < n - 1;
   const atLastPage =
     bookState === "ready" &&
     book !== null &&
@@ -698,7 +706,20 @@ export default function Reader() {
         });
       }
       if (t.pageCount > 0 && t.mode !== "webtoon") {
-        void api.setProgress(t.book.id, t.page).catch(() => {});
+        // 卸载路径也要走「进度页」口径：双页末屏收敛到 page_count-1，
+        // 否则关闭页签时会用组内最小页覆盖刚读到的 100%。
+        void api
+          .setProgress(
+            t.book.id,
+            progressPageFor(
+              t.page,
+              t.pageCount,
+              t.mode,
+              t.dir,
+              spreadOptsRef.current,
+            ),
+          )
+          .catch(() => {});
       }
     };
   }, [bookId]);
@@ -931,6 +952,8 @@ export default function Reader() {
   useEffect(() => {
     if (bookState !== "ready" || !book || n === 0) return;
     if (mode === "webtoon") return; // 条漫由 WebtoonView 预取
+    // 最小化/隐藏：停止静默预取与解码，恢复可见后本 effect 重跑补上。
+    if (!appVisible) return;
     const run = () => {
       const t = trackRef.current;
       if (!t.book || t.book.id !== book.id) return;
@@ -961,7 +984,7 @@ export default function Reader() {
     const t = window.setTimeout(run, 80);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookState, book, page, mode, prefs.dir, imgs]);
+  }, [bookState, book, page, mode, prefs.dir, imgs, appVisible]);
 
   /* ---------- debounced progress save ---------- */
   useEffect(() => {
@@ -969,18 +992,20 @@ export default function Reader() {
     if (mode === "webtoon") return; // 条漫进度由 WebtoonView 提交
     const t = window.setTimeout(() => {
       api
-        .setProgress(book.id, page)
+        .setProgress(book.id, progressPage)
         .then(() => {
           // 同步本地 book：分页阅读清掉条漫百分比（切条漫时走页码衔接）。
           setBook((b) =>
-            b && b.id === book.id ? { ...b, currentPage: page, scrollPct: -1 } : b,
+            b && b.id === book.id
+              ? { ...b, currentPage: progressPage, scrollPct: -1 }
+              : b,
           );
         })
         .catch((e) => showFailure("reader.error.saveProgress", e));
     }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookState, book, page, n, mode]);
+  }, [bookState, book, page, progressPage, n, mode]);
 
   /* ---------- 页签快照（只写工作区 ref，不触发重渲染） ---------- */
   useEffect(() => {
@@ -1041,12 +1066,19 @@ export default function Reader() {
   useEffect(() => {
     let t = 0;
     const on = () => {
+      // 最小化/隐藏时不做尺寸重算与清晰度重取；恢复可见时统一补一次。
+      if (!isAppVisible()) return;
       window.clearTimeout(t);
       t = window.setTimeout(() => setSizeTick((v) => v + 1), 250);
     };
+    const onVisible = () => {
+      if (isAppVisible()) on();
+    };
     window.addEventListener("resize", on);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.removeEventListener("resize", on);
+      document.removeEventListener("visibilitychange", onVisible);
       window.clearTimeout(t);
     };
   }, []);
@@ -1720,7 +1752,9 @@ export default function Reader() {
   const pagedMax = Math.max(0, n - 1);
   const sliderMax = mode === "webtoon" ? 100 : pagedMax;
   const sliderValue =
-    mode === "webtoon" ? Math.round(wtProgress.pct * 100) : Math.min(page, pagedMax);
+    mode === "webtoon"
+      ? Math.round(wtProgress.pct * 100)
+      : Math.min(progressPage, pagedMax);
 
   const onScrub = useCallback(
     (v: number) => {
@@ -2173,7 +2207,7 @@ export default function Reader() {
           ) : (
             <>
               <span className="text-[12px] font-semibold text-foreground">
-                {n > 0 ? page + 1 : "–"}
+                {n > 0 ? progressPage + 1 : "–"}
               </span>
               <span className="px-0.5">/</span>
               {n > 0 ? n : "–"}

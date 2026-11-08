@@ -16,6 +16,7 @@ import {
 import { api, type BookInfo, type HeatDay } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { sourceDisplay } from "@/lib/sourceDisplay";
+import { readPagesRead, readProgressPercent } from "@/lib/progress";
 import { translate, useI18n } from "@/i18n";
 import { localizeBackendError } from "@/features/errors/localize";
 import { Badge } from "@/components/ui/badge";
@@ -119,11 +120,9 @@ function BookDetailSheetBody({
     source.kind === "local" ? "source.local" : "source.online",
   );
   const sourceText = source.text || t("source.hiddenAddress");
-  const read = Math.max(0, Math.min(book.currentPage, book.pageCount));
-  const pct =
-    book.pageCount > 0
-      ? Math.min(100, Math.round((read / book.pageCount) * 100))
-      : 0;
+  // 与书库卡片同一口径：current_page 是 0-based 页下标，末页 ⇒ 100%。
+  const pct = readProgressPercent(book.currentPage, book.pageCount);
+  const read = readPagesRead(book.currentPage, book.pageCount);
 
   useEffect(() => {
     if (!active) return;
@@ -316,7 +315,13 @@ function BookDetailSheetBody({
               variant="pill-primary"
               size="pill-sm"
               className="min-w-[128px] flex-1"
-              onClick={() => startReading(book.currentPage + 1)}
+              onClick={() =>
+                startReading(
+                  book.pageCount > 0
+                    ? Math.min(book.pageCount, Math.max(1, book.currentPage + 1))
+                    : 1,
+                )
+              }
             >
               <Play className="fill-current" />
               {t("book.continue")}

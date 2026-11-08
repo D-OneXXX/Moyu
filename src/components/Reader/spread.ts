@@ -127,6 +127,30 @@ export function isWideSolo(
   return dim ? isWidePage(dim[0], dim[1]) : false;
 }
 
+/**
+ * 阅读进度页（0-based）：当前屏幕对应的 `books.current_page`。
+ *
+ * 进度契约：有效范围 `0 .. page_count - 1`，只有落库值等于
+ * `page_count - 1` 才算 100% 读完（与 `get_last_read` 的
+ * `current_page + 1 < page_count` 未读完判定严格互补）。
+ *
+ * 双页模式最后一屏是 `[page_count - 2, page_count - 1]`；若仍按组内最小页
+ * 上报，`current_page` 会永远停在 `page_count - 2`，书库进度条与「继续阅读」
+ * 都会差一页。因此**末屏组包含最后一页时收敛到 `page_count - 1`**；
+ * 其余屏幕保持既有落点语义（不改变阅读统计的每步增量）。
+ */
+export function progressPageFor(
+  p: number,
+  n: number,
+  mode: PageMode,
+  dir: Direction,
+  options: SpreadOptions = {},
+): number {
+  if (n <= 0) return 0;
+  const c = Math.max(0, Math.min(n - 1, p));
+  return spreadFor(c, n, mode, dir, options).includes(n - 1) ? n - 1 : c;
+}
+
 /** Next/prev spread landing index from 0-based p (clamped). */
 export function stepPage(
   p: number,
@@ -141,6 +165,10 @@ export function stepPage(
   const layout = buildLayout(n, mode, dir, options);
   const groupIndex = layout.indexOf[c] ?? 0;
   const next = Math.max(0, Math.min(layout.groups.length - 1, groupIndex + delta));
-  // 落点取该组的最小页下标（RTL 组内视觉序与逻辑序相反）。
-  return Math.min(...layout.groups[next]);
+  const group = layout.groups[next];
+  if (!group || group.length === 0) return c;
+  // 末屏跨页组包含最后一页：落点收敛到 page_count - 1。
+  // 否则落点取组内最小页下标（RTL 组内视觉序与逻辑序相反），保持既有翻页语义。
+  if (group.includes(n - 1)) return n - 1;
+  return Math.min(...group);
 }

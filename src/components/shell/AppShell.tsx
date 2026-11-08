@@ -80,6 +80,17 @@ export default function AppShell() {
     mainRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [loc.pathname]);
 
+  // 最小化 / 隐藏到托盘：释放后端页与条漫切片的内存 LRU，把常驻内存压到
+  // 最低水位。只清派生缓存，不动书库与阅读进度；回到前台按需重渲染。
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden") return;
+      void api.clearPages().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
   useEffect(() => {
     let alive = true;
     const load = () => {

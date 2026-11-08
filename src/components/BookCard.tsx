@@ -5,6 +5,8 @@ import { api, type BookInfo } from "@/lib/tauri";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { readPagesRead, readProgressPercent } from "@/lib/progress";
+import { useAppVisible } from "@/features/performance/visibility";
 
 interface Props {
   book: BookInfo;
@@ -44,11 +46,14 @@ export default function BookCard({
   deferSelect,
 }: Props) {
   const { t, formatNumber } = useI18n();
+  // 最小化/隐藏到托盘时暂停缩略图请求与解码（静默态零 IPC / 零解码）。
+  const appVisible = useAppVisible();
   const [cover, setCover] = useState<string | null>(null);
   const [coverLoading, setCoverLoading] = useState(true);
   const [inView, setInView] = useState(false);
   const clickTimer = useRef<number>(0);
   const cardRef = useRef<HTMLDivElement>(null);
+  const loadedRef = useRef("");
   const isSeries = !!book.seriesId && (seriesCount ?? 1) > 1;
   const missing = book.missing;
 
@@ -75,17 +80,23 @@ export default function BookCard({
   }, []);
 
   useEffect(() => {
-    if (!inView) return;
+    // 主窗最小化/隐藏时不发缩略图请求、不解码；恢复可见后由 effect 重跑补上。
+    if (!inView || !appVisible) return;
+    if (loadedRef.current === book.id) return;
     let alive = true;
+    let settled = false;
+    loadedRef.current = book.id;
     setCover(null);
     setCoverLoading(true);
     const isPdf = book.format === "pdf";
+    const finish = (dataUrl: string | null) => {
+      if (!alive) return;
+      settled = true;
+      setCover(dataUrl);
+      setCoverLoading(false);
+    };
     api.getThumbnail(book.id, 512).then(
-      (img) => {
-        if (!alive) return;
-        setCover(img.dataUrl);
-        setCoverLoading(false);
-      },
+      (img) => finish(img.dataUrl),
       (error) => {
         if (!alive) return;
         // PDF：封面缺失不是错误——用 pdf.js 渲染首页并回写缓存。
@@ -96,42 +107,35 @@ export default function BookCard({
             ({ ensurePdfCover, hasPdfErrorCode }) => {
               if (!alive) return;
               if (hasPdfErrorCode(error, "pdf-cover-missing")) {
-                void ensurePdfCover(book.id).then((dataUrl) => {
-                  if (!alive) return;
-                  setCover(dataUrl);
-                  setCoverLoading(false);
-                });
+                void ensurePdfCover(book.id).then(
+                  (dataUrl) => finish(dataUrl),
+                  () => finish(null),
+                );
                 return;
               }
-              setCover(null);
-              setCoverLoading(false);
+              finish(null);
             },
-            () => {
-              if (!alive) return;
-              setCover(null);
-              setCoverLoading(false);
-            },
+            () => finish(null),
           );
           return;
         }
-        setCover(null);
-        setCoverLoading(false);
+        finish(null);
       },
     );
     return () => {
       alive = false;
+      // 被隐藏/卸载打断的请求不算“已加载”：恢复可见时允许重取（不留永久骨架）。
+      if (!settled) loadedRef.current = "";
     };
-  }, [book.id, book.format, inView]);
+  }, [book.id, book.format, inView, appVisible]);
 
-  const pct =
-    book.pageCount > 0
-      ? Math.min(100, Math.round((book.currentPage / book.pageCount) * 100))
-      : 0;
+  const pct = readProgressPercent(book.currentPage, book.pageCount);
+  const readPages = readPagesRead(book.currentPage, book.pageCount);
   const totalPages = formatNumber(book.pageCount);
   const sub =
-    book.currentPage > 0
+    readPages > 0
       ? t("card.readPages", {
-          current: formatNumber(book.currentPage),
+          current: formatNumber(readPages),
           total: totalPages,
         })
       : t("card.notStarted", { total: totalPages });
@@ -187,9 +191,9 @@ export default function BookCard({
   const ariaLabel = t("card.ariaLabel", {
     title: book.title,
     status:
-      book.currentPage > 0
+      readPages > 0
         ? t("card.ariaStatusRead", {
-            current: formatNumber(book.currentPage),
+            current: formatNumber(readPages),
             total: totalPages,
           })
         : t("card.ariaStatusNotStarted", { total: totalPages }),

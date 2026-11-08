@@ -21,6 +21,7 @@ import PixelPet from "../PixelPet";
 import { useI18n } from "@/i18n";
 import { localizeBackendError } from "@/features/errors/localize";
 import { useGlobalShortcuts } from "@/features/shortcuts/useGlobalShortcuts";
+import { isAppVisible, useAppVisible } from "@/features/performance/visibility";
 
 export interface WebtoonHandle {
   scrollToPct: (pct: number) => void;
@@ -203,6 +204,8 @@ const WebtoonView = memo(function WebtoonView({
   ref,
 }: Props) {
   const { t } = useI18n();
+  // 主窗最小化/隐藏：暂停预取与尺寸重算，恢复可见后补一次。
+  const appVisible = useAppVisible();
   const [dims, setDims] = useState<PageDim[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tiles, setTiles] = useState<Record<string, string>>({});
@@ -249,6 +252,8 @@ const WebtoonView = memo(function WebtoonView({
 
   // 程序化滚动（恢复/跳页/宽度锚定）产生的 scroll 事件不要重复提交进度。
   const programmaticScroll = useRef(false);
+  // 触底吸附只立即落库一次；离开底部后复位，避免重复 IPC。
+  const bottomFlushed = useRef(false);
   // 换书/换渲染宽清空缓存后，下一次窗口同步必须强制重新请求（不能信旧 tiles 闭包）。
   const forceFetchRef = useRef(false);
   // 当前布局的保留窗口（绝对像素），预取结果超出即丢弃，避免无界缓存。
@@ -290,6 +295,8 @@ const WebtoonView = memo(function WebtoonView({
     const el = scrollerRef.current;
     if (!el) return;
     const measure = () => {
+      // 最小化/隐藏时跳过重算，避免静默态触发 layout + 重渲染。
+      if (!isAppVisible()) return;
       const w = el.clientWidth;
       const h = el.clientHeight;
       setViewport((prev) =>
@@ -300,7 +307,7 @@ const WebtoonView = memo(function WebtoonView({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [appVisible]);
 
   const vw = viewport.w;
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -540,7 +547,7 @@ const WebtoonView = memo(function WebtoonView({
     onProgress(p, page);
   }, [onProgress]);
 
-  /* ---------- 滚动：当前页 = 视口中心；同步窗口/进度 ---------- */
+  /* ---------- 滚动：当前页 = 视口中心；触底吸附到最后一页 ---------- */
   const syncFromScroll = useCallback(
     (schedule = true) => {
       const el = scrollerRef.current;
@@ -549,16 +556,20 @@ const WebtoonView = memo(function WebtoonView({
       const vhNow = el.clientHeight;
       // centerAnchor 返回逻辑页下标（页内比例与 tile 无关）。
       const anchor = centerAnchor(layout, top, vhNow);
-      anchorRef.current = anchor;
-      const max = Math.max(1, layout.total - vhNow);
-      lastProgress.current = {
-        pct: clamp(top / max, 0, 1),
-        page: anchor.page,
-      };
       const rawMax = Math.max(0, layout.total - vhNow);
+      // 触底判定用真实滚动几何（scrollTop + clientHeight >= scrollHeight - 2）。
+      // 尾页常是版权页/窄条，视口中心线仍会停在倒数第二页；只看中心锚点
+      // 会永远差一页，导致 current_page 到不了 page_count - 1。
+      const atBottom = rawMax <= 0.5 || top + vhNow >= el.scrollHeight - 2;
+      const page = atBottom ? layout.pages.length - 1 : anchor.page;
+      lastProgress.current = {
+        pct: atBottom ? 1 : clamp(top / Math.max(1, rawMax), 0, 1),
+        page,
+      };
+      anchorRef.current = atBottom ? { page, frac: 1 } : anchor;
       edgeRef.current = {
         top: top <= 0.5,
-        bottom: top >= rawMax - 0.5,
+        bottom: atBottom,
       };
       measuredRef.current = { layout, top, vh: vhNow };
 
@@ -573,7 +584,16 @@ const WebtoonView = memo(function WebtoonView({
       setWin((prev) => (prev.lo === lo && prev.hi === hi ? prev : { lo, hi }));
 
       ensureTiles(top, vhNow);
-      if (schedule) {
+      if (atBottom && !bottomFlushed.current) {
+        // 触底立即落库：400ms 防抖窗口内关窗/切页签会吞掉最后一次写入，
+        // 留下「已读完却停在倒数第二页」的残留。
+        bottomFlushed.current = true;
+        window.clearTimeout(progressTimer.current);
+        commitProgress();
+      } else if (!atBottom) {
+        bottomFlushed.current = false;
+      }
+      if (schedule && !atBottom) {
         window.clearTimeout(progressTimer.current);
         progressTimer.current = window.setTimeout(
           commitProgress,
@@ -706,12 +726,16 @@ const WebtoonView = memo(function WebtoonView({
     syncRef.current(true);
   }, [W]);
 
-  /* ---------- 后台预切：逐页物化后续页（近前优先，向前扫窗口） ---------- */
+  /* ---------- 后台预切：逐页物化后续页（事件驱动，不空转轮询） ---------- */
   // 逻辑页总数（= book.pageCount = 后端 layout.pages.length），预取游标 P 与
   // doneRef 都以逻辑页为单位；请求首片只是触发后端把该页整页切成片。
+  //
+  // 这里刻意**不做** `sleep(800); continue` 常驻轮询：前方窗口就绪即退出，
+  // 由滚动（win.lo 变化）或恢复可见重新触发。最小化/隐藏时直接不启动，
+  // 静默空闲态不产生任何定时器唤醒。
   const pageCount = layout?.pages.length ?? 0;
   useEffect(() => {
-    if (pageCount === 0) return;
+    if (pageCount === 0 || !appVisible) return;
     let alive = true;
     const gen = ++prefetchGen.current;
     // 在线源每页都要真实下载：预取窗口收紧到近前 1 页 / 向前 2 页；
@@ -736,22 +760,20 @@ const WebtoonView = memo(function WebtoonView({
             }
           }
         }
-        if (target < 0) {
-          await sleep(800); // 前方窗口已就绪：低频待命
-          continue;
-        }
+        // 有界预取：前方窗口已就绪就退出，等下一次滚动/可见性事件再踢。
+        if (target < 0) return;
         // 请求首片 = 触发后端整页物化；顺带预解码存入可视缓存。
         await loadTile(target, 0);
         if (!alive || gen !== prefetchGen.current) return;
         doneRef.current.add(target);
-        await sleep(30);
+        await sleep(30); // 连续预取之间的节流，不是轮询
       }
     };
     void run();
     return () => {
       alive = false;
     };
-  }, [pageCount, book.id, book.sourceType, loadTile]);
+  }, [pageCount, book.id, book.sourceType, loadTile, appVisible, win.lo]);
 
   /* ---------- 卸载：立即提交进度并让在途请求失效 ---------- */
   useEffect(() => {
@@ -894,14 +916,14 @@ const WebtoonView = memo(function WebtoonView({
         if (el && layout && layout.pages.length > 0) {
           const top = el.scrollTop;
           const vhNow = el.clientHeight;
-          // 与 syncFromScroll 同源：page 为逻辑页下标（不是切片号）。
-          const page = pageIndexAt(
-            layout.pages,
-            top + vhNow * 0.5,
-          );
-          const max = Math.max(1, layout.total - vhNow);
+          const rawMax = Math.max(0, layout.total - vhNow);
+          // 与 syncFromScroll 同源：触底吸附到最后一页，卸载快照不会回退。
+          const atBottom = rawMax <= 0.5 || top + vhNow >= el.scrollHeight - 2;
+          const page = atBottom
+            ? layout.pages.length - 1
+            : pageIndexAt(layout.pages, top + vhNow * 0.5);
           lastProgress.current = {
-            pct: clamp(top / max, 0, 1),
+            pct: atBottom ? 1 : clamp(top / Math.max(1, rawMax), 0, 1),
             page,
           };
         }

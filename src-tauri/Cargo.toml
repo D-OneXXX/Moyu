@@ -5,6 +5,9 @@ description = "Moyu - a free desktop application for manga reading and library m
 authors = ["manga-reader"]
 edition = "2021"
 rust-version = "1.90"
+# Windows 基线：只支持 NT 10.0 (Build 10240)+。安装器由 nsis/hooks.nsh
+# 拦截，进程启动期由 platform::enforce_windows_baseline 二次硬校验；
+# 仓库不再维护 Win7/8/8.1 兼容垫片。
 
 [lib]
 name = "manga_reader_tauri_lib"

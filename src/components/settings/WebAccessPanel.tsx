@@ -6,12 +6,14 @@ import {
   Copy,
   Globe2,
   Loader2,
+  Monitor,
   Play,
   QrCode,
   RefreshCw,
   ShieldAlert,
   Smartphone,
   Square,
+  Tablet,
   Unplug,
   UserX,
   X,
@@ -24,6 +26,7 @@ import { toast } from "@/components/Toast";
 import { localizeStableErrorCode } from "@/features/errors/localize";
 import { useI18n, type MessageKey } from "@/i18n";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
+import { useAppVisible } from "@/features/performance/visibility";
 import { useWebAccess } from "@/features/web-access/useWebAccess";
 import type {
   DeviceView,
@@ -235,6 +238,8 @@ function ClaimRow({
 export default function WebAccessPanel() {
   const { t, formatDateTime } = useI18n();
   const { active: safeModeActive } = useSafeMode();
+  // 最小化/隐藏到托盘时暂停 1s 倒计时；恢复可见后重新对时。
+  const appVisible = useAppVisible();
   const {
     status,
     addresses,
@@ -283,13 +288,15 @@ export default function WebAccessPanel() {
   const hasClaimCountdown = claims.length > 0;
 
   // Local countdown only: this timer never talks to the backend and is always
-  // cleared when no pairing window or pending request needs it.
+  // cleared when no pairing window or pending request needs it — or while the
+  // window is minimized/hidden (防静默态每秒唤醒)。
   useEffect(() => {
+    if (!appVisible) return;
     if (!hasPairingWindowCountdown && !hasClaimCountdown) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [hasClaimCountdown, hasPairingWindowCountdown]);
+  }, [appVisible, hasClaimCountdown, hasPairingWindowCountdown]);
 
   const secondsLeft =
     !hasPairingWindowCountdown || pairingExpiresAt === null
@@ -378,7 +385,7 @@ export default function WebAccessPanel() {
   const onRevokeConfirm = () => {
     const device = revokeDevice;
     setRevokeDevice(null);
-    if (device) void revoke(device.id);
+    if (device) void revoke(device.sessionId);
   };
 
   return (
@@ -836,61 +843,103 @@ export default function WebAccessPanel() {
                 </p>
               ) : (
                 <ul className="mt-3 space-y-2">
-                  {devices.map((device) => (
-                    <li
-                      key={device.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card/60 p-3"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="break-words text-sm font-semibold">
-                          {displayDeviceName(device.deviceName, t)}
-                        </p>
-                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                          {t("settings.webAccess.deviceIssued", {
-                            date: formatDateTime(device.issuedAtUnixMs, {
-                              year: "numeric",
-                              month: "short",
-                              day: "2-digit",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            }),
-                          })}
-                        </p>
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                          {t("settings.webAccess.deviceExpires", {
-                            date: formatDateTime(device.expiresAtUnixMs, {
-                              year: "numeric",
-                              month: "short",
-                              day: "2-digit",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            }),
-                          })}
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="pill-danger"
-                        size="pill-sm"
-                        className="whitespace-nowrap"
-                        aria-label={`${t("settings.webAccess.revoke")}: ${displayDeviceName(
-                          device.deviceName,
-                          t,
-                        )}`}
-                        disabled={busy !== null}
-                        onClick={() => setRevokeDevice(device)}
+                  {devices.map((device) => {
+                    const PlatformIcon = device.platform.startsWith("iPadOS")
+                      ? Tablet
+                      : device.platform.startsWith("iOS") ||
+                          device.platform.startsWith("Android")
+                        ? Smartphone
+                        : Monitor;
+                    return (
+                      <li
+                        key={device.sessionId}
+                        className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-border bg-card/60 p-3"
                       >
-                        {busy === "revoke" && busyTarget === device.id ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <UserX className="size-3.5" />
-                        )}
-                        {t("settings.webAccess.revoke")}
-                      </Button>
-                    </li>
-                  ))}
+                        <div className="flex min-w-0 flex-1 items-start gap-3">
+                          <span
+                            className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl border border-border bg-background/70 text-muted-foreground"
+                            aria-hidden
+                          >
+                            <PlatformIcon className="size-4" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="break-words text-sm font-semibold">
+                                {displayDeviceName(device.deviceName, t)}
+                              </p>
+                              <Badge variant="outline" className="whitespace-nowrap">
+                                {device.platform}
+                              </Badge>
+                            </div>
+                            {device.sourceIp ? (
+                              <p className="mt-1 font-mono text-xs leading-relaxed text-muted-foreground">
+                                {t("settings.webAccess.deviceIp", {
+                                  ip: device.sourceIp,
+                                })}
+                              </p>
+                            ) : null}
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                              {t("settings.webAccess.deviceLastActive", {
+                                date: formatDateTime(device.lastActiveAtUnixMs, {
+                                  year: "numeric",
+                                  month: "short",
+                                  day: "2-digit",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                }),
+                              })}
+                            </p>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                              {t("settings.webAccess.deviceIssued", {
+                                date: formatDateTime(device.issuedAtUnixMs, {
+                                  year: "numeric",
+                                  month: "short",
+                                  day: "2-digit",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                }),
+                              })}
+                            </p>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                              {t("settings.webAccess.deviceExpires", {
+                                date: formatDateTime(device.expiresAtUnixMs, {
+                                  year: "numeric",
+                                  month: "short",
+                                  day: "2-digit",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                }),
+                              })}
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="pill-danger"
+                          size="pill-sm"
+                          className="whitespace-nowrap"
+                          aria-label={`${t("settings.webAccess.revoke")}: ${displayDeviceName(
+                            device.deviceName,
+                            t,
+                          )}`}
+                          disabled={busy !== null}
+                          onClick={() => setRevokeDevice(device)}
+                        >
+                          {busy === "revoke" && busyTarget === device.sessionId ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <UserX className="size-3.5" />
+                          )}
+                          {t("settings.webAccess.revoke")}
+                        </Button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
+              <p className="mt-3 rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+                {t("settings.webAccess.devicesMemoryNote")}
+              </p>
             </div>
 
             <p className="rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 text-[10.5px] leading-relaxed text-muted-foreground">

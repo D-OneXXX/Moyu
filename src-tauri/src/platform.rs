@@ -1,8 +1,122 @@
 //! 跨平台启动期加固与安装形态探测。
 //!
 //! Linux（WebKitGTK）专属逻辑全部用 `#[cfg(target_os = "linux")]` 隔离；
-//! Windows 路径零改动。纯决策函数保持跨平台可测（Windows 宿主上
-//! `cargo test` 也能覆盖决策表）。
+//! Windows 侧的版本准入收敛到 [`enforce_windows_baseline`]。纯决策函数保持
+//! 跨平台可测（非 Windows 宿主上 `cargo test` 也能覆盖决策表）。
+
+/// Windows 最低支持基线：Windows 10 (NT 10.0) RTM，Build 10240。
+///
+/// 低于该基线的系统（Win7 SP1 / Win8 / Win8.1）不再提供任何兼容垫片：
+/// 安装器（`nsis/hooks.nsh`）先拦一层，进程启动期再硬校验一次。
+pub const MIN_WINDOWS_BUILD: u32 = 10240;
+
+/// 系统低于基线时的退出码（Fail-Fast，非零，便于安装器/自动化识别）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub const EXIT_UNSUPPORTED_WINDOWS: i32 = 96;
+
+/// Windows 版本准入判定（纯函数，便于在任意宿主上单测）。
+///
+/// - `major > 10`：未来版本，放行；
+/// - `major == 10`：Build 必须 ≥ 10240（Win10 RTM；Win11 同样报 major 10）；
+/// - `major < 10`：Win7 / Win8 / Win8.1，拒绝。
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub fn windows_supported(major: u32, build: u32) -> bool {
+    major > 10 || (major == 10 && build >= MIN_WINDOWS_BUILD)
+}
+
+/// 启动最早期硬校验：必须在数据库初始化与 WebView 创建之前调用。
+///
+/// 非 Windows 目标为空实现（Linux 的 WebKitGTK 加固仍走
+/// [`early_env_hardening`]）。
+pub fn enforce_windows_baseline() {
+    #[cfg(target_os = "windows")]
+    windows_baseline_gate();
+}
+
+#[cfg(target_os = "windows")]
+fn windows_baseline_gate() {
+    let Some((major, build)) = windows_kernel_version() else {
+        // 查询失败（理论上不会发生）不误伤用户：记录后放行。
+        eprintln!("[platform] 无法读取 Windows 内核版本，跳过基线校验");
+        return;
+    };
+    if windows_supported(major, build) {
+        return;
+    }
+    eprintln!(
+        "[platform] windows-unsupported: NT {major}.x build {build}（要求 Windows 10 / Build {MIN_WINDOWS_BUILD}+）"
+    );
+    show_unsupported_windows_notice();
+    std::process::exit(EXIT_UNSUPPORTED_WINDOWS);
+}
+
+/// `OSVERSIONINFOW`（只用到前 5 个 DWORD + CSD 串，布局必须逐字节一致）。
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct OsVersionInfoW {
+    size: u32,
+    major: u32,
+    minor: u32,
+    build: u32,
+    platform: u32,
+    csd: [u16; 128],
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "ntdll")]
+extern "system" {
+    /// 真实内核版本。`GetVersionEx` 会被应用清单的兼容性声明欺骗，
+    /// `RtlGetVersion` 不会——这是「低于 Win10 必须拒绝」的可信来源。
+    fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn windows_kernel_version() -> Option<(u32, u32)> {
+    let mut info = OsVersionInfoW {
+        size: std::mem::size_of::<OsVersionInfoW>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform: 0,
+        csd: [0; 128],
+    };
+    // SAFETY: `info` 是按 RtlGetVersion 期望布局初始化、可写的 OSVERSIONINFOW；
+    // 调用只写入该结构体，不保留任何指针。
+    let status = unsafe { RtlGetVersion(&mut info) };
+    (status == 0).then_some((info.major, info.build))
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBoxW(
+        hwnd: *mut core::ffi::c_void,
+        text: *const u16,
+        caption: *const u16,
+        utype: u32,
+    ) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn show_unsupported_windows_notice() {
+    const MB_ICONERROR: u32 = 0x0000_0010;
+    const MB_OK: u32 = 0x0000_0000;
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+    let text = wide(
+        "MangaReader 需要 Windows 10（NT 10.0, Build 10240）或更高版本。\n\
+         MangaReader requires Windows 10 (Build 10240) or later.",
+    );
+    let caption = wide("MangaReader");
+    // SAFETY: 两个字符串都以 NUL 结尾并在调用期间存活；无父窗口（桌面提示）。
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+}
 
 /// setup 之前的启动期环境加固。
 ///
@@ -170,6 +284,22 @@ mod tests {
         assert!(!decide_dmabuf_disable(false, false, false, true, false));
         assert!(!decide_dmabuf_disable(false, false, false, false, true));
         assert!(!decide_dmabuf_disable(false, false, false, false, false));
+    }
+
+    #[test]
+    fn windows_baseline_table() {
+        // 支持的基线：Win10 RTM / 后续累积更新 / Win11（同样报 major 10）。
+        assert!(windows_supported(10, 10240));
+        assert!(windows_supported(10, 19045));
+        assert!(windows_supported(10, 22000));
+        assert!(windows_supported(10, 26100));
+        // 未来主版本：不拦（只拒绝低于基线的系统）。
+        assert!(windows_supported(11, 0));
+        // 低于基线：Win7 SP1 / Win8 / Win8.1 / 未达 RTM 的 10 预览版。
+        assert!(!windows_supported(6, 7601));
+        assert!(!windows_supported(6, 9200));
+        assert!(!windows_supported(6, 9600));
+        assert!(!windows_supported(10, 10239));
     }
 
     #[test]

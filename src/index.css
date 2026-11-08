@@ -344,6 +344,13 @@
   }
 }
 
+/* 主窗最小化 / 隐藏到托盘：暂停一切装饰性动画，静默空闲态不再跑帧。 */
+html[data-app-hidden="true"] *,
+html[data-app-hidden="true"] *::before,
+html[data-app-hidden="true"] *::after {
+  animation-play-state: paused !important;
+}
+
 /* Safe mode: prioritize a stable local reading surface over decorative motion. */
 html[data-safe-mode="true"] *,
 html[data-safe-mode="true"] *::before,

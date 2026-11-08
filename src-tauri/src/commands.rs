@@ -2232,6 +2232,7 @@ fn settings_persist_pairs(s: &Settings) -> Vec<(&'static str, String)> {
     pairs.push(("online_proxy", s.online_proxy.clone()));
     pairs.push(("online_concurrency", s.online_concurrency.to_string()));
     pairs.push(("online_headers", s.online_headers.clone()));
+    pairs.push(("close_to_tray", bool_str(s.close_to_tray)));
     pairs
 }
 

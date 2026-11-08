@@ -604,6 +604,15 @@ fn open_recovery(
     Ok(true)
 }
 
+/// A hidden (tray) or minimized main window is not a frozen renderer.
+///
+/// WebView2 throttles timers for background/hidden pages, so heartbeats may
+/// legitimately stop for longer than [`HEARTBEAT_STALE`]. The watchdog must
+/// grant a fresh grace window instead of opening the recovery window.
+fn watchdog_exempt(minimized: bool, visible: bool) -> bool {
+    minimized || !visible
+}
+
 fn spawn_watchdog(app: AppHandle, state: Arc<ResilienceState>) {
     let _ = std::thread::Builder::new()
         .name("mr-ui-watchdog".to_string())
@@ -631,7 +640,7 @@ fn spawn_watchdog(app: AppHandle, state: Arc<ResilienceState>) {
                 };
                 let minimized = main.is_minimized().unwrap_or(false);
                 let visible = main.is_visible().unwrap_or(true);
-                if minimized || !visible {
+                if watchdog_exempt(minimized, visible) {
                     // Being minimized is not a freeze. Restore grants a fresh grace
                     // window instead of immediately declaring the old timestamp stale.
                     *state.last_heartbeat.lock() = Some(Instant::now());
@@ -1047,6 +1056,17 @@ mod tests {
             "mr-resilience-{}-{tag}-{nanos}.json",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn watchdog_exempts_tray_and_minimized_windows() {
+        // Tray residency (window.hide()) and minimize both stop heartbeats
+        // because WebView2 throttles background timers.
+        assert!(watchdog_exempt(false, false));
+        assert!(watchdog_exempt(true, false));
+        assert!(watchdog_exempt(true, true));
+        // A visible, non-minimized window is still watched.
+        assert!(!watchdog_exempt(false, true));
     }
 
     #[test]

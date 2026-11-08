@@ -5,7 +5,6 @@ import path from "node:path";
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CdpPage, waitForTarget } from "./lib/cdp.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const reader = path.join(root, "src-tauri/src/web_access/reader");
 const chrome = process.env.MR_HEADLESS_CHROME || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -14,6 +13,75 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQ
 const id = "a".repeat(64);
 let paired = false, writes = 0, lastWrite = null;
 let progressState = { page: 0, pageCount: 3, scrollPct: -1, rev: 4 };
+async function waitForTarget(port, predicate, timeout = 30_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
+      if (response.ok) {
+        const targets = await response.json();
+        const target = targets.find((entry) => entry.type === "page" && predicate(entry));
+        if (target) return target;
+      }
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error("Timed out waiting for the isolated headless browser target.");
+}
+class CdpPage {
+  constructor(target) {
+    this.target = target;
+    this.socket = null;
+    this.sequence = 0;
+    this.pending = new Map();
+  }
+  static async connect(target) {
+    const page = new CdpPage(target);
+    await page.open();
+    return page;
+  }
+  async open() {
+    if (typeof WebSocket !== "function") throw new Error("Node.js with global WebSocket support is required.");
+    this.socket = new WebSocket(this.target.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      this.socket.addEventListener("open", resolve, { once: true });
+      this.socket.addEventListener("error", () => reject(new Error("CDP WebSocket connection failed.")), { once: true });
+    });
+    this.socket.addEventListener("message", (event) => {
+      const message = JSON.parse(event.data);
+      const pending = message.id ? this.pending.get(message.id) : null;
+      if (!pending) return;
+      this.pending.delete(message.id);
+      clearTimeout(pending.timer);
+      if (message.error) pending.reject(new Error(JSON.stringify(message.error)));
+      else pending.resolve(message.result);
+    });
+    await this.send("Runtime.enable");
+    await this.send("Page.enable");
+  }
+  send(method, params = {}) {
+    if (!this.socket) return Promise.reject(new Error("CDP is not connected."));
+    return new Promise((resolve, reject) => {
+      const id = ++this.sequence;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP ${method} timed out.`));
+      }, 10_000);
+      this.pending.set(id, { resolve, reject, timer });
+      this.socket.send(JSON.stringify({ id, method, params }));
+    });
+  }
+  async eval(expression) {
+    const result = await this.send("Runtime.evaluate", {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: true,
+    });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || "Page evaluation failed.");
+    return result.result?.value;
+  }
+}
 const assets = /* @__PURE__ */ new Map([
   ["/", [path.join(reader, "index.html"), "text/html"]],
   ["/reader.js", [path.join(reader, "reader.js"), "text/javascript"]],
@@ -123,7 +191,7 @@ try {
   }
   assert.ok(cdpPort, "Chrome did not publish a CDP port");
   const target = await waitForTarget(cdpPort, (entry) => entry.url.includes(`127.0.0.1:${port}`));
-  page = await CdpPage.connect(target, cdpPort);
+  page = await CdpPage.connect(target);
   await page.send("Emulation.setDeviceMetricsOverride", {width: 390, height: 844, deviceScaleFactor: 1, mobile: true});
   const wait = async (expr) => {
     for (let i = 0; i < 100; i++) {

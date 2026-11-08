@@ -595,10 +595,17 @@ pub async fn scan_library(
     let st = state.inner().clone();
     let (books, errors) = blocking(move || scan_and_invalidate(&st, db_path, &path)).await?;
     // 刷新后全量回读；文件 stat / meta_json 解析放在 DB 锁外，避免阻塞阅读进度写入。
-    let rows = state
-        .db
-        .with(|conn| db::list_books(conn, None).map_err(err))?;
-    let list: Vec<BookInfo> = rows.into_iter().map(to_book_info).collect();
+    let st = state.inner().clone();
+    let list = blocking(move || {
+        // 只在 DbSlot 锁内取行；文件 stat 与 meta_json 解析在锁外，
+        // 但整个回读与物化都放进 blocking pool。
+        let rows = st
+            .db
+            .with(|conn| db::list_books(conn, None).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(rows.into_iter().map(to_book_info).collect())
+    })
+    .await?;
     Ok(ScanResult {
         added: books.len(),
         books: list,
@@ -1013,12 +1020,16 @@ pub async fn get_book(
     state: State<'_, Arc<AppState>>,
     book_id: String,
 ) -> Result<BookInfo, String> {
-    state.db.with(|conn| {
-        db::get_book(conn, &book_id)
-            .map_err(err)?
-            .map(to_book_info)
-            .ok_or_else(|| "书籍不存在".to_string())
+    let st = state.inner().clone();
+    blocking(move || {
+        let row = st
+            .db
+            .with(|conn| db::get_book(conn, &book_id).map_err(err))
+            .map_err(BackendError::Msg)?
+            .ok_or_else(|| BackendError::Msg("书籍不存在".into()))?;
+        Ok(to_book_info(row))
     })
+    .await
 }
 
 /// 重定位核心（同步、可单测）：校验新源 → 迁移 id/path/进度/历史。
@@ -1117,9 +1128,13 @@ pub async fn get_next_book(
     state: State<'_, Arc<AppState>>,
     book_id: String,
 ) -> Result<Option<BookInfo>, String> {
-    state
-        .db
-        .with(|conn| get_next_book_impl(conn, &book_id).map_err(err))
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| get_next_book_impl(conn, &book_id).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1127,9 +1142,13 @@ pub async fn get_series_books(
     state: State<'_, Arc<AppState>>,
     series_id: String,
 ) -> Result<Vec<BookInfo>, String> {
-    state
-        .db
-        .with(|conn| get_series_books_impl(conn, &series_id).map_err(err))
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| get_series_books_impl(conn, &series_id).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1290,12 +1309,19 @@ pub async fn get_page(
     if let Some(hit) = state.cache.get_page(&book_id, index, w, h) {
         return Ok(to_page_image(index, hit));
     }
-    let (is_online, format) = state.db.with(|conn| {
-        db::get_book(conn, &book_id)
-            .map_err(err)?
-            .map(|b| (b.source_type != "local", b.format))
-            .ok_or_else(|| "书籍不存在".to_string())
-    })?;
+    let st = state.inner().clone();
+    let lookup_book_id = book_id.clone();
+    let (is_online, format) = blocking(move || {
+        st.db
+            .with(|conn| {
+                db::get_book(conn, &lookup_book_id)
+                    .map_err(err)?
+                    .map(|b| (b.source_type != "local", b.format))
+                    .ok_or_else(|| "书籍不存在".into())
+            })
+            .map_err(BackendError::Msg)
+    })
+    .await?;
     // PDF-2：PDF 绝不能进入图片取页管线（页面由前端 PDF.js 渲染）。
     // 这里显式拦下，避免 L2 里恰好存在同尺寸封面时被当成「第 1 页」返回。
     if format == db::BOOK_FORMAT_PDF {
@@ -1491,12 +1517,19 @@ pub async fn get_thumbnail(
     }
     // 先查来源格式：PDF 没有「首页图片」，封面来自前端渲染后写回的 L2 缓存。
     // PDF 绝不能走 source_handle_for_book（那条路径有意拒绝 PDF）。
-    let format = state.db.with(|conn| {
-        db::get_book(conn, &book_id)
-            .map_err(err)?
-            .map(|row| row.format)
-            .ok_or_else(|| "书籍不存在".to_string())
-    })?;
+    let st = state.inner().clone();
+    let lookup_book_id = book_id.clone();
+    let format = blocking(move || {
+        st.db
+            .with(|conn| {
+                db::get_book(conn, &lookup_book_id)
+                    .map_err(err)?
+                    .map(|row| row.format)
+                    .ok_or_else(|| "书籍不存在".into())
+            })
+            .map_err(BackendError::Msg)
+    })
+    .await?;
     if format == db::BOOK_FORMAT_PDF {
         return pdf_thumbnail(state.inner(), &book_id).await;
     }
@@ -1660,13 +1693,27 @@ pub async fn set_book_page_count(
     book_id: String,
     page_count: u32,
 ) -> Result<(), String> {
-    state.db.with(|conn| {
-        let row = db::get_book(conn, &book_id)
-            .map_err(err)?
-            .ok_or_else(|| "书籍不存在".to_string())?;
-        let count = pdf::validate_pdf_page_count(&row.format, page_count).map_err(err)?;
-        db::set_book_page_count(conn, &book_id, count).map_err(err)
+    set_book_page_count_blocking(state.inner().clone(), book_id, page_count).await
+}
+
+async fn set_book_page_count_blocking(
+    state: Arc<AppState>,
+    book_id: String,
+    page_count: u32,
+) -> Result<(), String> {
+    blocking(move || {
+        state
+            .db
+            .with(|conn| {
+                let row = db::get_book(conn, &book_id)
+                    .map_err(err)?
+                    .ok_or_else(|| "书籍不存在".to_string())?;
+                let count = pdf::validate_pdf_page_count(&row.format, page_count).map_err(err)?;
+                db::set_book_page_count(conn, &book_id, count).map_err(err)
+            })
+            .map_err(BackendError::Msg)
     })
+    .await
 }
 
 /// 写入 PDF 封面（PDF-2）：前端 PDF.js 渲染首页后回传缓存。
@@ -1891,15 +1938,21 @@ pub async fn get_reading_log(
     days: Option<u32>,
 ) -> Result<Vec<HeatDay>, String> {
     let d = days.unwrap_or(30).clamp(1, 365) as i64;
-    state.db.with(|conn| {
-        db::reading_log_days(conn, book_id.as_deref(), d)
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|(date, count)| HeatDay { date, count })
-                    .collect()
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| {
+                db::reading_log_days(conn, book_id.as_deref(), d)
+                    .map(|rows| {
+                        rows.into_iter()
+                            .map(|(date, count)| HeatDay { date, count })
+                            .collect()
+                    })
+                    .map_err(err)
             })
-            .map_err(err)
+            .map_err(BackendError::Msg)
     })
+    .await
 }
 
 /// 逐日逐书阅读页数（书库趋势堆叠图）。
@@ -1909,19 +1962,25 @@ pub async fn get_reading_by_book(
     days: Option<u32>,
 ) -> Result<Vec<BookDayPoint>, String> {
     let d = days.unwrap_or(14).clamp(1, 365) as i64;
-    state.db.with(|conn| {
-        db::reading_by_book(conn, d)
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|(date, book_id, pages)| BookDayPoint {
-                        book_id,
-                        date,
-                        pages,
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| {
+                db::reading_by_book(conn, d)
+                    .map(|rows| {
+                        rows.into_iter()
+                            .map(|(date, book_id, pages)| BookDayPoint {
+                                book_id,
+                                date,
+                                pages,
+                            })
+                            .collect()
                     })
-                    .collect()
+                    .map_err(err)
             })
-            .map_err(err)
+            .map_err(BackendError::Msg)
     })
+    .await
 }
 
 /// 阅读位置钳制（PDF-2 有例外）。
@@ -1965,9 +2024,22 @@ pub async fn set_progress(
 ) -> Result<(), String> {
     // 重扫使用另一连接，必须在同一个 SQLite 写事务内读取页数并钳制。
     let pct = scroll_pct.map(|p| p.clamp(0.0, 1.0));
-    state
-        .db
-        .with(|conn| set_progress_desktop(conn, &book_id, page, pct).map_err(err))
+    set_progress_blocking(state.inner().clone(), book_id, page, pct).await
+}
+
+async fn set_progress_blocking(
+    state: Arc<AppState>,
+    book_id: String,
+    page: u32,
+    pct: Option<f64>,
+) -> Result<(), String> {
+    blocking(move || {
+        state
+            .db
+            .with(|conn| set_progress_desktop(conn, &book_id, page, pct).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
 }
 
 /// 记录「最近打开」（方案 C）：**只**写 `last_opened_at`。
@@ -1979,9 +2051,17 @@ pub async fn mark_book_opened(
     state: State<'_, Arc<AppState>>,
     book_id: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .with(|conn| db::touch_opened(conn, &book_id).map_err(err))
+    mark_book_opened_blocking(state.inner().clone(), book_id).await
+}
+
+async fn mark_book_opened_blocking(state: Arc<AppState>, book_id: String) -> Result<(), String> {
+    blocking(move || {
+        state
+            .db
+            .with(|conn| db::touch_opened(conn, &book_id).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
 }
 
 /// 显式清空阅读页窗口（阅读器卸载/切书时可调；换书首个 get_page 也会自动清）。
@@ -2024,12 +2104,19 @@ pub async fn get_webtoon_tile(
     if let Some(hit) = state.cache.get_tile(&book_id, index, tile, w) {
         return Ok(to_page_image(index, hit));
     }
-    state.db.with(|conn| {
-        db::get_book(conn, &book_id)
-            .map_err(err)?
-            .map(|_| ())
-            .ok_or_else(|| "书籍不存在".to_string())
-    })?;
+    let st = state.inner().clone();
+    let lookup_book_id = book_id.clone();
+    blocking(move || {
+        st.db
+            .with(|conn| {
+                db::get_book(conn, &lookup_book_id)
+                    .map_err(err)?
+                    .map(|_| ())
+                    .ok_or_else(|| "书籍不存在".into())
+            })
+            .map_err(BackendError::Msg)
+    })
+    .await?;
     // 逻辑页源尺寸：条漫布局通常已由 get_webtoon_layout 写入缓存。
     // L2 切片只有成品字节，必须借它把 orig_* 还原成**整页**尺寸，
     // 不能让调用方把单片高度误认成逻辑页高度。
@@ -2169,6 +2256,37 @@ pub fn assert_feature_enabled(
     ensure_feature(state.inner(), feature)
 }
 
+async fn persist_feature_enabled_locked(
+    state: &Arc<AppState>,
+    feature: crate::features::FeatureId,
+    enabled: bool,
+) -> Result<Settings, String> {
+    let pairs = {
+        let mut pairs = vec![(feature.key(), bool_str(enabled))];
+        if let Some(legacy) = feature.legacy_key() {
+            pairs.push((legacy, bool_str(enabled)));
+        }
+        pairs
+    };
+    let db_state = state.clone();
+    blocking(move || {
+        db_state
+            .db
+            .with(|conn| {
+                for (key, value) in &pairs {
+                    db::set_setting(conn, key, value).map_err(err)?;
+                }
+                Ok(())
+            })
+            .map_err(BackendError::Msg)
+    })
+    .await?;
+
+    let mut settings = state.settings.lock();
+    feature.set(&mut settings.features, enabled);
+    Ok(settings.clone())
+}
+
 #[tauri::command]
 pub async fn set_feature_enabled(
     app: tauri::AppHandle,
@@ -2178,11 +2296,15 @@ pub async fn set_feature_enabled(
     feature: crate::features::FeatureId,
     enabled: bool,
 ) -> Result<Settings, String> {
+    let st = state.inner().clone();
+    // Keep feature stop/start side effects, DB persistence, and the in-memory
+    // feature flag in one serialized operation across the blocking-pool await.
+    let _settings_guard = st.settings_write_lock.lock().await;
     if !enabled {
         match feature {
             crate::features::FeatureId::Online => {
-                crate::online::handoff::stop_handoff(&app, state.inner());
-                state.invalidate_sources();
+                crate::online::handoff::stop_handoff(&app, &st);
+                st.invalidate_sources();
             }
             crate::features::FeatureId::Browser => {
                 crate::browser::close_browser_window(&app);
@@ -2196,27 +2318,7 @@ pub async fn set_feature_enabled(
             _ => {}
         }
     }
-
-    let pairs = {
-        let mut pairs = vec![(feature.key(), bool_str(enabled))];
-        if let Some(legacy) = feature.legacy_key() {
-            pairs.push((legacy, bool_str(enabled)));
-        }
-        pairs
-    };
-    state.db.with(|conn| {
-        for (key, value) in &pairs {
-            db::set_setting(conn, key, value).map_err(err)?;
-        }
-        Ok(())
-    })?;
-
-    let updated = {
-        let mut settings = state.settings.lock();
-        feature.set(&mut settings.features, enabled);
-        settings.clone()
-    };
-    Ok(updated)
+    persist_feature_enabled_locked(&st, feature, enabled).await
 }
 
 /// 前端已解析出的页面列表入库前整理：规范化 URL、去重、页数上限。
@@ -3663,11 +3765,7 @@ pub fn get_session_online_headers(state: State<'_, Arc<AppState>>) -> Option<Str
     state.session_online_headers.lock().clone()
 }
 
-#[tauri::command]
-pub async fn set_settings(
-    state: State<'_, Arc<AppState>>,
-    mut settings: Settings,
-) -> Result<Settings, String> {
+async fn update_settings(state: Arc<AppState>, mut settings: Settings) -> Result<Settings, String> {
     // 在线源连接参数与请求头先校验；非法输入不落库、不改内存态。
     crate::online::validate_proxy(&settings.online_proxy)?;
     crate::online::validate_headers(&settings.online_headers)?;
@@ -3676,9 +3774,7 @@ pub async fn set_settings(
     settings.disk_cache_budget_mb =
         crate::disk_cache::clamp_budget_mb(settings.disk_cache_budget_mb);
 
-    // 缩略图与页缓存预算即时生效（MB→字节；至少 16MB；同一滑杆管两级）。
-    let budget = (settings.cache_budget_mb.max(16) as u64) * 1024 * 1024;
-    state.cache.set_budgets(budget);
+    let _settings_guard = state.settings_write_lock.lock().await;
 
     let old = state.settings.lock().clone();
     // 功能开关只能经 set_feature_enabled 修改，避免旧表单覆盖。
@@ -3689,20 +3785,38 @@ pub async fn set_settings(
         || old.online_headers != settings.online_headers;
 
     let persist = settings_persist_pairs(&settings);
-    let res = state.db.with(|conn| {
-        for (k, v) in persist {
-            db::set_setting(conn, k, &v).map_err(err)?;
-        }
-        Ok(())
-    });
+    let db_state = state.clone();
+    blocking(move || {
+        db_state
+            .db
+            .with(|conn| {
+                for (key, value) in persist {
+                    db::set_setting(conn, key, &value).map_err(err)?;
+                }
+                Ok(())
+            })
+            .map_err(BackendError::Msg)
+    })
+    .await?;
+
+    // 缩略图与页缓存预算、settings 内存态与派生缓存只在 SQLite 持久化成功后更新。
+    let budget = (settings.cache_budget_mb.max(16) as u64) * 1024 * 1024;
+    state.cache.set_budgets(budget);
     *state.settings.lock() = settings.clone();
     state.trim_disk_cache_async();
     if online_conn_changed {
         state.invalidate_sources();
     }
-    // 数据库不可用必须显式失败；启动恢复门会阻止用户在坏库上改设置。
-    res?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub async fn set_settings(
+    state: State<'_, Arc<AppState>>,
+    settings: Settings,
+) -> Result<Settings, String> {
+    // 数据库不可用必须显式失败；启动恢复门会阻止用户在坏库上改设置。
+    update_settings(state.inner().clone(), settings).await
 }
 
 // ---------- OPDS 远程书库（仅用户自建服务；配置只存本地） ----------
@@ -3713,30 +3827,45 @@ fn opds_runtime(st: &AppState) -> Result<crate::opds::OpdsRuntime, BackendError>
         .map_err(BackendError::Msg)
 }
 
+fn opds_get_config_blocking(state: &AppState) -> Result<crate::opds::OpdsConfigView, BackendError> {
+    state
+        .db
+        .with(|conn| crate::opds::load_config(conn).map_err(err))
+        .map_err(BackendError::Msg)
+}
+
+fn opds_set_config_blocking(
+    state: &AppState,
+    config: crate::opds::OpdsConfigInput,
+) -> Result<crate::opds::OpdsConfigView, BackendError> {
+    state
+        .db
+        .with(|conn| crate::opds::save_config(conn, config).map_err(err))
+        .map_err(BackendError::Msg)
+}
+
 fn opds_target(runtime: &crate::opds::OpdsRuntime, raw: &str) -> Result<url::Url, BackendError> {
     crate::opds::same_origin_link(&runtime.origin, &runtime.origin, raw.trim())
         .map_err(|error| BackendError::Msg(error.into()))
 }
 
 #[tauri::command]
-pub fn opds_get_config(
+pub async fn opds_get_config(
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::opds::OpdsConfigView, String> {
     ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
-    state
-        .db
-        .with(|conn| crate::opds::load_config(conn).map_err(err))
+    let st = state.inner().clone();
+    blocking(move || opds_get_config_blocking(&st)).await
 }
 
 #[tauri::command]
-pub fn opds_set_config(
+pub async fn opds_set_config(
     state: State<'_, Arc<AppState>>,
     config: crate::opds::OpdsConfigInput,
 ) -> Result<crate::opds::OpdsConfigView, String> {
     ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
-    state
-        .db
-        .with(|conn| crate::opds::save_config(conn, config).map_err(err))
+    let st = state.inner().clone();
+    blocking(move || opds_set_config_blocking(&st, config)).await
 }
 
 /// 连接测试只读取目录第一页，不写库、不下载。
@@ -3859,6 +3988,303 @@ pub async fn opds_download_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn opds_config_db_helpers_run_on_blocking_pool_and_preserve_view() {
+        let state = Arc::new(AppState::new());
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        db::init_schema(&conn).expect("init schema");
+        state.db.set(conn);
+
+        let caller_thread = std::thread::current().id();
+        let read_state = state.clone();
+        let (initial, worker_thread) = blocking(move || {
+            let config = opds_get_config_blocking(&read_state)?;
+            Ok((config, std::thread::current().id()))
+        })
+        .await
+        .expect("OPDS config read succeeds");
+        assert_ne!(caller_thread, worker_thread);
+        assert!(!initial.enabled);
+        assert!(initial.url.is_empty());
+        assert!(!initial.has_username);
+        assert!(!initial.has_password);
+
+        let write_state = state.clone();
+        let saved = blocking(move || {
+            opds_set_config_blocking(
+                &write_state,
+                crate::opds::OpdsConfigInput {
+                    enabled: false,
+                    url: String::new(),
+                    username: Some("reader".into()),
+                    password: Some("private-secret".into()),
+                },
+            )
+        })
+        .await
+        .expect("OPDS config write succeeds");
+        assert!(!saved.enabled);
+        assert!(saved.url.is_empty());
+        assert!(saved.has_username);
+        assert!(saved.has_password);
+
+        let read_state = state.clone();
+        let persisted = blocking(move || opds_get_config_blocking(&read_state))
+            .await
+            .expect("persisted OPDS config read succeeds");
+        assert_eq!(saved.enabled, persisted.enabled);
+        assert_eq!(saved.url, persisted.url);
+        assert_eq!(saved.has_username, persisted.has_username);
+        assert_eq!(saved.has_password, persisted.has_password);
+    }
+
+    /// Progress writes and readers share one DbSlot connection. A blocking-pool
+    /// reader must wait for the whole write transaction, then observe its
+    /// committed state; concurrent repeated progress writes stay serialized.
+    #[tokio::test]
+    async fn blocking_db_read_serializes_with_progress_write() {
+        use tokio::sync::oneshot;
+
+        const ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        let state = Arc::new(AppState::new());
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        db::init_schema(&conn).expect("init schema");
+        db::upsert_book(&conn, ID, "C:/library/async-db-test.zip", "测试", 8).expect("seed book");
+        state.db.set(conn);
+
+        let writer_state = state.clone();
+        let (writer_locked_tx, writer_locked_rx) = oneshot::channel();
+        let (release_writer_tx, release_writer_rx) = oneshot::channel();
+        let writer = tokio::task::spawn_blocking(move || {
+            writer_state.db.with(|conn| {
+                writer_locked_tx
+                    .send(())
+                    .expect("signal writer holds DbSlot");
+                release_writer_rx
+                    .blocking_recv()
+                    .map_err(|error| error.to_string())?;
+                db::set_progress(conn, ID, 3, None).map_err(err)
+            })
+        });
+        writer_locked_rx.await.expect("writer acquired DbSlot");
+
+        let reader_state = state.clone();
+        let (reader_started_tx, reader_started_rx) = oneshot::channel();
+        let reader = tokio::spawn(async move {
+            blocking(move || {
+                reader_started_tx.send(()).expect("signal reader started");
+                reader_state
+                    .db
+                    .with(|conn| db::get_book(conn, ID).map_err(err))
+                    .map_err(BackendError::Msg)
+            })
+            .await
+        });
+        reader_started_rx
+            .await
+            .expect("reader entered blocking pool");
+
+        // The current-thread Tokio test continues scheduling despite both DB
+        // operations waiting on the single connection mutex.
+        tokio::task::yield_now().await;
+        assert!(
+            !reader.is_finished(),
+            "reader must wait for the active write"
+        );
+
+        release_writer_tx.send(()).expect("release writer");
+        writer
+            .await
+            .expect("writer task joins")
+            .expect("write commits");
+        let row = reader
+            .await
+            .expect("reader task joins")
+            .expect("blocking read succeeds")
+            .expect("book exists");
+        assert_eq!(
+            row.current_page, 3,
+            "reader observes the committed progress"
+        );
+
+        let mut writes = Vec::new();
+        for _ in 0..16 {
+            let writer_state = state.clone();
+            writes.push(tokio::spawn(set_progress_blocking(
+                writer_state,
+                ID.to_string(),
+                4,
+                None,
+            )));
+        }
+        for write in writes {
+            write
+                .await
+                .expect("progress write task joins")
+                .expect("progress write succeeds");
+        }
+
+        let mut opened_writes = Vec::new();
+        for _ in 0..16 {
+            let open_state = state.clone();
+            opened_writes.push(tokio::spawn(mark_book_opened_blocking(
+                open_state,
+                ID.to_string(),
+            )));
+        }
+        for opened in opened_writes {
+            opened
+                .await
+                .expect("mark-opened task joins")
+                .expect("mark-opened succeeds");
+        }
+
+        let final_state = state.clone();
+        let (row, logged_pages) = blocking(move || {
+            final_state
+                .db
+                .with(|conn| {
+                    let row = db::get_book(conn, ID)
+                        .map_err(err)?
+                        .ok_or_else(|| "book disappeared".to_string())?;
+                    let logged_pages = conn
+                        .query_row(
+                            "SELECT COALESCE(SUM(pages), 0) FROM reading_log WHERE book_id=?1",
+                            rusqlite::params![ID],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .map_err(err)?;
+                    Ok((row, logged_pages))
+                })
+                .map_err(BackendError::Msg)
+        })
+        .await
+        .expect("final state read succeeds");
+        assert_eq!(row.current_page, 4);
+        assert_eq!(row.progress_rev, 2, "same-page writes must remain no-ops");
+        assert!(!row.last_opened_at.is_empty());
+        assert_eq!(logged_pages, 4, "progress history is not double-counted");
+    }
+
+    #[tokio::test]
+    async fn settings_writes_are_serialized_and_failures_keep_memory_unchanged() {
+        let state = online_state();
+        let mut first = Settings::default();
+        first.cache_budget_mb = 96;
+        let mut second = Settings::default();
+        second.cache_budget_mb = 192;
+
+        let first_task = {
+            let state = state.clone();
+            tokio::spawn(async move { update_settings(state, first).await })
+        };
+        let second_task = {
+            let state = state.clone();
+            tokio::spawn(async move { update_settings(state, second).await })
+        };
+        first_task
+            .await
+            .expect("first settings task joins")
+            .unwrap();
+        second_task
+            .await
+            .expect("second settings task joins")
+            .unwrap();
+
+        let current = state.settings.lock().clone();
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "cache_budget_mb").map_err(err))
+            .expect("read persisted setting")
+            .expect("setting exists");
+        assert_eq!(persisted, current.cache_budget_mb.to_string());
+        assert_eq!(
+            state.cache.stats().1,
+            u64::from(current.cache_budget_mb) * 2 * 1024 * 1024,
+            "both L1 budgets track the committed settings"
+        );
+
+        let settings_before_failure = current;
+        let cache_budget_before_failure = state.cache.stats().1;
+        state.db.clear();
+        let mut failed = Settings::default();
+        failed.cache_budget_mb = 384;
+        assert!(update_settings(state.clone(), failed).await.is_err());
+        assert_eq!(
+            state.settings.lock().cache_budget_mb,
+            settings_before_failure.cache_budget_mb,
+            "DB failure must not publish the new in-memory settings"
+        );
+        assert_eq!(
+            state.cache.stats().1,
+            cache_budget_before_failure,
+            "DB failure must not change the in-memory cache budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn feature_flag_updates_memory_only_after_persistence() {
+        let state = online_state();
+        {
+            let _guard = state.settings_write_lock.lock().await;
+            let updated =
+                persist_feature_enabled_locked(&state, crate::features::FeatureId::Browser, false)
+                    .await
+                    .expect("persist feature flag");
+            assert!(!crate::features::FeatureId::Browser.get(&updated.features));
+        }
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "feature_browser").map_err(err))
+            .expect("read persisted feature")
+            .expect("feature setting exists");
+        assert_eq!(persisted, "false");
+
+        let before_failure = state.settings.lock().features.browser;
+        state.db.clear();
+        let _guard = state.settings_write_lock.lock().await;
+        assert!(
+            persist_feature_enabled_locked(&state, crate::features::FeatureId::Browser, true,)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            state.settings.lock().features.browser,
+            before_failure,
+            "failed persistence must not change the memory flag"
+        );
+    }
+
+    #[tokio::test]
+    async fn pdf_page_count_command_uses_blocking_db_path_and_keeps_validation() {
+        const ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let state = online_state();
+        state
+            .db
+            .with(|conn| {
+                db::upsert_book(conn, ID, "C:/library/async-pdf.pdf", "PDF", 0).map_err(err)?;
+                conn.execute("UPDATE books SET format='pdf' WHERE id=?1", [ID])
+                    .map_err(err)?;
+                Ok(())
+            })
+            .expect("seed PDF book");
+
+        set_book_page_count_blocking(state.clone(), ID.into(), 12)
+            .await
+            .expect("persist page count");
+        let row = state
+            .db
+            .with(|conn| db::get_book(conn, ID).map_err(err))
+            .expect("read PDF book")
+            .expect("book exists");
+        assert_eq!(row.page_count, 12);
+
+        assert!(set_book_page_count_blocking(state, ID.into(), 0)
+            .await
+            .is_err());
+    }
 
     #[test]
     fn prefetch_epoch_guard_rejects_stale_and_accepts_current() {

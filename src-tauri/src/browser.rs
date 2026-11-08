@@ -342,19 +342,25 @@ pub async fn list_browser_downloads(
         &state.settings.lock().features,
         crate::features::FeatureId::Browser,
     )?;
-    let dir = downloads_dir()?;
-    collect_downloads(&dir, |path| {
-        let id = db::book_id_for_path(path);
-        state
-            .db
-            .with(|conn| {
-                db::get_book(conn, &id)
-                    .map(|book| book.is_some())
-                    .map_err(|e| e.to_string())
-            })
-            .unwrap_or(false)
+    let st = state.inner().clone();
+    commands::blocking(move || {
+        // Downloads directory enumeration and the per-file SQLite lookup both
+        // perform synchronous work; keep them off the async runtime together.
+        let dir =
+            downloads_dir().map_err(|error| crate::source::BackendError::Msg(error.to_string()))?;
+        collect_downloads(&dir, |path| {
+            let id = db::book_id_for_path(path);
+            st.db
+                .with(|conn| {
+                    db::get_book(conn, &id)
+                        .map(|book| book.is_some())
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap_or(false)
+        })
+        .map_err(|error| crate::source::BackendError::Msg(error.to_string()))
     })
-    .map_err(|e| e.to_string())
+    .await
 }
 
 #[tauri::command]

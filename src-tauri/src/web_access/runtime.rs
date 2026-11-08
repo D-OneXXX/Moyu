@@ -1391,6 +1391,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_queued_during_start_leaves_runtime_disabled() {
+        let runtime = Arc::new(WebAccessRuntime::for_test(
+            temp_path("queued-stop").join("ca"),
+        ));
+        let operation = runtime.operation.lock().await;
+
+        let start_runtime = Arc::clone(&runtime);
+        let start_queued = Arc::new(tokio::sync::Notify::new());
+        let start_signal = Arc::clone(&start_queued);
+        let start_task = tokio::spawn(async move {
+            start_signal.notify_one();
+            start_runtime
+                .start_plain(Ipv4Addr::LOCALHOST, 0)
+                .await
+                .unwrap()
+        });
+        start_queued.notified().await;
+
+        let stop_runtime = Arc::clone(&runtime);
+        let stop_queued = Arc::new(tokio::sync::Notify::new());
+        let stop_signal = Arc::clone(&stop_queued);
+        let stop_task = tokio::spawn(async move {
+            stop_signal.notify_one();
+            stop_runtime.stop(StopReason::Stopped).await
+        });
+        stop_queued.notified().await;
+
+        drop(operation);
+
+        let started = start_task.await.unwrap();
+        let stopped = stop_task.await.unwrap();
+        assert_eq!(started.phase, "enabled");
+        assert_eq!(stopped.phase, "disabled");
+        assert_eq!(runtime.status().await.phase, "disabled");
+    }
+
+    #[tokio::test]
     async fn pairing_window_approve_consume_and_revoke_are_secret_free() {
         let ca = TestCa::new("runtime-pairing");
         let runtime = WebAccessRuntime::for_test(ca.root.clone());

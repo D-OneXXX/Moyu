@@ -15,6 +15,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   api,
   onExperimentalChange,
@@ -75,6 +76,11 @@ export default function AppShell() {
   const mainRef = useRef<HTMLElement | null>(null);
   const pathRef = useRef(loc.pathname);
   pathRef.current = loc.pathname;
+
+  // 原生窗口标题统一为品牌名；文档标题仍由 i18n 的 app.title 维护。
+  useEffect(() => {
+    void getCurrentWindow().setTitle("Moyu").catch(() => {});
+  }, []);
 
   // Page transitions must start at the top: the shell owns the scroll container,
   // so without this a previous page's scroll position can clip the next header.

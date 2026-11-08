@@ -274,7 +274,11 @@ pub async fn import_backup(
         }
     })?;
     // 事务提交且阻塞连接已释放后再回读设置，避免在持锁状态下刷新缓存。
-    refresh_after_restore(state.inner())?;
+    let refresh_state = state.inner().clone();
+    let settings = tokio::task::spawn_blocking(move || load_settings_after_restore(&refresh_state))
+        .await
+        .map_err(|e| format!("后台任务失败：{e}"))??;
+    apply_restored_settings(state.inner(), settings);
     Ok(result)
 }
 
@@ -318,13 +322,23 @@ pub async fn recover_database_from_backup(
             .await
             .map_err(|error| format!("后台任务失败：{error}"))??;
 
-    let conn = db::open(state.db_path()).map_err(|error| format!("恢复后打开书库失败：{error}"))?;
-    db::init_schema(&conn).map_err(|error| format!("恢复后初始化书库失败：{error}"))?;
-    db::quick_check(&conn).map_err(|error| format!("恢复后完整性检查失败：{error}"))?;
+    let db_path = state.db_path();
+    let (conn, settings) = tokio::task::spawn_blocking(move || {
+        let conn = db::open(db_path).map_err(|error| format!("恢复后打开书库失败：{error}"))?;
+        db::init_schema(&conn).map_err(|error| format!("恢复后初始化书库失败：{error}"))?;
+        db::quick_check(&conn).map_err(|error| format!("恢复后完整性检查失败：{error}"))?;
+        let settings = load_settings_from_connection(&conn);
+        Ok::<_, String>((conn, settings))
+    })
+    .await
+    .map_err(|error| format!("后台任务失败：{error}"))??;
     state.db.set(conn);
     state.clear_db_error();
-    if let Err(error) = refresh_after_restore(state.inner()) {
-        crate::logging::log_error("backup", &format!("启动恢复后刷新内存态失败：{error}"));
+    match settings {
+        Ok(settings) => apply_restored_settings(state.inner(), settings),
+        Err(error) => {
+            crate::logging::log_error("backup", &format!("启动恢复后刷新内存态失败：{error}"));
+        }
     }
     crate::logging::log_error("backup", "启动恢复完成：损坏库已隔离，备份已替换为活库");
     Ok(result)
@@ -398,14 +412,20 @@ fn recover_from_backup_blocking(
     Ok(result)
 }
 
-/// 恢复成功后刷新内存态：回读设置 → 修复越界 → 写回 → 清空派生缓存与源句柄。
-fn refresh_after_restore(state: &AppState) -> Result<(), String> {
+/// 恢复后回读设置并修复越界值。调用方必须在 blocking pool 中执行。
+fn load_settings_after_restore(state: &AppState) -> Result<crate::Settings, String> {
+    state.db.with(load_settings_from_connection)
+}
+
+fn load_settings_from_connection(conn: &Connection) -> Result<crate::Settings, String> {
     let mut settings = crate::Settings::default();
-    state.db.with(|conn| {
-        crate::hydrate_settings(conn, &mut settings);
-        crate::versioning::normalize_settings(conn, &mut settings).map_err(|e| e.to_string())?;
-        Ok(())
-    })?;
+    crate::hydrate_settings(conn, &mut settings);
+    crate::versioning::normalize_settings(conn, &mut settings).map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+/// Apply normalized settings and clear derived caches after the blocking DB read.
+fn apply_restored_settings(state: &AppState, settings: crate::Settings) {
     state
         .cache
         .set_budgets((settings.cache_budget_mb.max(16) as u64) * 1024 * 1024);
@@ -416,7 +436,6 @@ fn refresh_after_restore(state: &AppState) -> Result<(), String> {
     state.render.clear_all();
     state.online_cache.clear_all();
     state.invalidate_sources();
-    Ok(())
 }
 
 // ---------- 导出（阻塞、可单测） ----------
@@ -1400,6 +1419,27 @@ impl Drop for TempFileGuard {
 mod tests {
     use super::*;
     use crate::online::filter::{FilterAction, FilterRule, RulePattern, RuleSource, SiteProfile};
+
+    #[tokio::test]
+    async fn settings_after_restore_reads_database_on_blocking_pool() {
+        let state = Arc::new(AppState::new());
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        db::init_schema(&conn).expect("init schema");
+        state.db.set(conn);
+
+        let caller_thread = std::thread::current().id();
+        let worker_state = Arc::clone(&state);
+        let (settings, worker_thread) = tokio::task::spawn_blocking(move || {
+            let settings = load_settings_after_restore(&worker_state)?;
+            Ok::<_, String>((settings, std::thread::current().id()))
+        })
+        .await
+        .expect("blocking settings refresh joins")
+        .expect("settings refresh succeeds");
+
+        assert_ne!(caller_thread, worker_thread);
+        assert!((16..=2048).contains(&settings.cache_budget_mb));
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("mr-backup-test-{tag}-{}", unique_token()));

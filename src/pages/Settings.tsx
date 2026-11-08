@@ -22,6 +22,7 @@ import {
   Monitor,
   Moon,
   Palette,
+  PanelTop,
   RefreshCw,
   RotateCcw,
   Save,
@@ -120,6 +121,7 @@ const DEFAULT_FORM: Settings = {
   onlineProxy: "",
   onlineConcurrency: 3,
   onlineHeaders: "",
+  closeToTray: false,
 };
 
 const THEME_OPTIONS: ReadonlyArray<{
@@ -892,6 +894,34 @@ export default function SettingsPage() {
               <p className="text-xs text-muted-foreground">
                 {t("settings.theme.systemNote")}
               </p>
+            </SettingsSection>
+
+            <SettingsSection
+              icon={PanelTop}
+              title={t("settings.tray.title")}
+              description={t("settings.tray.description")}
+            >
+              <SettingRow
+                title={t("settings.tray.closeToTray")}
+                description={t("settings.tray.closeToTrayHint")}
+                badge={
+                  <Badge variant={form.closeToTray ? "success" : "muted"}>
+                    {form.closeToTray
+                      ? t("common.enabled")
+                      : t("common.disabled")}
+                  </Badge>
+                }
+              >
+                <Switch
+                  checked={form.closeToTray}
+                  disabled={saving || loading}
+                  aria-label={t("settings.tray.closeToTray")}
+                  onCheckedChange={(checked) => {
+                    setForm((prev) => ({ ...prev, closeToTray: checked }));
+                    setDirty(true);
+                  }}
+                />
+              </SettingRow>
             </SettingsSection>
 
             <SettingsSection

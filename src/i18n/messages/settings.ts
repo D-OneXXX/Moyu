@@ -12,10 +12,6 @@ const zhCN = {
   "settings.features.pdf.title": "PDF 阅读",
   "settings.features.pdf.description":
     "本地 PDF 的读取与渲染。关闭后已有 PDF 仍保留，打开时会提示功能已关闭。",
-  "settings.demo.title": "互动演示",
-  "settings.demo.description": "体验示例书库与阅读布局。示例内容不会自动导入。",
-  "settings.demo.open": "打开演示",
-  "settings.demo.close": "关闭演示",
   "settings.page.eyebrow": "偏好设置",
   "settings.page.description": "外观、在线源、阅读统计与缓存都在这台设备上管理。",
   "settings.page.localFirst": "本地优先",
@@ -404,10 +400,6 @@ const zhTW: SettingsMessages = {
   "settings.features.pdf.title": "PDF 閱讀",
   "settings.features.pdf.description":
     "本機 PDF 的讀取與渲染。關閉後既有 PDF 仍保留，開啟時會提示功能已關閉。",
-  "settings.demo.title": "互動示範",
-  "settings.demo.description": "體驗示範書庫與閱讀版面。示範內容不會自動匯入。",
-  "settings.demo.open": "開啟示範",
-  "settings.demo.close": "關閉示範",
   "settings.page.eyebrow": "偏好設定",
   "settings.page.description":
     "外觀、線上來源、閱讀統計與快取都在這台裝置上管理。",
@@ -797,10 +789,6 @@ const en: SettingsMessages = {
   "settings.features.pdf.title": "PDF reading",
   "settings.features.pdf.description":
     "Local PDF reading and rendering. Existing PDFs remain in the library, but opening one shows a disabled notice.",
-  "settings.demo.title": "Interactive demo",
-  "settings.demo.description": "Explore a sample library and reading layouts. Samples are not imported automatically.",
-  "settings.demo.open": "Open demo",
-  "settings.demo.close": "Close demo",
   "settings.page.eyebrow": "Preferences",
   "settings.page.description":
     "Appearance, online sources, reading stats and cache are managed on this device.",
@@ -1204,10 +1192,6 @@ const es: SettingsMessages = {
   "settings.features.pdf.title": "Lectura de PDF",
   "settings.features.pdf.description":
     "Lectura y renderizado de PDF locales. Los PDF existentes permanecen en la biblioteca, pero al abrirlos se muestra un aviso de función desactivada.",
-  "settings.demo.title": "Demo interactiva",
-  "settings.demo.description": "Explora una biblioteca de muestra y los modos de lectura. Las muestras no se importan automáticamente.",
-  "settings.demo.open": "Abrir demo",
-  "settings.demo.close": "Cerrar demo",
   "settings.page.eyebrow": "Preferencias",
   "settings.page.description":
     "La apariencia, las fuentes en línea, las estadísticas y la caché se gestionan en este dispositivo.",
@@ -1626,10 +1610,6 @@ const ja: SettingsMessages = {
   "settings.features.pdf.title": "PDF 閲覧",
   "settings.features.pdf.description":
     "ローカル PDF の読み取りと描画。オフにしても既存の PDF は残りますが、開くと機能が無効である旨が表示されます。",
-  "settings.demo.title": "体験デモ",
-  "settings.demo.description": "サンプル本棚と読み方を体験できます。サンプルは自動で取り込まれません。",
-  "settings.demo.open": "デモを開く",
-  "settings.demo.close": "デモを閉じる",
   "settings.page.eyebrow": "環境設定",
   "settings.page.description":
     "外観、オンラインソース、読書統計、キャッシュはこのデバイスで管理されます。",
@@ -2046,10 +2026,6 @@ const ko: SettingsMessages = {
   "settings.features.pdf.title": "PDF 읽기",
   "settings.features.pdf.description":
     "로컬 PDF 읽기와 렌더링. 끄더라도 기존 PDF는 서재에 남지만 열면 기능이 꺼져 있다는 안내가 표시됩니다.",
-  "settings.demo.title": "인터랙티브 데모",
-  "settings.demo.description": "샘플 서재와 읽기 방식을 체험하세요. 샘플은 자동으로 가져오지 않습니다.",
-  "settings.demo.open": "데모 열기",
-  "settings.demo.close": "데모 닫기",
   "settings.page.eyebrow": "환경설정",
   "settings.page.description":
     "외형, 온라인 소스, 읽기 통계와 캐시를 이 기기에서 관리합니다.",

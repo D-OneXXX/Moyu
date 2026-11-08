@@ -53,14 +53,9 @@ const zhCN = {
   "settings.theme.systemNote":
     "「跟随系统」会随操作系统的深浅色自动切换。",
 
-  "settings.experimental.title": "实验性功能",
-  "settings.experimental.description":
-    "默认关闭。开关切换会立即写入设置，不需要再点保存。",
   "settings.experimental.webtoonTitle": "条漫模式",
   "settings.experimental.webtoonDescription":
     "韩漫长条纵向连续滚动，在单页 / 双页之外提供第三版式。",
-  "settings.experimental.note":
-    "切换只更新这个开关，不会顺带保存本页其他未保存的修改。",
 
   "settings.toast.featureOn": "{feature}已开启",
   "settings.toast.featureOff": "{feature}已关闭",
@@ -451,14 +446,9 @@ const zhTW: SettingsMessages = {
   "settings.theme.systemNote":
     "「跟隨系統」會隨作業系統的深淺色自動切換。",
 
-  "settings.experimental.title": "實驗性功能",
-  "settings.experimental.description":
-    "預設關閉。開關切換會立即寫入設定，不需要再按儲存。",
   "settings.experimental.webtoonTitle": "條漫模式",
   "settings.experimental.webtoonDescription":
     "韓漫長條縱向連續捲動，在單頁 / 雙頁之外提供第三種版面。",
-  "settings.experimental.note":
-    "切換只會更新這個開關，不會順帶儲存本頁其他未儲存的修改。",
 
   "settings.toast.featureOn": "{feature}已開啟",
   "settings.toast.featureOff": "{feature}已關閉",
@@ -849,14 +839,9 @@ const en: SettingsMessages = {
   "settings.theme.systemNote":
     "“System” follows your operating system's light and dark appearance automatically.",
 
-  "settings.experimental.title": "Experimental features",
-  "settings.experimental.description":
-    "Off by default. Toggling writes to settings immediately; no save is needed.",
   "settings.experimental.webtoonTitle": "Webtoon mode",
   "settings.experimental.webtoonDescription":
     "Continuous vertical scrolling for long-strip comics, a third layout beyond single and double page.",
-  "settings.experimental.note":
-    "Toggling only updates this switch; other unsaved changes on this page are not saved.",
 
   "settings.toast.featureOn": "{feature} enabled",
   "settings.toast.featureOff": "{feature} disabled",
@@ -1261,14 +1246,9 @@ const es: SettingsMessages = {
   "settings.theme.systemNote":
     "«Sistema» sigue automáticamente el modo claro u oscuro del sistema operativo.",
 
-  "settings.experimental.title": "Funciones experimentales",
-  "settings.experimental.description":
-    "Desactivadas por defecto. Cada interruptor se guarda al instante; no hace falta guardar.",
   "settings.experimental.webtoonTitle": "Modo webtoon",
   "settings.experimental.webtoonDescription":
     "Desplazamiento vertical continuo para cómics de tira larga, un tercer diseño además de página única y doble.",
-  "settings.experimental.note":
-    "Cambiar este interruptor no guarda otros cambios sin guardar de esta página.",
 
   "settings.toast.featureOn": "Se activó «{feature}»",
   "settings.toast.featureOff": "Se desactivó «{feature}»",
@@ -1688,14 +1668,9 @@ const ja: SettingsMessages = {
   "settings.theme.systemNote":
     "「システム」は OS のライト / ダークに合わせて自動で切り替わります。",
 
-  "settings.experimental.title": "実験的機能",
-  "settings.experimental.description":
-    "既定ではオフです。スイッチの切り替えはすぐに設定へ保存され、保存操作は不要です。",
   "settings.experimental.webtoonTitle": "Webtoon モード",
   "settings.experimental.webtoonDescription":
     "縦長作品を途切れず縦スクロール。単ページ / 見開きに続く第 3 のレイアウトです。",
-  "settings.experimental.note":
-    "このスイッチのみを更新し、このページの他の未保存の変更は保存しません。",
 
   "settings.toast.featureOn": "{feature}をオンにしました",
   "settings.toast.featureOff": "{feature}をオフにしました",
@@ -2113,14 +2088,9 @@ const ko: SettingsMessages = {
   "settings.theme.systemNote":
     "「시스템」은 운영체제의 라이트/다크 모드를 자동으로 따릅니다.",
 
-  "settings.experimental.title": "실험적 기능",
-  "settings.experimental.description":
-    "기본적으로 꺼져 있습니다. 스위치를 바꾸면 즉시 설정에 기록되며 저장할 필요가 없습니다.",
   "settings.experimental.webtoonTitle": "웹툰 모드",
   "settings.experimental.webtoonDescription":
     "세로로 긴 작품을 끊김 없이 스크롤하는, 단일/양면 페이지에 이은 세 번째 레이아웃입니다.",
-  "settings.experimental.note":
-    "이 스위치만 갱신하며, 이 페이지의 다른 저장되지 않은 변경 사항은 저장하지 않습니다.",
 
   "settings.toast.featureOn": "{feature} 켜짐",
   "settings.toast.featureOff": "{feature} 꺼짐",

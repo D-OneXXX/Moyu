@@ -43,30 +43,39 @@ export default function FilteredPagesSheet({
   onRestore,
 }: Props) {
   const { t } = useI18n();
-  const [previews, setPreviews] = useState<Record<number, string>>({});
+  const [previewState, setPreviewState] = useState<{
+    bookId: string;
+    items: FilteredPage[];
+    previews: Record<number, string>;
+  } | null>(null);
+  const previews = previewState?.bookId === bookId && previewState.items === items
+    ? previewState.previews
+    : {};
 
   useEffect(() => {
     if (!open || !bookId || items.length === 0) return;
     let alive = true;
+    setPreviewState({ bookId, items, previews: {} });
     // 过滤抽屉通常只有几张；全部懒加载但用 allSettled 容忍单张失败。
     void Promise.allSettled(
       items.map(async (_, index) => {
-        if (previews[index]) return;
         const image = await api.getFilteredPreview(bookId, index);
         if (alive && image.dataUrl) {
-          setPreviews((prev) => ({ ...prev, [index]: image.dataUrl }));
+          setPreviewState((prev) =>
+            prev?.bookId === bookId && prev.items === items
+              ? { ...prev, previews: { ...prev.previews, [index]: image.dataUrl } }
+              : prev,
+          );
         }
       }),
     );
     return () => {
       alive = false;
     };
-    // previews 故意不加入依赖：只在打开/条目变化时补载缺失项。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, bookId, items]);
 
   useEffect(() => {
-    if (!open) setPreviews({});
+    if (!open) setPreviewState(null);
   }, [open]);
 
   const rows = useMemo(

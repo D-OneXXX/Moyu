@@ -71,7 +71,7 @@ interface AddressNotice {
 function normalizeUrl(raw: string): string {
   const value = raw.trim();
   if (!value) return "";
-  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(value)
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[^/?#]+:\d+(?:[/?#]|$)/.test(value)
     ? value
     : `https://${value}`;
   try {

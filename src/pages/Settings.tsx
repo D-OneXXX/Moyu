@@ -272,7 +272,6 @@ export default function SettingsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [demoVisible, setDemoVisible] = useState(false);
   const [featureBusy, setFeatureBusy] = useState<FeatureId | null>(null);
   const [scanning, setScanning] = useState(false);
   const [detectingProxy, setDetectingProxy] = useState(false);
@@ -936,34 +935,6 @@ export default function SettingsPage() {
               <p className="text-xs leading-relaxed text-muted-foreground">
                 {t("settings.about.note")}
               </p>
-            </SettingsSection>
-
-            <SettingsSection
-              icon={BookOpen}
-              title={t("settings.demo.title")}
-              description={t("settings.demo.description")}
-            >
-              <Button
-                type="button"
-                variant="pill-primary"
-                size="pill"
-                className="whitespace-nowrap"
-                onClick={() => {
-                  recordBreadcrumb("navigation", { route: "/settings" });
-                  setDemoVisible((visible) => !visible);
-                }}
-              >
-                <BookOpen />
-                {t(demoVisible ? "settings.demo.close" : "settings.demo.open")}
-              </Button>
-              {demoVisible ? (
-                <iframe
-                  src="/demo/index.html"
-                  title={t("settings.demo.title")}
-                  sandbox="allow-scripts allow-same-origin allow-downloads"
-                  className="h-[720px] w-full rounded-2xl border border-border bg-background"
-                />
-              ) : null}
             </SettingsSection>
 
             {form.features.updates ? <UpdatesPanel /> : null}

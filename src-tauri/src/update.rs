@@ -1050,10 +1050,57 @@ fn verify_manifest_signature_with(
 
 // ---------- 文件与签名 ----------
 
-fn update_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(UPDATE_DIR_NAME);
-    std::fs::create_dir_all(&dir).map_err(|err| format!("无法创建更新缓存目录：{err}"))?;
+/// 准备更新临时目录：`<base>/mangareader-updates`。
+///
+/// 目录落在共享系统临时目录，复用前必须做安全校验：拒绝符号链接、拒绝
+/// 非目录、拒绝非当前用户所有（Linux），并在 Unix 上收紧到 0700 后读回验证。
+/// 任何校验/创建失败都返回错误，绝不带着可疑目录继续下载。
+fn prepare_update_dir(base: &Path) -> Result<PathBuf, String> {
+    let dir = base.join(UPDATE_DIR_NAME);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&dir).map_err(|err| format!("无法创建更新缓存目录：{err}"))?;
+        }
+        Err(error) => return Err(format!("无法检查更新缓存目录：{error}")),
+    }
+    // 始终用 symlink_metadata（不跟随链接）复核，避免创建与校验之间被替换。
+    let meta =
+        std::fs::symlink_metadata(&dir).map_err(|err| format!("无法检查更新缓存目录：{err}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("更新缓存目录是符号链接，已拒绝使用".to_string());
+    }
+    if !meta.is_dir() {
+        return Err("更新缓存路径不是目录，已拒绝使用".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid {
+            return Err("更新缓存目录不属于当前用户，已拒绝使用".to_string());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| format!("无法收紧更新缓存目录权限：{err}"))?;
+        let mode = std::fs::symlink_metadata(&dir)
+            .map_err(|err| format!("无法校验更新缓存目录权限：{err}"))?
+            .permissions()
+            .mode()
+            & 0o777;
+        if mode != 0o700 {
+            return Err("更新缓存目录权限校验失败，已拒绝使用".to_string());
+        }
+    }
     Ok(dir)
+}
+
+fn update_dir() -> Result<PathBuf, String> {
+    prepare_update_dir(&std::env::temp_dir())
 }
 
 const STALE_UPDATE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -1120,7 +1167,25 @@ fn write_pending_install(ready: &ReadyUpdate) -> Result<(), String> {
     };
     let raw = serde_json::to_vec(&pending).map_err(|_| "无法记录更新安装状态".to_string())?;
     let path = update_dir()?.join(PENDING_INSTALL_FILE);
-    std::fs::write(path, raw).map_err(|error| format!("无法记录更新安装状态：{error}"))
+    // 先删除旧的普通文件，再独占创建：既不跟随预置符号链接，也不截断已有文件。
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => {
+            std::fs::remove_file(&path)
+                .map_err(|error| format!("无法记录更新安装状态：{error}"))?;
+        }
+        Ok(_) => return Err("更新安装状态路径不安全，已拒绝写入".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("无法记录更新安装状态：{error}")),
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("无法记录更新安装状态：{error}"))?;
+    use std::io::Write as _;
+    file.write_all(&raw)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("无法记录更新安装状态：{error}"))
 }
 
 fn clear_pending_install() {
@@ -1357,9 +1422,12 @@ async fn stream_artifact(
     on_event: &Channel<UpdateEvent>,
     request_id: &str,
 ) -> Result<StreamedArtifact, String> {
-    let mut file = tokio::fs::File::create(path)
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
         .await
-        .map_err(|err| format!("无法创建更新临时文件：{err}"))?;
+        .map_err(|err| format!("无法创建更新临时文件（已存在或路径不安全）：{err}"))?;
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut speed = 0.0f64;
@@ -1900,6 +1968,21 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn verify_and_spawn_install(stored: &StoredArtifact) -> Result<(), String> {
+    // 安装前确认制品父目录仍在受控更新目录内（canonicalize 后再比较，
+    // 目录/文件若是符号链接会在这里被识破）。
+    let update_root = update_dir()?;
+    let parent = stored
+        .path
+        .parent()
+        .ok_or_else(|| "更新安装包路径无效".to_string())?;
+    let canonical_root = std::fs::canonicalize(&update_root)
+        .map_err(|err| format!("无法定位更新缓存目录：{err}"))?;
+    let canonical_parent =
+        std::fs::canonicalize(parent).map_err(|err| format!("无法定位更新安装包目录：{err}"))?;
+    if canonical_parent != canonical_root {
+        return Err("更新安装包不在受控临时目录，已拒绝安装".to_string());
+    }
+
     match std::fs::metadata(&stored.path) {
         Ok(meta) if meta.is_file() => {}
         Ok(_) => {
@@ -2556,6 +2639,79 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
         let decoded = String::from_utf16(&units).unwrap();
         assert_eq!(decoded, script);
         assert!(decoded.contains("漫画 目录"));
+    }
+
+    /// 独立测试目录：绝不触碰真实的系统更新临时目录。
+    fn unique_update_dir_base(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mr-update-dir-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_dir_rejects_symlinked_cache_directory() {
+        let base = unique_update_dir_base("symlink");
+        let target = base.join("attacker-target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, base.join(UPDATE_DIR_NAME)).unwrap();
+        let error = prepare_update_dir(&base).expect_err("符号链接目录必须拒绝");
+        assert!(error.contains("符号链接"), "{error}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_dir_tightens_permissions_to_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = unique_update_dir_base("perm");
+        let dir = base.join(UPDATE_DIR_NAME);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let prepared = prepare_update_dir(&base).expect("普通目录应通过校验");
+        assert_eq!(prepared, dir);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "更新目录必须收紧到 0700");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn update_dir_rejects_non_directory_path() {
+        let base = unique_update_dir_base("file");
+        std::fs::write(base.join(UPDATE_DIR_NAME), b"not-a-dir").unwrap();
+        let error = prepare_update_dir(&base).expect_err("同名文件必须拒绝");
+        assert!(error.contains("不是目录"), "{error}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn artifact_creation_is_exclusive_and_never_truncates() {
+        let base = unique_update_dir_base("exclusive");
+        let dir = prepare_update_dir(&base).expect("更新目录应可创建");
+        let path = dir.join("artifact.exe");
+        {
+            use std::io::Write as _;
+            let mut first = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .expect("首次独占创建应成功");
+            first.write_all(b"original").unwrap();
+        }
+        let second = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        assert!(second.is_err(), "同路径二次 create_new 必须被拒绝");
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

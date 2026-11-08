@@ -349,14 +349,49 @@ fn legacy_data_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("com.local.manga-reader"))
 }
 
+/// `MR_DATA_DIR` 覆盖解析：先 trim，空值视为未设置，只接受绝对路径。
+///
+/// 相对路径会让书库数据库落到进程 CWD，与日志/缓存根分叉，因此一律忽略。
+/// 保持纯函数以便单测；拒绝时的脱敏日志由 [`env_data_dir_override`] 记录。
+fn data_dir_override(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// 读取并校验 `MR_DATA_DIR`；非空但不是绝对路径时记录脱敏日志后忽略。
+///
+/// `data_dir()` 与 `install_app_paths()` 必须共用这一解析入口，避免同一
+/// 环境变量在两处得出不同的数据根。
+fn env_data_dir_override() -> Option<PathBuf> {
+    let raw = std::env::var("MR_DATA_DIR").ok()?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    match data_dir_override(&raw) {
+        Some(path) => Some(path),
+        None => {
+            logging::log_error(
+                "paths",
+                "MR_DATA_DIR 不是绝对路径，已忽略并回落到 app_data_dir",
+            );
+            None
+        }
+    }
+}
+
 /// 统一数据目录解析：`MR_DATA_DIR`（测试隔离）> 已安装的 Tauri 数据根 >
 /// 旧版本地目录。绝不使用 CWD / exe 同级目录。
 pub(crate) fn data_dir() -> Result<PathBuf, String> {
-    if let Ok(raw) = std::env::var("MR_DATA_DIR") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
+    if let Some(dir) = env_data_dir_override() {
+        return Ok(dir);
     }
     if let Some(dir) = paths::data_dir() {
         return Ok(dir.to_path_buf());
@@ -376,26 +411,15 @@ fn install_app_paths(
     app_cache: Option<PathBuf>,
     legacy: Option<PathBuf>,
 ) -> (PathBuf, PathBuf, bool) {
-    let env_override = std::env::var("MR_DATA_DIR")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .filter(|v| {
-            if std::path::Path::new(v).is_absolute() {
-                true
-            } else {
-                logging::log_error(
-                    "paths",
-                    "MR_DATA_DIR 不是绝对路径，已忽略并回落到 app_data_dir",
-                );
-                false
-            }
-        });
-    let data = paths::resolve_data_root(env_override.as_deref(), tauri_data, legacy)
-        .unwrap_or_else(|err| {
+    let env_override = env_data_dir_override();
+    let data = match env_override.as_ref() {
+        // 覆盖值已在 env_data_dir_override 中完成 trim 与绝对路径校验。
+        Some(dir) => dir.clone(),
+        None => paths::resolve_data_root(None, tauri_data, legacy).unwrap_or_else(|err| {
             logging::log_error("paths", &format!("{err}；回落到系统临时目录"));
             std::env::temp_dir().join("com.local.manga-reader")
-        });
+        }),
+    };
     let cache = if env_override.is_some() {
         // 隔离模式不触碰真实用户缓存目录。
         data.join("cache")
@@ -908,5 +932,26 @@ mod settings_feature_tests {
             load_normalized_settings(&readonly, Settings::default()).unwrap_err(),
             StartupSettingsError::Normalize
         );
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_override_accepts_only_absolute_paths() {
+        let absolute = std::env::temp_dir().join("mr-data-root");
+        let absolute_text = absolute.to_string_lossy().into_owned();
+        assert_eq!(data_dir_override(&absolute_text), Some(absolute.clone()));
+        // 两端空白先 trim 再判定。
+        assert_eq!(
+            data_dir_override(&format!("  {absolute_text}  ")),
+            Some(absolute)
+        );
+        // 相对路径、空值与纯空白一律视为未设置，不得回落 CWD。
+        for rejected in ["", "   ", "data", "./tmp", "../data"] {
+            assert_eq!(data_dir_override(rejected), None, "{rejected:?}");
+        }
     }
 }

@@ -735,7 +735,7 @@ impl AppState {
         self.db_path.lock().clone()
     }
 
-    /// 记录启动自检失败码（db-open-failed / db-schema-failed / db-quick-check-failed）。
+    /// 记录启动/恢复自检失败码（包含设置规范化失败）。
     pub fn set_db_error(&self, code: &str) {
         *self.db_error.lock() = Some(code.to_string());
     }

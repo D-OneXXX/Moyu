@@ -3,7 +3,7 @@ import type { BackupImportResult } from "@/features/backup/api";
 
 export interface DbHealth {
   ok: boolean;
-  /** db-open-failed / db-schema-failed / db-quick-check-failed；健康时为 null。 */
+  /** 数据库启动或恢复自检错误码；健康时为 null。 */
   errorCode: string | null;
   dataDir: string;
 }

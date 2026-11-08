@@ -13,6 +13,7 @@
 //! - 浏览痕迹（`online_filter_events`，含脱敏 URL）与内部版本标记（`app_meta`）不迁移；
 //! - 错误消息只允许出现固定文案 / 压缩包条目名，不输出任何 URL、凭据或偏好内容。
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
@@ -40,6 +41,8 @@ const MAX_PREFERENCES_BYTES: usize = 64 * 1024;
 /// 导入时允许的偏好上限（宽松一档，避免旧版本导出被误拒）。
 const MAX_RESTORE_PREFERENCES_BYTES: usize = 256 * 1024;
 const MAX_DB_BYTES: u64 = 1024 * 1024 * 1024;
+/// 保留最近三次启动恢复前的活库隔离组；每组包含主库及其 WAL/SHM 边车。
+const MAX_CORRUPT_RECOVERY_GROUPS: usize = 3;
 
 const EXCLUDED_ASSETS: &[&str] = &[
     "caches",
@@ -203,7 +206,7 @@ struct ValidatedBackup {
 #[serde(rename_all = "camelCase")]
 pub struct DbHealth {
     pub ok: bool,
-    /// db-open-failed / db-schema-failed / db-quick-check-failed；健康时为 None。
+    /// 数据库启动/恢复自检错误码；健康时为 None。
     pub error_code: Option<String>,
     pub data_dir: String,
 }
@@ -332,16 +335,29 @@ pub async fn recover_database_from_backup(
     })
     .await
     .map_err(|error| format!("后台任务失败：{error}"))??;
-    state.db.set(conn);
-    state.clear_db_error();
-    match settings {
-        Ok(settings) => apply_restored_settings(state.inner(), settings),
-        Err(error) => {
-            crate::logging::log_error("backup", &format!("启动恢复后刷新内存态失败：{error}"));
-        }
-    }
+    install_recovered_database(state.inner(), conn, settings)?;
     crate::logging::log_error("backup", "启动恢复完成：损坏库已隔离，备份已替换为活库");
     Ok(result)
+}
+
+fn install_recovered_database(
+    state: &AppState,
+    conn: Connection,
+    settings: Result<crate::Settings, String>,
+) -> Result<(), String> {
+    let settings = settings.map_err(|error| {
+        state.set_db_error("db-settings-normalize-failed");
+        crate::logging::log_error(
+            "backup",
+            "启动恢复后设置规范化失败（db-settings-normalize-failed）",
+        );
+        format!("恢复后书库设置规范化失败（db-settings-normalize-failed）：{error}")
+    })?;
+
+    state.db.set(conn);
+    apply_restored_settings(state, settings);
+    state.clear_db_error();
+    Ok(())
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -354,6 +370,135 @@ fn rollback_quarantine(moved: &[(PathBuf, PathBuf)]) {
     for (live, quarantined) in moved.iter().rev() {
         let _ = fs::rename(quarantined, live);
     }
+}
+
+/// Isolate the live database and its sidecars, then replace it with the
+/// already-validated staging database. Retention runs only after replacement
+/// succeeds, so a failed swap cannot delete rollback material.
+fn quarantine_and_replace<F>(
+    db_path: &Path,
+    staging_path: &Path,
+    stamp: &str,
+    replace: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    let mut quarantined = Vec::new();
+    for suffix in ["", "-wal", "-shm"] {
+        let live = with_suffix(db_path, suffix);
+        if !live.exists() {
+            continue;
+        }
+        let backup_path = with_suffix(&live, &format!(".corrupt-{stamp}"));
+        if let Err(error) = fs::rename(&live, &backup_path) {
+            rollback_quarantine(&quarantined);
+            return Err(format!("隔离旧数据库失败：{error}"));
+        }
+        quarantined.push((live, backup_path));
+    }
+
+    if let Err(error) = replace(staging_path, db_path) {
+        rollback_quarantine(&quarantined);
+        return Err(format!("替换数据库失败：{error}"));
+    }
+
+    if prune_corrupt_recovery_groups(db_path).is_err() {
+        crate::logging::log_error(
+            "backup",
+            "旧数据库隔离组清理失败（backup-quarantine-prune-failed）",
+        );
+    }
+    Ok(())
+}
+
+struct CorruptRecoveryGroup {
+    stamp: String,
+    created_at: SystemTime,
+    files: Vec<PathBuf>,
+}
+
+fn corrupt_group_created_at(stamp: &str, fallback_path: &Path) -> SystemTime {
+    // `unique_token()` is PID-nanoseconds-sequence; use its timestamp across
+    // process restarts instead of relying on the quarantined database mtime.
+    let nanos = stamp
+        .split('-')
+        .nth(1)
+        .and_then(|value| value.parse::<u128>().ok());
+    if let Some(nanos) = nanos {
+        let seconds = (nanos / 1_000_000_000).min(u64::MAX as u128) as u64;
+        let subsec_nanos = (nanos % 1_000_000_000) as u32;
+        return UNIX_EPOCH + std::time::Duration::new(seconds, subsec_nanos);
+    }
+    fs::metadata(fallback_path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(UNIX_EPOCH)
+}
+
+fn collect_corrupt_recovery_groups(db_path: &Path) -> Result<Vec<CorruptRecoveryGroup>, String> {
+    let parent = db_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| "书库数据库缺少父目录".to_string())?;
+    let file_name = db_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "书库数据库文件名无效".to_string())?;
+    let prefixes = [
+        format!("{file_name}.corrupt-"),
+        format!("{file_name}-wal.corrupt-"),
+        format!("{file_name}-shm.corrupt-"),
+    ];
+    let mut groups = BTreeMap::<String, CorruptRecoveryGroup>::new();
+    for entry in fs::read_dir(parent).map_err(|_| "读取旧数据库隔离组失败".to_string())?
+    {
+        let entry = entry.map_err(|_| "读取旧数据库隔离组失败".to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|_| "读取旧数据库隔离组失败".to_string())?
+            .is_file()
+        {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(stamp) = prefixes
+            .iter()
+            .find_map(|prefix| name.strip_prefix(prefix))
+            .filter(|stamp| !stamp.is_empty())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        let group = groups
+            .entry(stamp.to_string())
+            .or_insert_with(|| CorruptRecoveryGroup {
+                stamp: stamp.to_string(),
+                created_at: corrupt_group_created_at(stamp, &path),
+                files: Vec::new(),
+            });
+        group.files.push(path);
+    }
+    let mut groups: Vec<_> = groups.into_values().collect();
+    groups.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.stamp.cmp(&right.stamp))
+    });
+    Ok(groups)
+}
+
+/// Count a database plus its optional WAL/SHM siblings as one recovery group.
+fn prune_corrupt_recovery_groups(db_path: &Path) -> Result<(), String> {
+    let mut groups = collect_corrupt_recovery_groups(db_path)?;
+    let remove_count = groups.len().saturating_sub(MAX_CORRUPT_RECOVERY_GROUPS);
+    for group in groups.drain(..remove_count) {
+        for file in group.files {
+            fs::remove_file(file).map_err(|_| "清理旧数据库隔离组失败".to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn recover_from_backup_blocking(
@@ -387,25 +532,11 @@ fn recover_from_backup_blocking(
             .map_err(|error| format!("收尾恢复临时库失败：{error}"))?;
     }
 
-    // 隔离旧库与边车文件，再以同目录 rename 原子替换。
+    // 隔离旧库与边车文件，再以同目录 rename 原子替换；替换成功后才裁剪旧隔离组。
     let stamp = unique_token();
-    let mut quarantined = Vec::new();
-    for suffix in ["", "-wal", "-shm"] {
-        let live = with_suffix(db_path, suffix);
-        if !live.exists() {
-            continue;
-        }
-        let backup_path = with_suffix(&live, &format!(".corrupt-{stamp}"));
-        if let Err(error) = fs::rename(&live, &backup_path) {
-            rollback_quarantine(&quarantined);
-            return Err(format!("隔离旧数据库失败：{error}"));
-        }
-        quarantined.push((live, backup_path));
-    }
-    if let Err(error) = fs::rename(staging.path(), db_path) {
-        rollback_quarantine(&quarantined);
-        return Err(format!("替换数据库失败：{error}"));
-    }
+    quarantine_and_replace(db_path, staging.path(), &stamp, |from, to| {
+        fs::rename(from, to)
+    })?;
     // staging 已 checkpoint，残留边车文件不应覆盖新库。
     let _ = fs::remove_file(with_suffix(staging.path(), "-wal"));
     let _ = fs::remove_file(with_suffix(staging.path(), "-shm"));
@@ -469,8 +600,7 @@ fn export_backup_blocking(
 
     // 2) 净化快照：删除凭据 / 浏览痕迹 / 内部标记，VACUUM 抹除空闲页，切独立日志模式。
     let counts = {
-        let conn =
-            Connection::open(snapshot.path()).map_err(|e| format!("打开书库快照失败：{e}"))?;
+        let conn = db::open(snapshot.path()).map_err(|e| format!("打开书库快照失败：{e}"))?;
         sanitize_snapshot(&conn)?;
         count_core_rows(&conn)?
     };
@@ -811,8 +941,7 @@ fn restore_backup_blocking(
 }
 
 fn count_live_core_rows(db_path: &Path) -> Result<BackupCounts, String> {
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("打开恢复后的书库失败：{e}"))?;
+    let conn = db::open(db_path).map_err(|e| format!("打开恢复后的书库失败：{e}"))?;
     count_core_rows(&conn)
 }
 
@@ -882,8 +1011,7 @@ fn extract_db_entry(
 }
 
 fn validate_restored_db(path: &Path, manifest: &BackupManifest) -> Result<ValidatedBackup, String> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("打开备份数据库失败：{e}"))?;
+    let conn = db::open_readonly(path).map_err(|e| format!("打开备份数据库失败：{e}"))?;
     let integrity: String = conn
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .map_err(|e| format!("备份数据库完整性校验失败：{e}"))?;
@@ -1439,6 +1567,138 @@ mod tests {
 
         assert_ne!(caller_thread, worker_thread);
         assert!((16..=2048).contains(&settings.cache_budget_mb));
+    }
+
+    #[test]
+    fn read_only_backup_validation_avoids_sidecars_and_temp_guard_cleans_them() {
+        let dir = temp_dir("readonly-validation");
+        let source_db = seeded_db(&dir);
+        let archive = dir.join("readonly-validation.mrbackup");
+        export_backup_blocking(&source_db, &archive, None, "0.19.1").expect("导出测试备份");
+        let extracted = exported_db(&archive, &dir);
+        let manifest: BackupManifest =
+            serde_json::from_slice(&zip_entry_bytes(&archive, "manifest.json"))
+                .expect("读取测试清单");
+
+        validate_restored_db(&extracted, &manifest).expect("只读校验备份库");
+        assert!(!with_suffix(&extracted, "-wal").exists());
+        assert!(!with_suffix(&extracted, "-shm").exists());
+
+        let guarded_path = dir.join("guarded-temp.db");
+        let guard = TempFileGuard::new(guarded_path.clone());
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            fs::write(with_suffix(&guarded_path, suffix), b"temporary").expect("创建临时库及边车");
+        }
+        drop(guard);
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            assert!(
+                !with_suffix(&guarded_path, suffix).exists(),
+                "临时库边车 {suffix} 应由 guard 清理"
+            );
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn write_quarantine_group(db_path: &Path, stamp: &str) {
+        for suffix in ["", "-wal", "-shm"] {
+            let quarantined =
+                with_suffix(&with_suffix(db_path, suffix), &format!(".corrupt-{stamp}"));
+            fs::write(quarantined, format!("{stamp}{suffix}")).expect("创建隔离组成员");
+        }
+    }
+
+    fn assert_quarantine_group(db_path: &Path, stamp: &str, expected: bool) {
+        for suffix in ["", "-wal", "-shm"] {
+            let quarantined =
+                with_suffix(&with_suffix(db_path, suffix), &format!(".corrupt-{stamp}"));
+            assert_eq!(quarantined.exists(), expected, "{quarantined:?}");
+        }
+    }
+
+    #[test]
+    fn successful_recovery_prunes_oldest_quarantine_as_db_wal_shm_group() {
+        let dir = temp_dir("quarantine-retention");
+        let db_path = dir.join("library.db");
+        for index in 1..=3 {
+            write_quarantine_group(&db_path, &format!("1-{index}-0"));
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            fs::write(with_suffix(&db_path, suffix), format!("live{suffix}"))
+                .expect("创建当前活库成员");
+        }
+        let staging = dir.join("staging.db");
+        fs::write(&staging, b"restored database").expect("创建恢复暂存库");
+
+        quarantine_and_replace(&db_path, &staging, "1-4-0", |from, to| fs::rename(from, to))
+            .expect("替换成功后执行保留裁剪");
+
+        assert_quarantine_group(&db_path, "1-1-0", false);
+        for stamp in ["1-2-0", "1-3-0", "1-4-0"] {
+            assert_quarantine_group(&db_path, stamp, true);
+        }
+        assert_eq!(fs::read(&db_path).unwrap(), b"restored database");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_recovery_replacement_rolls_back_without_pruning_quarantine_groups() {
+        let dir = temp_dir("quarantine-rollback");
+        let db_path = dir.join("library.db");
+        for index in 1..=3 {
+            write_quarantine_group(&db_path, &format!("1-{index}-0"));
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            fs::write(with_suffix(&db_path, suffix), format!("live{suffix}"))
+                .expect("创建当前活库成员");
+        }
+        let staging = dir.join("staging.db");
+        fs::write(&staging, b"restored database").expect("创建恢复暂存库");
+
+        let result = quarantine_and_replace(&db_path, &staging, "1-4-0", |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "injected replacement failure",
+            ))
+        });
+
+        assert!(result.is_err());
+        for stamp in ["1-1-0", "1-2-0", "1-3-0"] {
+            assert_quarantine_group(&db_path, stamp, true);
+        }
+        assert_quarantine_group(&db_path, "1-4-0", false);
+        for suffix in ["", "-wal", "-shm"] {
+            assert_eq!(
+                fs::read(with_suffix(&db_path, suffix)).unwrap(),
+                format!("live{suffix}").as_bytes()
+            );
+        }
+        assert!(staging.exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn normalization_failure_keeps_database_recovery_gate_closed() {
+        let dir = temp_dir("normalize-failure");
+        let path = dir.join("library.db");
+        {
+            let conn = db::open(&path).expect("创建测试数据库");
+            db::init_schema(&conn).expect("初始化测试数据库");
+            db::set_setting(&conn, "theme", "invalid-theme").expect("写入非法主题");
+        }
+        let conn = db::open_readonly(&path).expect("以只读连接模拟归一化写入失败");
+        let settings = load_settings_from_connection(&conn);
+        assert!(settings.is_err(), "只读连接不能写入修复后的设置");
+
+        let state = AppState::new();
+        state.set_db_error("db-quick-check-failed");
+        let error = install_recovered_database(&state, conn, settings).unwrap_err();
+        assert!(error.contains("db-settings-normalize-failed"));
+        assert_eq!(
+            state.db_error_code().as_deref(),
+            Some("db-settings-normalize-failed")
+        );
+        assert!(state.db.with(|_| Ok(())).is_err(), "失败时不得安装恢复库");
+        fs::remove_dir_all(&dir).ok();
     }
 
     fn temp_dir(tag: &str) -> PathBuf {

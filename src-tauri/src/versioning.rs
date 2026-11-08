@@ -156,36 +156,77 @@ pub fn normalize_settings(
     conn: &Connection,
     settings: &mut Settings,
 ) -> Result<Vec<String>, BackendError> {
+    let mut normalized = settings.clone();
     let mut repaired = Vec::new();
-    let theme = settings.theme.trim().to_ascii_lowercase();
+    let mut writes = Vec::new();
+    let theme = normalized.theme.trim().to_ascii_lowercase();
     if !matches!(theme.as_str(), "system" | "light" | "dark") {
-        settings.theme = "system".to_string();
-        db::set_setting(conn, "theme", "system")?;
+        normalized.theme = "system".to_string();
+        writes.push(("theme", normalized.theme.clone()));
         repaired.push("theme".to_string());
-    } else if theme != settings.theme {
-        settings.theme = theme;
-        db::set_setting(conn, "theme", &settings.theme)?;
+    } else if theme != normalized.theme {
+        normalized.theme = theme;
+        writes.push(("theme", normalized.theme.clone()));
         repaired.push("theme".to_string());
     }
-    let budget = settings.cache_budget_mb.clamp(16, 2048);
-    if budget != settings.cache_budget_mb {
-        settings.cache_budget_mb = budget;
-        db::set_setting(conn, "cache_budget_mb", &budget.to_string())?;
+
+    let (budget, budget_write) = normalized_u32_setting(
+        conn,
+        "cache_budget_mb",
+        normalized.cache_budget_mb,
+        |value| value.clamp(16, 2048),
+    )?;
+    normalized.cache_budget_mb = budget;
+    if let Some(value) = budget_write {
+        writes.push(("cache_budget_mb", value));
         repaired.push("cache_budget_mb".to_string());
     }
-    let disk_budget = crate::disk_cache::clamp_budget_mb(settings.disk_cache_budget_mb);
-    if disk_budget != settings.disk_cache_budget_mb {
-        settings.disk_cache_budget_mb = disk_budget;
-        db::set_setting(conn, "disk_cache_budget_mb", &disk_budget.to_string())?;
+
+    let (disk_budget, disk_budget_write) = normalized_u32_setting(
+        conn,
+        "disk_cache_budget_mb",
+        normalized.disk_cache_budget_mb,
+        crate::disk_cache::clamp_budget_mb,
+    )?;
+    normalized.disk_cache_budget_mb = disk_budget;
+    if let Some(value) = disk_budget_write {
+        writes.push(("disk_cache_budget_mb", value));
         repaired.push("disk_cache_budget_mb".to_string());
     }
-    let concurrency = settings.online_concurrency.clamp(1, 8);
-    if concurrency != settings.online_concurrency {
-        settings.online_concurrency = concurrency;
-        db::set_setting(conn, "online_concurrency", &concurrency.to_string())?;
+
+    let (concurrency, concurrency_write) = normalized_u32_setting(
+        conn,
+        "online_concurrency",
+        normalized.online_concurrency,
+        |value| value.clamp(1, 8),
+    )?;
+    normalized.online_concurrency = concurrency;
+    if let Some(value) = concurrency_write {
+        writes.push(("online_concurrency", value));
         repaired.push("online_concurrency".to_string());
     }
+
+    if !writes.is_empty() {
+        db::set_settings_atomic(conn, &writes)?;
+    }
+    *settings = normalized;
     Ok(repaired)
+}
+
+fn normalized_u32_setting(
+    conn: &Connection,
+    key: &'static str,
+    current: u32,
+    clamp: impl FnOnce(u32) -> u32,
+) -> Result<(u32, Option<String>), BackendError> {
+    let stored = db::get_setting(conn, key)?;
+    let parsed = stored
+        .as_deref()
+        .and_then(|value| value.parse::<u32>().ok());
+    let normalized = clamp(parsed.unwrap_or(current));
+    let needs_write = normalized != current || stored.is_some() && parsed != Some(normalized);
+    let write = needs_write.then(|| normalized.to_string());
+    Ok((normalized, write))
 }
 
 #[cfg(test)]
@@ -283,6 +324,67 @@ mod tests {
         assert_eq!(
             db::get_setting(&conn, "theme").unwrap().as_deref(),
             Some("system")
+        );
+    }
+
+    #[test]
+    fn malformed_numeric_settings_are_persistently_repaired_to_defaults() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        db::set_setting(&conn, "cache_budget_mb", "not-a-number").unwrap();
+        db::set_setting(&conn, "online_concurrency", "not-a-number").unwrap();
+        let mut settings = Settings::default();
+
+        let repaired = normalize_settings(&conn, &mut settings).unwrap();
+
+        assert!(repaired.contains(&"cache_budget_mb".to_string()));
+        assert!(repaired.contains(&"online_concurrency".to_string()));
+        assert_eq!(
+            db::get_setting(&conn, "cache_budget_mb")
+                .unwrap()
+                .as_deref(),
+            Some(settings.cache_budget_mb.to_string().as_str())
+        );
+        assert_eq!(
+            db::get_setting(&conn, "online_concurrency")
+                .unwrap()
+                .as_deref(),
+            Some(settings.online_concurrency.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn settings_normalization_write_failure_rolls_back_all_values() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        db::set_setting(&conn, "theme", "BROKEN").unwrap();
+        db::set_setting(&conn, "cache_budget_mb", "4096").unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_cache_budget_update
+             BEFORE UPDATE ON settings
+             WHEN NEW.k = 'cache_budget_mb'
+             BEGIN SELECT RAISE(ABORT, 'injected normalization failure'); END;",
+        )
+        .unwrap();
+
+        let mut settings = Settings {
+            theme: "BROKEN".to_string(),
+            cache_budget_mb: 2048,
+            ..Settings::default()
+        };
+        assert!(normalize_settings(&conn, &mut settings).is_err());
+
+        assert_eq!(settings.theme, "BROKEN", "failed repair must not publish");
+        assert_eq!(
+            db::get_setting(&conn, "theme").unwrap().as_deref(),
+            Some("BROKEN"),
+            "earlier repairs must roll back"
+        );
+        assert_eq!(
+            db::get_setting(&conn, "cache_budget_mb")
+                .unwrap()
+                .as_deref(),
+            Some("4096")
         );
     }
 }

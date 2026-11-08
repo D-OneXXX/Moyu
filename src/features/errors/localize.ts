@@ -17,6 +17,7 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "db-open-failed", key: "dbRecovery.openFailed" },
   { code: "db-schema-failed", key: "dbRecovery.schemaFailed" },
   { code: "db-quick-check-failed", key: "dbRecovery.quickCheckFailed" },
+  { code: "db-settings-load-failed", key: "dbRecovery.settingsLoadFailed" },
   {
     code: "db-settings-normalize-failed",
     key: "dbRecovery.settingsNormalizeFailed",

@@ -275,73 +275,118 @@ fn pick_next(current: &db::BookRow, candidates: Vec<db::BookRow>) -> Option<db::
         })
 }
 
-pub(crate) fn get_next_book_impl(
+/// Owned rows needed to choose a following chapter. SQLite access and the
+/// single current-row link lookup happen while the DbSlot lock is held;
+/// candidate JSON parsing, selection, sorting, and filesystem checks happen
+/// after the snapshot leaves the lock.
+pub(crate) struct NextBookSnapshot {
+    current: db::BookRow,
+    current_series_id: Option<String>,
+    direct_next: Option<db::BookRow>,
+    candidates: Vec<db::BookRow>,
+}
+
+impl NextBookSnapshot {
+    pub(crate) fn resolve_next_row(self) -> Option<db::BookRow> {
+        if let Some(row) = self.direct_next {
+            return Some(row);
+        }
+
+        let mut series_candidates = Vec::new();
+        if let Some(series_id) = self.current_series_id.as_deref() {
+            for book in &self.candidates {
+                if book.id == self.current.id {
+                    continue;
+                }
+                let Ok(meta) = serde_json::from_str::<crate::online::StoredMeta>(&book.meta_json)
+                else {
+                    continue;
+                };
+                if meta.series_id.as_deref() == Some(series_id) {
+                    series_candidates.push(book.clone());
+                }
+            }
+        }
+
+        if !series_candidates.is_empty() {
+            return pick_next(&self.current, series_candidates);
+        }
+
+        let prefix = title_prefix(&self.current.title);
+        if prefix.is_empty() {
+            return None;
+        }
+        let candidates = self
+            .candidates
+            .into_iter()
+            .filter(|book| {
+                book.id != self.current.id
+                    && book.title != self.current.title
+                    && book.title.starts_with(&prefix)
+            })
+            .collect();
+        pick_next(&self.current, candidates)
+    }
+}
+
+pub(crate) fn get_next_book_snapshot(
     conn: &rusqlite::Connection,
     book_id: &str,
-) -> Result<Option<BookInfo>, BackendError> {
+) -> Result<Option<NextBookSnapshot>, BackendError> {
     let Some(current) = db::get_book(conn, book_id)? else {
         return Ok(None);
     };
-    let stored = serde_json::from_str::<crate::online::StoredMeta>(&current.meta_json).ok();
+    get_next_book_snapshot_from_current(conn, current).map(Some)
+}
 
+/// The Web detail endpoint already loaded an active current row. Reuse that
+/// row so its current-book and next-book lookups stay within one DbSlot guard.
+pub(crate) fn get_next_book_snapshot_from_current(
+    conn: &rusqlite::Connection,
+    current: db::BookRow,
+) -> Result<NextBookSnapshot, BackendError> {
+    let stored = serde_json::from_str::<crate::online::StoredMeta>(&current.meta_json).ok();
+    let current_series_id = stored.as_ref().and_then(|meta| meta.series_id.clone());
     if let Some(next) = stored.as_ref().and_then(|meta| meta.next_url.as_deref()) {
         if let Ok(next) = crate::online::normalize_url(next) {
             let next_id = db::book_id_for_path(next.as_str());
             if next_id != current.id {
                 if let Some(row) = db::get_book(conn, &next_id)? {
-                    return Ok(Some(to_book_info(row)));
+                    return Ok(NextBookSnapshot {
+                        current,
+                        current_series_id,
+                        direct_next: Some(row),
+                        candidates: Vec::new(),
+                    });
                 }
             }
         }
     }
 
-    let books = db::list_books(conn, None)?;
-    let mut series_candidates = Vec::new();
-    if let Some(series_id) = stored.as_ref().and_then(|meta| meta.series_id.as_deref()) {
-        for book in &books {
-            if book.id == current.id {
-                continue;
-            }
-            let Ok(meta) = serde_json::from_str::<crate::online::StoredMeta>(&book.meta_json)
-            else {
-                continue;
-            };
-            if meta.series_id.as_deref() == Some(series_id) {
-                series_candidates.push(book.clone());
-            }
-        }
-    }
-
-    let next = if !series_candidates.is_empty() {
-        pick_next(&current, series_candidates)
-    } else {
-        let prefix = title_prefix(&current.title);
-        if prefix.is_empty() {
-            None
-        } else {
-            let candidates = books
-                .into_iter()
-                .filter(|book| {
-                    book.id != current.id
-                        && book.title != current.title
-                        && book.title.starts_with(&prefix)
-                })
-                .collect();
-            pick_next(&current, candidates)
-        }
-    };
-    Ok(next.map(to_book_info))
+    Ok(NextBookSnapshot {
+        current,
+        current_series_id,
+        direct_next: None,
+        candidates: db::list_books(conn, None)?,
+    })
 }
 
-fn get_series_books_impl(
+fn series_books_snapshot(
     conn: &rusqlite::Connection,
     series_id: &str,
-) -> Result<Vec<BookInfo>, BackendError> {
+) -> Result<Vec<db::BookRow>, BackendError> {
     if series_id.trim().is_empty() {
         return Ok(Vec::new());
     }
+    db::list_books(conn, None)
+}
+
+fn project_series_books(snapshot_rows: Vec<db::BookRow>, series_id: &str) -> Vec<BookInfo> {
+    if series_id.trim().is_empty() {
+        return Vec::new();
+    }
     let mut rows = Vec::new();
-    for book in db::list_books(conn, None)? {
+    for book in snapshot_rows {
         let Ok(meta) = serde_json::from_str::<crate::online::StoredMeta>(&book.meta_json) else {
             continue;
         };
@@ -357,7 +402,7 @@ fn get_series_books_impl(
             .then_with(|| a.updated_at.cmp(&b.updated_at))
             .then_with(|| a.id.cmp(&b.id))
     });
-    Ok(rows.into_iter().map(|(_, row)| to_book_info(row)).collect())
+    rows.into_iter().map(|(_, row)| to_book_info(row)).collect()
 }
 
 /// 从文件/目录名推导书名（去扩展名）。
@@ -1130,9 +1175,11 @@ pub async fn get_next_book(
 ) -> Result<Option<BookInfo>, String> {
     let st = state.inner().clone();
     blocking(move || {
-        st.db
-            .with(|conn| get_next_book_impl(conn, &book_id).map_err(err))
-            .map_err(BackendError::Msg)
+        let snapshot = st
+            .db
+            .with(|conn| get_next_book_snapshot(conn, &book_id).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(snapshot.and_then(|snapshot| snapshot.resolve_next_row().map(to_book_info)))
     })
     .await
 }
@@ -1143,10 +1190,13 @@ pub async fn get_series_books(
     series_id: String,
 ) -> Result<Vec<BookInfo>, String> {
     let st = state.inner().clone();
+    let query = series_id.clone();
     blocking(move || {
-        st.db
-            .with(|conn| get_series_books_impl(conn, &series_id).map_err(err))
-            .map_err(BackendError::Msg)
+        let snapshot = st
+            .db
+            .with(|conn| series_books_snapshot(conn, &query).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(project_series_books(snapshot, &query))
     })
     .await
 }
@@ -5274,6 +5324,20 @@ mod tests {
         id
     }
 
+    fn next_book_for_test(st: &AppState, book_id: &str) -> Result<Option<BookInfo>, String> {
+        let snapshot = st.db.with(|conn| {
+            get_next_book_snapshot(conn, book_id).map_err(|error| error.to_string())
+        })?;
+        Ok(snapshot.and_then(|snapshot| snapshot.resolve_next_row().map(to_book_info)))
+    }
+
+    fn series_books_for_test(st: &AppState, series_id: &str) -> Result<Vec<BookInfo>, String> {
+        let snapshot = st.db.with(|conn| {
+            series_books_snapshot(conn, series_id).map_err(|error| error.to_string())
+        })?;
+        Ok(project_series_books(snapshot, series_id))
+    }
+
     #[test]
     fn natural_cmp_and_title_prefix_follow_contract() {
         assert_eq!(natural_cmp("第2话", "第10话"), std::cmp::Ordering::Less);
@@ -5314,27 +5378,17 @@ mod tests {
         let b = insert_linked(&st, "http://e/b", "第2话", Some("S"), None);
         let c = insert_linked(&st, "http://e/c", "第10话", Some("S"), None);
 
-        st.db
-            .with(|conn| {
-                let next = get_next_book_impl(conn, &a).unwrap().unwrap();
-                assert_eq!(next.id, c, "next_url 直链应优先于自然排序");
-                let next = get_next_book_impl(conn, &b).unwrap().unwrap();
-                assert_eq!(next.id, c);
-                assert!(get_next_book_impl(conn, &c).unwrap().is_none());
-                Ok(())
-            })
-            .unwrap();
+        let next = next_book_for_test(&st, &a).unwrap().unwrap();
+        assert_eq!(next.id, c, "next_url 直链应优先于自然排序");
+        let next = next_book_for_test(&st, &b).unwrap().unwrap();
+        assert_eq!(next.id, c);
+        assert!(next_book_for_test(&st, &c).unwrap().is_none());
 
         let d = insert_linked(&st, "http://e/d", "漫画 第2话", None, None);
         insert_linked(&st, "http://e/e", "漫画 第10话", None, None);
         let f = insert_linked(&st, "http://e/f", "漫画 第3话", None, None);
-        st.db
-            .with(|conn| {
-                let next = get_next_book_impl(conn, &d).unwrap().unwrap();
-                assert_eq!(next.id, f);
-                Ok(())
-            })
-            .unwrap();
+        let next = next_book_for_test(&st, &d).unwrap().unwrap();
+        assert_eq!(next.id, f);
         let _ = b;
     }
 
@@ -5355,12 +5409,12 @@ mod tests {
                     rusqlite::params![newer],
                 )
                 .unwrap();
-                let next = get_next_book_impl(conn, &older).unwrap().unwrap();
-                assert_eq!(next.id, newer);
-                assert!(get_next_book_impl(conn, &newer).unwrap().is_none());
                 Ok(())
             })
             .unwrap();
+        let next = next_book_for_test(&st, &older).unwrap().unwrap();
+        assert_eq!(next.id, newer);
+        assert!(next_book_for_test(&st, &newer).unwrap().is_none());
     }
 
     fn insert_series_book(
@@ -5410,22 +5464,17 @@ mod tests {
         let extra = insert_series_book(&st, "http://e/sx", "番外", "S", "Series", None);
         let other = insert_series_book(&st, "http://e/o1", "第1话", "Other", "Other", Some(1));
 
-        st.db
-            .with(|conn| {
-                let books = get_series_books_impl(conn, "S").unwrap();
-                let ids: Vec<&str> = books.iter().map(|b| b.id.as_str()).collect();
-                assert_eq!(
-                    ids,
-                    vec![c1.as_str(), c2.as_str(), c3.as_str(), extra.as_str()]
-                );
-                assert_eq!(books[0].series_title.as_deref(), Some("Series"));
-                assert_eq!(books[0].chapter_index, Some(1));
-                assert!(books.iter().all(|b| b.id != other));
-                assert!(get_series_books_impl(conn, "").unwrap().is_empty());
-                assert!(get_series_books_impl(conn, "missing").unwrap().is_empty());
-                Ok(())
-            })
-            .unwrap();
+        let books = series_books_for_test(&st, "S").unwrap();
+        let ids: Vec<&str> = books.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![c1.as_str(), c2.as_str(), c3.as_str(), extra.as_str()]
+        );
+        assert_eq!(books[0].series_title.as_deref(), Some("Series"));
+        assert_eq!(books[0].chapter_index, Some(1));
+        assert!(books.iter().all(|b| b.id != other));
+        assert!(series_books_for_test(&st, "").unwrap().is_empty());
+        assert!(series_books_for_test(&st, "missing").unwrap().is_empty());
     }
 
     #[test]

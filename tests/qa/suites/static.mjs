@@ -639,7 +639,11 @@ export async function runStaticSuite(ctx, report) {
   }
 
   checkCapabilityWall(root, report);
+  checkWindowApiCapabilities(root, report);
   checkStorageWhitelist(root, report);
+  checkStableErrorCodes(root, dictionary, report);
+  checkWebReaderDictionaries(root, report);
+  checkNumericTypography(root, report);
   checkUpdateChannelSource(root, report);
   checkWebtoonTextureGuard(root, report);
   checkProductionBundle(root, report);
@@ -1884,6 +1888,10 @@ export function checkStorageWhitelist(root, report) {
   // 非存储用途的 mr-* 标识（事件名 / 状态名 / 广播名），不属于 localStorage 键。
   const nonStorage = new Set([
     "mr-brand-icon-change",
+    // 装饰层 CSS 类名，不是 localStorage 键。
+    "mr-decoration",
+    "mr-decoration-layer",
+    "mr-decoration-slot",
     "mr-focus-library-search",
     "mr-online-handoff-state",
     "mr-online-last-test-updated",
@@ -1891,7 +1899,11 @@ export function checkStorageWhitelist(root, report) {
     "mr-privacy-open",
     "mr-settings-changed",
     "mr-settings-updated",
+    "mr-shortcuts-preference",
     "mr-storage-sanitized",
+    // sessionStorage 键：生命周期仅限当前窗口会话，不参与启动 localStorage 清洗。
+    "mr-scroll-positions",
+    "mr-scroll-restore",
   ]);
 
   const used = collectMrLiterals(root);
@@ -2029,6 +2041,290 @@ export function checkWebtoonTextureGuard(root, report) {
       details: `MAX_SAFE_TEXTURE_H=${safeMatch ? safeMatch[1] : "?"}，MAX_SLICE_H=${
         sliceMatch ? sliceMatch[1] : "?"
       }，${details}`,
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Task 14-1：稳定错误码、Web Reader 六语与数字排版物理标尺           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Rust 侧出现、但不属于用户可见错误码的字面量。
+ * 新增错误必须进 localize.ts；只有事件名 / HTTP 头 / 诊断计数 / 测试夹具
+ * 才能进入本清单，避免“未映射错误码”被静默放过。
+ */
+const NON_UI_RUST_CODE_LITERALS = new Map([
+  ["browser-download", "下载完成事件名"],
+  ["cached-errors", "缓存诊断计数键"],
+  ["content-type", "HTTP 头名"],
+  ["error-boundary", "诊断分类名"],
+  ["mr-startup-recovery", "启动恢复事件名"],
+  ["mr-ui-watchdog", "UI 看门狗事件名"],
+  ["opds-book", "OPDS 条目缺省标题"],
+  ["page-errors", "页面诊断计数键"],
+  ["req-1", "更新测试夹具标识"],
+  ["ring-test", "日志测试标记"],
+  ["sec-fetch-site", "HTTP 头名"],
+  ["series-1", "命令测试夹具标识"],
+  ["unknown-sid", "Windows ACL 诊断标记"],
+  ["web-access-tray-error", "托盘错误事件名"],
+]);
+
+export function checkStableErrorCodes(root, dictionary, report) {
+  const localizePath = path.join(root, "src", "features", "errors", "localize.ts");
+  const errors = [];
+  try {
+    const source = fs.readFileSync(localizePath, "utf8");
+    const entries = [
+      ...source.matchAll(/code:\s*"([^"]+)",\s*key:\s*"([^"]+)"/g),
+    ].map((match) => ({ code: match[1], key: match[2] }));
+    if (entries.length === 0) errors.push("localize.ts 未解析到任何错误码映射");
+    const seen = new Set();
+    for (const entry of entries) {
+      if (seen.has(entry.code)) errors.push(`重复错误码 ${entry.code}`);
+      seen.add(entry.code);
+      for (const locale of ["zh-CN", "zh-TW", "en", "es", "ja", "ko"]) {
+        if (!(entry.key in (dictionary[locale] || {}))) {
+          errors.push(`${entry.code} -> ${entry.key} 缺少 ${locale} 文案`);
+        }
+      }
+    }
+
+    const rustCodes = new Map();
+    for (const file of walk(path.join(root, "src-tauri", "src")).filter((item) =>
+      item.endsWith(".rs"),
+    )) {
+      const raw = fs.readFileSync(file, "utf8");
+      const lines = stripRustComments(raw).split(/\r?\n/);
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        // 只扫描错误返回语境，避免把普通文案 / 路径 / 事件负载当成错误码。
+        if (!/(?:Err\(|map_err|to_string|error|Error|code|Code|return)/.test(line)) {
+          continue;
+        }
+        for (const match of line.matchAll(
+          /"([a-z][a-z0-9]*(?:-[a-z0-9]+){1,6})"/g,
+        )) {
+          const code = match[1];
+          if (!rustCodes.has(code)) {
+            rustCodes.set(code, `${path.relative(root, file)}:${index + 1}`);
+          }
+        }
+      }
+    }
+    for (const [code, location] of rustCodes) {
+      if (seen.has(code) || NON_UI_RUST_CODE_LITERALS.has(code)) continue;
+      errors.push(`${code} 未在 localize.ts 注册（${location}）`);
+    }
+  } catch (error) {
+    errors.push(`错误码扫描失败：${error.message}`);
+  }
+
+  if (errors.length) {
+    fail(report, {
+      id: "static:stable-error-codes",
+      suite: "static",
+      layer: "static",
+      title: "Rust 稳定错误码未完整映射到六语本地化表",
+      severity: "P1",
+      details: errors.slice(0, 30).join(" | "),
+      location: "src/features/errors/localize.ts",
+      expected:
+        "每个用户可见 kebab-case 错误码都有 localize 映射，且 key 在六套字典中存在",
+      actual: errors.join(" | "),
+      rootCause: "新增错误码未同步 localize.ts 或六语字典",
+      fix: "登记错误码与六语文案；事件名/HTTP 头/诊断键才可加入 NON_UI 清单",
+    });
+  } else {
+    ok(report, {
+      id: "static:stable-error-codes",
+      suite: "static",
+      layer: "static",
+      title: "Rust 稳定错误码与六语 localize 映射完整",
+      details: "扫描 Rust 错误语境与 localize 映射",
+    });
+  }
+}
+
+export function checkWebReaderDictionaries(root, report) {
+  const file = path.join(root, "src", "i18n", "messages", "webReader.ts");
+  const errors = [];
+  try {
+    const table = loadTsObject(fs.readFileSync(file, "utf8"), "messages");
+    const locales = Object.keys(table || {});
+    const expected = ["zh-CN", "zh-TW", "en", "es", "ja", "ko"];
+    for (const locale of expected) {
+      if (!table?.[locale]) errors.push(`缺少 ${locale} 字典`);
+    }
+    const base = table?.["en"] || {};
+    for (const locale of locales) {
+      const current = table[locale] || {};
+      for (const key of Object.keys(base)) {
+        if (!(key in current)) errors.push(`${locale} missing ${key}`);
+        else if (!String(current[key]).trim()) errors.push(`${locale} empty ${key}`);
+        else if (placeholders(current[key]) !== placeholders(base[key])) {
+          errors.push(`${locale} placeholder mismatch ${key}`);
+        }
+      }
+      for (const key of Object.keys(current)) {
+        if (!(key in base)) errors.push(`${locale} extra ${key}`);
+      }
+    }
+  } catch (error) {
+    errors.push(`webReader 字典解析失败：${error.message}`);
+  }
+
+  if (errors.length) {
+    fail(report, {
+      id: "static:web-reader-i18n",
+      suite: "static",
+      layer: "static",
+      title: "移动 Web Reader 六语字典不完整",
+      severity: "P1",
+      details: errors.slice(0, 30).join(" | "),
+      location: "src/i18n/messages/webReader.ts",
+      expected: "zh-CN / zh-TW / en / es / ja / ko 键名与占位符完全一致",
+      actual: errors.join(" | "),
+      rootCause: "新增移动端提示语只写了一种语言，或占位符不一致",
+      fix: "补齐六语键并使用相同 {placeholder}",
+    });
+  } else {
+    ok(report, {
+      id: "static:web-reader-i18n",
+      suite: "static",
+      layer: "static",
+      title: "移动 Web Reader 六语字典键名与占位符一致",
+    });
+  }
+}
+
+/**
+ * 动态数字组件的静态物理标尺。
+ *
+ * 只扫描 UI 目录中含数字展示信号的 tsx；纯逻辑文件与 toast 文案文件
+ * 明确列入 allowlist，避免把“代码里出现 pageCount”误判成排版缺陷。
+ */
+const NUMERIC_UI_ALLOWLIST = new Map([
+  [
+    "src/components/Reader/Webtoon.tsx",
+    "pageCount 仅用于预取/滚动逻辑，页码由 ProgressScrubber 渲染",
+  ],
+  [
+    "src/components/settings/DataBackupPanel.tsx",
+    "数字仅进入一次性 toast 文案，不构成持久列宽抖动",
+  ],
+]);
+const NUMERIC_UI_PATTERN =
+  /currentPage|pageCount|progressPercent|scrollPct|toFixed\(|formatNumber\(|formatBytes|readPercent|deviceCount|totalBooks|cacheUsage|cachedBytes/;
+
+export function checkNumericTypography(root, report) {
+  const errors = [];
+  for (const dir of ["src/components", "src/pages"]) {
+    for (const file of walk(path.join(root, dir)).filter((item) =>
+      item.endsWith(".tsx"),
+    )) {
+      const relative = path.relative(root, file).replace(/\\/g, "/");
+      const source = fs.readFileSync(file, "utf8");
+      if (!NUMERIC_UI_PATTERN.test(source)) continue;
+      if (source.includes("tabular-nums")) continue;
+      if (NUMERIC_UI_ALLOWLIST.has(relative)) continue;
+      errors.push(`${relative} 渲染动态数字但缺少 tabular-nums`);
+    }
+  }
+
+  if (errors.length) {
+    fail(report, {
+      id: "static:numeric-typography",
+      suite: "static",
+      layer: "static",
+      title: "动态数字排版缺少 tabular-nums",
+      severity: "P2",
+      details: errors.join(" | "),
+      location: "src/components / src/pages",
+      expected: "页码、百分比、字节数、设备数等动态数字使用 tabular-nums",
+      actual: errors.join(" | "),
+      rootCause: "新增数字展示时沿用比例字形，数值变化会导致横向抖动",
+      fix: "给数字节点添加 tabular-nums；纯逻辑文件请加入明确 allowlist",
+    });
+  } else {
+    ok(report, {
+      id: "static:numeric-typography",
+      suite: "static",
+      layer: "static",
+      title: "动态数字组件均使用 tabular-nums",
+    });
+  }
+}
+
+const WINDOW_API_PERMISSIONS = new Map([
+  ["setTitle", "core:window:allow-set-title"],
+  ["minimize", "core:window:allow-minimize"],
+  ["toggleMaximize", "core:window:allow-toggle-maximize"],
+  ["close", "core:window:allow-close"],
+  ["isMaximized", "core:window:allow-is-maximized"],
+  ["startDragging", "core:window:allow-start-dragging"],
+  ["hide", "core:window:allow-hide"],
+  ["show", "core:window:allow-show"],
+  ["setIcon", "core:window:allow-set-icon"],
+]);
+
+/**
+ * 前端真实调用的 Window API 必须逐项出现在 capability 中。
+ * Tray / set_icon 若走自研 Rust 命令则不经过 ACL；只有前端直接调用
+ * `getCurrentWindow().method()` 时才要求补权限。
+ */
+export function checkWindowApiCapabilities(root, report) {
+  const capabilityPath = path.join(
+    root,
+    "src-tauri",
+    "capabilities",
+    "default.json",
+  );
+  const errors = [];
+  try {
+    const capability = JSON.parse(fs.readFileSync(capabilityPath, "utf8"));
+    const permissions = new Set(
+      Array.isArray(capability.permissions) ? capability.permissions : [],
+    );
+    for (const file of walk(path.join(root, "src")).filter((item) =>
+      /\.(tsx?|jsx?)$/.test(item),
+    )) {
+      const source = fs.readFileSync(file, "utf8");
+      if (!source.includes("getCurrentWindow")) continue;
+      for (const [method, permission] of WINDOW_API_PERMISSIONS) {
+        const used = new RegExp(`\\.${method}\\s*\\(`).test(source);
+        if (used && !permissions.has(permission)) {
+          errors.push(
+            `${path.relative(root, file)} 调用 ${method}() 但缺少 ${permission}`,
+          );
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`窗口能力扫描失败：${error.message}`);
+  }
+
+  if (errors.length) {
+    fail(report, {
+      id: "static:window-api-capabilities",
+      suite: "static",
+      layer: "static",
+      title: "前端 Window API 调用与 capability 不一致",
+      severity: "P1",
+      details: errors.join(" | "),
+      location: "src-tauri/capabilities/default.json",
+      expected: "每个 getCurrentWindow().method() 都有精确 core:window:allow-* 权限",
+      actual: errors.join(" | "),
+      rootCause: "新增窗口 API 调用未补 capability，或声明了未使用的权限",
+      fix: "按真实调用补齐 allow-*；自研 Rust 托盘/图标命令不需要 ACL",
+    });
+  } else {
+    ok(report, {
+      id: "static:window-api-capabilities",
+      suite: "static",
+      layer: "static",
+      title: "前端 Window API 与 capability 精确对齐",
     });
   }
 }
@@ -3078,11 +3374,21 @@ export function checkAntiMockGuards(root, report) {
       "settings",
       "PrivacyPanel.tsx",
     );
-    if (
-      fs.existsSync(privacyFile) &&
-      !fs.readFileSync(privacyFile, "utf8").includes("<WebAccessPanel")
-    ) {
-      errors.push("PrivacyPanel 未挂载 Web Access 面板");
+    const settingsPageFile = path.join(root, "src", "pages", "Settings.tsx");
+    const privacySource = fs.existsSync(privacyFile)
+      ? fs.readFileSync(privacyFile, "utf8")
+      : "";
+    const settingsSource = fs.existsSync(settingsPageFile)
+      ? fs.readFileSync(settingsPageFile, "utf8")
+      : "";
+    // Task 8 起 Web Access 收敛为「摘要卡 + 二级抽屉」：面板挂在
+    // Settings 的 WebAccessSummaryCard 内，不再直接塞进 PrivacyPanel。
+    const mountedInSummary =
+      settingsSource.includes("<WebAccessSummaryCard") &&
+      settingsSource.includes("<WebAccessPanel");
+    const mountedInPrivacy = privacySource.includes("<WebAccessPanel");
+    if (!mountedInSummary && !mountedInPrivacy) {
+      errors.push("Web Access 面板未挂载到 PrivacyPanel 或摘要卡二级抽屉");
     }
 
     const packageSource = fs.readFileSync(

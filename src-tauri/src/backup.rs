@@ -65,6 +65,8 @@ const BACKUP_SETTING_KEYS: &[&str] = &[
     "library_dir",
     "experimental_webtoon",
     "feature_webtoon",
+    // 纯 UX 偏好：关闭主窗口时最小化到托盘。托盘不可用时运行时会自动忽略。
+    "close_to_tray",
 ];
 
 /// 恢复时必须存在且会被复制的表。
@@ -1799,6 +1801,7 @@ mod tests {
         db::set_progress(conn, "b1", 12, Some(0.5)).unwrap();
         db::set_setting(conn, "theme", "dark").unwrap();
         db::set_setting(conn, "cache_budget_mb", "256").unwrap();
+        db::set_setting(conn, "close_to_tray", "true").unwrap();
         db::set_setting(conn, "online_proxy", "socks5://backup-proxy:1080").unwrap();
         db::set_setting(conn, "experimental_online", "true").unwrap();
         db::set_setting(conn, "online_headers", "Cookie: secret=1").unwrap();
@@ -2248,10 +2251,10 @@ mod tests {
         assert_eq!(
             count(
                 &conn,
-                "SELECT COUNT(*) FROM settings WHERE k IN ('theme','cache_budget_mb')"
+                "SELECT COUNT(*) FROM settings WHERE k IN ('theme','cache_budget_mb','close_to_tray')"
             ),
-            2,
-            "白名单偏好必须保留"
+            3,
+            "白名单偏好（含托盘关闭偏好）必须保留"
         );
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM online_filter_events"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM app_meta"), 0);

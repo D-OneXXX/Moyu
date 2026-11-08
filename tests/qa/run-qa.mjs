@@ -34,6 +34,7 @@ import { runCacheSuite } from "./suites/cache.mjs";
 import { runPrivacySuite } from "./suites/privacy.mjs";
 import { runChaosSuite } from "./suites/chaos.mjs";
 import { runArchitectureSuite } from "./suites/architecture.mjs";
+import { runGallerySuite } from "./suites/gallery.mjs";
 
 const QA_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(QA_ROOT, "..", "..");
@@ -263,6 +264,7 @@ async function main() {
       { id: "opds", title: "OPDS 1.2 自建远程书库", run: runOpdsSuite },
       { id: "cache", title: "磁盘缓存上限与清理隔离", run: runCacheSuite },
       { id: "privacy", title: "隐私脱敏与版本展示", run: runPrivacySuite },
+      { id: "gallery", title: "视觉验收快照与布局指标", run: runGallerySuite },
       {
         id: "architecture",
         title:

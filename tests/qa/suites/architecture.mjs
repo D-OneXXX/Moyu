@@ -1090,10 +1090,11 @@ const SETTINGS_TABS_PROBE = `(() => {
       hasTheme: !!panel.querySelector("[aria-pressed]"),
       hasOnlineProxy: !!panel.querySelector("#online-proxy"),
       hasOnlineHeaders: !!panel.querySelector("#online-headers"),
-      hasStorage: !!panel.querySelector('[data-testid="disk-cache-usage"]') && !!panel.querySelector("#disk-cache-budget"),
-      hasPrivacyVersion: /\\b20\\d\\d-\\d\\d\\b/.test(panelText),
-      hasWebAccess: !!panel.querySelector('[data-testid="settings-web-access"]'),
-      hasDiagnostics: !!panel.querySelector("#diagnostics-description"),
+      // Task 8 渐进式披露：预算滑杆/诊断详情移入二级 Sheet，一级面板只保留摘要。
+      hasStorage: !!panel.querySelector('[data-testid="disk-cache-usage"]'),
+      hasPrivacyVersion: !!panel.querySelector('[data-testid="privacy-detail"]'),
+      hasWebAccess: !!panel.querySelector('[data-testid="settings-web-access-summary"]'),
+      hasDiagnostics: !!panel.querySelector('[data-testid="diagnostics-open"]'),
       hasUpdate: !!panel.querySelector("#update-check"),
     } : null,
     hash: location.hash,
@@ -1137,13 +1138,13 @@ function settingsMarker(id, panel) {
     case "general":
       return panel.hasLanguage || panel.hasLibraryDir || panel.hasTheme;
     case "network":
-      return panel.hasOnlineProxy || panel.hasOnlineHeaders;
+      return panel.hasOnlineProxy || panel.hasOnlineHeaders || panel.hasWebAccess;
     case "storage":
       return panel.hasStorage;
     case "privacy":
-      return panel.hasPrivacyVersion && panel.hasWebAccess;
+      return panel.hasPrivacyVersion;
     case "about":
-      return panel.hasDiagnostics;
+      return panel.hasDiagnostics || panel.hasUpdate;
     default:
       return false;
   }
@@ -1427,7 +1428,245 @@ async function checkSettingsI18n(ctx, report) {
 }
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Task 14-3：装饰层点击穿透与设置二级抽屉遍历                       */
+/* ------------------------------------------------------------------ */
+
+async function checkDecorationLayerHitTest(ctx, report) {
+  const page = ctx.page;
+  await page.eval(`localStorage.setItem("mr-skin", "ink-companion"); true`);
+  await ctx.resetWorkspace();
+  await ctx.goto("#/");
+  await page
+    .waitFor(
+      `!!document.querySelector('[data-testid="theme-decoration-layer"]') && document.querySelectorAll('img.mr-decoration').length > 0`,
+      { timeout: 8000, label: "decoration layer" },
+    )
+    .catch(() => {});
+  const probe = await page.eval(`(() => {
+    const visible = ${VISIBLE_FN};
+    const layer = document.querySelector('[data-testid="theme-decoration-layer"]');
+    if (!layer) return { ok: false, reason: "theme-decoration-layer missing" };
+    const style = getComputedStyle(layer);
+    const targets = [];
+    const add = (kind, element) => {
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      targets.push({
+        kind,
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+        element,
+      });
+    };
+    for (const button of [...document.querySelectorAll("header button")].filter(visible).slice(0, 3)) {
+      add("topbar-button", button);
+    }
+    add("library-search", document.getElementById("library-search-input"));
+    add(
+      "first-book-card",
+      [...document.querySelectorAll('main [role="button"][aria-label]')].filter(visible)[0],
+    );
+    if (targets.length < 3) {
+      return { ok: false, reason: "not enough hit-test targets", targets: targets.length };
+    }
+    const hits = targets.map((target) => {
+      const hit = document.elementFromPoint(target.x, target.y);
+      return {
+        kind: target.kind,
+        hitTag: hit ? hit.tagName : null,
+        hitClass: hit ? String(hit.className || "").slice(0, 120) : null,
+        inDecorationLayer: !!(hit && hit.closest(".mr-decoration-layer")),
+        insideTarget: !!(hit && (hit === target.element || target.element.contains(hit))),
+      };
+    });
+    return {
+      ok: true,
+      pointerEvents: style.pointerEvents,
+      decorations: layer.querySelectorAll("img.mr-decoration").length,
+      hits,
+    };
+  })()`);
+
+  const problems = [];
+  if (!probe?.ok) problems.push(probe?.reason || "装饰层探针失败");
+  else {
+    if (probe.pointerEvents !== "none") {
+      problems.push(`装饰层 pointer-events=${probe.pointerEvents}，必须为 none`);
+    }
+    if (probe.decorations < 1) problems.push("装饰层没有渲染任何挂件");
+    for (const hit of probe.hits) {
+      if (hit.inDecorationLayer) {
+        problems.push(`${hit.kind} 命中装饰层`);
+      }
+      if (!hit.insideTarget) {
+        problems.push(`${hit.kind} 未命中目标控件（${hit.hitTag}）`);
+      }
+    }
+  }
+
+  if (problems.length) {
+    fail(report, {
+      id: "arch:decoration-hit-test",
+      suite: "architecture",
+      layer: "e2e",
+      title: "主题装饰层拦截了顶栏/搜索/书卡点击",
+      severity: "P1",
+      details: JSON.stringify({ problems, probe }, null, 2),
+      location: "src/components/shell/ThemeDecorationLayer.tsx",
+      expected: "装饰层 pointer-events:none；elementFromPoint 命中真实交互控件",
+      actual: problems.join(" | "),
+      rootCause: "装饰层进入 pointer-events 或与页面内容同层包裹",
+      fix: "保持装饰层为 pointer-events:none 的兄弟节点，仅 interactive artwork 可点击",
+    });
+  } else {
+    ok(report, {
+      id: "arch:decoration-hit-test",
+      suite: "architecture",
+      layer: "e2e",
+      title: "装饰层点击穿透：顶栏/搜索/书卡命中真实控件",
+      details: `${probe.decorations} 个挂件，${probe.hits.length} 个命中点全部穿透`,
+    });
+  }
+
+  await page.eval(`localStorage.removeItem("mr-skin"); true`).catch(() => {});
+  await ctx.resetWorkspace().catch(() => {});
+}
+
+const SHEET_ENTRY_IDS = new Set([
+  "skin-open",
+  "shortcuts-open",
+  "online-headers-open",
+  "cache-detail-open",
+  "diagnostics-open",
+]);
+
+async function checkSettingsSheets(ctx, report) {
+  await ctx.setLocale("zh-CN");
+  const watcher = watchPageErrors(ctx.page);
+  const problems = [];
+  const evidence = [];
+  try {
+    const { probe } = await gotoAndReadSettings(ctx, "#/settings");
+    for (const id of EXPECTED_SETTINGS_TABS) {
+      const index = tabIndexFor(probe.tabs, id);
+      if (index < 0) continue;
+      const clicked = await clickSettingsTab(ctx, index, id);
+      if (!clicked.tabs[index]?.selected) continue;
+      const entries = await ctx.page.eval(`(() => {
+        const visible = ${VISIBLE_FN};
+        return [...document.querySelectorAll('[data-testid$="-open"]')]
+          .filter(visible)
+          .map((node) => node.dataset.testid)
+          .filter(Boolean);
+      })()`);
+      for (const testId of entries) {
+        if (!SHEET_ENTRY_IDS.has(testId)) {
+          evidence.push({ tab: id, testId, skipped: "native picker / not a sheet" });
+          continue;
+        }
+        const errorMark = watcher.errors.length;
+        const consoleMark = watcher.consoleErrors.length;
+        const clickedEntry = await ctx.page.eval(`(() => {
+          const node = [...document.querySelectorAll('[data-testid=${JSON.stringify(testId)}]')].find((item) => {
+            const style = getComputedStyle(item);
+            const rect = item.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+          });
+          if (!node) return false;
+          node.click();
+          return true;
+        })()`);
+        if (!clickedEntry) {
+          problems.push(`${id}/${testId}: 入口不可点击`);
+          continue;
+        }
+        const opened = await ctx.page
+          .waitFor(
+            `(() => { const node = document.querySelector('[data-slot="sheet-content"], [role="dialog"]'); if (!node) return false; const style = getComputedStyle(node); return style.display !== "none" && style.visibility !== "hidden"; })()`,
+            { timeout: 5000, label: `${testId} sheet` },
+          )
+          .then(() => true)
+          .catch(() => false);
+        if (!opened) {
+          problems.push(`${id}/${testId}: 点击后未出现二级 Sheet/Dialog`);
+          continue;
+        }
+        const metrics = await ctx.page.eval(`(() => {
+          const node = document.querySelector('[data-slot="sheet-content"], [role="dialog"]');
+          const root = document.documentElement;
+          if (!node) return { missing: true };
+          const body = node.querySelector('[data-slot="sheet-header"]')?.parentElement || node;
+          return {
+            rootOverflow: root.scrollWidth - root.clientWidth,
+            sheetOverflow: node.scrollWidth - node.clientWidth,
+            bodyOverflow: body.scrollWidth - body.clientWidth,
+            title: (node.querySelector('[data-slot="sheet-title"], h2, h3')?.textContent || "").trim().slice(0, 80),
+          };
+        })()`);
+        if (metrics.rootOverflow > 1) {
+          problems.push(`${id}/${testId}: 页面横向溢出 ${metrics.rootOverflow}px`);
+        }
+        if (metrics.sheetOverflow > 1) {
+          problems.push(`${id}/${testId}: 抽屉横向溢出 ${metrics.sheetOverflow}px`);
+        }
+        if (metrics.bodyOverflow > 1) {
+          problems.push(`${id}/${testId}: 抽屉正文横向溢出 ${metrics.bodyOverflow}px`);
+        }
+        await ctx.page.key("Escape");
+        const closed = await ctx.page
+          .waitFor(
+            `!document.querySelector('[data-slot="sheet-content"], [role="dialog"]')`,
+            { timeout: 3000, label: `${testId} sheet closed` },
+          )
+          .then(() => true)
+          .catch(() => false);
+        if (!closed) problems.push(`${id}/${testId}: Escape 未能关闭二级面板`);
+        const newErrors = watcher.errors.slice(errorMark);
+        const newConsole = watcher.consoleErrors.slice(consoleMark);
+        if (newErrors.length || newConsole.length) {
+          problems.push(
+            `${id}/${testId}: 控制台错误 ${JSON.stringify([...newErrors, ...newConsole]).slice(0, 300)}`,
+          );
+        }
+        evidence.push({ tab: id, testId, ...metrics, closed, newErrors, newConsole });
+      }
+    }
+  } catch (error) {
+    problems.push(`抽屉遍历异常：${error.message}`);
+  } finally {
+    watcher.stop();
+  }
+
+  if (problems.length) {
+    fail(report, {
+      id: "arch:settings-sheet-traversal",
+      suite: "architecture",
+      layer: "e2e",
+      title: "设置二级 Sheet/Dialog 遍历出现溢出、报错或 Escape 失效",
+      severity: "P1",
+      details: JSON.stringify({ problems, evidence }, null, 2),
+      location: "src/pages/Settings.tsx / src/components/settings/SettingsDetailSheet.tsx",
+      expected: "每个轻入口可打开、无横向溢出、无控制台错误、Escape 可关闭",
+      actual: problems.join(" | "),
+      rootCause: "二级面板内容过长、缺少 min-w-0/truncate，或关闭事件未接线",
+      fix: "修复溢出/报错并确保 Sheet 由 Base UI 统一处理 Escape",
+    });
+  } else {
+    ok(report, {
+      id: "arch:settings-sheet-traversal",
+      suite: "architecture",
+      layer: "e2e",
+      title: "设置二级 Sheet/Dialog 全部可打开、无溢出、Escape 可关闭",
+      details: `${evidence.filter((item) => !item.skipped).length} 个轻入口；跳过 ${evidence.filter((item) => item.skipped).length} 个原生选择器`,
+    });
+  }
+}
+
 export async function runArchitectureSuite(ctx, report) {
+  await checkDecorationLayerHitTest(ctx, report);
+  await checkSettingsSheets(ctx, report);
   await checkLegacyRoutes(ctx, report);
   await checkStorageSanitizer(ctx, report);
   await checkShortcutIsolation(ctx, report);

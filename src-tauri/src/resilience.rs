@@ -613,6 +613,21 @@ fn watchdog_exempt(minimized: bool, visible: bool) -> bool {
     minimized || !visible
 }
 
+/// Final watchdog verdict. Exemption (tray/minimize) dominates even when the
+/// heartbeat is older than [`HEARTBEAT_STALE`]: a hidden WebView2 timer is
+/// throttled by design, not frozen. Only a visible, non-minimized window may
+/// open the recovery surface.
+fn should_open_recovery(
+    minimized: bool,
+    visible: bool,
+    has_heartbeat: bool,
+    since_start: Duration,
+    since_heartbeat: Duration,
+) -> bool {
+    !watchdog_exempt(minimized, visible)
+        && declare_freeze(true, has_heartbeat, since_start, since_heartbeat)
+}
+
 fn spawn_watchdog(app: AppHandle, state: Arc<ResilienceState>) {
     let _ = std::thread::Builder::new()
         .name("mr-ui-watchdog".to_string())
@@ -651,7 +666,13 @@ fn spawn_watchdog(app: AppHandle, state: Arc<ResilienceState>) {
                 let last = *state.last_heartbeat.lock();
                 let since_start = state.started.elapsed();
                 let since_heartbeat = last.map(|instant| instant.elapsed()).unwrap_or(since_start);
-                if !declare_freeze(true, last.is_some(), since_start, since_heartbeat) {
+                if !should_open_recovery(
+                    minimized,
+                    visible,
+                    last.is_some(),
+                    since_start,
+                    since_heartbeat,
+                ) {
                     continue;
                 }
                 // 用户关掉恢复窗后不要立刻弹回：冷却期内不再唤起；
@@ -1067,6 +1088,21 @@ mod tests {
         assert!(watchdog_exempt(true, true));
         // A visible, non-minimized window is still watched.
         assert!(!watchdog_exempt(false, true));
+    }
+
+    #[test]
+    fn hidden_to_tray_is_exempt_even_after_a_stale_heartbeat() {
+        // Regression: closing the main window hides it to the tray. WebView2
+        // throttles timers, so the heartbeat legitimately stops longer than
+        // HEARTBEAT_STALE. The watchdog must never open a recovery window while
+        // the main window is hidden (is_visible == false) or minimized.
+        let stale = HEARTBEAT_STALE + Duration::from_secs(30);
+        let long_run = BOOT_GRACE + Duration::from_secs(120);
+        assert!(!should_open_recovery(false, false, true, long_run, stale));
+        assert!(!should_open_recovery(true, true, true, long_run, stale));
+        // Sanity: a visible, non-minimized window with the same stale heartbeat
+        // still opens the recovery surface.
+        assert!(should_open_recovery(false, true, true, long_run, stale));
     }
 
     #[test]

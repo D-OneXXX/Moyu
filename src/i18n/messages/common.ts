@@ -116,6 +116,7 @@ const zhCN = {
   "error.pageInvalidCursor": "分页游标无效或已过期，请重新加载书库",
   "error.requestFailed": "调用 {cmd} 失败",
   "error.backendGeneric": "操作失败；详情已写入本地日志。",
+  "error.trayIconInvalid": "托盘图标无效或超过 64 KiB 上限，已保留原图标。",
   "error.featureDisabled": "该功能已在设置中关闭（feature-disabled）",
   "feature.disabled.title": "功能已关闭",
   "feature.disabled.description":
@@ -318,6 +319,7 @@ const zhTW: CommonMessages = {
   "error.pageInvalidCursor": "分頁游標無效或已過期，請重新載入書庫",
   "error.requestFailed": "呼叫 {cmd} 失敗",
   "error.backendGeneric": "操作失敗；詳情已寫入本機日誌。",
+  "error.trayIconInvalid": "托盤圖示無效或超過 64 KiB 上限，已保留原圖示。",
   "error.featureDisabled": "該功能已在設定中關閉（feature-disabled）",
   "feature.disabled.title": "功能已關閉",
   "feature.disabled.description":
@@ -522,6 +524,8 @@ const en: CommonMessages = {
   "error.pageInvalidCursor": "The pagination cursor is invalid or expired. Reload the library.",
   "error.requestFailed": "Request failed: {cmd}",
   "error.backendGeneric": "The operation failed. Details were written to the local log.",
+  "error.trayIconInvalid":
+    "The tray icon is invalid or exceeds the 64 KiB limit; the previous icon was kept.",
   "error.featureDisabled": "This feature is turned off in Settings (feature-disabled).",
   "feature.disabled.title": "Feature disabled",
   "feature.disabled.description":
@@ -739,6 +743,8 @@ const es: CommonMessages = {
   "error.pageInvalidCursor": "El cursor de paginación no es válido o ha caducado. Recarga la biblioteca.",
   "error.requestFailed": "Error al llamar a {cmd}",
   "error.backendGeneric": "La operación falló. Los detalles se guardaron en el registro local.",
+  "error.trayIconInvalid":
+    "El icono de la bandeja no es válido o supera el límite de 64 KiB; se mantuvo el icono anterior.",
   "error.featureDisabled": "Esta función está desactivada en Ajustes (feature-disabled).",
   "feature.disabled.title": "Función desactivada",
   "feature.disabled.description":
@@ -974,6 +980,8 @@ const ja: CommonMessages = {
   "error.pageInvalidCursor": "ページカーソルが無効または期限切れです。書庫を再読み込みしてください。",
   "error.requestFailed": "{cmd} の呼び出しに失敗しました",
   "error.backendGeneric": "操作に失敗しました。詳細はローカルログに記録しました。",
+  "error.trayIconInvalid":
+    "トレイアイコンが無効か 64 KiB を超えています。以前のアイコンを維持しました。",
   "error.featureDisabled": "この機能は設定でオフになっています（feature-disabled）。",
   "feature.disabled.title": "機能はオフです",
   "feature.disabled.description":
@@ -1203,6 +1211,8 @@ const ko: CommonMessages = {
   "error.pageInvalidCursor": "페이지 커서가 유효하지 않거나 만료되었습니다. 서재를 다시 불러오세요.",
   "error.requestFailed": "{cmd} 호출 실패",
   "error.backendGeneric": "작업에 실패했습니다. 자세한 내용은 로컬 로그에 기록했습니다.",
+  "error.trayIconInvalid":
+    "트레이 아이콘이 유효하지 않거나 64 KiB 제한을 초과하여 이전 아이콘을 유지했습니다.",
   "error.featureDisabled": "이 기능은 설정에서 꺼져 있습니다(feature-disabled).",
   "feature.disabled.title": "기능이 꺼져 있습니다",
   "feature.disabled.description":

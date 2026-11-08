@@ -15,6 +15,8 @@ use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use base64::Engine as _;
+
 use crate::state::AppState;
 use crate::web_access::{StopReason, WebAccessRuntime, WebAccessStatusView};
 
@@ -253,6 +255,52 @@ fn custom_icon() -> Option<tauri::image::Image<'static>> {
         }
     }
     None
+}
+
+/// Decode the 64×64 PNG produced by the webview. Never returns raw bytes to
+/// the caller; invalid payloads are log-only and keep the previous icon.
+fn decode_tray_png(raw: &str) -> Result<tauri::image::Image<'static>, &'static str> {
+    const PREFIX: &str = "data:image/png;base64,";
+    const MAX_BYTES: usize = 512 * 1024;
+    let payload = raw.strip_prefix(PREFIX).ok_or("tray-icon-invalid")?;
+    if payload.len() > MAX_BYTES {
+        return Err("tray-icon-too-large");
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| "tray-icon-invalid")?;
+    tauri::image::Image::from_bytes(&bytes).map_err(|_| "tray-icon-invalid")
+}
+
+/// Apply the Task 7 brand icon (preset or custom upload) to the tray.
+///
+/// Task 7 keeps the preference in `localStorage`, so the main window rasterizes
+/// the live SVG/image and pushes PNG here. Best-effort: a missing tray or a bad
+/// payload only logs, it never surfaces a user-facing error.
+#[tauri::command]
+pub(crate) async fn tray_set_icon(app: AppHandle, data_url: Option<String>) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let Some(raw) = data_url else {
+        if let Some(icon) = app.default_window_icon() {
+            let _ = tray.set_icon(Some(icon.clone()));
+        }
+        return;
+    };
+    match tauri::async_runtime::spawn_blocking(move || decode_tray_png(&raw)).await {
+        Ok(Ok(image)) => {
+            if let Err(error) = tray.set_icon(Some(image)) {
+                crate::logging::log_error("tray", &format!("托盘图标设置失败：{error}"));
+            }
+        }
+        Ok(Err(code)) => {
+            crate::logging::log_error("tray", &format!("托盘图标无效（{code}）"));
+        }
+        Err(_) => {
+            crate::logging::log_error("tray", "托盘图标解码任务失败");
+        }
+    }
 }
 
 /// Refresh menu text/tooltip from the latest runtime snapshot. Called from the

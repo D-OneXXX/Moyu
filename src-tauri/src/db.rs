@@ -12,7 +12,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{Local, NaiveDateTime, TimeZone};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::source::BackendError;
@@ -1427,12 +1427,11 @@ pub fn today_pages(conn: &Connection) -> Result<u32, BackendError> {
 }
 
 pub fn get_setting(conn: &Connection, k: &str) -> Result<Option<String>, BackendError> {
-    let v: Option<String> = conn
+    Ok(conn
         .query_row("SELECT v FROM settings WHERE k=?1", params![k], |r| {
             r.get(0)
         })
-        .ok();
-    Ok(v)
+        .optional()?)
 }
 
 pub fn set_setting(conn: &Connection, k: &str, v: &str) -> Result<(), BackendError> {
@@ -1927,6 +1926,15 @@ mod tests {
             get_setting(&conn, "theme").unwrap().as_deref(),
             Some("dark")
         );
+    }
+
+    #[test]
+    fn setting_read_distinguishes_missing_key_from_database_error() {
+        let conn = mem();
+        assert_eq!(get_setting(&conn, "missing").unwrap(), None);
+
+        let conn_without_settings = Connection::open_in_memory().unwrap();
+        assert!(get_setting(&conn_without_settings, "missing").is_err());
     }
 
     #[test]

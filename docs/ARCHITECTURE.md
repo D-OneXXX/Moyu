@@ -46,6 +46,9 @@ browser WebView
 - Database connections use WAL, a busy timeout, foreign keys, and normal synchronous mode.
 - Related settings keys commit in one SQLite transaction. Cache/settings memory changes happen
   only after commit; disabling an optional feature persists its gate before runtime cleanup.
+- Missing setting keys use defaults, but SQL read failures and normalization failures propagate.
+  Startup and backup recovery publish a database connection only after settings load and repair
+  succeed; the settings repair batch commits atomically.
 - `DbSlot` guards are held only while reading or writing SQLite. Large metadata parsing,
   sorting, and filesystem checks run after an owned row snapshot leaves the lock, but remain
   inside `spawn_blocking`.

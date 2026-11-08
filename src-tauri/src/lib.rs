@@ -261,25 +261,33 @@ pub struct OnlineProbe {
 }
 
 /// 从 SQLite `settings` 表恢复持久化设置（无值则保留默认）。
-pub(crate) fn hydrate_settings(conn: &rusqlite::Connection, s: &mut Settings) {
-    let get = |k: &str| db::get_setting(conn, k).unwrap_or(None);
-    if let Some(v) = get("theme") {
+pub(crate) fn hydrate_settings(
+    conn: &rusqlite::Connection,
+    s: &mut Settings,
+) -> Result<(), source::BackendError> {
+    let get = |k: &str| db::get_setting(conn, k);
+    if let Some(v) = get("theme")? {
         s.theme = v;
     }
-    if let Some(v) = get("cache_budget_mb").and_then(|v| v.parse::<u32>().ok()) {
+    if let Some(v) = get("cache_budget_mb")?.and_then(|v| v.parse::<u32>().ok()) {
         s.cache_budget_mb = v.clamp(16, 2048);
     }
-    if let Some(v) = get("disk_cache_budget_mb").and_then(|v| v.parse::<u32>().ok()) {
+    if let Some(v) = get("disk_cache_budget_mb")?.and_then(|v| v.parse::<u32>().ok()) {
         s.disk_cache_budget_mb = disk_cache::clamp_budget_mb(v);
     }
-    if let Some(v) = get("library_dir") {
+    if let Some(v) = get("library_dir")? {
         s.library_dir = v;
     }
-    if let Some(v) = get("feature_webtoon") {
+    if let Some(v) = get("feature_webtoon")? {
         s.features.webtoon = v == "true" || v == "1";
     }
     // 在线直读兼容旧键；新键优先。
-    if let Some(v) = get("feature_online").or_else(|| get("experimental_online")) {
+    let online = get("feature_online")?;
+    let online = match online {
+        Some(value) => Some(value),
+        None => get("experimental_online")?,
+    };
+    if let Some(v) = online {
         s.features.online = v == "true" || v == "1";
     }
     for feature in [
@@ -291,22 +299,48 @@ pub(crate) fn hydrate_settings(conn: &rusqlite::Connection, s: &mut Settings) {
         features::FeatureId::Backup,
         features::FeatureId::Diagnostics,
     ] {
-        if let Some(v) = get(feature.key()) {
+        if let Some(v) = get(feature.key())? {
             feature.set(&mut s.features, v == "true" || v == "1");
         }
     }
-    if let Some(v) = get("online_proxy") {
+    if let Some(v) = get("online_proxy")? {
         s.online_proxy = v;
     }
-    if let Some(v) = get("online_concurrency").and_then(|v| v.parse::<u32>().ok()) {
+    if let Some(v) = get("online_concurrency")?.and_then(|v| v.parse::<u32>().ok()) {
         s.online_concurrency = v.clamp(1, 8);
     }
-    if let Some(v) = get("online_headers") {
+    if let Some(v) = get("online_headers")? {
         s.online_headers = v;
     }
-    if let Some(v) = get("close_to_tray") {
+    if let Some(v) = get("close_to_tray")? {
         s.close_to_tray = v == "true" || v == "1";
     }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupSettingsError {
+    Load,
+    Normalize,
+}
+
+impl StartupSettingsError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Load => "db-settings-load-failed",
+            Self::Normalize => "db-settings-normalize-failed",
+        }
+    }
+}
+
+fn load_normalized_settings(
+    conn: &rusqlite::Connection,
+    mut settings: Settings,
+) -> Result<(Settings, Vec<String>), StartupSettingsError> {
+    hydrate_settings(conn, &mut settings).map_err(|_| StartupSettingsError::Load)?;
+    let repaired = versioning::normalize_settings(conn, &mut settings)
+        .map_err(|_| StartupSettingsError::Normalize)?;
+    Ok((settings, repaired))
 }
 
 /// 旧版数据根：`%LOCALAPPDATA%\com.local.manga-reader`（仅用于迁移与最终回落）。
@@ -442,27 +476,30 @@ fn init_app<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), String> {
         raw.push(suffix);
         paths::harden_private_file(Path::new(&raw));
     }
-    state.clear_db_error();
     let current_version = env!("CARGO_PKG_VERSION");
     let previous_version = versioning::read_last_run_version(&conn).unwrap_or_else(|err| {
         logging::log_error("version", &format!("读取 last_run_version 失败：{err}"));
         None
     });
     let migration = versioning::plan(previous_version.as_deref(), current_version);
-    let repaired_settings;
-    {
-        let mut s = state.settings.lock().clone();
-        hydrate_settings(&conn, &mut s);
-        repaired_settings = versioning::normalize_settings(&conn, &mut s).unwrap_or_else(|err| {
-            logging::log_error("version", &format!("修复旧版配置失败：{err}"));
-            Vec::new()
-        });
-        state
-            .cache
-            .set_budgets((s.cache_budget_mb.max(16) as u64) * 1024 * 1024);
-        *state.settings.lock() = s;
-    }
+    let (settings, repaired_settings) =
+        match load_normalized_settings(&conn, state.settings.lock().clone()) {
+            Ok(settings) => settings,
+            Err(error) => {
+                state.set_db_error(error.code());
+                logging::log_error(
+                    "startup",
+                    &format!("书库设置加载/规范化失败（{}，详情已省略）", error.code()),
+                );
+                return Err(error.code().to_string());
+            }
+        };
+    state
+        .cache
+        .set_budgets((settings.cache_budget_mb.max(16) as u64) * 1024 * 1024);
+    *state.settings.lock() = settings;
     state.db.set(conn);
+    state.clear_db_error();
     if migration.clear_memory_cache {
         state.cache.clear_pages();
         state.cache.clear_thumbs();
@@ -780,7 +817,7 @@ mod settings_feature_tests {
     fn hydrate_defaults_keep_webtoon_on_and_online_off() {
         let conn = conn();
         let mut s = Settings::default();
-        hydrate_settings(&conn, &mut s);
+        hydrate_settings(&conn, &mut s).unwrap();
         assert!(s.features.webtoon);
         assert!(!s.features.online);
         assert!(s.features.pdf);
@@ -793,9 +830,33 @@ mod settings_feature_tests {
         db::set_setting(&conn, "experimental_online", "true").unwrap();
         db::set_setting(&conn, "feature_pdf", "false").unwrap();
         let mut s = Settings::default();
-        hydrate_settings(&conn, &mut s);
+        hydrate_settings(&conn, &mut s).unwrap();
         assert!(!s.features.webtoon);
         assert!(s.features.online);
         assert!(!s.features.pdf);
+    }
+
+    #[test]
+    fn hydrate_propagates_settings_table_read_errors() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut s = Settings::default();
+        assert!(hydrate_settings(&conn, &mut s).is_err());
+    }
+
+    #[test]
+    fn startup_settings_loader_classifies_read_and_normalize_failures() {
+        let missing_table = rusqlite::Connection::open_in_memory().unwrap();
+        assert_eq!(
+            load_normalized_settings(&missing_table, Settings::default()).unwrap_err(),
+            StartupSettingsError::Load
+        );
+
+        let readonly = conn();
+        db::set_setting(&readonly, "theme", "invalid-theme").unwrap();
+        readonly.pragma_update(None, "query_only", true).unwrap();
+        assert_eq!(
+            load_normalized_settings(&readonly, Settings::default()).unwrap_err(),
+            StartupSettingsError::Normalize
+        );
     }
 }

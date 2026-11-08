@@ -89,6 +89,10 @@ const zhCN = {
   "dbRecovery.openFailed": "无法打开本地书库数据库。",
   "dbRecovery.schemaFailed": "书库数据库结构初始化失败。",
   "dbRecovery.quickCheckFailed": "书库数据库完整性检查未通过。",
+  "dbRecovery.settingsNormalizeFailed":
+    "恢复后书库设置规范化失败。（db-settings-normalize-failed）",
+  "dbRecovery.settingsLoadFailed":
+    "无法安全读取本地书库设置，已阻止启动或恢复。（db-settings-load-failed）",
   "dbRecovery.unknown": "数据库状态异常。",
   "dbRecovery.hint":
     "损坏的数据库不会被删除；恢复前会将它隔离为 .corrupt 备份。可选择 .mrbackup 恢复，或打开数据目录手动处理。",
@@ -100,7 +104,7 @@ const zhCN = {
     "当前数据库将被隔离保留，并用所选 .mrbackup 重建书库；恢复成功后应用会重新加载。",
   "dbRecovery.confirmAction": "隔离并恢复",
   "dbRecovery.recovered": "数据库已恢复，正在重新加载…",
-  "dbRecovery.failed": "恢复失败，原数据库未被覆盖。",
+  "dbRecovery.failed": "恢复未能完成，请重新检查数据库状态。",
   "dbRecovery.healthUnavailable":
     "无法读取数据库健康状态；请打开数据目录查看日志。",
   "dbRecovery.selectTitle": "选择 .mrbackup 备份",
@@ -287,6 +291,10 @@ const zhTW: CommonMessages = {
   "dbRecovery.openFailed": "無法開啟本機書庫資料庫。",
   "dbRecovery.schemaFailed": "書庫資料庫結構初始化失敗。",
   "dbRecovery.quickCheckFailed": "書庫資料庫完整性檢查未通過。",
+  "dbRecovery.settingsNormalizeFailed":
+    "還原後書庫設定正規化失敗。（db-settings-normalize-failed）",
+  "dbRecovery.settingsLoadFailed":
+    "無法安全讀取本機書庫設定，已阻止啟動或還原。（db-settings-load-failed）",
   "dbRecovery.unknown": "資料庫狀態異常。",
   "dbRecovery.hint":
     "損壞的資料庫不會被刪除；恢復前會將它隔離為 .corrupt 備份。可選擇 .mrbackup 還原，或開啟資料目錄手動處理。",
@@ -298,7 +306,7 @@ const zhTW: CommonMessages = {
     "目前資料庫將被隔離保留，並用所選 .mrbackup 重建書庫；還原成功後應用程式會重新載入。",
   "dbRecovery.confirmAction": "隔離並還原",
   "dbRecovery.recovered": "資料庫已還原，正在重新載入…",
-  "dbRecovery.failed": "還原失敗，原資料庫未被覆蓋。",
+  "dbRecovery.failed": "還原未能完成，請重新檢查資料庫狀態。",
   "dbRecovery.healthUnavailable":
     "無法讀取資料庫健康狀態；請開啟資料目錄查看日誌。",
   "dbRecovery.selectTitle": "選擇 .mrbackup 備份",
@@ -486,6 +494,10 @@ const en: CommonMessages = {
     "The library database schema could not be initialized.",
   "dbRecovery.quickCheckFailed":
     "The library database failed its integrity check.",
+  "dbRecovery.settingsNormalizeFailed":
+    "Library settings could not be normalized after restore. (db-settings-normalize-failed)",
+  "dbRecovery.settingsLoadFailed":
+    "Library settings could not be read safely; startup or restore was blocked. (db-settings-load-failed)",
   "dbRecovery.unknown": "The database is in an unexpected state.",
   "dbRecovery.hint":
     "The damaged database will not be deleted. It will be quarantined as a .corrupt backup before recovery. Choose a .mrbackup to restore, or open the data folder to handle it manually.",
@@ -498,7 +510,7 @@ const en: CommonMessages = {
   "dbRecovery.confirmAction": "Quarantine and restore",
   "dbRecovery.recovered": "Database restored. Reloading…",
   "dbRecovery.failed":
-    "Restore failed; the original database was not overwritten.",
+    "Restore did not complete. Check the database status again.",
   "dbRecovery.healthUnavailable":
     "Could not read database health. Open the data folder to inspect the log.",
   "dbRecovery.selectTitle": "Choose a .mrbackup backup",
@@ -699,6 +711,10 @@ const es: CommonMessages = {
   "dbRecovery.quickCheckFailed":
     "La base de datos no superó la comprobación de integridad.",
   "dbRecovery.unknown": "La base de datos está en un estado inesperado.",
+  "dbRecovery.settingsNormalizeFailed":
+    "No se pudieron normalizar los ajustes de la biblioteca tras restaurarla. (db-settings-normalize-failed)",
+  "dbRecovery.settingsLoadFailed":
+    "No se pudieron leer los ajustes de forma segura; se bloqueó el inicio o la restauración. (db-settings-load-failed)",
   "dbRecovery.hint":
     "La base de datos dañada no se eliminará. Se pondrá en cuarentena como copia .corrupt antes de restaurar. Elige un .mrbackup para restaurar o abre la carpeta de datos para gestionarla manualmente.",
   "dbRecovery.recover": "Restaurar base de datos desde .mrbackup",
@@ -711,7 +727,7 @@ const es: CommonMessages = {
   "dbRecovery.confirmAction": "Poner en cuarentena y restaurar",
   "dbRecovery.recovered": "Base de datos restaurada. Recargando…",
   "dbRecovery.failed":
-    "La restauración falló; la base de datos original no se sobrescribió.",
+    "La restauración no se completó. Vuelve a comprobar el estado de la base de datos.",
   "dbRecovery.healthUnavailable":
     "No se pudo leer el estado de la base de datos. Abre la carpeta de datos para revisar el registro.",
   "dbRecovery.selectTitle": "Elegir una copia .mrbackup",
@@ -930,6 +946,10 @@ const ja: CommonMessages = {
   "dbRecovery.quickCheckFailed":
     "書庫データベースの整合性チェックに失敗しました。",
   "dbRecovery.unknown": "データベースの状態が異常です。",
+  "dbRecovery.settingsNormalizeFailed":
+    "復元後にライブラリ設定を正規化できませんでした。（db-settings-normalize-failed）",
+  "dbRecovery.settingsLoadFailed":
+    "ライブラリ設定を安全に読み取れないため、起動または復元を停止しました。（db-settings-load-failed）",
   "dbRecovery.hint":
     "破損したデータベースは削除しません。復元前に .corrupt バックアップとして隔離します。.mrbackup を選んで復元するか、データフォルダーを開いて手動で対処してください。",
   "dbRecovery.recover": ".mrbackup からデータベースを復元",
@@ -942,7 +962,7 @@ const ja: CommonMessages = {
   "dbRecovery.confirmAction": "隔離して復元",
   "dbRecovery.recovered": "データベースを復元しました。再読み込み中…",
   "dbRecovery.failed":
-    "復元に失敗しました。元のデータベースは上書きされていません。",
+    "復元が完了しませんでした。データベースの状態をもう一度確認してください。",
   "dbRecovery.healthUnavailable":
     "データベースの状態を読み取れません。データフォルダーを開いてログを確認してください。",
   "dbRecovery.selectTitle": ".mrbackup バックアップを選択",
@@ -1155,6 +1175,10 @@ const ko: CommonMessages = {
   "dbRecovery.quickCheckFailed":
     "라이브러리 데이터베이스 무결성 검사에 실패했습니다.",
   "dbRecovery.unknown": "데이터베이스 상태가 비정상입니다.",
+  "dbRecovery.settingsNormalizeFailed":
+    "복원 후 라이브러리 설정을 정규화하지 못했습니다. (db-settings-normalize-failed)",
+  "dbRecovery.settingsLoadFailed":
+    "라이브러리 설정을 안전하게 읽을 수 없어 시작 또는 복원을 중단했습니다. (db-settings-load-failed)",
   "dbRecovery.hint":
     "손상된 데이터베이스는 삭제하지 않습니다. 복구 전에 .corrupt 백업으로 격리합니다. .mrbackup을 선택해 복원하거나 데이터 폴더를 열어 직접 처리하세요.",
   "dbRecovery.recover": ".mrbackup에서 데이터베이스 복원",
@@ -1167,7 +1191,7 @@ const ko: CommonMessages = {
   "dbRecovery.confirmAction": "격리 후 복원",
   "dbRecovery.recovered": "데이터베이스를 복원했습니다. 다시 로드하는 중…",
   "dbRecovery.failed":
-    "복원에 실패했습니다. 기존 데이터베이스는 덮어쓰지 않았습니다.",
+    "복원을 완료하지 못했습니다. 데이터베이스 상태를 다시 확인하세요.",
   "dbRecovery.healthUnavailable":
     "데이터베이스 상태를 읽을 수 없습니다. 데이터 폴더를 열어 로그를 확인하세요.",
   "dbRecovery.selectTitle": ".mrbackup 백업 선택",

@@ -19,6 +19,7 @@ import { useDropImport } from "@/features/import/DropImportProvider";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useWorkspace } from "@/features/workspace/WorkspaceContext";
 import { recordBreadcrumb } from "@/features/resilience";
+import { useAppVisible, isAppVisible } from "@/features/performance/visibility";
 import {
   api,
   type BookInfo,
@@ -105,6 +106,8 @@ export default function LibraryPage() {
   const { t, locale, formatNumber } = useI18n();
   const { active: safeMode } = useSafeMode();
   const opdsEnabled = useFeatureEnabled("opds");
+  // 最小化/隐藏时跳过网格度量重算，恢复可见后重算一次。
+  const appVisible = useAppVisible();
   const [groupSeries, setGroupSeries] = useState(readGrouping);
   // 方案 C：默认「最近打开」（后端按 last_opened_at 排序）；可切「最近阅读」。
   const [sortMode, setSortMode] = useState<SortMode>("recentOpened");
@@ -122,6 +125,8 @@ export default function LibraryPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
+  /** 查询代际：搜索/刷新期间到达的过期分页响应一律丢弃。 */
+  const loadSeqRef = useRef(0);
   const loadMoreRef = useRef<HTMLDivElement>(null);
   // 窗口化：滚动位置 + 网格列数/单行高度（ResizeObserver 实测宽度估算）。
   const gridRef = useRef<HTMLDivElement>(null);
@@ -170,6 +175,7 @@ export default function LibraryPage() {
   }, [query]);
 
   const reload = useCallback(async (q: string) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setLoadError(null);
     setLoadingMore(false);
@@ -185,23 +191,31 @@ export default function LibraryPage() {
         // ADR-032：合集计数走一次分组聚合，搜索态不再取全库列表。
         api.libraryStats().catch(() => null),
       ]);
+      // 慢请求晚到：直接丢弃，绝不覆盖更新的搜索结果。
+      if (seq !== loadSeqRef.current) return;
       setDash(d);
       setBooks(page.items);
       setCursor(page.nextCursor);
       setStats(libraryStats);
       setAllBooks(page.items);
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
       setLoadError(localizeBackendError(e));
       notifyError("list_books_page", e);
       setCursor(null);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void reload(debounced);
   }, [debounced, reload]);
+
+  // 卸载即作废在途请求，避免组件销毁后仍写入状态。
+  useEffect(() => () => {
+    loadSeqRef.current += 1;
+  }, []);
 
   // 协同配对回传导入完成 / 其他页面触发刷新。
   useEffect(() => {
@@ -294,6 +308,7 @@ export default function LibraryPage() {
   // 哨兵在单页在途期间重复触发。
   const loadNextPage = useCallback(async () => {
     if (cursor === null || loadingMoreRef.current) return;
+    const seq = loadSeqRef.current;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
@@ -302,12 +317,14 @@ export default function LibraryPage() {
         cursor,
         limit: PAGE_SIZE,
       });
+      // 期间发生过搜索/刷新：这一页属于旧查询，追加会污染新列表。
+      if (seq !== loadSeqRef.current) return;
       setBooks((prev) => [...prev, ...page.items]);
       // ADR-032：`allBooks` 统一为「已加载页」累积（搜索态也只累积搜索页）。
       setAllBooks((prev) => [...prev, ...page.items]);
       setCursor(page.nextCursor);
     } catch (e) {
-      notifyError("list_books_page", e);
+      if (seq === loadSeqRef.current) notifyError("list_books_page", e);
     } finally {
       loadingMoreRef.current = false;
       setLoadingMore(false);
@@ -320,6 +337,8 @@ export default function LibraryPage() {
     const grid = gridRef.current;
     if (!grid || typeof ResizeObserver === "undefined") return;
     const measure = () => {
+      // 主窗最小化/隐藏时不读 computedStyle、不重算行高（静默态零布局抖动）。
+      if (!isAppVisible()) return;
       const cols = Math.max(
         1,
         getComputedStyle(grid)
@@ -337,7 +356,7 @@ export default function LibraryPage() {
     observer.observe(grid);
     measure();
     return () => observer.disconnect();
-  }, [displayBooks.length, loading, loadError]);
+  }, [displayBooks.length, loading, loadError, appVisible]);
 
   // 滚动位置：AppShell 的 <main> 是真实滚动容器，向上查找最近的
   // overflow-y 容器；rAF 节流，避免每个 scroll 事件都同步 setState。
@@ -753,7 +772,7 @@ export default function LibraryPage() {
             <h1 className="text-3xl font-extrabold tracking-tight text-foreground sm:text-4xl">
               {t("nav.library")}
             </h1>
-            <p className="mt-1.5 text-sm text-muted-foreground">
+            <p className="mt-1.5 text-sm tabular-nums text-muted-foreground">
               {t("library.summary", {
                 total: formatNumber(totalBooks),
                 reading: formatNumber(readingCount),

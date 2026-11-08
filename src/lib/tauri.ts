@@ -269,6 +269,8 @@ export interface Settings {
   onlineConcurrency: number;
   /** 手动请求头：JSON 对象或单行 Cookie；仅用于自建/授权源，明文存储。 */
   onlineHeaders: string;
+  /** 关闭主窗口时隐藏到系统托盘（局域网阅读运行中始终拦截关闭）。 */
+  closeToTray: boolean;
 }
 
 /** 在线源连通性探测结果（只解析清单，不写库）。 */
@@ -474,6 +476,12 @@ export const api = {
       window.dispatchEvent(new CustomEvent("mr-settings-changed"));
       return saved;
     }),
+  /** Persist + apply the native tray menu language (6 dictionaries). */
+  setTrayLocale: (locale: string) =>
+    invoke<void>("tray_set_locale", { locale }),
+  /** Push the Task 7 brand icon to the tray (64×64 PNG data URL; null resets). */
+  setTrayIcon: (dataUrl: string | null) =>
+    invoke<void>("tray_set_icon", { dataUrl }),
   setFeatureEnabled: (feature: FeatureId, enabled: boolean) =>
     invoke<Settings>("set_feature_enabled", { feature, enabled }).then(
       (settings) => {

@@ -64,6 +64,9 @@ const RATE_WINDOW: Duration = Duration::from_secs(60);
 const CLAIM_PER_WINDOW: u32 = 10;
 const STATUS_PER_WINDOW: u32 = 60;
 const CONSUME_PER_WINDOW: u32 = 30;
+// The embedded reader shell loads five small assets. Allow 60 complete page
+// loads per minute while still bounding tight retry loops from one peer.
+const READER_STATIC_PER_WINDOW: u32 = 300;
 /// Bound the per-IP map. A LAN with more distinct peers than this is
 /// implausible; new peers are fail-closed with a retry hint instead of letting
 /// an unbounded map grow.
@@ -82,6 +85,7 @@ enum RouteClass {
     Claim = 0,
     Status = 1,
     Consume = 2,
+    ReaderStatic = 3,
 }
 
 impl RouteClass {
@@ -90,13 +94,14 @@ impl RouteClass {
             Self::Claim => CLAIM_PER_WINDOW,
             Self::Status => STATUS_PER_WINDOW,
             Self::Consume => CONSUME_PER_WINDOW,
+            Self::ReaderStatic => READER_STATIC_PER_WINDOW,
         }
     }
 }
 
 struct IpBucket {
     window_started: Instant,
-    counts: [u32; 3],
+    counts: [u32; 4],
 }
 
 struct RateLimiter {
@@ -128,11 +133,11 @@ impl RateLimiter {
         }
         let bucket = buckets.entry(ip).or_insert_with(|| IpBucket {
             window_started: now,
-            counts: [0; 3],
+            counts: [0; 4],
         });
         if now.saturating_duration_since(bucket.window_started) >= self.window {
             bucket.window_started = now;
-            bucket.counts = [0; 3];
+            bucket.counts = [0; 4];
         }
         let index = route as usize;
         if bucket.counts[index] >= route.limit() {
@@ -284,6 +289,12 @@ impl PairingHttp {
         let path = request.uri().path().to_owned();
 
         if let Some(response) = super::reader_http::handle(&request) {
+            if let Err(retry_after) =
+                self.limiter
+                    .check(source_ip, RouteClass::ReaderStatic, Instant::now())
+            {
+                return rate_limited_response(retry_after);
+            }
             return response;
         }
         if method == Method::GET && path == HEALTH_PATH {
@@ -447,7 +458,11 @@ impl PairingHttp {
         let Some(secret) = claim_cookie(request.headers()) else {
             return error_response(StatusCode::UNAUTHORIZED, "unauthorized", None);
         };
-        match self.service.consume(claim_id, secret.as_str()) {
+        let user_agent = single_header(request.headers(), "user-agent");
+        match self
+            .service
+            .consume_with_client(claim_id, secret.as_str(), user_agent)
+        {
             Ok(issued) => consumed_response(issued),
             Err(error) => auth_error_response(&error),
         }
@@ -772,6 +787,55 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reader_static_resources_are_rate_limited_per_ip_in_their_own_bucket() {
+        use super::super::clock::SystemClock;
+        use super::super::pairing::PairingStore;
+        use super::super::session::SessionStore;
+        let service = Arc::new(PairingService::new(
+            PairingStore::new(Arc::new(SystemClock)),
+            SessionStore::new(Arc::new(SystemClock)),
+        ));
+        let addr: SocketAddr = "192.168.1.10:8443".parse().unwrap();
+        let router = PairingHttp::for_test(service, addr);
+        let static_request = || {
+            Request::builder()
+                .method(Method::GET)
+                .uri("/reader.js")
+                .header("host", "192.168.1.10:8443")
+                .body(Full::new(Bytes::new()))
+                .unwrap()
+        };
+        let limited_ip = ip(20);
+        for _ in 0..READER_STATIC_PER_WINDOW {
+            assert_eq!(
+                router.handle(static_request(), limited_ip).await.status(),
+                StatusCode::OK
+            );
+        }
+        assert_eq!(
+            router.handle(static_request(), limited_ip).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            router.handle(static_request(), ip(21)).await.status(),
+            StatusCode::OK,
+            "another peer must have an independent static-resource bucket"
+        );
+
+        let health_request = Request::builder()
+            .method(Method::GET)
+            .uri(HEALTH_PATH)
+            .header("host", "192.168.1.10:8443")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        assert_eq!(
+            router.handle(health_request, limited_ip).await.status(),
+            StatusCode::NO_CONTENT,
+            "static-resource requests must not consume the health route's budget"
+        );
+    }
+
     #[test]
     fn rate_limiter_buckets_are_per_ip_and_per_route() {
         let limiter = RateLimiter::new(RATE_WINDOW);
@@ -783,6 +847,9 @@ mod tests {
         assert!(retry > Duration::ZERO && retry <= RATE_WINDOW);
         // A different route and a different IP keep their own buckets.
         assert!(limiter.check(ip(10), RouteClass::Status, start).is_ok());
+        assert!(limiter
+            .check(ip(10), RouteClass::ReaderStatic, start)
+            .is_ok());
         assert!(limiter.check(ip(11), RouteClass::Claim, start).is_ok());
         // The window slides on the next check.
         assert!(limiter

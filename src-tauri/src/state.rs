@@ -327,6 +327,9 @@ pub(crate) struct HandoffStatusSnapshot {
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
+    /// Serializes persisted settings changes across their blocking SQLite write
+    /// and the following in-memory/cache update.
+    pub(crate) settings_write_lock: tokio::sync::Mutex<()>,
     /// 进程内会话临时请求头；优先于 Settings.online_headers，绝不持久化/记日志。
     pub session_online_headers: Mutex<Option<String>>,
     /// 辅助会话注册表（origin → UA / 用户自备请求头）；只在内存，绝不写库、绝不记日志。
@@ -381,6 +384,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             settings: Mutex::new(Settings::default()),
+            settings_write_lock: tokio::sync::Mutex::new(()),
             session_online_headers: Mutex::new(None),
             assisted_sessions: Arc::new(AssistedSessionRegistry::new()),
             db: DbSlot::new(),
@@ -731,7 +735,7 @@ impl AppState {
         self.db_path.lock().clone()
     }
 
-    /// 记录启动自检失败码（db-open-failed / db-schema-failed / db-quick-check-failed）。
+    /// 记录启动/恢复自检失败码（包含设置规范化失败）。
     pub fn set_db_error(&self, code: &str) {
         *self.db_error.lock() = Some(code.to_string());
     }

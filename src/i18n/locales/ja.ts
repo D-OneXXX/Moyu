@@ -9,6 +9,7 @@ import { privacyMessages } from "../messages/privacy";
 import { resilienceMessages } from "../messages/resilience";
 import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
+import { settingsDetailMessages } from "../messages/settingsDetail";
 import type { Messages } from "./zh-CN";
 
 export const ja = {
@@ -22,5 +23,6 @@ export const ja = {
   ...privacyMessages.ja,
   ...onlineMessages["ja"],
   ...opdsMessages.ja,
+  ...settingsDetailMessages.ja,
   ...resilienceMessages.ja,
 } satisfies Messages;

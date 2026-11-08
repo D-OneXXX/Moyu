@@ -18,6 +18,9 @@
     "test:demo": "node --test tests/demo.test.mjs",
     "test:release": "node --test scripts/release-contract.test.mjs scripts/release-governance/candidate-identity.test.mjs scripts/release-governance/candidate-evidence.test.mjs scripts/release-governance/publish-identity.test.mjs scripts/release-governance/verify-peer-manifest.test.mjs scripts/release-governance/rc-record.test.mjs scripts/release-governance/release-notes.test.mjs scripts/release-governance/publish-state.test.mjs scripts/release-governance/release-guard.test.mjs scripts/release-governance/resolve-qa-ref.test.mjs scripts/release-governance/qa-gate.test.mjs scripts/release-governance/resolve-draft-asset.test.mjs scripts/release-governance/workflow-contract.test.mjs scripts/release-governance/classify-qa-scope.test.mjs scripts/release-governance/evidence.test.mjs scripts/release-governance/minisign-tooling.test.mjs scripts/release-governance/verify-provenance.test.mjs scripts/release-smoke/prepare-candidate.test.mjs scripts/release-smoke/prepare-candidate-linux.test.mjs scripts/release-smoke/linux-install-evidence.test.mjs scripts/release-smoke/library-fixture.test.mjs scripts/release-smoke/library-ui-check.test.mjs scripts/release-smoke/pdf-release-check.test.mjs",
     "release:rehearse": "node scripts/release-governance/rehearse.mjs",
+    "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
+    "test:rust": "cargo test --lib --manifest-path src-tauri/Cargo.toml",
+    "test:web": "node --experimental-strip-types --test tests/reader-progress.test.mjs",
     "format:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
     "status": "node scripts/project-status.mjs",
     "labels:sync": "node scripts/sync-labels.mjs",
@@ -50,6 +53,9 @@
     "@vitejs/plugin-react": "^4.3.4",
     "shadcn": "^4.23.0",
     "typescript": "~5.8.3",
-    "vite": "^6.4.4"
+    "vite": "^6.4.5"
+  },
+  "overrides": {
+    "minimatch": "11.0.1"
   }
 }

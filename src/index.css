@@ -56,6 +56,29 @@
   /* Reader canvas is always dark, in both themes. */
   --v3-reader: #09090b;
 
+  /* ---------------------------------------------------------------------
+   * Skin tokens (Task 7) — every visual "skin" only has to inject this
+   * block. Components consume the semantic tokens below, never raw px.
+   * ------------------------------------------------------------------- */
+  /* Card / sheet geometry. A "hard" skin uses 0.25rem, a "cute" skin 1.5rem. */
+  --mr-radius-card: 1rem;
+  --mr-radius-control: 999px;
+  --mr-radius-sheet: 1.25rem;
+  --mr-radius-chip: 999px;
+  /* Border + elevation material. */
+  --mr-border-width: 1px;
+  --mr-border-style: solid;
+  --mr-shadow-elevation: 0 4px 0 0 var(--mi-hard-shadow);
+  --mr-shadow-elevation-sm: 0 2px 0 0 var(--mi-hard-shadow);
+  /* Shell backdrop layer: a wallpaper/pattern painted under every page.
+     `none` keeps the default flat ice-blue canvas at zero cost. */
+  --mr-surface-backdrop: none;
+  --mr-surface-backdrop-size: auto;
+  --mr-surface-backdrop-opacity: 1;
+  /* Decoration layer geometry. */
+  --mr-decoration-inset: 0px;
+  --mr-decoration-opacity: 1;
+
   /* Compatibility aliases for structural Reader CSS until it is fully ported. */
   --v3-accent: var(--sh-primary);
   --v3-accent-soft: rgb(56 168 248 / 0.16);
@@ -168,11 +191,18 @@
   --radius-2xl: 1rem;
   --radius-3xl: 1.5rem;
   --radius-pill: 999px;
+  /* Skin-driven radii: `rounded-card` / `rounded-sheet` follow the active skin. */
+  --radius-card: var(--mr-radius-card);
+  --radius-sheet: var(--mr-radius-sheet);
+  --radius-chip: var(--mr-radius-chip);
 
   --shadow-hard: 0 4px 0 0 var(--mi-hard-shadow);
   --shadow-card: 0 3px 0 0 var(--mi-hard-shadow);
   --shadow-hard-sm: 0 2px 0 0 var(--mi-hard-shadow);
   --shadow-soft: 0 18px 50px -24px rgb(2 6 23 / 0.45);
+  /* Skin-driven elevation: `shadow-elevation` follows the active skin. */
+  --shadow-elevation: var(--mr-shadow-elevation);
+  --shadow-elevation-sm: var(--mr-shadow-elevation-sm);
 }
 
 @layer base {
@@ -213,6 +243,67 @@
   button,
   [role="button"] {
     cursor: pointer;
+  }
+
+  /* Native desktop feel: chrome text is not drag-selectable. Copyable
+     surfaces (URL / fingerprint / error detail) opt back in with
+     `.select-text` or `<code>`-family elements. */
+  :where(button, [role="button"], summary, label, nav, [data-chrome]) {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  :where(img, svg, canvas) {
+    -webkit-user-drag: none;
+  }
+
+  :where(
+    input,
+    textarea,
+    code,
+    kbd,
+    samp,
+    pre,
+    [contenteditable="true"],
+    [data-selectable],
+    .select-text
+  ) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* One focus ring for the whole app: only rendered for keyboard users, so
+     mouse clicks never leave a sticky outline behind. Components that ship
+     their own `focus-visible:ring-*` (Button/Input/Select/Switch/Tabs and the
+     NavLinks) keep it; this rule is the fallback for plain elements. */
+  :where(button, [role="button"], summary, [tabindex]):focus {
+    outline: none;
+  }
+
+  :where(button, summary, [tabindex]):not([data-slot]):focus-visible {
+    outline: 2px solid var(--sh-ring);
+    outline-offset: 2px;
+  }
+
+  /* The shell `<main>` is the only scroll container. A stable gutter keeps
+     the layout from shifting when a modal locks scrolling. */
+  [data-shell-scroll] {
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+  }
+
+  /* Scroll lock for modal surfaces: Base UI renders the backdrop in a body
+     portal, so `:has()` unlocks a JS-free lock on the real scroller. */
+  body:has(
+      [data-slot="dialog-overlay"],
+      [data-slot="dialog-backdrop"],
+      [data-slot="sheet-overlay"],
+      [data-slot="alert-dialog-overlay"]
+    )
+    [data-shell-scroll] {
+    overflow: hidden;
+    overscroll-behavior: contain;
   }
 
   button:disabled,
@@ -342,6 +433,104 @@
   50% {
     transform: translateY(-5px);
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Skin / mascot decoration slots (Task 7)
+ *
+ * The layer is a pure overlay: `pointer-events: none` everywhere, so a
+ * mascot can never steal a card click, a scrollbar drag or a top-bar hit.
+ * Only an explicit `data-interactive="true"` area re-enables hit-testing.
+ * ------------------------------------------------------------------------- */
+.mr-decoration-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout paint style;
+}
+
+.mr-decoration-slot {
+  position: absolute;
+  display: flex;
+  pointer-events: none;
+  opacity: var(--mr-decoration-opacity);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Perch anchor: hangs from the window top edge in the free gap between the
+   brand mark and the centred navigation pill, so it never covers a control. */
+.mr-decoration-slot[data-slot="window-perch-top"] {
+  top: var(--mr-decoration-inset);
+  left: max(180px, calc(50% - 300px));
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.mr-decoration-slot[data-slot="corner-companion-bottom-left"] {
+  bottom: var(--mr-decoration-inset);
+  left: var(--mr-decoration-inset);
+  align-items: flex-end;
+}
+
+.mr-decoration-slot[data-slot="corner-companion-bottom-right"] {
+  right: var(--mr-decoration-inset);
+  bottom: var(--mr-decoration-inset);
+  align-items: flex-end;
+}
+
+.mr-decoration-slot[data-slot="window-frame-surround"] {
+  inset: 0;
+  align-items: stretch;
+}
+
+.mr-decoration {
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  object-fit: contain;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.mr-decoration[data-interactive="true"] {
+  pointer-events: auto;
+}
+
+/* A companion may breathe, but never while the window is hidden or the user
+   asked for less motion. */
+.mr-decoration[data-motion="bob"] {
+  animation: mr-decoration-bob 3.2s var(--mi-ease) infinite;
+}
+
+@keyframes mr-decoration-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mr-decoration[data-motion="bob"] {
+    animation: none;
+  }
+}
+
+html[data-safe-mode="true"] .mr-decoration-layer,
+html[data-app-hidden="true"] .mr-decoration-layer {
+  display: none;
+}
+
+/* 主窗最小化 / 隐藏到托盘：暂停一切装饰性动画，静默空闲态不再跑帧。 */
+html[data-app-hidden="true"] *,
+html[data-app-hidden="true"] *::before,
+html[data-app-hidden="true"] *::after {
+  animation-play-state: paused !important;
 }
 
 /* Safe mode: prioritize a stable local reading surface over decorative motion. */

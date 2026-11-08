@@ -75,6 +75,9 @@ pub(crate) struct PairingService {
     // commit after revocation returns. This lock is never acquired while
     // holding either the pairing or session state mutex.
     progress_barrier: RwLock<()>,
+    /// Desktop wake-up: fired after a session is committed or revoked so the
+    /// paired-device list updates without polling. Never carries secrets.
+    change_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl PairingService {
@@ -84,6 +87,27 @@ impl PairingService {
             session,
             open_claim_gate: Mutex::new(()),
             progress_barrier: RwLock::new(()),
+            change_hook: Mutex::new(None),
+        }
+    }
+
+    /// Install the desktop device-list wake-up. Replacing an existing hook is
+    /// allowed (each start creates a fresh service).
+    pub(crate) fn set_change_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        match self.change_hook.lock() {
+            Ok(mut slot) => *slot = Some(hook),
+            Err(poisoned) => *poisoned.into_inner() = Some(hook),
+        }
+    }
+
+    /// Call the wake-up outside every state lock; failures are non-fatal.
+    fn notify_change(&self) {
+        let hook = match self.change_hook.lock() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
@@ -138,6 +162,9 @@ impl PairingService {
         let Some(device_name) = pairing.claim_device_name_locked(claim_id) else {
             return Err(PairingError::NotFound.into());
         };
+        let Some(source_ip) = pairing.claim_source_ip_locked(claim_id) else {
+            return Err(PairingError::NotFound.into());
+        };
         match pairing.claim_state_locked(claim_id) {
             Some(ClaimState::Pending) => {}
             Some(ClaimState::Approved) => return Err(PairingError::Claimed.into()),
@@ -151,7 +178,7 @@ impl PairingService {
         let mut session = self.session.lock();
         // A full device list propagates `device-limit` only for a claim that
         // could otherwise be approved, before any pairing state changes.
-        let reservation = session.reserve_locked(&device_name, now)?;
+        let reservation = session.reserve_locked(&device_name, Some(source_ip), now)?;
         match pairing.approve_locked(claim_id, now, Some(reservation.id.clone())) {
             Ok(_) => Ok(()),
             Err(error) => {
@@ -180,6 +207,17 @@ impl PairingService {
         &self,
         claim_id: &str,
         claim_secret: &str,
+    ) -> Result<SessionIssued, AuthError> {
+        self.consume_with_client(claim_id, claim_secret, None)
+    }
+
+    /// Pickup with the consume request's User-Agent. The peer IPv4 comes from
+    /// the reservation (claim time), never from a caller-supplied string.
+    pub(crate) fn consume_with_client(
+        &self,
+        claim_id: &str,
+        claim_secret: &str,
+        user_agent: Option<&str>,
     ) -> Result<SessionIssued, AuthError> {
         let now = self.pairing.clock().now();
         // Frozen lock order: pairing state first, session state second.
@@ -210,12 +248,16 @@ impl PairingService {
             return Err(PairingError::Expired.into());
         };
         let mut session = self.session.lock();
-        match session.commit_locked(&reservation_id, now) {
+        match session.commit_locked(&reservation_id, now, user_agent) {
             Ok(issued) => {
                 // Token issuance and consumption share one critical section:
                 // concurrent consumes can never both observe an approved claim
                 // with a live reservation.
                 pairing.mark_consumed_locked(claim_id, now);
+                // Wake the desktop list only after both state locks are free.
+                drop(session);
+                drop(pairing);
+                self.notify_change();
                 Ok(issued)
             }
             // A successful precheck plus a missing/expired reservation means
@@ -267,11 +309,17 @@ impl PairingService {
     }
 
     pub(crate) fn revoke_device(&self, session_id: &str) -> bool {
-        let _guard = self
-            .progress_barrier
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        self.session.revoke(session_id)
+        let revoked = {
+            let _guard = self
+                .progress_barrier
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            self.session.revoke(session_id)
+        };
+        if revoked {
+            self.notify_change();
+        }
+        revoked
     }
 
     /// Issue a live session without the pairing flow. Test-only; the data

@@ -25,7 +25,7 @@ import {
   readFeatureFlags,
   type FeatureFlags,
 } from "@/features/features";
-import { toast, Toaster } from "@/components/Toast";
+import { toast, toastErr, Toaster } from "@/components/Toast";
 import { translate, useI18n } from "@/i18n";
 import { Loader2 } from "lucide-react";
 import Library from "@/pages/Library";
@@ -55,13 +55,22 @@ import {
   LIBRARY_REFRESH_EVENT,
 } from "@/lib/events";
 import TopBar from "./TopBar";
+import ThemeDecorationLayer from "./ThemeDecorationLayer";
 import PrivacyDialog from "@/components/privacy/PrivacyDialog";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useGlobalShortcuts } from "@/features/shortcuts/useGlobalShortcuts";
+import { useScrollRestoration } from "@/features/scroll/useScrollRestoration";
+import { WEB_ACCESS_TRAY_ERROR_EVENT } from "@/features/web-access/types";
+import { useBrandIcon } from "@/features/brand/BrandIconProvider";
+import { renderTrayIconPng } from "@/features/brand/trayIcon";
+import { useTheme } from "@/features/theme/ThemeProvider";
 
 export default function AppShell() {
   const nav = useNavigate();
   const loc = useLocation();
+  const { locale } = useI18n();
+  const { selection: brandIcon } = useBrandIcon();
+  const { mode: themeMode } = useTheme();
   const ws = useWorkspace();
   const { active: safeMode } = useSafeMode();
   const [lastRead, setLastRead] = useState<BookInfo | null>(null);
@@ -82,9 +91,59 @@ export default function AppShell() {
 
   // Page transitions must start at the top: the shell owns the scroll container,
   // so without this a previous page's scroll position can clip the next header.
+  // Back/forward restores instead (see useScrollRestoration).
+  useScrollRestoration(mainRef);
+
+  // The native tray menu follows the UI locale (persisted in the settings DB,
+  // so it is already correct on the next cold start).
   useEffect(() => {
-    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
-  }, [loc.pathname]);
+    void api.setTrayLocale(locale).catch(() => {});
+  }, [locale]);
+
+  // Task 7 stores the brand icon in localStorage, so the main window rasterizes
+  // it (theme-aware preset SVG or custom image) and pushes a 64×64 PNG.
+  useEffect(() => {
+    let cancelled = false;
+    void renderTrayIconPng(brandIcon).then((png) => {
+      if (cancelled) return;
+      void api.setTrayIcon(png).catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [brandIcon, themeMode]);
+
+  // Tray start/stop can fail while the settings panel is unmounted; surface
+  // the backend's stable code as a localized global toast.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>(WEB_ACCESS_TRAY_ERROR_EVENT, (event) => {
+      if (!disposed) toastErr("web_access_tray", event.payload);
+    })
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => {
+        /* Not inside Tauri (browser preview). */
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 最小化 / 隐藏到托盘：释放后端页与条漫切片的内存 LRU，把常驻内存压到
+  // 最低水位。只清派生缓存，不动书库与阅读进度；回到前台按需重渲染。
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden") return;
+      void api.clearPages().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -240,7 +299,17 @@ export default function AppShell() {
   useGlobalShortcuts(shellShortcuts, { editableExempt: ["w", "W"] });
 
   return (
-    <div className="flex h-screen w-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
+    <div className="relative flex h-screen w-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
+      {/* 皮肤壁纸层：默认 `none`（零绘制），注入一条 CSS 变量即可换底纹。 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-0"
+        style={{
+          backgroundImage: "var(--mr-surface-backdrop)",
+          backgroundSize: "var(--mr-surface-backdrop-size)",
+          opacity: "var(--mr-surface-backdrop-opacity)",
+        }}
+      />
       <TopBar
         lastRead={lastRead}
         onlineProxy={onlineProxy}
@@ -253,6 +322,7 @@ export default function AppShell() {
       />
       <main
         ref={mainRef}
+        data-shell-scroll
         className="relative w-full min-w-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
       >
         <div key={loc.pathname} className="view-fade min-h-full">
@@ -273,6 +343,8 @@ export default function AppShell() {
           </Suspense>
         </div>
       </main>
+      {/* 装饰层永远是内容层的兄弟节点：不参与布局、不拦截命中测试。 */}
+      <ThemeDecorationLayer />
       <Toaster />
       <PrivacyDialog />
     </div>

@@ -18,6 +18,7 @@ import { toast, toastErr } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
 import { useI18n } from "@/i18n";
 import { recordBreadcrumb } from "@/features/resilience";
+import { useAppVisible } from "@/features/performance/visibility";
 import {
   caDistributionApi,
   type CaDistributionStatusView,
@@ -53,6 +54,8 @@ export default function CaDistributionPanel() {
   const [confirmInit, setConfirmInit] = useState(false);
   const mountedRef = useRef(true);
   const wasRunningRef = useRef(false);
+  // 主窗最小化/隐藏时停掉 1s 状态轮询；恢复可见后 effect 重跑续上。
+  const appVisible = useAppVisible();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,7 +94,7 @@ export default function CaDistributionPanel() {
   }, [load]);
 
   useEffect(() => {
-    if (!distribution?.running) return;
+    if (!distribution?.running || !appVisible) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -118,7 +121,7 @@ export default function CaDistributionPanel() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [distribution?.running, t]);
+  }, [distribution?.running, t, appVisible]);
 
   const copyText = async (value: string) => {
     try {

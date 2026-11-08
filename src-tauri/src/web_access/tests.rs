@@ -2369,6 +2369,10 @@ async fn d4_headless_browser_uses_real_tls_and_database() {
     let window = runtime.pairing_start().await.unwrap();
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
+    if !script.exists() {
+        eprintln!("skip: public snapshot does not include tests/qa/web-reader-real-tls.mjs");
+        return;
+    }
     let mut browser = tokio::process::Command::new("node")
         .arg(script)
         .env("MR_D4_TEST_URL", &window.url)
@@ -2478,6 +2482,10 @@ async fn simple_lan_headless_browser_pairs_over_real_http() {
     let window = runtime.pairing_state().await.window.unwrap();
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
+    if !script.exists() {
+        eprintln!("skip: public snapshot does not include tests/qa/web-reader-real-tls.mjs");
+        return;
+    }
     let mut browser = tokio::process::Command::new("node")
         .arg(script)
         .env("MR_D4_TEST_URL", &window.url)

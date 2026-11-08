@@ -5,6 +5,9 @@ description = "Moyu - a free desktop application for manga reading and library m
 authors = ["manga-reader"]
 edition = "2021"
 rust-version = "1.90"
+# Windows 基线：只支持 NT 10.0 (Build 10240)+。安装器由 nsis/hooks.nsh
+# 拦截，进程启动期由 platform::enforce_windows_baseline 二次硬校验；
+# 仓库不再维护 Win7/8/8.1 兼容垫片。
 
 [lib]
 name = "manga_reader_tauri_lib"
@@ -14,7 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 # 双击文件关联/二次启动：单实例唤醒并转发命令行路径。
@@ -23,30 +26,24 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.14.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# ADR-036：tokio 已是单版本（1.54.1）；feature unification 由 tauri / reqwest / updater 决定，不再收缩。
-tokio = { version = "1", default-features = false, features = ["rt", "sync", "time", "net", "io-util", "fs", "macros", "process"] }
+tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 zip = "9"
 # OPDS CBR：纯 Rust RAR 读取（Apache-2.0 + UnRAR restriction，见 THIRD_PARTY_NOTICES）。
-# ADR-036：unrar-rs 0.15.1（最新）无条件依赖 rayon + reedsolomon-rs，无关闭特性；
-# 不 fork / 不移除 RAR 的前提下残余接受，不再列为待办。
 unrar-rs = { version = "0.15", default-features = false, features = ["crypto-rust"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 png = "0.18"
 # 条漫长图：IDCT 缩放解码（>8000px 高的 JPEG 按显示宽度解码，全分辨率栅格不进内存）
-# ADR-035：只用串行解码，关闭默认 rayon 特性（unrar-rs 的 rayon 残余另记）。
-jpeg-decoder = { version = "0.3", default-features = false }
+jpeg-decoder = "0.3"
 lru = "0.19"
 parking_lot = "0.13"
 base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-sysinfo = { version = "0.31", default-features = false, features = ["system", "disk"] }
+chrono = "0.4"
+sysinfo = "0.31"
 dirs = "5"
 thiserror = "2"
-# ADR-036：保持 0.12（updater 走 0.13）；升级 0.13 会切到 aws-lc-rs / platform verifier，
-# 触及更新下载的 TLS 信任面，需单独安全评审，不在收尾轮变更。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # 更新包签名校验（minisign / Ed25519，Tauri 更新器同款格式）。
 minisign-verify = "0.2"

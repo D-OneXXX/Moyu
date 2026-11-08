@@ -9,6 +9,7 @@ import { UpdateProvider } from "./features/update/UpdateProvider";
 import DbRecoveryGate from "./features/recovery/DbRecoveryGate";
 import { SafeModeProvider } from "./features/safeMode/SafeModeContext";
 import { installResilienceRuntime } from "./features/resilience/runtime";
+import { installVisibilityFlag } from "./features/performance/visibility";
 import AppErrorBoundary from "./components/AppErrorBoundary";
 import {
   installStorageSanitizerApi,
@@ -37,6 +38,9 @@ try {
 installStorageSanitizerApi();
 
 installResilienceRuntime();
+
+// 最小化 / 隐藏到托盘时暂停装饰性动画与重布局（静默态 CPU 归零）。
+installVisibilityFlag();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

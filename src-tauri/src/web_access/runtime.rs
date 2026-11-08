@@ -17,6 +17,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
@@ -41,6 +43,9 @@ use super::tls_renewal::TlsCertificateState;
 
 pub(crate) const STATE_EVENT: &str = "web-access-state";
 pub(crate) const PAIRING_EVENT: &str = "web-access-pairing-event";
+/// Desktop device list changed: a session was committed or revoked. Carries no
+/// payload; the panel re-reads `web_access_devices_list` (no polling).
+pub(crate) const DEVICES_EVENT: &str = "web-access-devices-changed";
 const PAIRING_BRIDGE_TICK: Duration = Duration::from_millis(500);
 /// Bound recovery/exit waits so a stuck CA renewal cannot block the recovery
 /// window or app exit forever.
@@ -63,6 +68,17 @@ impl Phase {
             Self::Enabled => "enabled",
             Self::Stopping => "stopping",
             Self::Error => "error",
+        }
+    }
+
+    /// Compact mirror for [`WebAccessRuntime::is_running_snapshot`].
+    fn code(self) -> u8 {
+        match self {
+            Self::Disabled => 0,
+            Self::Starting => 1,
+            Self::Enabled => 2,
+            Self::Stopping => 3,
+            Self::Error => 4,
         }
     }
 }
@@ -187,8 +203,15 @@ pub(crate) struct PairingStateView {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeviceView {
-    pub id: String,
+    /// Session id used by `web_access_device_revoke`; never a token or hash.
+    pub session_id: String,
     pub device_name: String,
+    /// Parsed from the consume-time User-Agent (`iOS Safari`, `Android Chrome`…).
+    pub platform: String,
+    /// Claim-time private IPv4; `None` only for sessions issued by tests.
+    pub source_ip: Option<String>,
+    pub created_at_unix_ms: i64,
+    pub last_active_at_unix_ms: i64,
     pub issued_at_unix_ms: i64,
     pub expires_at_unix_ms: i64,
     pub absolute_expires_at_unix_ms: i64,
@@ -301,6 +324,52 @@ impl PairingEventView {
 pub(crate) trait WebAccessEventSink: Send + Sync {
     fn emit_state(&self, status: &WebAccessStatusView);
     fn emit_pairing(&self, event: &PairingEventView);
+    /// A session was committed/revoked; the desktop list should refresh.
+    fn emit_devices_changed(&self) {}
+}
+
+/// Best-effort platform/browser label from a User-Agent.
+///
+/// Display-only: the result is a fixed English proper-noun string, never used
+/// for authorization or persisted. Unknown agents return `Unknown`.
+pub(crate) fn platform_label(user_agent: Option<&str>) -> String {
+    let Some(raw) = user_agent else {
+        return "Unknown".to_owned();
+    };
+    let ua = raw.to_ascii_lowercase();
+    let os = if ua.contains("android") {
+        "Android"
+    } else if ua.contains("iphone") || ua.contains("ipod") {
+        "iOS"
+    } else if ua.contains("ipad") {
+        "iPadOS"
+    } else if ua.contains("windows") {
+        "Windows"
+    } else if ua.contains("macintosh") || ua.contains("mac os x") {
+        "macOS"
+    } else if ua.contains("linux") {
+        "Linux"
+    } else {
+        ""
+    };
+    // Edge/Chrome/Firefox UAs all contain `safari/`, so order matters.
+    let browser = if ua.contains("edg/") || ua.contains("edga/") || ua.contains("edgios/") {
+        "Edge"
+    } else if ua.contains("firefox/") || ua.contains("fxios/") {
+        "Firefox"
+    } else if ua.contains("chrome/") || ua.contains("crios/") {
+        "Chrome"
+    } else if ua.contains("safari/") {
+        "Safari"
+    } else {
+        ""
+    };
+    match (os, browser) {
+        ("", "") => "Unknown".to_owned(),
+        ("", browser) => browser.to_owned(),
+        (os, "") => os.to_owned(),
+        (os, browser) => format!("{os} {browser}"),
+    }
 }
 
 enum Listener {
@@ -364,6 +433,9 @@ pub(crate) struct WebAccessRuntime {
     /// in-memory service and may overlap with a snapshot read.
     operation: AsyncMutex<()>,
     state: AsyncMutex<RunningState>,
+    /// Lock-free phase mirror for synchronous callers (window close / tray).
+    /// Updated by every [`WebAccessRuntime::status`] snapshot.
+    phase_code: AtomicU8,
 }
 
 impl WebAccessRuntime {
@@ -407,7 +479,14 @@ impl WebAccessRuntime {
             progress: None,
             operation: AsyncMutex::new(()),
             state: AsyncMutex::new(RunningState::default()),
+            phase_code: AtomicU8::new(0),
         }
+    }
+
+    /// Lock-free "starting or serving" snapshot. Used by the main-window close
+    /// interceptor and the tray toggle; never blocks on the async state lock.
+    pub(crate) fn is_running_snapshot(&self) -> bool {
+        matches!(self.phase_code.load(Ordering::Relaxed), 1 | 2)
     }
 
     pub(crate) fn addresses(&self) -> Result<Vec<LanAddressView>, RuntimeError> {
@@ -498,6 +577,8 @@ impl WebAccessRuntime {
             } else {
                 phase.as_str()
             };
+        // Mirror the raw phase (not the display override) for sync callers.
+        self.phase_code.store(phase.code(), Ordering::Relaxed);
         let effective_error =
             last_error_code.or_else(|| cert.as_ref().and_then(|snapshot| snapshot.last_error_code));
 
@@ -597,6 +678,11 @@ impl WebAccessRuntime {
             PairingStore::new(Arc::new(SystemClock)),
             SessionStore::new(Arc::new(SystemClock)),
         ));
+        // Pairing/consume/revoke are HTTP-driven; wake the desktop list from
+        // the same service so the panel never polls.
+        if let Some(events) = self.events.clone() {
+            service.set_change_hook(Arc::new(move || events.emit_devices_changed()));
+        }
         let factory_data = self.data.clone();
         let factory_progress = self.progress.clone();
         let factory_service = Arc::clone(&service);
@@ -702,6 +788,11 @@ impl WebAccessRuntime {
             PairingStore::new(Arc::new(SystemClock)),
             SessionStore::new(Arc::new(SystemClock)),
         ));
+        // Pairing/consume/revoke are HTTP-driven; wake the desktop list from
+        // the same service so the panel never polls.
+        if let Some(events) = self.events.clone() {
+            service.set_change_hook(Arc::new(move || events.emit_devices_changed()));
+        }
         let factory_data = self.data.clone();
         let factory_progress = self.progress.clone();
         let factory_service = Arc::clone(&service);
@@ -986,8 +1077,12 @@ impl WebAccessRuntime {
             .devices()
             .into_iter()
             .map(|device| DeviceView {
-                id: device.id,
+                session_id: device.id,
                 device_name: device.device_name,
+                platform: platform_label(device.user_agent.as_deref()),
+                source_ip: device.source_ip.map(|ip| ip.to_string()),
+                created_at_unix_ms: device.created_at.timestamp_millis(),
+                last_active_at_unix_ms: device.last_seen_at.timestamp_millis(),
                 issued_at_unix_ms: to_unix_ms(now, device.issued_at),
                 expires_at_unix_ms: to_unix_ms(now, device.expires_at),
                 absolute_expires_at_unix_ms: to_unix_ms(now, device.absolute_expires_at),
@@ -1255,6 +1350,38 @@ mod tests {
 
     const NONCE: &str = "AAAAAAAAAAAAAAAAAAAAAA";
 
+    #[test]
+    fn platform_label_maps_common_user_agents() {
+        assert_eq!(platform_label(None), "Unknown");
+        assert_eq!(platform_label(Some("")), "Unknown");
+        assert_eq!(
+            platform_label(Some(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            )),
+            "iOS Safari"
+        );
+        assert_eq!(
+            platform_label(Some(
+                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            )),
+            "Android Chrome"
+        );
+        assert_eq!(
+            platform_label(Some(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+            )),
+            "Windows Edge"
+        );
+        assert_eq!(
+            platform_label(Some(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+            )),
+            "macOS Safari"
+        );
+        // No recognizable OS/browser tokens: never echo the raw agent.
+        assert_eq!(platform_label(Some("curl/8.0")), "Unknown");
+    }
+
     #[tokio::test]
     async fn plain_runtime_emits_requests_supports_multiple_devices_and_revokes_on_stop() {
         #[derive(Default)]
@@ -1391,6 +1518,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_queued_during_start_leaves_runtime_disabled() {
+        let runtime = Arc::new(WebAccessRuntime::for_test(
+            temp_path("queued-stop").join("ca"),
+        ));
+        let operation = runtime.operation.lock().await;
+
+        let start_runtime = Arc::clone(&runtime);
+        let start_queued = Arc::new(tokio::sync::Notify::new());
+        let start_signal = Arc::clone(&start_queued);
+        let start_task = tokio::spawn(async move {
+            start_signal.notify_one();
+            start_runtime
+                .start_plain(Ipv4Addr::LOCALHOST, 0)
+                .await
+                .unwrap()
+        });
+        start_queued.notified().await;
+
+        let stop_runtime = Arc::clone(&runtime);
+        let stop_queued = Arc::new(tokio::sync::Notify::new());
+        let stop_signal = Arc::clone(&stop_queued);
+        let stop_task = tokio::spawn(async move {
+            stop_signal.notify_one();
+            stop_runtime.stop(StopReason::Stopped).await
+        });
+        stop_queued.notified().await;
+
+        drop(operation);
+
+        let started = start_task.await.unwrap();
+        let stopped = stop_task.await.unwrap();
+        assert_eq!(started.phase, "enabled");
+        assert_eq!(stopped.phase, "disabled");
+        assert_eq!(runtime.status().await.phase, "disabled");
+    }
+
+    #[tokio::test]
     async fn pairing_window_approve_consume_and_revoke_are_secret_free() {
         let ca = TestCa::new("runtime-pairing");
         let runtime = WebAccessRuntime::for_test(ca.root.clone());
@@ -1433,15 +1597,24 @@ mod tests {
         assert!(!approved.pairing_active);
 
         let session = service
-            .consume(&issued.claim_id, issued.claim_secret.as_str())
+            .consume_with_client(
+                &issued.claim_id,
+                issued.claim_secret.as_str(),
+                Some(
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                ),
+            )
             .unwrap();
         assert_eq!(session.token.len(), 49);
         let devices = runtime.devices().await;
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].device_name, "Pixel 8");
+        assert_eq!(devices[0].platform, "iOS Safari");
+        assert_eq!(devices[0].source_ip.as_deref(), Some("192.168.1.20"));
+        assert!(devices[0].last_active_at_unix_ms >= devices[0].created_at_unix_ms);
         assert!(!format!("{devices:?}").contains(session.token.as_str()));
 
-        assert!(runtime.revoke_device(&devices[0].id).await.unwrap());
+        assert!(runtime.revoke_device(&devices[0].session_id).await.unwrap());
         assert!(runtime.devices().await.is_empty());
         runtime.stop(StopReason::Stopped).await;
     }

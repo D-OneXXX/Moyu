@@ -40,6 +40,12 @@ const zhCN = {
   "settings.language.label": "显示语言",
 
   "settings.theme.title": "外观主题",
+  "settings.tray.title": "窗口与托盘",
+  "settings.tray.description":
+    "局域网阅读运行时可关闭主窗口到系统托盘，后台继续提供阅读服务。",
+  "settings.tray.closeToTray": "关闭主窗口时最小化到托盘",
+  "settings.tray.closeToTrayHint":
+    "开启后，点击关闭（×）只隐藏窗口；从托盘菜单可彻底退出。",
   "settings.theme.description":
     "选择界面配色；切换会立即生效，并同步到本地偏好与数据库。",
   "settings.theme.groupLabel": "主题模式",
@@ -393,13 +399,24 @@ const zhCN = {
   "settings.webAccess.unverifiedDevice": "名称未经核实",
   "settings.webAccess.sourceIp": "来源 IP（服务端观测）",
   "settings.webAccess.receivedAt": "收到时间：{time}",
+  "settings.webAccess.claimExpiresIn": "请求剩余 {seconds} 秒",
+  "settings.webAccess.claimExpired": "请求已过期",
+  "settings.webAccess.cancelRequest": "取消请求",
   "settings.webAccess.approve": "批准",
   "settings.webAccess.deny": "拒绝",
   "settings.webAccess.approveConfirmTitle": "批准这台设备？",
   "settings.webAccess.approveConfirmMessage":
-    "即将授权「{name}」连接本机。设备名由手机自行上报，无法证明对方身份；只有你本人发起了这次配对时才应批准。",
+    "即将授权「{name}」连接本机，并可浏览和读取这台桌面设备上的整个书库与阅读进度。设备名由手机自行上报，无法证明对方身份；只有你本人发起了这次配对时才应批准。",
+  "settings.webAccess.approvePlainHttpWarning":
+    "当前使用未加密的 HTTP；同一局域网内的设备都可连接服务。请只在可信网络中批准你信任的设备。",
+  "settings.webAccess.cancelStart": "取消启动",
+  "settings.webAccess.cancelingStart": "正在取消…",
   "settings.webAccess.devicesTitle": "已配对设备",
-  "settings.webAccess.devicesEmpty": "还没有已配对设备。",
+  "settings.webAccess.devicesEmpty": "还没有已配对设备。设备完成配对批准并打开阅读页后会自动出现在这里。",
+  "settings.webAccess.deviceIp": "局域网地址：{ip}",
+  "settings.webAccess.deviceLastActive": "最近活跃：{date}",
+  "settings.webAccess.devicesMemoryNote":
+    "会话只保存在内存中：停止局域网服务或退出程序后，所有设备会自动断开并清空。",
   "settings.webAccess.deviceIssued": "签发：{date}",
   "settings.webAccess.deviceExpires": "到期：{date}",
   "settings.webAccess.revoke": "撤销",
@@ -451,6 +468,12 @@ const zhTW: SettingsMessages = {
   "settings.language.label": "顯示語言",
 
   "settings.theme.title": "外觀主題",
+  "settings.tray.title": "視窗與系統匣",
+  "settings.tray.description":
+    "區域網路閱讀執行時可將主視窗關閉至系統匣，背景繼續提供閱讀服務。",
+  "settings.tray.closeToTray": "關閉主視窗時最小化到系統匣",
+  "settings.tray.closeToTrayHint":
+    "開啟後，點擊關閉（×）只會隱藏視窗；可從系統匣選單徹底結束。",
   "settings.theme.description":
     "選擇介面配色；切換會立即生效，並同步到本機偏好與資料庫。",
   "settings.theme.groupLabel": "主題模式",
@@ -806,13 +829,24 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.unverifiedDevice": "名稱未經核實",
   "settings.webAccess.sourceIp": "來源 IP（伺服器端觀測）",
   "settings.webAccess.receivedAt": "收到時間：{time}",
+  "settings.webAccess.claimExpiresIn": "請求剩餘 {seconds} 秒",
+  "settings.webAccess.claimExpired": "請求已過期",
+  "settings.webAccess.cancelRequest": "取消請求",
   "settings.webAccess.approve": "批准",
   "settings.webAccess.deny": "拒絕",
   "settings.webAccess.approveConfirmTitle": "批准這台裝置？",
   "settings.webAccess.approveConfirmMessage":
-    "即將授權「{name}」連線到本機。裝置名稱由手機自行回報，無法證明對方身分；只有你本人發起這次配對時才應批准。",
+    "即將授權「{name}」連線到本機，並可瀏覽和讀取這台桌面裝置上的整個書庫與閱讀進度。裝置名稱由手機自行回報，無法證明對方身分；只有你本人發起這次配對時才應批准。",
+  "settings.webAccess.approvePlainHttpWarning":
+    "目前使用未加密的 HTTP；同一區域網路內的裝置都可連線至服務。請只在可信任的網路中批准你信任的裝置。",
+  "settings.webAccess.cancelStart": "取消啟動",
+  "settings.webAccess.cancelingStart": "正在取消…",
   "settings.webAccess.devicesTitle": "已配對裝置",
-  "settings.webAccess.devicesEmpty": "還沒有已配對裝置。",
+  "settings.webAccess.devicesEmpty": "還沒有已配對裝置。裝置完成配對批准並開啟閱讀頁後會自動出現在這裡。",
+  "settings.webAccess.deviceIp": "區域網路位址：{ip}",
+  "settings.webAccess.deviceLastActive": "最近活躍：{date}",
+  "settings.webAccess.devicesMemoryNote":
+    "工作階段只保存在記憶體中：停止區域網路服務或結束程式後，所有裝置會自動斷開並清空。",
   "settings.webAccess.deviceIssued": "簽發：{date}",
   "settings.webAccess.deviceExpires": "到期：{date}",
   "settings.webAccess.revoke": "撤銷",
@@ -862,6 +896,12 @@ const en: SettingsMessages = {
   "settings.language.label": "Display language",
 
   "settings.theme.title": "Appearance",
+  "settings.tray.title": "Window & tray",
+  "settings.tray.description":
+    "While LAN reading is running, closing the main window can keep it in the system tray and keep serving pages in the background.",
+  "settings.tray.closeToTray": "Minimize to tray when closing the main window",
+  "settings.tray.closeToTrayHint":
+    "When enabled, the close (×) button only hides the window; quit from the tray menu to exit completely.",
   "settings.theme.description":
     "Choose the interface palette. Changes apply instantly and sync to local preferences and the database.",
   "settings.theme.groupLabel": "Theme mode",
@@ -1233,13 +1273,25 @@ const en: SettingsMessages = {
   "settings.webAccess.unverifiedDevice": "Unverified name",
   "settings.webAccess.sourceIp": "Source IP (server-observed)",
   "settings.webAccess.receivedAt": "Received: {time}",
+  "settings.webAccess.claimExpiresIn": "Request expires in {seconds}s",
+  "settings.webAccess.claimExpired": "Request expired",
+  "settings.webAccess.cancelRequest": "Cancel request",
   "settings.webAccess.approve": "Approve",
   "settings.webAccess.deny": "Deny",
   "settings.webAccess.approveConfirmTitle": "Approve this device?",
   "settings.webAccess.approveConfirmMessage":
-    "You are about to authorize “{name}” to connect to this desktop. The device name is self-reported by the phone and does not prove its identity; approve only if you started this pairing.",
+    "You are about to authorize “{name}” to connect to this desktop and browse or read its entire library and reading progress. The device name is self-reported by the phone and does not prove its identity; approve only if you started this pairing.",
+  "settings.webAccess.approvePlainHttpWarning":
+    "Plain HTTP is unencrypted and the service is reachable by devices on this local network. Continue only on a network you trust and for a device you trust.",
+  "settings.webAccess.cancelStart": "Cancel start",
+  "settings.webAccess.cancelingStart": "Canceling…",
   "settings.webAccess.devicesTitle": "Paired devices",
-  "settings.webAccess.devicesEmpty": "No devices are paired yet.",
+  "settings.webAccess.devicesEmpty":
+    "No devices are paired yet. A device appears here right after its pairing is approved and it opens the reader.",
+  "settings.webAccess.deviceIp": "LAN address: {ip}",
+  "settings.webAccess.deviceLastActive": "Last active: {date}",
+  "settings.webAccess.devicesMemoryNote":
+    "Sessions live in memory only: stopping the LAN service or quitting the app disconnects and clears every device.",
   "settings.webAccess.deviceIssued": "Issued: {date}",
   "settings.webAccess.deviceExpires": "Expires: {date}",
   "settings.webAccess.revoke": "Revoke",
@@ -1289,6 +1341,13 @@ const es: SettingsMessages = {
   "settings.language.label": "Idioma mostrado",
 
   "settings.theme.title": "Apariencia",
+  "settings.tray.title": "Ventana y bandeja",
+  "settings.tray.description":
+    "Con la lectura LAN en marcha, cerrar la ventana principal puede mantenerla en la bandeja del sistema y seguir sirviendo páginas en segundo plano.",
+  "settings.tray.closeToTray":
+    "Minimizar a la bandeja al cerrar la ventana principal",
+  "settings.tray.closeToTrayHint":
+    "Si se activa, el botón cerrar (×) solo oculta la ventana; sal del menú de la bandeja para terminar del todo.",
   "settings.theme.description":
     "Elige la paleta de la interfaz. El cambio se aplica al instante y se sincroniza con las preferencias locales y la base de datos.",
   "settings.theme.groupLabel": "Modo de tema",
@@ -1674,14 +1733,25 @@ const es: SettingsMessages = {
   "settings.webAccess.sourceIp":
     "IP de origen (observada por el servidor)",
   "settings.webAccess.receivedAt": "Recibida: {time}",
+  "settings.webAccess.claimExpiresIn": "La solicitud caduca en {seconds} s",
+  "settings.webAccess.claimExpired": "Solicitud caducada",
+  "settings.webAccess.cancelRequest": "Cancelar solicitud",
   "settings.webAccess.approve": "Aprobar",
   "settings.webAccess.deny": "Rechazar",
   "settings.webAccess.approveConfirmTitle": "¿Aprobar este dispositivo?",
   "settings.webAccess.approveConfirmMessage":
-    "Vas a autorizar que «{name}» se conecte a este equipo. El nombre lo declara el propio teléfono y no demuestra su identidad; aprueba solo si tú iniciaste esta vinculación.",
+    "Vas a autorizar que «{name}» se conecte a este equipo y pueda explorar o leer toda su biblioteca y el progreso de lectura. El nombre lo declara el propio teléfono y no demuestra su identidad; aprueba solo si tú iniciaste esta vinculación.",
+  "settings.webAccess.approvePlainHttpWarning":
+    "HTTP sin cifrar permite que los dispositivos de esta red local lleguen al servicio. Continúa solo en una red de confianza y para un dispositivo en el que confíes.",
+  "settings.webAccess.cancelStart": "Cancelar inicio",
+  "settings.webAccess.cancelingStart": "Cancelando…",
   "settings.webAccess.devicesTitle": "Dispositivos vinculados",
   "settings.webAccess.devicesEmpty":
-    "Todavía no hay dispositivos vinculados.",
+    "Todavía no hay dispositivos vinculados. Un dispositivo aparece aquí en cuanto se aprueba su vinculación y abre el lector.",
+  "settings.webAccess.deviceIp": "Dirección LAN: {ip}",
+  "settings.webAccess.deviceLastActive": "Última actividad: {date}",
+  "settings.webAccess.devicesMemoryNote":
+    "Las sesiones solo viven en memoria: al detener el servicio LAN o salir de la aplicación, todos los dispositivos se desconectan y se borran.",
   "settings.webAccess.deviceIssued": "Emitido: {date}",
   "settings.webAccess.deviceExpires": "Caduca: {date}",
   "settings.webAccess.revoke": "Revocar",
@@ -1731,6 +1801,12 @@ const ja: SettingsMessages = {
   "settings.language.label": "表示言語",
 
   "settings.theme.title": "外観テーマ",
+  "settings.tray.title": "ウィンドウとトレイ",
+  "settings.tray.description":
+    "LAN リーディングの実行中は、メインウィンドウを閉じてもシステムトレイに残してバックグラウンドで配信を続けられます。",
+  "settings.tray.closeToTray": "メインウィンドウを閉じるときにトレイへ最小化",
+  "settings.tray.closeToTrayHint":
+    "有効にすると、閉じる（×）はウィンドウを隠すだけになります。完全に終了するにはトレイメニューから終了してください。",
   "settings.theme.description":
     "配色を選択します。切り替えはすぐに反映され、ローカル設定とデータベースに同期されます。",
   "settings.theme.groupLabel": "テーマモード",
@@ -2114,14 +2190,25 @@ const ja: SettingsMessages = {
   "settings.webAccess.unverifiedDevice": "未確認の名前",
   "settings.webAccess.sourceIp": "送信元 IP（サーバー側の観測値）",
   "settings.webAccess.receivedAt": "受信日時：{time}",
+  "settings.webAccess.claimExpiresIn": "要求の有効期限：残り {seconds} 秒",
+  "settings.webAccess.claimExpired": "要求の有効期限が切れました",
+  "settings.webAccess.cancelRequest": "要求を取り消す",
   "settings.webAccess.approve": "承認",
   "settings.webAccess.deny": "拒否",
   "settings.webAccess.approveConfirmTitle": "この端末を承認しますか？",
   "settings.webAccess.approveConfirmMessage":
-    "「{name}」にこの PC への接続を許可しようとしています。端末名はスマートフォンの自己申告であり、本人性の証明にはなりません。自分でこのペアリングを開始した場合にのみ承認してください。",
+    "「{name}」にこの PC への接続を許可すると、このデスクトップのライブラリ全体と読書の進行状況を閲覧・読み取りできるようになります。端末名はスマートフォンの自己申告であり、本人性の証明にはなりません。自分でこのペアリングを開始した場合にのみ承認してください。",
+  "settings.webAccess.approvePlainHttpWarning":
+    "平文の HTTP を使用中です。同じローカルネットワーク上の端末からサービスに接続できます。信頼できるネットワークと端末の場合にのみ続行してください。",
+  "settings.webAccess.cancelStart": "起動を中止",
+  "settings.webAccess.cancelingStart": "中止しています…",
   "settings.webAccess.devicesTitle": "ペアリング済み端末",
   "settings.webAccess.devicesEmpty":
-    "ペアリング済みの端末はまだありません。",
+    "ペアリング済みの端末はまだありません。ペアリング承認後にリーダーを開くと、ここに表示されます。",
+  "settings.webAccess.deviceIp": "LAN アドレス：{ip}",
+  "settings.webAccess.deviceLastActive": "最終アクティブ：{date}",
+  "settings.webAccess.devicesMemoryNote":
+    "セッションはメモリ内だけに保持されます。LAN サービスを停止するかアプリを終了すると、すべての端末が切断され消去されます。",
   "settings.webAccess.deviceIssued": "発行：{date}",
   "settings.webAccess.deviceExpires": "有効期限：{date}",
   "settings.webAccess.revoke": "取り消す",
@@ -2171,6 +2258,12 @@ const ko: SettingsMessages = {
   "settings.language.label": "표시 언어",
 
   "settings.theme.title": "외형 테마",
+  "settings.tray.title": "창 및 트레이",
+  "settings.tray.description":
+    "LAN 읽기가 실행 중일 때 기본 창을 닫아도 시스템 트레이에 남아 백그라운드에서 계속 제공할 수 있습니다.",
+  "settings.tray.closeToTray": "기본 창을 닫을 때 트레이로 최소화",
+  "settings.tray.closeToTrayHint":
+    "활성화하면 닫기(×)는 창을 숨기기만 합니다. 완전히 종료하려면 트레이 메뉴에서 종료하세요.",
   "settings.theme.description":
     "인터페이스 색상을 선택합니다. 변경은 즉시 적용되며 로컬 환경설정과 데이터베이스에 동기화됩니다.",
   "settings.theme.groupLabel": "테마 모드",
@@ -2546,13 +2639,25 @@ const ko: SettingsMessages = {
   "settings.webAccess.unverifiedDevice": "확인되지 않은 이름",
   "settings.webAccess.sourceIp": "출발지 IP(서버 관측값)",
   "settings.webAccess.receivedAt": "수신 시각: {time}",
+  "settings.webAccess.claimExpiresIn": "요청 만료까지 {seconds}초",
+  "settings.webAccess.claimExpired": "요청이 만료됨",
+  "settings.webAccess.cancelRequest": "요청 취소",
   "settings.webAccess.approve": "승인",
   "settings.webAccess.deny": "거부",
   "settings.webAccess.approveConfirmTitle": "이 기기를 승인할까요?",
   "settings.webAccess.approveConfirmMessage":
-    "'{name}' 기기가 이 PC에 연결하도록 승인하려 합니다. 기기 이름은 휴대폰이 스스로 신고한 값이라 신원을 증명하지 않습니다. 직접 이 페어링을 시작한 경우에만 승인하세요.",
+    "'{name}' 기기가 이 PC에 연결하면 이 데스크톱의 전체 서재와 읽기 진행 상황을 둘러보고 읽을 수 있습니다. 기기 이름은 휴대폰이 스스로 신고한 값이라 신원을 증명하지 않습니다. 직접 이 페어링을 시작한 경우에만 승인하세요.",
+  "settings.webAccess.approvePlainHttpWarning":
+    "암호화되지 않은 HTTP를 사용 중이며 같은 로컬 네트워크의 기기에서 서비스에 연결할 수 있습니다. 신뢰하는 네트워크와 기기에서만 계속하세요.",
+  "settings.webAccess.cancelStart": "시작 취소",
+  "settings.webAccess.cancelingStart": "취소 중…",
   "settings.webAccess.devicesTitle": "페어링된 기기",
-  "settings.webAccess.devicesEmpty": "아직 페어링된 기기가 없습니다.",
+  "settings.webAccess.devicesEmpty":
+    "아직 페어링된 기기가 없습니다. 페어링 승인 후 리더를 열면 여기에 표시됩니다.",
+  "settings.webAccess.deviceIp": "LAN 주소: {ip}",
+  "settings.webAccess.deviceLastActive": "최근 활동: {date}",
+  "settings.webAccess.devicesMemoryNote":
+    "세션은 메모리에만 보관됩니다. LAN 서비스를 중지하거나 앱을 종료하면 모든 기기가 연결 해제되고 지워집니다.",
   "settings.webAccess.deviceIssued": "발급: {date}",
   "settings.webAccess.deviceExpires": "만료: {date}",
   "settings.webAccess.revoke": "취소",

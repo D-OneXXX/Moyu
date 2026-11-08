@@ -9,6 +9,7 @@ import { privacyMessages } from "../messages/privacy";
 import { resilienceMessages } from "../messages/resilience";
 import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
+import { settingsDetailMessages } from "../messages/settingsDetail";
 import type { Messages } from "./zh-CN";
 
 export const ko = {
@@ -22,5 +23,6 @@ export const ko = {
   ...privacyMessages.ko,
   ...onlineMessages["ko"],
   ...opdsMessages.ko,
+  ...settingsDetailMessages.ko,
   ...resilienceMessages.ko,
 } satisfies Messages;

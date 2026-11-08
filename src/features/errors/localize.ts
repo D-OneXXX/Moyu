@@ -17,6 +17,11 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "db-open-failed", key: "dbRecovery.openFailed" },
   { code: "db-schema-failed", key: "dbRecovery.schemaFailed" },
   { code: "db-quick-check-failed", key: "dbRecovery.quickCheckFailed" },
+  { code: "db-settings-load-failed", key: "dbRecovery.settingsLoadFailed" },
+  {
+    code: "db-settings-normalize-failed",
+    key: "dbRecovery.settingsNormalizeFailed",
+  },
   { code: "db-already-healthy", key: "dbRecovery.unknown" },
   { code: "linux-manual-install", key: "updates.linux.manualBlocked" },
   { code: "backup-file-missing", key: "error.backupFileMissing" },
@@ -125,6 +130,12 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "invalid-page-limit", key: "error.pageInvalidLimit" },
   { code: "invalid-page-query", key: "error.pageInvalidQuery" },
   { code: "invalid-page-cursor", key: "error.pageInvalidCursor" },
+  // Task 7：皮肤素材导入（Rust 侧校验图片头与尺寸）。
+  { code: "skin-read-failed", key: "settings.skin.errorRead" },
+  { code: "skin-empty", key: "settings.skin.errorRead" },
+  { code: "skin-too-large", key: "settings.skin.errorSize" },
+  { code: "skin-unsupported-format", key: "settings.skin.errorFormat" },
+  { code: "skin-dimension-too-large", key: "settings.skin.errorDimension" },
 ];
 
 /**

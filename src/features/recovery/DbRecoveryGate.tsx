@@ -17,6 +17,8 @@ const ERROR_KEYS: Record<string, MessageKey> = {
   "db-open-failed": "dbRecovery.openFailed",
   "db-schema-failed": "dbRecovery.schemaFailed",
   "db-quick-check-failed": "dbRecovery.quickCheckFailed",
+  "db-settings-load-failed": "dbRecovery.settingsLoadFailed",
+  "db-settings-normalize-failed": "dbRecovery.settingsNormalizeFailed",
 };
 
 /**

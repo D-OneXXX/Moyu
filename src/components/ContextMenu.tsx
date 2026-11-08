@@ -4,6 +4,7 @@ import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 export interface MenuItem {
+  id: string;
   label: string;
   danger?: boolean;
   icon?: ReactNode;
@@ -114,7 +115,7 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
     >
       {items.map((item) => (
         <button
-          key={item.label}
+          key={item.id}
           type="button"
           role="menuitem"
           tabIndex={-1}

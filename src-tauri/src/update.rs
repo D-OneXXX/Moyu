@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
 // ---------- 常量 ----------
@@ -523,7 +523,7 @@ impl Drop for PartialFileGuard {
             return;
         }
         if let Some(path) = self.path.take() {
-            remove_file_quiet(&path);
+            let _ = tauri::async_runtime::spawn_blocking(move || remove_file_quiet(&path));
         }
     }
 }
@@ -634,7 +634,7 @@ pub fn last_verification() -> Option<(String, String)> {
     Some((at, status.to_string()))
 }
 
-fn begin_download() -> DownloadSession {
+async fn begin_download() -> DownloadSession {
     let (generation, cancel, previous_ready) = {
         let mut rt = runtime().lock();
         if let Some(active) = rt.active.take() {
@@ -649,7 +649,7 @@ fn begin_download() -> DownloadSession {
         (generation, cancel, rt.ready.take())
     };
     if let Some(stale) = previous_ready {
-        remove_file_quiet(&stale.path);
+        let _ = tokio::task::spawn_blocking(move || remove_file_quiet(&stale.path)).await;
     }
     DownloadSession { generation, cancel }
 }
@@ -1107,7 +1107,9 @@ pub fn cleanup_stale_artifacts() {
 }
 
 fn pending_install_path() -> Result<PathBuf, String> {
-    Ok(update_dir()?.join(PENDING_INSTALL_FILE))
+    Ok(std::env::temp_dir()
+        .join(UPDATE_DIR_NAME)
+        .join(PENDING_INSTALL_FILE))
 }
 
 fn write_pending_install(ready: &ReadyUpdate) -> Result<(), String> {
@@ -1117,8 +1119,8 @@ fn write_pending_install(ready: &ReadyUpdate) -> Result<(), String> {
         started_at: now_iso8601(),
     };
     let raw = serde_json::to_vec(&pending).map_err(|_| "无法记录更新安装状态".to_string())?;
-    std::fs::write(pending_install_path()?, raw)
-        .map_err(|error| format!("无法记录更新安装状态：{error}"))
+    let path = update_dir()?.join(PENDING_INSTALL_FILE);
+    std::fs::write(path, raw).map_err(|error| format!("无法记录更新安装状态：{error}"))
 }
 
 fn clear_pending_install() {
@@ -1296,16 +1298,13 @@ fn verify_signature_file(
     }
 }
 
-async fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|err| format!("无法读取更新安装包：{err}"))?;
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|err| format!("无法读取更新安装包：{err}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         let read = file
             .read(&mut buffer)
-            .await
             .map_err(|err| format!("无法读取更新安装包：{err}"))?;
         if read == 0 {
             break;
@@ -1484,7 +1483,9 @@ async fn perform_download(
     };
     let signature = prepare_signature(&artifact)?;
 
-    let dir = update_dir()?;
+    let dir = tokio::task::spawn_blocking(update_dir)
+        .await
+        .map_err(|_| "更新目录后台任务失败（blocking-task-failed）".to_string())??;
     let file_name = artifact_file_name(&artifact, &manifest.version_raw, session.generation);
     let path = dir.join(&file_name);
     if path.parent().map(|parent| parent == dir.as_path()) != Some(true) {
@@ -1589,7 +1590,8 @@ async fn perform_download(
         0.0,
     ) {
         if clear_ready_for_path(session.generation, &path) {
-            remove_file_quiet(&path);
+            let cleanup_path = path.clone();
+            let _ = tokio::task::spawn_blocking(move || remove_file_quiet(&cleanup_path)).await;
         }
         return Err(error);
     }
@@ -1854,7 +1856,7 @@ pub async fn download_update(
     validate_download_url(&manifest_url)?;
     let requested_kind = ArtifactKind::parse(&kind)?;
     let requested_version = Version::parse(&version).map_err(|_| "更新版本号无效".to_string())?;
-    let session = begin_download();
+    let session = begin_download().await;
     perform_download(
         &session,
         &manifest_url,
@@ -1877,7 +1879,28 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
             .ok_or_else(|| "没有可安装的更新包，请先下载".to_string())?
     };
 
-    match tokio::fs::metadata(&stored.path).await {
+    let install_artifact = stored.clone();
+    tokio::task::spawn_blocking(move || verify_and_spawn_install(&install_artifact))
+        .await
+        .map_err(|_| "更新安装后台任务失败（blocking-task-failed）".to_string())??;
+
+    {
+        let mut rt = runtime().lock();
+        if rt
+            .ready
+            .as_ref()
+            .map(|ready| ready.path == stored.path)
+            .unwrap_or(false)
+        {
+            rt.ready = None;
+        }
+    }
+    app.exit(0);
+    Ok(())
+}
+
+fn verify_and_spawn_install(stored: &StoredArtifact) -> Result<(), String> {
+    match std::fs::metadata(&stored.path) {
         Ok(meta) if meta.is_file() => {}
         Ok(_) => {
             clear_ready_path(&stored.path);
@@ -1890,7 +1913,7 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
         Err(error) => return Err(format!("无法读取更新安装包：{error}")),
     }
 
-    let digest = sha256_file(&stored.path).await?;
+    let digest = sha256_file(&stored.path)?;
     if !sha256_matches(&digest, &stored.ready.sha256) {
         record_verification_failure();
         clear_ready_path(&stored.path);
@@ -1905,19 +1928,6 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
         clear_pending_install();
         return Err(error);
     }
-
-    {
-        let mut rt = runtime().lock();
-        if rt
-            .ready
-            .as_ref()
-            .map(|ready| ready.path == stored.path)
-            .unwrap_or(false)
-        {
-            rt.ready = None;
-        }
-    }
-    app.exit(0);
     Ok(())
 }
 
@@ -1941,19 +1951,21 @@ pub fn cancel_update() {
 
 /// 返回可安装制品与下载状态，供前端重挂载后恢复。
 #[tauri::command]
-pub fn get_update_snapshot() -> UpdateSnapshot {
-    let pending_failure = take_pending_install_failure();
+pub async fn get_update_snapshot() -> Result<UpdateSnapshot, String> {
+    let pending_failure = tokio::task::spawn_blocking(take_pending_install_failure)
+        .await
+        .map_err(|_| "读取更新状态后台任务失败（blocking-task-failed）".to_string())?;
     let mut rt = runtime().lock();
     if rt.previous_failure.is_none() {
         rt.previous_failure = pending_failure;
     }
-    UpdateSnapshot {
+    Ok(UpdateSnapshot {
         ready: rt.ready.as_ref().map(|stored| stored.ready.clone()),
         downloading: rt.active.is_some(),
         last_verified_at: rt.last_verified_at.clone(),
         last_verified_kind: rt.last_verified_kind.clone(),
         previous_attempt_failed: rt.previous_failure.clone(),
-    }
+    })
 }
 
 // ---------- 测试 ----------

@@ -62,17 +62,12 @@ import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useGlobalShortcuts } from "@/features/shortcuts/useGlobalShortcuts";
 import { useScrollRestoration } from "@/features/scroll/useScrollRestoration";
 import { WEB_ACCESS_TRAY_ERROR_EVENT } from "@/features/web-access/types";
-import { useBrandIcon } from "@/features/brand/BrandIconProvider";
 import { BRAND_DISPLAY_NAME } from "@/features/brand/brand";
-import { renderTrayIconPng } from "@/features/brand/trayIcon";
-import { useTheme } from "@/features/theme/ThemeProvider";
 
 export default function AppShell() {
   const nav = useNavigate();
   const loc = useLocation();
   const { locale } = useI18n();
-  const { selection: brandIcon } = useBrandIcon();
-  const { mode: themeMode } = useTheme();
   const ws = useWorkspace();
   const { active: safeMode } = useSafeMode();
   const [lastRead, setLastRead] = useState<BookInfo | null>(null);
@@ -103,19 +98,6 @@ export default function AppShell() {
   useEffect(() => {
     void api.setTrayLocale(locale).catch(() => {});
   }, [locale]);
-
-  // Task 7 stores the brand icon in localStorage, so the main window rasterizes
-  // it (theme-aware preset SVG or custom image) and pushes a 64×64 PNG.
-  useEffect(() => {
-    let cancelled = false;
-    void renderTrayIconPng(brandIcon).then((png) => {
-      if (cancelled) return;
-      void api.setTrayIcon(png).catch(() => {});
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [brandIcon, themeMode]);
 
   // Tray start/stop can fail while the settings panel is unmounted; surface
   // the backend's stable code as a localized global toast.

@@ -3,17 +3,14 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  Check,
   Command,
   FolderOpen,
   Gauge,
   Globe2,
   HardDrive,
-  Image as ImageIcon,
   Info,
   KeyRound,
   Keyboard,
@@ -28,10 +25,8 @@ import {
   ScanLine,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
   Sun,
   Trash2,
-  Upload,
   Wifi,
   type LucideIcon,
 } from "lucide-react";
@@ -92,32 +87,13 @@ import WebAccessSummaryCard from "@/components/settings/WebAccessSummaryCard";
 import WebAccessPanel from "@/components/settings/WebAccessPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
 import DiagnosticPanel from "@/components/diagnostics/DiagnosticPanel";
-import AppBrandIcon from "@/components/shell/AppBrandIcon";
-import { useBrandIcon } from "@/features/brand/BrandIconProvider";
-import {
-  installAppIcon,
-  readAppIconState,
-  resetAppIcon,
-} from "@/features/brand/appIcon";
-import type { DesktopIconState } from "@/lib/tauri";
-import {
-  BRAND_ICON_PRESETS,
-  CustomBrandIconError,
-  loadCustomBrandIcon,
-  type BrandIconPreset,
-  type BrandIconSelection,
-  type CustomBrandIconErrorCode,
-} from "@/features/brand/brandIcon";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { recordBreadcrumb } from "@/features/resilience";
 import ErrorState from "@/components/ErrorState";
 import { APP_VERSION, BUILD_COMMIT } from "@/lib/version";
 import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
-import {
-  localizeBackendError,
-  localizeStableErrorCode,
-} from "@/features/errors/localize";
+import { localizeBackendError } from "@/features/errors/localize";
 import {
   DEFAULT_FEATURE_FLAGS,
   FEATURE_REGISTRY,
@@ -125,13 +101,6 @@ import {
   type FeatureId,
 } from "@/features/features";
 import { useShortcutsEnabled } from "@/features/shortcuts/preferences";
-import { pickSkinArtwork } from "@/features/skin/api";
-import {
-  customSkinDefinition,
-  customSkinId,
-  writePersistedCustomSkin,
-} from "@/features/skin/customSkin";
-import { useSkin } from "@/features/skin/SkinProvider";
 
 const DEFAULT_FORM: Settings = {
   theme: "system",
@@ -170,21 +139,6 @@ const THEME_OPTIONS: ReadonlyArray<{
     icon: Moon,
   },
 ];
-
-const BRAND_ICON_LABEL_KEYS: Record<BrandIconPreset, MessageKey> = {
-  moyu: "settings.desktopIcon.presetMoyu",
-  book: "settings.desktopIcon.presetBook",
-  fish: "settings.desktopIcon.presetFish",
-  moon: "settings.desktopIcon.presetMoon",
-  wave: "settings.desktopIcon.presetWave",
-};
-
-const BRAND_ICON_ERROR_KEYS: Record<CustomBrandIconErrorCode, MessageKey> = {
-  type: "settings.desktopIcon.errorType",
-  size: "settings.desktopIcon.errorSize",
-  dimension: "settings.desktopIcon.errorDimension",
-  read: "settings.desktopIcon.errorRead",
-};
 
 function normalizeTheme(value: string): ThemeMode {
   return value === "light" || value === "dark" || value === "system"
@@ -315,15 +269,6 @@ export default function SettingsPage() {
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [dashLoading, setDashLoading] = useState(true);
   const [dashError, setDashError] = useState<string | null>(null);
-  const {
-    selection: brandIcon,
-    setSelection: setBrandIcon,
-    reset: resetBrandIcon,
-  } = useBrandIcon();
-  const [brandIconBusy, setBrandIconBusy] = useState(false);
-  const [skinBusy, setSkinBusy] = useState(false);
-  const brandIconInputRef = useRef<HTMLInputElement | null>(null);
-  const { skin, skins, setSkin, addSkin } = useSkin();
   const [shortcutsEnabled, setShortcutsEnabled] = useShortcutsEnabled();
 
   // 最近一次成功读/写数据库的完整设置；保存时作为底稿保留隐藏字段。
@@ -345,119 +290,6 @@ export default function SettingsPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
   }
-
-  // 系统级图标（桌面快捷方式 / 任务栏 / 托盘）的安装状态，由后端记账。
-  const [desktopIconState, setDesktopIconState] = useState<DesktopIconState | null>(
-    null,
-  );
-
-  useEffect(() => {
-    let alive = true;
-    void readAppIconState().then(
-      (state) => {
-        if (alive) setDesktopIconState(state);
-      },
-      () => {
-        if (alive) setDesktopIconState(null);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  /**
-   * 写入偏好，并把同一个图标装进系统级位置（快捷方式 / 任务栏 / 托盘）。
-   * 偏好与系统状态分离：即使系统不支持快捷方式改写，托盘与任务栏仍然生效。
-   */
-  const commitIconSelection = useCallback(
-    async (next: BrandIconSelection) => {
-      if (!setBrandIcon(next)) {
-        toast(t("settings.desktopIcon.errorSave"));
-        return;
-      }
-      // 仅记录动作类型；绝不把自定义 data URL 写进操作轨迹。
-      recordBreadcrumb("settingsChange");
-      try {
-        setDesktopIconState(await installAppIcon(next));
-      } catch (error) {
-        toast(
-          localizeStableErrorCode(
-            error instanceof Error ? error.message : "desktop-icon-com-failed",
-          ),
-        );
-      }
-    },
-    [setBrandIcon, t],
-  );
-
-  const onBrandIconFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || brandIconBusy) return;
-    setBrandIconBusy(true);
-    try {
-      const selection = await loadCustomBrandIcon(file);
-      await commitIconSelection(selection);
-    } catch (error) {
-      const code =
-        error instanceof CustomBrandIconError ? error.code : "read";
-      toast(t(BRAND_ICON_ERROR_KEYS[code]));
-    } finally {
-      setBrandIconBusy(false);
-    }
-  };
-
-  const onResetBrandIcon = async () => {
-    if (!resetBrandIcon()) {
-      toast(t("settings.desktopIcon.errorSave"));
-      return;
-    }
-    recordBreadcrumb("settingsChange");
-    setBrandIconBusy(true);
-    try {
-      setDesktopIconState(await resetAppIcon());
-    } catch (error) {
-      toast(
-        localizeStableErrorCode(
-          error instanceof Error ? error.message : "desktop-icon-com-failed",
-        ),
-      );
-    } finally {
-      setBrandIconBusy(false);
-    }
-  };
-
-  const onImportSkin = async () => {
-    if (skinBusy) return;
-    setSkinBusy(true);
-    try {
-      const payload = await pickSkinArtwork();
-      if (!payload) return;
-      // 自定义素材是「整页画布背景」：内容视窗向内收缩，图片铺满整片窗口。
-      const id = customSkinId(payload.dataUrl);
-      const persisted = {
-        id,
-        dataUrl: payload.dataUrl,
-        width: payload.width,
-        height: payload.height,
-      };
-      addSkin(customSkinDefinition(persisted));
-      setSkin(id);
-      recordBreadcrumb("settingsChange");
-      // 持久化成功则重启后仍在；超出 localStorage 配额时只在本次会话生效。
-      const stored = writePersistedCustomSkin(persisted);
-      toast(t(stored ? "settings.skin.importDone" : "settings.skin.importSessionOnly"));
-    } catch (error) {
-      const code =
-        typeof error === "string" && error.startsWith("skin-")
-          ? error
-          : "skin-read-failed";
-      toast(localizeStableErrorCode(code));
-    } finally {
-      setSkinBusy(false);
-    }
-  };
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current;
@@ -1003,139 +835,6 @@ export default function SettingsPage() {
               }
             />
 
-            <SettingsSection
-              icon={ImageIcon}
-              title={t("settings.desktopIcon.title")}
-              description={t("settings.desktopIcon.description")}
-              summary={
-                <div className="flex items-center gap-3 rounded-xl border border-border bg-background/60 px-3 py-2.5">
-                  <AppBrandIcon className="size-8" selection={brandIcon} />
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-medium">
-                      {brandIcon.kind === "custom"
-                        ? t("settings.desktopIcon.customActive")
-                        : t(BRAND_ICON_LABEL_KEYS[brandIcon.preset])}
-                    </p>
-                    <p className="truncate text-[11px] text-muted-foreground">
-                      {t("settings.desktopIcon.current")}
-                    </p>
-                  </div>
-                </div>
-              }
-              disclosure={{
-                triggerLabel: t("settings.desktopIcon.open"),
-                triggerHint: t("settings.desktopIcon.openHint"),
-              }}
-            >
-              <input
-                ref={brandIconInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="sr-only"
-                aria-label={t("settings.desktopIcon.upload")}
-                onChange={onBrandIconFile}
-              />
-              <div
-                role="group"
-                aria-label={t("settings.desktopIcon.groupLabel")}
-                className="grid grid-cols-2 gap-2 sm:grid-cols-5"
-              >
-                {BRAND_ICON_PRESETS.map((preset) => {
-                  const active =
-                    brandIcon.kind === "preset" && brandIcon.preset === preset;
-                  return (
-                    <Button
-                      key={preset}
-                      type="button"
-                      aria-pressed={active}
-                      variant={active ? "pill-primary" : "pill"}
-                      size="pill"
-                      className="h-auto w-full min-w-0 items-center justify-start gap-2 rounded-xl px-3 py-2.5 text-left"
-                      onClick={() =>
-                        void commitIconSelection({ kind: "preset", preset })
-                      }
-                      disabled={brandIconBusy || saving}
-                    >
-                      <AppBrandIcon
-                        selection={{ kind: "preset", preset }}
-                        className="size-7 shrink-0"
-                      />
-                      <span className="min-w-0 truncate text-xs font-medium">
-                        {t(BRAND_ICON_LABEL_KEYS[preset])}
-                      </span>
-                      {active ? (
-                        <Check className="ml-auto size-3.5 shrink-0" />
-                      ) : null}
-                    </Button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="pill-sm"
-                  onClick={() => brandIconInputRef.current?.click()}
-                  disabled={brandIconBusy || saving}
-                >
-                  <Upload className="size-4" />
-                  {t(
-                    brandIcon.kind === "custom"
-                      ? "settings.desktopIcon.replace"
-                      : "settings.desktopIcon.upload",
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="pill-sm"
-                  onClick={() => void onResetBrandIcon()}
-                  disabled={
-                    brandIconBusy ||
-                    saving ||
-                    (brandIcon.kind === "preset" &&
-                      brandIcon.preset === "moyu")
-                  }
-                >
-                  <RotateCcw className="size-4" />
-                  {t("settings.desktopIcon.reset")}
-                </Button>
-                {brandIconBusy ? (
-                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                ) : null}
-              </div>
-              {/* 快捷方式状态：只显示文件名，不把完整本机路径写进界面。 */}
-              {desktopIconState ? (
-                <div className="space-y-1.5">
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    {!desktopIconState.supported
-                      ? t("settings.desktopIcon.unsupported")
-                      : desktopIconState.shortcuts.length === 0
-                        ? t("settings.desktopIcon.noShortcut")
-                        : t("settings.desktopIcon.shortcutCount", {
-                            count: desktopIconState.shortcuts.filter(
-                              (shortcut) => shortcut.updated,
-                            ).length,
-                          })}
-                  </p>
-                  {desktopIconState.shortcuts.length > 0 ? (
-                    <ul className="space-y-1">
-                      {desktopIconState.shortcuts.map((shortcut) => (
-                        <li
-                          key={shortcut.path}
-                          className="truncate text-[11px] text-muted-foreground"
-                        >
-                          {shortcut.path.split(/[\\/]/).pop()}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              ) : null}
-              <p className="text-xs leading-5 text-muted-foreground">
-                {t("settings.desktopIcon.hint")}
-              </p>
-            </SettingsSection>
 
             <SettingsSection
               icon={SlidersHorizontal}
@@ -1173,87 +872,6 @@ export default function SettingsPage() {
               }
             />
 
-            <SettingsSection
-              icon={Sparkles}
-              title={t("settings.skin.title")}
-              description={t("settings.skin.description")}
-              summary={
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary">{t(skin.nameKey)}</Badge>
-                  <span className="text-xs text-muted-foreground">
-                    {skin.tokens?.["--mr-skin-viewport-inset"] &&
-                    skin.tokens["--mr-skin-viewport-inset"] !== "0px"
-                      ? t("settings.skin.modeFramed")
-                      : t("settings.skin.modeFullscreen")}
-                  </span>
-                </div>
-              }
-              disclosure={{
-                triggerLabel: t("settings.skin.open"),
-                triggerHint: t("settings.skin.openHint"),
-                testId: "skin-open",
-              }}
-            >
-              <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
-                {skins.map((item) => {
-                  const active = item.id === skin.id;
-                  return (
-                    <div
-                      key={item.id}
-                      className="flex min-h-12 items-center gap-3 px-3.5 py-2.5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">
-                          {t(item.nameKey)}
-                        </p>
-                        {item.descriptionKey ? (
-                          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
-                            {t(item.descriptionKey)}
-                          </p>
-                        ) : null}
-                      </div>
-                      <Button
-                        type="button"
-                        variant={active ? "pill-primary" : "pill"}
-                        size="pill-sm"
-                        className="shrink-0"
-                        aria-pressed={active}
-                        disabled={active}
-                        onClick={() => setSkin(item.id)}
-                      >
-                        {active ? (
-                          <Check className="size-3.5" />
-                        ) : (
-                          <Sparkles className="size-3.5" />
-                        )}
-                        {active
-                          ? t("settings.skin.active")
-                          : t("settings.skin.apply")}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="pill-sm"
-                  disabled={skinBusy}
-                  onClick={() => void onImportSkin()}
-                >
-                  {skinBusy ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Upload className="size-3.5" />
-                  )}
-                  {t("settings.skin.import")}
-                </Button>
-                <span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
-                  {t("settings.skin.importHint")}
-                </span>
-              </div>
-            </SettingsSection>
 
             <SettingsSection
               icon={Keyboard}

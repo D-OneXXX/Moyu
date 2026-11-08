@@ -3,8 +3,6 @@
  * strings (Task 7). Kept in one module so the six dictionaries stay in sync.
  */
 const zhCN = {
-  "settings.desktopIcon.open": "更换桌面与程序图标",
-  "settings.desktopIcon.openHint": "内置图标 / 自定义上传",
 
   "settings.skin.title": "画框式界面皮肤",
   "settings.skin.description":
@@ -74,8 +72,6 @@ const zhCN = {
 };
 
 const zhTW = {
-  "settings.desktopIcon.open": "更換桌面與程式圖示",
-  "settings.desktopIcon.openHint": "內建圖示 / 自訂上傳",
 
   "settings.skin.title": "畫框式介面板",
   "settings.skin.description":
@@ -145,8 +141,6 @@ const zhTW = {
 };
 
 const en = {
-  "settings.desktopIcon.open": "Change desktop & app icons",
-  "settings.desktopIcon.openHint": "Built-in presets or your own upload",
 
   "settings.skin.title": "Framed interface skin",
   "settings.skin.description":
@@ -220,8 +214,6 @@ const en = {
 };
 
 const es = {
-  "settings.desktopIcon.open": "Cambiar iconos del escritorio y de la app",
-  "settings.desktopIcon.openHint": "Iconos integrados o tu propia imagen",
 
   "settings.skin.title": "Piel de interfaz enmarcada",
   "settings.skin.description":
@@ -296,8 +288,6 @@ const es = {
 };
 
 const ja = {
-  "settings.desktopIcon.open": "デスクトップとアプリのアイコンを変更",
-  "settings.desktopIcon.openHint": "内蔵アイコン / 独自アップロード",
 
   "settings.skin.title": "額装した外観スタイル",
   "settings.skin.description":
@@ -370,8 +360,6 @@ const ja = {
 };
 
 const ko = {
-  "settings.desktopIcon.open": "데스크톱 및 프로그램 아이콘 변경",
-  "settings.desktopIcon.openHint": "내장 아이콘 / 직접 업로드",
 
   "settings.skin.title": "액자형 인터페이스 스킨",
   "settings.skin.description":

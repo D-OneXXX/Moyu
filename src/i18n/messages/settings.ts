@@ -55,34 +55,6 @@ const zhCN = {
   "settings.theme.systemNote":
     "「跟随系统」会随操作系统的深浅色自动切换。",
 
-  "settings.desktopIcon.title": "桌面与程序图标设置",
-  "settings.desktopIcon.description":
-    "更换桌面快捷方式、任务栏与托盘的系统级图标；主界面左上角的品牌标识保持原版不变。",
-  "settings.desktopIcon.current": "当前图标",
-  "settings.desktopIcon.groupLabel": "程序图标选择",
-  "settings.desktopIcon.presetMoyu": "Moyu 原版",
-  "settings.desktopIcon.presetBook": "开卷",
-  "settings.desktopIcon.presetFish": "墨鱼",
-  "settings.desktopIcon.presetMoon": "夜读",
-  "settings.desktopIcon.presetWave": "潮汐",
-  "settings.desktopIcon.upload": "选择自定义图标",
-  "settings.desktopIcon.replace": "更换自定义图标",
-  "settings.desktopIcon.reset": "恢复默认",
-  "settings.desktopIcon.customActive": "自定义图标",
-  "settings.desktopIcon.hint":
-    "图标只保存在本机，不会上传或写入日志。支持 PNG / JPEG / WebP，文件不超过 2 MiB，单边不超过 1024 px。后端会生成 16/32/48/256 多尺寸 .ico 并改写桌面与开始菜单快捷方式。",
-  "settings.desktopIcon.errorType": "请选择 PNG、JPEG 或 WebP 图片。",
-  "settings.desktopIcon.errorSize": "图片不能超过 2 MiB。",
-  "settings.desktopIcon.errorDimension": "图片单边不能超过 1024 px。",
-  "settings.desktopIcon.errorRead": "无法读取这张图片，请换一张。",
-  "settings.desktopIcon.errorSave":
-    "无法保存图标偏好，请检查本机存储权限。",
-  "settings.desktopIcon.errorInstall": "图标安装失败，请重试。",
-  "settings.desktopIcon.shortcutCount": "已更新 {count} 个快捷方式图标",
-  "settings.desktopIcon.noShortcut":
-    "没有找到 Moyu 快捷方式；安装后可在桌面或开始菜单手动创建。",
-  "settings.desktopIcon.unsupported":
-    "当前系统不支持快捷方式图标替换，任务栏与托盘图标仍然生效。",
 
   "settings.experimental.webtoonTitle": "条漫模式",
   "settings.experimental.webtoonDescription":
@@ -490,34 +462,6 @@ const zhTW: SettingsMessages = {
   "settings.theme.systemNote":
     "「跟隨系統」會隨作業系統的深淺色自動切換。",
 
-  "settings.desktopIcon.title": "桌面與程式圖示設定",
-  "settings.desktopIcon.description":
-    "更換桌面捷徑、工作列與系統匣的系統層級圖示；主畫面左上角的品牌標誌維持原版不變。",
-  "settings.desktopIcon.current": "目前圖示",
-  "settings.desktopIcon.groupLabel": "程式圖示選擇",
-  "settings.desktopIcon.presetMoyu": "Moyu 原版",
-  "settings.desktopIcon.presetBook": "開卷",
-  "settings.desktopIcon.presetFish": "墨魚",
-  "settings.desktopIcon.presetMoon": "夜讀",
-  "settings.desktopIcon.presetWave": "潮汐",
-  "settings.desktopIcon.upload": "選擇自訂圖示",
-  "settings.desktopIcon.replace": "更換自訂圖示",
-  "settings.desktopIcon.reset": "恢復預設",
-  "settings.desktopIcon.customActive": "自訂圖示",
-  "settings.desktopIcon.hint":
-    "圖示只儲存在本機，不會上傳或寫入日誌。支援 PNG / JPEG / WebP，檔案不超過 2 MiB，單邊不超過 1024 px。後端會產生 16/32/48/256 多尺寸 .ico 並改寫桌面與開始功能表的捷徑。",
-  "settings.desktopIcon.errorType": "請選擇 PNG、JPEG 或 WebP 圖片。",
-  "settings.desktopIcon.errorSize": "圖片不能超過 2 MiB。",
-  "settings.desktopIcon.errorDimension": "圖片單邊不能超過 1024 px。",
-  "settings.desktopIcon.errorRead": "無法讀取這張圖片，請換一張。",
-  "settings.desktopIcon.errorSave":
-    "無法儲存圖示偏好，請檢查本機儲存權限。",
-  "settings.desktopIcon.errorInstall": "圖示安裝失敗，請重試。",
-  "settings.desktopIcon.shortcutCount": "已更新 {count} 個捷徑圖示",
-  "settings.desktopIcon.noShortcut":
-    "沒有找到 Moyu 捷徑；安裝後可在桌面或開始功能表手動建立。",
-  "settings.desktopIcon.unsupported":
-    "目前系統不支援捷徑圖示替換，工作列與系統匣圖示仍然生效。",
 
   "settings.experimental.webtoonTitle": "條漫模式",
   "settings.experimental.webtoonDescription":
@@ -925,36 +869,6 @@ const en: SettingsMessages = {
   "settings.theme.systemNote":
     "“System” follows your operating system's light and dark appearance automatically.",
 
-  "settings.desktopIcon.title": "Desktop & app icons",
-  "settings.desktopIcon.description":
-    "Change the system icons for the desktop shortcut, taskbar and tray. The brand mark in the top-left of the main window keeps the original artwork.",
-  "settings.desktopIcon.current": "Current icon",
-  "settings.desktopIcon.groupLabel": "App icon selection",
-  "settings.desktopIcon.presetMoyu": "Moyu original",
-  "settings.desktopIcon.presetBook": "Open book",
-  "settings.desktopIcon.presetFish": "Ink fish",
-  "settings.desktopIcon.presetMoon": "Night read",
-  "settings.desktopIcon.presetWave": "Tide",
-  "settings.desktopIcon.upload": "Choose custom icon",
-  "settings.desktopIcon.replace": "Replace custom icon",
-  "settings.desktopIcon.reset": "Restore default",
-  "settings.desktopIcon.customActive": "Custom icon",
-  "settings.desktopIcon.hint":
-    "The icon stays on this device and is never uploaded or written to logs. PNG / JPEG / WebP, up to 2 MiB, max 1024 px per side. The backend builds multi-size .ico files (16/32/48/256) and rewrites the desktop and Start Menu shortcuts.",
-  "settings.desktopIcon.errorType": "Choose a PNG, JPEG or WebP image.",
-  "settings.desktopIcon.errorSize": "The image must be 2 MiB or smaller.",
-  "settings.desktopIcon.errorDimension":
-    "Each side must be 1024 px or smaller.",
-  "settings.desktopIcon.errorRead":
-    "Could not read this image. Try another file.",
-  "settings.desktopIcon.errorSave":
-    "Could not save the icon preference. Check local storage permissions.",
-  "settings.desktopIcon.errorInstall": "Icon installation failed. Please try again.",
-  "settings.desktopIcon.shortcutCount": "Updated {count} shortcut icons",
-  "settings.desktopIcon.noShortcut":
-    "No Moyu shortcut found; you can create one on the desktop or in the Start Menu after installing.",
-  "settings.desktopIcon.unsupported":
-    "This system cannot replace shortcut icons, but the taskbar and tray icons still apply.",
 
   "settings.experimental.webtoonTitle": "Webtoon mode",
   "settings.experimental.webtoonDescription":
@@ -1378,37 +1292,6 @@ const es: SettingsMessages = {
   "settings.theme.systemNote":
     "«Sistema» sigue automáticamente el modo claro u oscuro del sistema operativo.",
 
-  "settings.desktopIcon.title": "Iconos del escritorio y de la app",
-  "settings.desktopIcon.description":
-    "Cambia los iconos del sistema para el acceso directo del escritorio, la barra de tareas y la bandeja. La marca de la esquina superior izquierda de la ventana principal conserva el arte original.",
-  "settings.desktopIcon.current": "Icono actual",
-  "settings.desktopIcon.groupLabel": "Selección del icono de la app",
-  "settings.desktopIcon.presetMoyu": "Moyu original",
-  "settings.desktopIcon.presetBook": "Libro abierto",
-  "settings.desktopIcon.presetFish": "Pez tinta",
-  "settings.desktopIcon.presetMoon": "Lectura nocturna",
-  "settings.desktopIcon.presetWave": "Marea",
-  "settings.desktopIcon.upload": "Elegir icono personalizado",
-  "settings.desktopIcon.replace": "Cambiar icono personalizado",
-  "settings.desktopIcon.reset": "Restaurar predeterminado",
-  "settings.desktopIcon.customActive": "Icono personalizado",
-  "settings.desktopIcon.hint":
-    "El icono permanece en este dispositivo y nunca se sube ni se escribe en los registros. PNG / JPEG / WebP, hasta 2 MiB y 1024 px por lado. El backend genera archivos .ico de varios tamaños (16/32/48/256) y reescribe los accesos directos del escritorio y del menú Inicio.",
-  "settings.desktopIcon.errorType": "Elige una imagen PNG, JPEG o WebP.",
-  "settings.desktopIcon.errorSize": "La imagen no puede superar 2 MiB.",
-  "settings.desktopIcon.errorDimension":
-    "Cada lado debe medir 1024 px o menos.",
-  "settings.desktopIcon.errorRead":
-    "No se pudo leer esta imagen. Prueba con otro archivo.",
-  "settings.desktopIcon.errorSave":
-    "No se pudo guardar el icono. Revisa los permisos de almacenamiento local.",
-  "settings.desktopIcon.errorInstall":
-    "La instalación del icono falló. Inténtalo de nuevo.",
-  "settings.desktopIcon.shortcutCount": "Se actualizaron {count} iconos de acceso directo",
-  "settings.desktopIcon.noShortcut":
-    "No se encontró ningún acceso directo de Moyu; puedes crear uno en el escritorio o en el menú Inicio tras instalar.",
-  "settings.desktopIcon.unsupported":
-    "Este sistema no admite el cambio de iconos de accesos directos, pero los iconos de la barra de tareas y de la bandeja siguen aplicándose.",
 
   "settings.experimental.webtoonTitle": "Modo webtoon",
   "settings.experimental.webtoonDescription":
@@ -1845,37 +1728,6 @@ const ja: SettingsMessages = {
   "settings.theme.systemNote":
     "「システム」は OS のライト / ダークに合わせて自動で切り替わります。",
 
-  "settings.desktopIcon.title": "デスクトップとアプリのアイコン",
-  "settings.desktopIcon.description":
-    "デスクトップのショートカット、タスクバー、トレイのシステムアイコンを変更します。メイン画面左上のブランドマークは原版のままです。",
-  "settings.desktopIcon.current": "現在のアイコン",
-  "settings.desktopIcon.groupLabel": "アプリアイコンの選択",
-  "settings.desktopIcon.presetMoyu": "Moyu 原版",
-  "settings.desktopIcon.presetBook": "開いた本",
-  "settings.desktopIcon.presetFish": "墨魚",
-  "settings.desktopIcon.presetMoon": "夜読み",
-  "settings.desktopIcon.presetWave": "潮汐",
-  "settings.desktopIcon.upload": "カスタムアイコンを選択",
-  "settings.desktopIcon.replace": "カスタムアイコンを変更",
-  "settings.desktopIcon.reset": "既定に戻す",
-  "settings.desktopIcon.customActive": "カスタムアイコン",
-  "settings.desktopIcon.hint":
-    "アイコンはこの端末にのみ保存され、アップロードやログ出力は行いません。PNG / JPEG / WebP、2 MiB 以下、各辺 1024 px 以下。バックエンドが 16/32/48/256 の複数サイズの .ico を生成し、デスクトップとスタートメニューのショートカットを書き換えます。",
-  "settings.desktopIcon.errorType":
-    "PNG、JPEG、WebP の画像を選択してください。",
-  "settings.desktopIcon.errorSize": "画像は 2 MiB 以下にしてください。",
-  "settings.desktopIcon.errorDimension": "各辺は 1024 px 以下にしてください。",
-  "settings.desktopIcon.errorRead":
-    "この画像を読み取れません。別のファイルをお試しください。",
-  "settings.desktopIcon.errorSave":
-    "アイコン設定を保存できません。ローカルストレージの権限を確認してください。",
-  "settings.desktopIcon.errorInstall":
-    "アイコンのインストールに失敗しました。もう一度お試しください。",
-  "settings.desktopIcon.shortcutCount": "{count} 個のショートカットアイコンを更新しました",
-  "settings.desktopIcon.noShortcut":
-    "Moyu のショートカットが見つかりません。インストール後にデスクトップまたはスタートメニューで作成してください。",
-  "settings.desktopIcon.unsupported":
-    "このシステムではショートカットアイコンの差し替えはできませんが、タスクバーとトレイのアイコンは引き続き適用されます。",
 
   "settings.experimental.webtoonTitle": "Webtoon モード",
   "settings.experimental.webtoonDescription":
@@ -2310,37 +2162,6 @@ const ko: SettingsMessages = {
   "settings.theme.systemNote":
     "「시스템」은 운영체제의 라이트/다크 모드를 자동으로 따릅니다.",
 
-  "settings.desktopIcon.title": "데스크톱 및 프로그램 아이콘",
-  "settings.desktopIcon.description":
-    "데스크톱 바로 가기, 작업 표시줄, 트레이의 시스템 아이콘을 바꿉니다. 메인 창 왼쪽 위 브랜드 표시는 원본 그대로 유지됩니다.",
-  "settings.desktopIcon.current": "현재 아이콘",
-  "settings.desktopIcon.groupLabel": "프로그램 아이콘 선택",
-  "settings.desktopIcon.presetMoyu": "Moyu 원본",
-  "settings.desktopIcon.presetBook": "펼친 책",
-  "settings.desktopIcon.presetFish": "먹물고기",
-  "settings.desktopIcon.presetMoon": "밤 읽기",
-  "settings.desktopIcon.presetWave": "조수",
-  "settings.desktopIcon.upload": "사용자 아이콘 선택",
-  "settings.desktopIcon.replace": "사용자 아이콘 변경",
-  "settings.desktopIcon.reset": "기본값 복원",
-  "settings.desktopIcon.customActive": "사용자 아이콘",
-  "settings.desktopIcon.hint":
-    "아이콘은 이 기기에만 저장되며 업로드되거나 로그에 기록되지 않습니다. PNG / JPEG / WebP, 2 MiB 이하, 각 변 1024 px 이하. 백엔드가 16/32/48/256 여러 크기의 .ico 를 만들고 데스크톱과 시작 메뉴 바로 가기를 다시 씁니다.",
-  "settings.desktopIcon.errorType":
-    "PNG, JPEG 또는 WebP 이미지를 선택하세요.",
-  "settings.desktopIcon.errorSize": "이미지는 2 MiB 이하여야 합니다.",
-  "settings.desktopIcon.errorDimension": "각 변은 1024 px 이하여야 합니다.",
-  "settings.desktopIcon.errorRead":
-    "이미지를 읽을 수 없습니다. 다른 파일을 선택하세요.",
-  "settings.desktopIcon.errorSave":
-    "아이콘 설정을 저장할 수 없습니다. 로컬 저장소 권한을 확인하세요.",
-  "settings.desktopIcon.errorInstall":
-    "아이콘 설치에 실패했습니다. 다시 시도하세요.",
-  "settings.desktopIcon.shortcutCount": "바로 가기 아이콘 {count}개를 업데이트했습니다",
-  "settings.desktopIcon.noShortcut":
-    "Moyu 바로 가기를 찾지 못했습니다. 설치 후 데스크톱이나 시작 메뉴에서 직접 만드세요.",
-  "settings.desktopIcon.unsupported":
-    "이 시스템은 바로 가기 아이콘 교체를 지원하지 않지만 작업 표시줄과 트레이 아이콘은 계속 적용됩니다.",
 
   "settings.experimental.webtoonTitle": "웹툰 모드",
   "settings.experimental.webtoonDescription":

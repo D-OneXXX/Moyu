@@ -255,34 +255,6 @@ function skinRule(): Rule {
   };
 }
 
-/**
- * 应用图标偏好：与 `features/brand/brandIcon.ts` 的 schema 保持一致。
- * 清洗器必须保持零导入，才能被 static QA 直接转译执行；两处规则需同步维护。
- */
-const BRAND_ICON_PRESETS = new Set(["moyu", "book", "fish", "moon", "wave"]);
-const BRAND_ICON_DATA_URL =
-  /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
-const MAX_BRAND_ICON_DATA_URL_CHARS = 2_800_000;
-
-function canonicalBrandIcon(parsed: unknown): unknown | null {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const record = parsed as Record<string, unknown>;
-  if (record.kind === "preset") {
-    return typeof record.preset === "string" &&
-      BRAND_ICON_PRESETS.has(record.preset)
-      ? parsed
-      : null;
-  }
-  if (record.kind === "custom") {
-    return typeof record.dataUrl === "string" &&
-      record.dataUrl.length <= MAX_BRAND_ICON_DATA_URL_CHARS &&
-      BRAND_ICON_DATA_URL.test(record.dataUrl)
-      ? parsed
-      : null;
-  }
-  return null;
-}
-
 /** 在线连通性记录：与 lib/onlineLastTest.ts 的 readOnlineLastTest 保持一致。 */
 function canonicalOnlineLastTest(parsed: unknown): unknown | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -367,7 +339,6 @@ const KEY_RULES: Record<string, Rule> = {
   // 隐私弹窗确认标记：内容任意，但长度有上限（正常形如 "2026-10:0"）。
   "mr-privacy-ack": textRule(128, "隐私确认标记"),
   // 品牌图标偏好：预设 id 或受控 data URL；结构非法回落到默认预设。
-  "mr-brand-icon": jsonRule("品牌图标", canonicalBrandIcon),
   // JSON 键：解析失败即删，结构合法则规范化。
   "mr-online-last-test": jsonRule("在线连通性记录", canonicalOnlineLastTest),
   "mr-browser-recents": jsonRule("浏览器最近访问", canonicalRecents),

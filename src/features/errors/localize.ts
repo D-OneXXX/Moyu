@@ -139,23 +139,6 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "skin-too-large", key: "settings.skin.errorSize" },
   { code: "skin-unsupported-format", key: "settings.skin.errorFormat" },
   { code: "skin-dimension-too-large", key: "settings.skin.errorDimension" },
-  // Task 7：桌面 / 任务栏图标安装（Rust 侧校验大小、魔数与 Shell Link 改写）。
-  {
-    code: "desktop-icon-too-large",
-    key: "settings.desktopIcon.errorSize",
-  },
-  { code: "desktop-icon-empty", key: "settings.desktopIcon.errorRead" },
-  {
-    code: "desktop-icon-unsupported-format",
-    key: "settings.desktopIcon.errorType",
-  },
-  { code: "desktop-icon-decode-failed", key: "settings.desktopIcon.errorRead" },
-  { code: "desktop-icon-encode-failed", key: "settings.desktopIcon.errorRead" },
-  { code: "desktop-icon-com-failed", key: "settings.desktopIcon.errorInstall" },
-  {
-    code: "desktop-icon-path-unavailable",
-    key: "settings.desktopIcon.errorInstall",
-  },
 ];
 
 /**

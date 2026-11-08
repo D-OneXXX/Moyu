@@ -325,6 +325,11 @@ fn shortcut_roots() -> Vec<PathBuf> {
     if let Some(desktop) = dirs::desktop_dir() {
         roots.push(desktop);
     }
+    // 公共桌面（`C:\Users\Public\Desktop`）与用户桌面在资源管理器里是同一个
+    // 「桌面」，但安装器把快捷方式放在公共桌面。只扫用户桌面会漏掉它。
+    if let Some(public) = std::env::var_os("PUBLIC") {
+        roots.push(PathBuf::from(public).join("Desktop"));
+    }
     if let Some(roaming) = dirs::data_dir() {
         roots.push(
             roaming
@@ -608,5 +613,20 @@ mod tests {
             r"C:\Users\x\Desktop\Other.lnk"
         )));
         assert!(!is_moyu_shortcut(Path::new(r"C:\Users\x\Desktop\Moyu.txt")));
+    }
+
+    #[test]
+    fn shortcut_roots_include_the_public_desktop() {
+        // 安装器把快捷方式放在公共桌面；只扫用户桌面会漏掉它。
+        if std::env::var_os("PUBLIC").is_none() {
+            return;
+        }
+        let roots = shortcut_roots();
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.ends_with("Desktop") && root.to_string_lossy().contains("Public")),
+            "the public desktop must be scanned: {roots:?}",
+        );
     }
 }

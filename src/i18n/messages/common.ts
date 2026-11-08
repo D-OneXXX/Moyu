@@ -91,6 +91,8 @@ const zhCN = {
   "dbRecovery.quickCheckFailed": "书库数据库完整性检查未通过。",
   "dbRecovery.settingsNormalizeFailed":
     "恢复后书库设置规范化失败。（db-settings-normalize-failed）",
+  "dbRecovery.settingsLoadFailed":
+    "无法安全读取本地书库设置，已阻止启动或恢复。（db-settings-load-failed）",
   "dbRecovery.unknown": "数据库状态异常。",
   "dbRecovery.hint":
     "损坏的数据库不会被删除；恢复前会将它隔离为 .corrupt 备份。可选择 .mrbackup 恢复，或打开数据目录手动处理。",
@@ -294,6 +296,8 @@ const zhTW: CommonMessages = {
   "dbRecovery.quickCheckFailed": "書庫資料庫完整性檢查未通過。",
   "dbRecovery.settingsNormalizeFailed":
     "還原後書庫設定正規化失敗。（db-settings-normalize-failed）",
+  "dbRecovery.settingsLoadFailed":
+    "無法安全讀取本機書庫設定，已阻止啟動或還原。（db-settings-load-failed）",
   "dbRecovery.unknown": "資料庫狀態異常。",
   "dbRecovery.hint":
     "損壞的資料庫不會被刪除；恢復前會將它隔離為 .corrupt 備份。可選擇 .mrbackup 還原，或開啟資料目錄手動處理。",
@@ -498,6 +502,8 @@ const en: CommonMessages = {
     "The library database failed its integrity check.",
   "dbRecovery.settingsNormalizeFailed":
     "Library settings could not be normalized after restore. (db-settings-normalize-failed)",
+  "dbRecovery.settingsLoadFailed":
+    "Library settings could not be read safely; startup or restore was blocked. (db-settings-load-failed)",
   "dbRecovery.unknown": "The database is in an unexpected state.",
   "dbRecovery.hint":
     "The damaged database will not be deleted. It will be quarantined as a .corrupt backup before recovery. Choose a .mrbackup to restore, or open the data folder to handle it manually.",
@@ -716,6 +722,8 @@ const es: CommonMessages = {
   "dbRecovery.unknown": "La base de datos está en un estado inesperado.",
   "dbRecovery.settingsNormalizeFailed":
     "No se pudieron normalizar los ajustes de la biblioteca tras restaurarla. (db-settings-normalize-failed)",
+  "dbRecovery.settingsLoadFailed":
+    "No se pudieron leer los ajustes de forma segura; se bloqueó el inicio o la restauración. (db-settings-load-failed)",
   "dbRecovery.hint":
     "La base de datos dañada no se eliminará. Se pondrá en cuarentena como copia .corrupt antes de restaurar. Elige un .mrbackup para restaurar o abre la carpeta de datos para gestionarla manualmente.",
   "dbRecovery.recover": "Restaurar base de datos desde .mrbackup",
@@ -952,6 +960,8 @@ const ja: CommonMessages = {
   "dbRecovery.unknown": "データベースの状態が異常です。",
   "dbRecovery.settingsNormalizeFailed":
     "復元後にライブラリ設定を正規化できませんでした。（db-settings-normalize-failed）",
+  "dbRecovery.settingsLoadFailed":
+    "ライブラリ設定を安全に読み取れないため、起動または復元を停止しました。（db-settings-load-failed）",
   "dbRecovery.hint":
     "破損したデータベースは削除しません。復元前に .corrupt バックアップとして隔離します。.mrbackup を選んで復元するか、データフォルダーを開いて手動で対処してください。",
   "dbRecovery.recover": ".mrbackup からデータベースを復元",
@@ -1182,6 +1192,8 @@ const ko: CommonMessages = {
   "dbRecovery.unknown": "데이터베이스 상태가 비정상입니다.",
   "dbRecovery.settingsNormalizeFailed":
     "복원 후 라이브러리 설정을 정규화하지 못했습니다. (db-settings-normalize-failed)",
+  "dbRecovery.settingsLoadFailed":
+    "라이브러리 설정을 안전하게 읽을 수 없어 시작 또는 복원을 중단했습니다. (db-settings-load-failed)",
   "dbRecovery.hint":
     "손상된 데이터베이스는 삭제하지 않습니다. 복구 전에 .corrupt 백업으로 격리합니다. .mrbackup을 선택해 복원하거나 데이터 폴더를 열어 직접 처리하세요.",
   "dbRecovery.recover": ".mrbackup에서 데이터베이스 복원",

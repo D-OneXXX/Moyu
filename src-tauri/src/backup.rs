@@ -280,7 +280,11 @@ pub async fn import_backup(
     let refresh_state = state.inner().clone();
     let settings = tokio::task::spawn_blocking(move || load_settings_after_restore(&refresh_state))
         .await
-        .map_err(|e| format!("后台任务失败：{e}"))??;
+        .map_err(|e| format!("后台任务失败：{e}"))?
+        .map_err(|error| {
+            state.set_db_error(error.code());
+            format!("恢复后书库设置无法安全加载（{}）", error.code())
+        })?;
     apply_restored_settings(state.inner(), settings);
     Ok(result)
 }
@@ -343,20 +347,21 @@ pub async fn recover_database_from_backup(
 fn install_recovered_database(
     state: &AppState,
     conn: Connection,
-    settings: Result<crate::Settings, String>,
+    settings: Result<crate::Settings, SettingsLoadError>,
 ) -> Result<(), String> {
     let settings = settings.map_err(|error| {
-        state.set_db_error("db-settings-normalize-failed");
-        crate::logging::log_error(
-            "backup",
-            "启动恢复后设置规范化失败（db-settings-normalize-failed）",
-        );
-        format!("恢复后书库设置规范化失败（db-settings-normalize-failed）：{error}")
+        let code = error.code();
+        state.set_db_error(code);
+        let message = match error {
+            SettingsLoadError::Read => "启动恢复后读取书库设置失败",
+            SettingsLoadError::Normalize => "启动恢复后规范化书库设置失败",
+        };
+        crate::logging::log_error("backup", &format!("{message}（{code}）"));
+        format!("{message}（{code}）")
     })?;
 
     state.db.set(conn);
     apply_restored_settings(state, settings);
-    state.clear_db_error();
     Ok(())
 }
 
@@ -544,14 +549,34 @@ fn recover_from_backup_blocking(
 }
 
 /// 恢复后回读设置并修复越界值。调用方必须在 blocking pool 中执行。
-fn load_settings_after_restore(state: &AppState) -> Result<crate::Settings, String> {
-    state.db.with(load_settings_from_connection)
+fn load_settings_after_restore(state: &AppState) -> Result<crate::Settings, SettingsLoadError> {
+    let result = state
+        .db
+        .with(|conn| Ok(load_settings_from_connection(conn)))
+        .map_err(|_| SettingsLoadError::Read)?;
+    result
 }
 
-fn load_settings_from_connection(conn: &Connection) -> Result<crate::Settings, String> {
+#[derive(Debug)]
+enum SettingsLoadError {
+    Read,
+    Normalize,
+}
+
+impl SettingsLoadError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Read => "db-settings-load-failed",
+            Self::Normalize => "db-settings-normalize-failed",
+        }
+    }
+}
+
+fn load_settings_from_connection(conn: &Connection) -> Result<crate::Settings, SettingsLoadError> {
     let mut settings = crate::Settings::default();
-    crate::hydrate_settings(conn, &mut settings);
-    crate::versioning::normalize_settings(conn, &mut settings).map_err(|e| e.to_string())?;
+    crate::hydrate_settings(conn, &mut settings).map_err(|_| SettingsLoadError::Read)?;
+    crate::versioning::normalize_settings(conn, &mut settings)
+        .map_err(|_| SettingsLoadError::Normalize)?;
     Ok(settings)
 }
 
@@ -567,6 +592,7 @@ fn apply_restored_settings(state: &AppState, settings: crate::Settings) {
     state.render.clear_all();
     state.online_cache.clear_all();
     state.invalidate_sources();
+    state.clear_db_error();
 }
 
 // ---------- 导出（阻塞、可单测） ----------
@@ -1559,7 +1585,7 @@ mod tests {
         let worker_state = Arc::clone(&state);
         let (settings, worker_thread) = tokio::task::spawn_blocking(move || {
             let settings = load_settings_after_restore(&worker_state)?;
-            Ok::<_, String>((settings, std::thread::current().id()))
+            Ok::<_, SettingsLoadError>((settings, std::thread::current().id()))
         })
         .await
         .expect("blocking settings refresh joins")
@@ -1699,6 +1725,34 @@ mod tests {
         );
         assert!(state.db.with(|_| Ok(())).is_err(), "失败时不得安装恢复库");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn settings_read_failure_keeps_database_recovery_gate_closed() {
+        let conn = Connection::open_in_memory().expect("open empty in-memory database");
+        let settings = load_settings_from_connection(&conn);
+        assert!(matches!(settings, Err(SettingsLoadError::Read)));
+
+        let state = AppState::new();
+        state.set_db_error("db-quick-check-failed");
+        let error = install_recovered_database(&state, conn, settings).unwrap_err();
+        assert!(error.contains("db-settings-load-failed"));
+        assert_eq!(
+            state.db_error_code().as_deref(),
+            Some("db-settings-load-failed")
+        );
+        assert!(
+            state.db.with(|_| Ok(())).is_err(),
+            "failed read must not install the database"
+        );
+    }
+
+    #[test]
+    fn applying_restored_settings_clears_the_recovery_gate() {
+        let state = AppState::new();
+        state.set_db_error("db-settings-load-failed");
+        apply_restored_settings(&state, crate::Settings::default());
+        assert!(state.db_error_code().is_none());
     }
 
     fn temp_dir(tag: &str) -> PathBuf {

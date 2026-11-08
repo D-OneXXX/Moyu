@@ -61,7 +61,13 @@ impl<K: Hash + Eq + Clone> ByteLru<K> {
             }
         }
         self.bytes += size as u64;
-        self.inner.put(k, (page, size));
+        // `put` discards an entry evicted by the entry-count limit, which
+        // would leave the byte total inflated. `push` returns either the
+        // replaced entry or the capacity-evicted LRU entry so accounting
+        // remains tied to the values actually resident in the cache.
+        if let Some((_, (_, evicted_size))) = self.inner.push(k, (page, size)) {
+            self.bytes = self.bytes.saturating_sub(evicted_size as u64);
+        }
     }
 
     fn set_limit(&mut self, limit_bytes: u64) {
@@ -259,6 +265,23 @@ mod tests {
         assert!(lru.get(&"a".to_string()).is_some());
         assert!(lru.get(&"c".to_string()).is_some());
         assert!(lru.bytes <= 1000);
+    }
+
+    #[test]
+    fn entry_capacity_eviction_keeps_byte_accounting_in_sync() {
+        // ByteLru enforces a minimum capacity of 16 entries.
+        let mut lru: ByteLru<u32> = ByteLru::new(10_000, 16);
+        for key in 0..25 {
+            lru.put(key, fake_page(400));
+        }
+
+        let resident_bytes: u64 = lru.inner.iter().map(|(_, (_, size))| *size as u64).sum();
+        assert_eq!(lru.inner.len(), 16);
+        assert_eq!(lru.bytes, resident_bytes);
+        assert!(lru.bytes <= lru.limit);
+        assert!(lru.get(&8).is_none());
+        assert!(lru.get(&9).is_some());
+        assert!(lru.get(&24).is_some());
     }
 
     #[test]

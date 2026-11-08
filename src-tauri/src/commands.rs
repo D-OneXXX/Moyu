@@ -1536,12 +1536,12 @@ pub async fn get_thumbnail(
     let st = state.inner().clone();
     let book = book_id.clone();
     let rendered = match blocking(move || {
-        // L2 磁盘复用同一套渲染缓存（键 = 首页 + edge 桶）。
-        if let Some(bytes) = st.render.get(&book, 0, edge, edge) {
+        // 封面有独立的 L2 命名空间，不与普通第 1 页共用尺寸键。
+        if let Some(bytes) = st.render.get_cover(&book, edge) {
             match assembled_page(bytes, 0, 0) {
                 Ok(page) => return Ok(page),
                 Err(e) => {
-                    st.render.remove_page(&book, 0, edge, edge);
+                    st.render.remove_cover(&book, edge);
                     crate::logging::log_error(
                         "get_thumbnail",
                         &format!("封面 L2 缓存损坏，已丢弃并重建：{e}"),
@@ -1554,7 +1554,7 @@ pub async fn get_thumbnail(
         let raw_bytes = raw.bytes.len();
         let page = pipeline::render_raw(&raw, Some(edge), Some(edge))?;
         st.cache_if_current(cache_epoch, || {
-            st.render.put(&book, 0, edge, edge, &page.bytes)
+            st.render.put_cover(&book, edge, &page.bytes)
         });
         st.note_cache_write(raw_bytes.saturating_add(page.bytes.len()));
         Ok(page)
@@ -1580,7 +1580,7 @@ pub async fn get_thumbnail(
     Ok(to_page_image(0, rendered))
 }
 
-/// PDF 封面读取：固定边长（[`pdf::PDF_COVER_EDGE`]）的 L2 缓存成品。
+/// PDF 封面读取：独立封面命名空间中的固定边长（[`pdf::PDF_COVER_EDGE`]）缓存成品。
 ///
 /// 与图片书不同：PDF 没有首页图，封面由前端 PDF.js 渲染后经
 /// `put_pdf_thumbnail` 写回缓存。缓存缺失时返回稳定错误码
@@ -1589,10 +1589,7 @@ async fn pdf_thumbnail(state: &Arc<AppState>, book_id: &str) -> Result<PageImage
     let st = state.clone();
     let book = book_id.to_string();
     let rendered = blocking(move || -> Result<RenderedPage, BackendError> {
-        let Some(bytes) = st
-            .render
-            .get_raw(&book, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE)
-        else {
+        let Some(bytes) = st.render.get_cover_raw(&book, pdf::PDF_COVER_EDGE) else {
             return Err(BackendError::Msg(
                 "PDF 封面尚未生成（pdf-cover-missing）".into(),
             ));
@@ -1601,8 +1598,7 @@ async fn pdf_thumbnail(state: &Arc<AppState>, book_id: &str) -> Result<PageImage
             Ok(page) => Ok(page),
             Err(error) => {
                 // 坏缓存自愈：删掉后让前端重新生成封面。
-                st.render
-                    .remove_page(&book, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE);
+                st.render.remove_cover(&book, pdf::PDF_COVER_EDGE);
                 Err(error)
             }
         }
@@ -1719,8 +1715,8 @@ async fn set_book_page_count_blocking(
 /// 写入 PDF 封面（PDF-2）：前端 PDF.js 渲染首页后回传缓存。
 ///
 /// - 只允许 PDF 书；
-/// - base64 解码后必须 ≤ 2 MiB，且必须是 JPEG / PNG（任意字节不得进缓存）；
-/// - 以**固定边长**（[`pdf::PDF_COVER_EDGE`]）落 L2 渲染缓存的第 0 页，
+/// - base64 解码后必须 ≤ 2 MiB，且必须是 JPEG（历史 PNG 只在读取路径兼容）；
+/// - 以**固定边长**（[`pdf::PDF_COVER_EDGE`]）落 L2 封面命名空间，
 ///   与 `get_thumbnail` 的读取键严格一致（不受 `max_size` 影响）。
 #[tauri::command]
 pub async fn put_pdf_thumbnail(
@@ -1781,21 +1777,21 @@ fn decode_base64_lenient(raw: &str) -> Option<Vec<u8>> {
     })
 }
 
-/// 把校验过的 PDF 封面字节写入 L2 渲染缓存（第 0 页，固定边长）。
+/// 把校验过的 PDF 封面字节写入 L2 独立封面命名空间（固定边长）。
 fn store_pdf_cover(st: &Arc<AppState>, book_id: &str, bytes: &[u8]) -> Result<(), BackendError> {
     pdf::validate_pdf_cover(bytes)?;
-    st.render
-        .put(book_id, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE, bytes);
+    st.render.put_cover(book_id, pdf::PDF_COVER_EDGE, bytes);
     st.note_cache_write(bytes.len());
     Ok(())
 }
 
-/// 清空缩略图缓存（内存 LRU + 磁盘首页成品），重新进入书库自动重建。
+/// 清空封面缩略图缓存（内存 LRU + 磁盘独立封面命名空间），重新进入书库自动重建。
 /// 设置页「重新生成缩略图」按钮的数据面。
 #[tauri::command]
 pub async fn clear_thumbnail_cache(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
     state.cache.clear_thumbs();
-    let n = state.render.clear_thumb_files();
+    let render = state.render.clone();
+    let n = blocking(move || Ok::<_, BackendError>(render.clear_thumb_files())).await?;
     crate::logging::log_error(
         "clear_thumbnail_cache",
         &format!("已清除 {n} 个封面缓存文件"),
@@ -5692,8 +5688,7 @@ mod tests {
 
     /// 非 JPEG 字节与超限载荷一律拒绝；合法 JPEG 能落缓存并原样读回。
     ///
-    /// 写回**只收 JPEG**：L2 缓存文件名固定 `.jpg`，PNG 会被 `RenderCache::get`
-    /// 当成坏缓存删掉，等于静默丢封面（详见 `pdf::validate_pdf_cover` 的注释）。
+    /// 写回**只收 JPEG**；独立封面缓存以原始字节读取，PNG 仍只在读取路径兼容历史条目。
     #[test]
     fn pdf_cover_rejects_non_image_bytes_and_oversized_payloads() {
         let (state, dir) = pdf_test_state("pdf-cover");
@@ -5721,16 +5716,16 @@ mod tests {
         let err = store_pdf_cover(&state, book, &[]).unwrap_err().to_string();
         assert!(err.contains("pdf-cover-invalid"), "got: {err}");
 
-        // 合法 JPEG → 写入固定边长的第 0 页，并能原样读回。
+        // 合法 JPEG → 写入固定边长的封面命名空间，并能原样读回。
         let jpeg = tiny_jpeg();
         store_pdf_cover(&state, book, &jpeg).unwrap();
         let stored = state
             .render
-            .get_raw(book, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE)
-            .expect("封面必须落在固定边长的第 0 页");
+            .get_cover_raw(book, pdf::PDF_COVER_EDGE)
+            .expect("封面必须落在独立封面命名空间");
         assert_eq!(stored, jpeg, "封面字节必须原样落盘");
         // 其它边长读不到（固定边长是唯一键）。
-        assert!(state.render.get_raw(book, 0, 240, 240).is_none());
+        assert!(state.render.get_cover_raw(book, 240).is_none());
 
         // 读回后能解析尺寸并组装成 PageImage。
         let page = pdf_cover_page(stored).unwrap();

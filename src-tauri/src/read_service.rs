@@ -316,10 +316,10 @@ pub(crate) fn thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset,
         return Err(DataError::ThumbMissing);
     }
     let edge = WEB_THUMB_EDGE;
-    if let Some(bytes) = state.render.get(id, 0, edge, edge) {
+    if let Some(bytes) = state.render.get_cover(id, edge) {
         match assembled_asset(bytes, 0, 0, false) {
             Ok(asset) => return Ok(asset),
-            Err(_) => state.render.remove_page(id, 0, edge, edge),
+            Err(_) => state.render.remove_cover(id, edge),
         }
     }
 
@@ -327,7 +327,7 @@ pub(crate) fn thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset,
     let rendered = pipeline::render_raw_asset(&raw, Some(edge), Some(edge), false)
         .map_err(|_| DataError::SourceMissing)?;
     state.cache_if_current(cache_epoch, || {
-        state.render.put(id, 0, edge, edge, &rendered.bytes)
+        state.render.put_cover(id, edge, &rendered.bytes)
     });
     state.note_cache_write(raw.bytes.len().saturating_add(rendered.bytes.len()));
     Ok(asset_from_rendered(rendered, false))
@@ -738,10 +738,7 @@ fn assembled_asset(
 }
 
 fn pdf_thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataError> {
-    let Some(bytes) = state
-        .render
-        .get_raw(id, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE)
-    else {
+    let Some(bytes) = state.render.get_cover_raw(id, pdf::PDF_COVER_EDGE) else {
         return Err(DataError::ThumbMissing);
     };
     match pdf::validate_pdf_cover_read(&bytes) {
@@ -762,9 +759,7 @@ fn pdf_thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataEr
             })
         }
         Err(_) => {
-            state
-                .render
-                .remove_page(id, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE);
+            state.render.remove_cover(id, pdf::PDF_COVER_EDGE);
             Err(DataError::ThumbMissing)
         }
     }
@@ -1706,16 +1701,14 @@ mod tests {
             0,
         );
 
-        state.render.remove_page(&image, 0, 256, 256);
+        state.render.remove_cover(&image, 256);
         let thumb = thumb_asset(&state, &image).expect("image thumb");
         assert!(thumb.data_url.is_none());
         assert!(thumb.bytes.starts_with(&[0xFF, 0xD8]));
         assert_eq!(thumb.width, 40);
 
-        state.render.put(
+        state.render.put_cover(
             &pdf,
-            0,
-            crate::pdf::PDF_COVER_EDGE,
             crate::pdf::PDF_COVER_EDGE,
             &jpeg_bytes(crate::pdf::PDF_COVER_EDGE, crate::pdf::PDF_COVER_EDGE),
         );
@@ -1723,73 +1716,38 @@ mod tests {
         assert!(cover.data_url.is_none());
         assert_eq!(cover.mime, "image/jpeg");
         assert!(cover.bytes.starts_with(&[0xFF, 0xD8]));
-        state.render.remove_page(
-            &pdf,
-            0,
-            crate::pdf::PDF_COVER_EDGE,
-            crate::pdf::PDF_COVER_EDGE,
-        );
+        state.render.remove_cover(&pdf, crate::pdf::PDF_COVER_EDGE);
 
         // Legacy PNG covers are readable and must not be deleted as "corrupt".
-        state.render.put(
-            &pdf,
-            0,
-            crate::pdf::PDF_COVER_EDGE,
-            crate::pdf::PDF_COVER_EDGE,
-            &png_bytes(256, 256),
-        );
+        state
+            .render
+            .put_cover(&pdf, crate::pdf::PDF_COVER_EDGE, &png_bytes(256, 256));
         let png_cover = thumb_asset(&state, &pdf).expect("pdf png cover");
         assert_eq!(png_cover.mime, "image/png");
         assert!(state
             .render
-            .get_raw(
-                &pdf,
-                0,
-                crate::pdf::PDF_COVER_EDGE,
-                crate::pdf::PDF_COVER_EDGE
-            )
+            .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)
             .is_some());
-        state.render.remove_page(
-            &pdf,
-            0,
-            crate::pdf::PDF_COVER_EDGE,
-            crate::pdf::PDF_COVER_EDGE,
-        );
+        state.render.remove_cover(&pdf, crate::pdf::PDF_COVER_EDGE);
 
-        state.render.put(
-            &pdf,
-            0,
-            crate::pdf::PDF_COVER_EDGE,
-            crate::pdf::PDF_COVER_EDGE,
-            b"not an image",
-        );
+        state
+            .render
+            .put_cover(&pdf, crate::pdf::PDF_COVER_EDGE, b"not an image");
         assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
         assert!(state
             .render
-            .get_raw(
-                &pdf,
-                0,
-                crate::pdf::PDF_COVER_EDGE,
-                crate::pdf::PDF_COVER_EDGE
-            )
+            .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)
             .is_none());
 
-        state.render.put(
+        state.render.put_cover(
             &pdf,
-            0,
-            crate::pdf::PDF_COVER_EDGE,
             crate::pdf::PDF_COVER_EDGE,
             &crate::pdf::fixtures::png_header(5000, 5000),
         );
         assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
         assert!(state
             .render
-            .get_raw(
-                &pdf,
-                0,
-                crate::pdf::PDF_COVER_EDGE,
-                crate::pdf::PDF_COVER_EDGE
-            )
+            .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)
             .is_none());
     }
 
@@ -2409,10 +2367,7 @@ mod tests {
         assert_eq!(layout_read_only(&state, &id), Err(DataError::NotFound));
 
         // A removed book must not have materialised any render cache entry.
-        assert!(state
-            .render
-            .get(&id, 0, WEB_THUMB_EDGE, WEB_THUMB_EDGE)
-            .is_none());
+        assert!(state.render.get_cover(&id, WEB_THUMB_EDGE).is_none());
         assert!(state.render.get(&id, 0, 320, 0).is_none());
         assert!(state.render.get_tile(&id, 0, 0, 320).is_none());
     }

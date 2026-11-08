@@ -13,7 +13,9 @@ use base64::Engine as _;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde::Serialize;
 
-use crate::commands::{get_next_book_impl, is_safe_library_source_path, to_book_info};
+use crate::commands::{
+    get_next_book_snapshot_from_current, is_safe_library_source_path, to_book_info,
+};
 use crate::db::{self, BookRow};
 use crate::pdf;
 use crate::pipeline;
@@ -179,21 +181,30 @@ pub(crate) fn book_detail(state: &AppState, id: &str) -> Result<WebBookDetail, D
             let Some(row) = db::get_active_book(conn, id).map_err(|e| e.to_string())? else {
                 return Ok(None);
             };
-            let next_id = get_next_book_impl(conn, id)
-                .ok()
-                .flatten()
-                .and_then(|next| {
-                    db::get_active_book(conn, &next.id)
-                        .ok()
-                        .flatten()
-                        .map(|_| next.id)
-                });
-            Ok(Some((row, next_id)))
+            let snapshot = get_next_book_snapshot_from_current(conn, row.clone())
+                .map_err(|e| e.to_string())?;
+            Ok(Some((row, snapshot)))
         })
         .map_err(|_| DataError::DbUnavailable)?;
-    let Some((row, next_id)) = result else {
+    let Some((row, next_snapshot)) = result else {
         return Err(DataError::NotFound);
     };
+    let candidate_next_id = next_snapshot.resolve_next_row().map(|next| next.id);
+    // Keep Web Access's active-book policy after projection so both direct
+    // links and series/title fallbacks exclude tombstoned books, while the
+    // query itself remains a short DbSlot critical section.
+    let next_id = candidate_next_id.and_then(|next_id| {
+        state
+            .db
+            .with(|conn| {
+                Ok(db::get_active_book(conn, &next_id)
+                    .ok()
+                    .flatten()
+                    .map(|_| next_id))
+            })
+            .ok()
+            .flatten()
+    });
     let info = to_book_info(row);
     let series_title = info.series_title.clone();
     let chapter_index = info.chapter_index;

@@ -39,6 +39,11 @@ fn last_status() -> &'static Mutex<Option<WebAccessStatusView>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+fn locale_slot() -> &'static Mutex<String> {
+    static SLOT: OnceLock<Mutex<String>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new("zh-CN".to_owned()))
+}
+
 /// True once the user chose "quit" from the tray; the close interceptor must
 /// never hide the window at that point.
 pub(crate) fn is_exiting() -> bool {
@@ -212,7 +217,17 @@ pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if app.tray_by_id(TRAY_ID).is_some() {
         return Ok(());
     }
-    let locale = current_locale(app);
+    // Locale lookup touches SQLite and custom_icon reads/decodes a user file;
+    // prepare both on the blocking pool before creating native menu objects.
+    let locale_app = (*app).clone();
+    let (locale, custom) =
+        tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+            (current_locale(&locale_app), custom_icon())
+        }))
+        .unwrap_or_else(|_| ("zh-CN".to_owned(), None));
+    if let Ok(mut slot) = locale_slot().lock() {
+        *slot = locale.clone();
+    }
     let menu = build_menu(app, &locale, None)?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -232,7 +247,7 @@ pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     // Task 7 hook: a user-selected Moyu icon is written to
     // `<data>/brand/icon.png`; fall back to the bundled window icon.
-    if let Some(icon) = custom_icon() {
+    if let Some(icon) = custom {
         builder = builder.icon(icon);
     } else if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -317,7 +332,10 @@ pub(crate) fn refresh_menu<R: Runtime>(app: &AppHandle<R>) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    let locale = current_locale(app);
+    let locale = locale_slot()
+        .lock()
+        .map(|locale| locale.clone())
+        .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
     let status = match last_status().lock() {
         Ok(slot) => slot.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
@@ -429,7 +447,10 @@ pub(crate) async fn tray_set_locale(
         })
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|_| "托盘语言设置失败（blocking-task-failed）".to_string())??;
+    if let Ok(mut slot) = locale_slot().lock() {
+        *slot = normalized.clone();
+    }
     refresh_menu(&app);
     Ok(())
 }

@@ -1,5 +1,12 @@
 // Frozen invoke contract — mirrors src-tauri/src/lib.rs JSON shapes (camelCase).
 import { invoke } from "@tauri-apps/api/core";
+import {
+  FEATURE_REGISTRY,
+  emitFeaturesChanged,
+  isFeatureEnabled,
+  type FeatureFlags,
+  type FeatureId,
+} from "@/features/features";
 
 export interface BookInfo {
   id: string;
@@ -254,10 +261,8 @@ export interface Settings {
   /** 统一磁盘缓存预算（MB，render + online 原图）。 */
   diskCacheBudgetMb: number;
   libraryDir: string;
-  /** 实验性功能：条漫模式。默认关闭，关闭时版式只在单页/双页间切换。 */
-  experimentalWebtoon: boolean;
-  /** 实验性功能：URL 在线直读（JSON 清单 / 单页 HTML 图集）。默认关闭。 */
-  experimentalOnline: boolean;
+  /** 可选大功能总开关；以 src/features/features.ts 为唯一前端注册表。 */
+  features: FeatureFlags;
   /** 在线源 HTTP 代理（空=直连；http/https/socks5）。 */
   onlineProxy: string;
   /** 单本在线书页面下载并发（1-8）。 */
@@ -342,7 +347,7 @@ export interface HandoffStatus {
   script: string;
 }
 
-// ---------- 实验性功能镜像：同步读取 + 变更事件 ----------
+// ---------- 功能开关镜像：同步读取 + 变更事件 ----------
 // 设置的权威副本在 SQLite；这里维护 localStorage 镜像，让无法等待
 // 异步 getSettings 的组件（阅读器/导航）能同步读取开关状态。
 
@@ -351,29 +356,28 @@ const EXP_ONLINE_KEY = "mr-exp-online";
 
 function applySettingsMirror(s: Settings) {
   try {
-    localStorage.setItem(EXP_WT_KEY, s.experimentalWebtoon ? "1" : "0");
-    localStorage.setItem(EXP_ONLINE_KEY, s.experimentalOnline ? "1" : "0");
+    for (const feature of FEATURE_REGISTRY) {
+      localStorage.setItem(
+        feature.mirrorKey,
+        s.features[feature.settingKey] ? "1" : "0",
+      );
+    }
+    // 旧键只用于降级/旧备份兼容；读侧新键优先。
+    localStorage.setItem(EXP_WT_KEY, s.features.webtoon ? "1" : "0");
+    localStorage.setItem(EXP_ONLINE_KEY, s.features.online ? "1" : "0");
   } catch {
     /* 忽略 */
   }
 }
 
-/** 同步读取实验性条漫模式开关（镜像）。 */
+/** 同步读取条漫模式总开关（镜像）。 */
 export function isWebtoonEnabled(): boolean {
-  try {
-    return localStorage.getItem(EXP_WT_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return isFeatureEnabled("webtoon");
 }
 
-/** 同步读取在线直读开关（镜像）。 */
+/** 同步读取在线直读总开关（镜像）。 */
 export function isOnlineEnabled(): boolean {
-  try {
-    return localStorage.getItem(EXP_ONLINE_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return isFeatureEnabled("online");
 }
 
 /** 订阅设置变更（setSettings 成功后广播；回调里用 is*Enabled() 取最新值）。 */
@@ -465,10 +469,19 @@ export const api = {
       return s;
     }),
   setSettings: (settings: Settings) =>
-    invoke<void>("set_settings", { settings }).then(() => {
-      applySettingsMirror(settings);
+    invoke<Settings>("set_settings", { settings }).then((saved) => {
+      applySettingsMirror(saved);
       window.dispatchEvent(new CustomEvent("mr-settings-changed"));
-    }),  // 解析 JSON 清单/单页 HTML 图集并入库或恢复；不改变已有书进度。
+      return saved;
+    }),
+  setFeatureEnabled: (feature: FeatureId, enabled: boolean) =>
+    invoke<Settings>("set_feature_enabled", { feature, enabled }).then(
+      (settings) => {
+        applySettingsMirror(settings);
+        emitFeaturesChanged();
+        return settings;
+      },
+    ),
   resolveOnlineUrl: (url: string) =>
     invoke<BookInfo>("resolve_online_url", { url }),
   // OPDS 1.2 自建库：配置只存本地 SQLite，密码只写不读。

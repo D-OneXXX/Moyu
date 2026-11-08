@@ -73,8 +73,13 @@ export async function getTempFreeBytes(): Promise<number | null> {
   return invoke<number | null>("get_temp_free_bytes");
 }
 
+async function assertUpdatesEnabled(): Promise<void> {
+  await invoke<void>("assert_feature_enabled", { feature: "updates" });
+}
+
 /** Manual check against the endpoints configured in `tauri.conf.json`. */
 export async function checkNativeUpdate(): Promise<NativeUpdateCheck | null> {
+  await assertUpdatesEnabled();
   const update = await check();
   if (!update) return null;
   return {
@@ -99,6 +104,7 @@ export async function installNativeUpdate(
   update: Update,
   onProgress?: (event: NativeInstallEvent) => void,
 ): Promise<void> {
+  await assertUpdatesEnabled();
   let downloaded = 0;
   let total: number | null = null;
 

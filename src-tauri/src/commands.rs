@@ -1592,6 +1592,7 @@ pub async fn get_pdf_chunk(
     offset: u64,
     length: u32,
 ) -> Result<PdfChunk, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Pdf)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     let result = blocking(move || -> Result<PdfChunk, BackendError> {
@@ -1680,6 +1681,7 @@ pub async fn put_pdf_thumbnail(
     book_id: String,
     data_base64: String,
 ) -> Result<(), String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Pdf)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     let result = blocking(move || -> Result<(), BackendError> {
@@ -1997,6 +1999,7 @@ pub async fn get_webtoon_layout(
     state: State<'_, Arc<AppState>>,
     book_id: String,
 ) -> Result<Vec<PageDim>, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Webtoon)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     blocking(move || crate::read_service::layout_sync(&st, &bid, true)).await
@@ -2014,6 +2017,7 @@ pub async fn get_webtoon_tile(
     tile: u32,
     max_width: u32,
 ) -> Result<PageImage, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Webtoon)?;
     let cache_epoch = state.refresh_epoch();
     let w = max_width.clamp(320, 2160);
     // 1) L1。
@@ -2117,39 +2121,102 @@ pub async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, S
     Ok(state.settings.lock().clone())
 }
 
+fn bool_str(value: bool) -> String {
+    if value { "true" } else { "false" }.to_string()
+}
+
+fn feature_persist_pairs(flags: &crate::features::FeatureFlags) -> Vec<(&'static str, String)> {
+    crate::features::FeatureId::ALL
+        .iter()
+        .map(|feature| (feature.key(), bool_str(feature.get(flags))))
+        .collect()
+}
+
 /// set_settings 持久化到 settings 表的字段对(其余只透传内存)。
 /// 注意:hydrate_settings(lib.rs 侧)按同一批 key 回读,两处必须同步维护。
 fn settings_persist_pairs(s: &Settings) -> Vec<(&'static str, String)> {
-    vec![
-        ("theme", s.theme.clone()),
-        ("cache_budget_mb", s.cache_budget_mb.to_string()),
-        (
-            "disk_cache_budget_mb",
-            crate::disk_cache::clamp_budget_mb(s.disk_cache_budget_mb).to_string(),
-        ),
-        ("library_dir", s.library_dir.clone()),
-        (
-            "experimental_webtoon",
-            if s.experimental_webtoon {
-                "true"
-            } else {
-                "false"
+    let mut pairs = feature_persist_pairs(&s.features);
+    // 旧键只用于升级/降级兼容；新值以 feature_* 为准。
+    pairs.push(("experimental_webtoon", bool_str(s.features.webtoon)));
+    pairs.push(("experimental_online", bool_str(s.features.online)));
+    pairs.push(("theme", s.theme.clone()));
+    pairs.push(("cache_budget_mb", s.cache_budget_mb.to_string()));
+    pairs.push((
+        "disk_cache_budget_mb",
+        crate::disk_cache::clamp_budget_mb(s.disk_cache_budget_mb).to_string(),
+    ));
+    pairs.push(("library_dir", s.library_dir.clone()));
+    pairs.push(("online_proxy", s.online_proxy.clone()));
+    pairs.push(("online_concurrency", s.online_concurrency.to_string()));
+    pairs.push(("online_headers", s.online_headers.clone()));
+    pairs
+}
+
+fn preserve_features(mut incoming: Settings, current: &Settings) -> Settings {
+    incoming.features = current.features.clone();
+    incoming
+}
+
+fn ensure_feature(state: &AppState, feature: crate::features::FeatureId) -> Result<(), String> {
+    crate::features::ensure_enabled(&state.settings.lock().features, feature)
+}
+
+#[tauri::command]
+pub fn assert_feature_enabled(
+    state: State<'_, Arc<AppState>>,
+    feature: crate::features::FeatureId,
+) -> Result<(), String> {
+    ensure_feature(state.inner(), feature)
+}
+
+#[tauri::command]
+pub async fn set_feature_enabled(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    web_access: State<'_, Arc<crate::web_access::WebAccessRuntime>>,
+    ca: State<'_, Arc<crate::web_access::CaDistributionRuntime>>,
+    feature: crate::features::FeatureId,
+    enabled: bool,
+) -> Result<Settings, String> {
+    if !enabled {
+        match feature {
+            crate::features::FeatureId::Online => {
+                crate::online::handoff::stop_handoff(&app, state.inner());
+                state.invalidate_sources();
             }
-            .to_string(),
-        ),
-        (
-            "experimental_online",
-            if s.experimental_online {
-                "true"
-            } else {
-                "false"
+            crate::features::FeatureId::Browser => {
+                crate::browser::close_browser_window(&app);
             }
-            .to_string(),
-        ),
-        ("online_proxy", s.online_proxy.clone()),
-        ("online_concurrency", s.online_concurrency.to_string()),
-        ("online_headers", s.online_headers.clone()),
-    ]
+            crate::features::FeatureId::WebAccess => {
+                let _ = web_access
+                    .stop(crate::web_access::StopReason::Stopped)
+                    .await;
+                let _ = ca.stop().await;
+            }
+            _ => {}
+        }
+    }
+
+    let pairs = {
+        let mut pairs = vec![(feature.key(), bool_str(enabled))];
+        if let Some(legacy) = feature.legacy_key() {
+            pairs.push((legacy, bool_str(enabled)));
+        }
+        pairs
+    };
+    state.db.with(|conn| {
+        for (key, value) in &pairs {
+            db::set_setting(conn, key, value).map_err(err)?;
+        }
+        Ok(())
+    })?;
+
+    let updated = {
+        let mut settings = state.settings.lock();
+        feature.set(&mut settings.features, enabled);
+        settings.clone()
+    };
+    Ok(updated)
 }
 
 /// 前端已解析出的页面列表入库前整理：规范化 URL、去重、页数上限。
@@ -2294,9 +2361,8 @@ pub async fn resolve_online_url(
     let st = state.inner().clone();
     let (row, changed) = blocking(move || {
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let session_headers = st.session_online_headers.lock().clone();
         let headers =
             crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
@@ -2336,9 +2402,10 @@ pub async fn import_resolved_pages(
     page_urls: Vec<String>,
 ) -> Result<BookInfo, String> {
     crate::resilience::ensure_online_allowed()?;
-    if !state.settings.lock().experimental_online {
-        return Err("在线直读未开启".into());
-    }
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Online,
+    )?;
     let st = state.inner().clone();
     blocking(move || ingest_resolved_pages(&st, &url, &title, &page_urls)).await
 }
@@ -2349,9 +2416,10 @@ pub async fn resolve_online_batch(
     payload_json: String,
 ) -> Result<Vec<BookInfo>, String> {
     crate::resilience::ensure_online_allowed()?;
-    if !state.settings.lock().experimental_online {
-        return Err("在线直读未开启".into());
-    }
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Online,
+    )?;
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
@@ -2392,9 +2460,8 @@ pub async fn test_online_connection(
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let session_headers = st.session_online_headers.lock().clone();
         let headers =
             crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
@@ -3174,9 +3241,8 @@ pub async fn resolve_telegram_channel(
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let session_headers = st.session_online_headers.lock().clone();
         let headers =
             crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
@@ -3235,9 +3301,8 @@ pub async fn download_telegram_document(
     let row = blocking(move || {
         let st = st_work;
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let canonical = crate::online::normalize_url(&url)?;
         let lower_path = canonical.path().to_ascii_lowercase();
         let lower_name = filename.to_ascii_lowercase();
@@ -3602,7 +3667,7 @@ pub fn get_session_online_headers(state: State<'_, Arc<AppState>>) -> Option<Str
 pub async fn set_settings(
     state: State<'_, Arc<AppState>>,
     mut settings: Settings,
-) -> Result<(), String> {
+) -> Result<Settings, String> {
     // 在线源连接参数与请求头先校验；非法输入不落库、不改内存态。
     crate::online::validate_proxy(&settings.online_proxy)?;
     crate::online::validate_headers(&settings.online_headers)?;
@@ -3616,6 +3681,8 @@ pub async fn set_settings(
     state.cache.set_budgets(budget);
 
     let old = state.settings.lock().clone();
+    // 功能开关只能经 set_feature_enabled 修改，避免旧表单覆盖。
+    settings = preserve_features(settings, &old);
     // 代理/并发/请求头变化后，旧源句柄（含已解析 URL 与 Cookie 上下文）全部作废。
     let online_conn_changed = old.online_proxy != settings.online_proxy
         || old.online_concurrency != settings.online_concurrency
@@ -3628,13 +3695,14 @@ pub async fn set_settings(
         }
         Ok(())
     });
-    *state.settings.lock() = settings;
+    *state.settings.lock() = settings.clone();
     state.trim_disk_cache_async();
     if online_conn_changed {
         state.invalidate_sources();
     }
     // 数据库不可用必须显式失败；启动恢复门会阻止用户在坏库上改设置。
-    res
+    res?;
+    Ok(settings)
 }
 
 // ---------- OPDS 远程书库（仅用户自建服务；配置只存本地） ----------
@@ -3654,6 +3722,7 @@ fn opds_target(runtime: &crate::opds::OpdsRuntime, raw: &str) -> Result<url::Url
 pub fn opds_get_config(
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::opds::OpdsConfigView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     state
         .db
         .with(|conn| crate::opds::load_config(conn).map_err(err))
@@ -3664,6 +3733,7 @@ pub fn opds_set_config(
     state: State<'_, Arc<AppState>>,
     config: crate::opds::OpdsConfigInput,
 ) -> Result<crate::opds::OpdsConfigView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     state
         .db
         .with(|conn| crate::opds::save_config(conn, config).map_err(err))
@@ -3672,6 +3742,7 @@ pub fn opds_set_config(
 /// 连接测试只读取目录第一页，不写库、不下载。
 #[tauri::command]
 pub async fn opds_test_connection(state: State<'_, Arc<AppState>>) -> Result<OnlineProbe, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3699,6 +3770,7 @@ pub async fn opds_browse(
     state: State<'_, Arc<AppState>>,
     url: Option<String>,
 ) -> Result<crate::opds::OpdsFeedView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3720,6 +3792,7 @@ pub async fn opds_browse(
 /// 这样封面 URL（可能含 Kavita API key）不会进入 `<img src>` 或日志。
 #[tauri::command]
 pub async fn opds_cover(state: State<'_, Arc<AppState>>, url: String) -> Result<PageImage, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3761,6 +3834,7 @@ pub async fn opds_download_entry(
     url: String,
     title: String,
 ) -> Result<BookInfo, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     let st_work = st.clone();
@@ -3838,9 +3912,28 @@ mod tests {
             "online_proxy",
             "online_concurrency",
             "online_headers",
+            "feature_webtoon",
+            "feature_online",
+            "feature_browser",
+            "feature_pdf",
+            "feature_opds",
+            "feature_web_access",
+            "feature_updates",
+            "feature_backup",
+            "feature_diagnostics",
         ] {
             assert!(keys.contains(&k), "persist 清单缺少 {k}");
         }
+    }
+
+    #[test]
+    fn set_settings_preserves_current_feature_flags() {
+        let mut current = Settings::default();
+        current.features.browser = false;
+        let mut incoming = Settings::default();
+        incoming.features.browser = true;
+        let merged = preserve_features(incoming, &current);
+        assert!(!merged.features.browser);
     }
 
     fn test_temp_dir(tag: &str) -> PathBuf {

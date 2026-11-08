@@ -14,6 +14,15 @@ use super::runtime::{
     DeviceView, LanAddressView, PairingStateView, PairingWindowView, RuntimeError, StopReason,
     WebAccessRuntime, WebAccessStatusView,
 };
+use crate::AppState;
+
+/// 功能总开关门卫：只拦截会启动服务或改变配对的命令；stop/status/清理动作始终可用。
+fn ensure_enabled(state: &AppState) -> Result<(), String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::WebAccess,
+    )
+}
 
 /// Human-readable, code-tagged error for the existing string-based command
 /// boundary. No error ever includes a pairing id, claim id, secret, hash, or
@@ -75,9 +84,11 @@ pub(crate) fn web_access_addresses(
 #[tauri::command]
 pub(crate) async fn web_access_start(
     runtime: State<'_, Arc<WebAccessRuntime>>,
+    state: State<'_, Arc<AppState>>,
     ip: String,
     port: Option<u16>,
 ) -> Result<WebAccessStatusView, String> {
+    ensure_enabled(state.inner())?;
     let ip = ip
         .trim()
         .parse::<Ipv4Addr>()
@@ -91,9 +102,11 @@ pub(crate) async fn web_access_start(
 #[tauri::command]
 pub(crate) async fn web_access_start_plain(
     runtime: State<'_, Arc<WebAccessRuntime>>,
+    state: State<'_, Arc<AppState>>,
     ip: String,
     port: Option<u16>,
 ) -> Result<WebAccessStatusView, String> {
+    ensure_enabled(state.inner())?;
     let ip = ip
         .trim()
         .parse::<Ipv4Addr>()
@@ -114,7 +127,9 @@ pub(crate) async fn web_access_stop(
 #[tauri::command]
 pub(crate) async fn web_access_pairing_start(
     runtime: State<'_, Arc<WebAccessRuntime>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<PairingWindowView, String> {
+    ensure_enabled(state.inner())?;
     runtime.pairing_start().await.map_err(map_error)
 }
 
@@ -128,23 +143,29 @@ pub(crate) async fn web_access_pairing_state(
 #[tauri::command]
 pub(crate) async fn web_access_pairing_approve(
     runtime: State<'_, Arc<WebAccessRuntime>>,
+    state: State<'_, Arc<AppState>>,
     claim_id: String,
 ) -> Result<WebAccessStatusView, String> {
+    ensure_enabled(state.inner())?;
     runtime.approve(&claim_id).await.map_err(map_error)
 }
 
 #[tauri::command]
 pub(crate) async fn web_access_pairing_deny(
     runtime: State<'_, Arc<WebAccessRuntime>>,
+    state: State<'_, Arc<AppState>>,
     claim_id: String,
 ) -> Result<WebAccessStatusView, String> {
+    ensure_enabled(state.inner())?;
     runtime.deny(&claim_id).await.map_err(map_error)
 }
 
 #[tauri::command]
 pub(crate) async fn web_access_pairing_cancel(
     runtime: State<'_, Arc<WebAccessRuntime>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<WebAccessStatusView, String> {
+    ensure_enabled(state.inner())?;
     runtime.cancel_pairing().await.map_err(map_error)
 }
 

@@ -10,6 +10,7 @@ mod commands;
 pub mod db;
 pub mod diagnostics;
 pub mod disk_cache;
+mod features;
 pub mod logging;
 mod online;
 mod opds;
@@ -217,10 +218,9 @@ pub struct Settings {
     /// 磁盘缓存软上限（MB）：渲染成品 + 在线原图共用。
     pub disk_cache_budget_mb: u32,
     pub library_dir: String,
-    /// 实验性功能：条漫模式。默认关闭；关闭时版式只在单页/双页间切换。
-    pub experimental_webtoon: bool,
-    /// 实验性功能：URL 在线直读（JSON 清单 / HTML 图集 / Telegram）。
-    pub experimental_online: bool,
+    /// 可选大功能总开关；关闭 = 前端入口隐藏 + 后端命令拒绝。
+    #[serde(default)]
+    pub features: features::FeatureFlags,
     /// 在线源 HTTP 代理（空=直连；http/https/socks5）。
     pub online_proxy: String,
     /// 单本在线书页面下载并发（1-8）。
@@ -236,8 +236,7 @@ impl Default for Settings {
             cache_budget_mb: 128,
             disk_cache_budget_mb: disk_cache::DEFAULT_DISK_CACHE_MB,
             library_dir: String::new(),
-            experimental_webtoon: false,
-            experimental_online: false,
+            features: features::FeatureFlags::default(),
             online_proxy: String::new(),
             online_concurrency: 3,
             online_headers: String::new(),
@@ -271,11 +270,25 @@ pub(crate) fn hydrate_settings(conn: &rusqlite::Connection, s: &mut Settings) {
     if let Some(v) = get("library_dir") {
         s.library_dir = v;
     }
-    if let Some(v) = get("experimental_webtoon") {
-        s.experimental_webtoon = v == "true" || v == "1";
+    if let Some(v) = get("feature_webtoon") {
+        s.features.webtoon = v == "true" || v == "1";
     }
-    if let Some(v) = get("experimental_online") {
-        s.experimental_online = v == "true" || v == "1";
+    // 在线直读兼容旧键；新键优先。
+    if let Some(v) = get("feature_online").or_else(|| get("experimental_online")) {
+        s.features.online = v == "true" || v == "1";
+    }
+    for feature in [
+        features::FeatureId::Browser,
+        features::FeatureId::Pdf,
+        features::FeatureId::Opds,
+        features::FeatureId::WebAccess,
+        features::FeatureId::Updates,
+        features::FeatureId::Backup,
+        features::FeatureId::Diagnostics,
+    ] {
+        if let Some(v) = get(feature.key()) {
+            feature.set(&mut s.features, v == "true" || v == "1");
+        }
     }
     if let Some(v) = get("online_proxy") {
         s.online_proxy = v;
@@ -608,6 +621,8 @@ pub fn run() {
             commands::clear_pages,
             commands::get_settings,
             commands::set_settings,
+            commands::set_feature_enabled,
+            commands::assert_feature_enabled,
             backup::export_backup,
             backup::import_backup,
             backup::get_db_health,
@@ -707,4 +722,39 @@ pub fn run() {
                 .with(|conn| db::wal_checkpoint(conn).map_err(|error| error.to_string()));
         }
     });
+}
+
+#[cfg(test)]
+mod settings_feature_tests {
+    use super::*;
+
+    fn conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE settings(k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '')")
+            .unwrap();
+        conn
+    }
+
+    #[test]
+    fn hydrate_defaults_keep_webtoon_on_and_online_off() {
+        let conn = conn();
+        let mut s = Settings::default();
+        hydrate_settings(&conn, &mut s);
+        assert!(s.features.webtoon);
+        assert!(!s.features.online);
+        assert!(s.features.pdf);
+    }
+
+    #[test]
+    fn hydrate_reads_new_keys_and_legacy_online() {
+        let conn = conn();
+        db::set_setting(&conn, "feature_webtoon", "false").unwrap();
+        db::set_setting(&conn, "experimental_online", "true").unwrap();
+        db::set_setting(&conn, "feature_pdf", "false").unwrap();
+        let mut s = Settings::default();
+        hydrate_settings(&conn, &mut s);
+        assert!(!s.features.webtoon);
+        assert!(s.features.online);
+        assert!(!s.features.pdf);
+    }
 }

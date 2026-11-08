@@ -86,7 +86,7 @@ export default function StatusPill({
   }, [open]);
 
   const effectiveProxy = liveSettings?.onlineProxy ?? onlineProxy ?? "";
-  const effectiveOnlineOn = liveSettings?.experimentalOnline ?? onlineOn;
+  const effectiveOnlineOn = liveSettings?.features.online ?? onlineOn;
   const ready = liveSettings !== null || (settingsReady && !settingsError);
 
   const modeLabel = !ready

@@ -17,10 +17,13 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
-  isOnlineEnabled,
   onExperimentalChange,
   type BookInfo,
 } from "@/lib/tauri";
+import {
+  readFeatureFlags,
+  type FeatureFlags,
+} from "@/features/features";
 import { toast, Toaster } from "@/components/Toast";
 import { translate, useI18n } from "@/i18n";
 import { Loader2 } from "lucide-react";
@@ -61,7 +64,8 @@ export default function AppShell() {
   const ws = useWorkspace();
   const { active: safeMode } = useSafeMode();
   const [lastRead, setLastRead] = useState<BookInfo | null>(null);
-  const [onlineOn, setOnlineOn] = useState(isOnlineEnabled());
+  const [features, setFeatures] = useState<FeatureFlags>(readFeatureFlags);
+  const onlineOn = features.online;
   const [onlineProxy, setOnlineProxy] = useState<string | null>(null);
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsError, setSettingsError] = useState(false);
@@ -83,7 +87,7 @@ export default function AppShell() {
         (settings) => {
           if (!alive) return;
           setOnlineProxy(settings.onlineProxy);
-          setOnlineOn(isOnlineEnabled());
+          setFeatures(settings.features);
           setSettingsReady(true);
           setSettingsError(false);
         },
@@ -96,7 +100,7 @@ export default function AppShell() {
     };
     void load();
     const off = onExperimentalChange(() => {
-      setOnlineOn(isOnlineEnabled());
+      setFeatures(readFeatureFlags());
       void load();
     });
     return () => {
@@ -235,6 +239,7 @@ export default function AppShell() {
         lastRead={lastRead}
         onlineProxy={onlineProxy}
         onlineOn={onlineOn}
+        browserEnabled={features.browser}
         settingsReady={settingsReady}
         settingsError={settingsError}
         libraryBadge={libraryBadge}
@@ -248,7 +253,12 @@ export default function AppShell() {
           <Suspense fallback={<ShellRouteFallback />}>
             <Routes location={loc}>
               <Route path="/" element={<Library />} />
-              <Route path="/browser" element={<Browser />} />
+              <Route
+                path="/browser"
+                element={
+                  features.browser ? <Browser /> : <Navigate to="/" replace />
+                }
+              />
               <Route path="/settings" element={<SettingsPage />} />
               {/* 通配兜底：已下线/未知路由静默 replace 回书库首页，
                   避免历史栈残留废弃 URL 导致返回即白屏（AGENTS.md §2.1）。 */}

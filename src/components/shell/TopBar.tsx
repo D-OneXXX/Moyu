@@ -21,6 +21,7 @@ interface TopBarProps {
   lastRead: BookInfo | null;
   onlineProxy: string | null;
   onlineOn: boolean;
+  browserEnabled: boolean;
   settingsReady: boolean;
   settingsError: boolean;
   libraryBadge: number;
@@ -38,6 +39,7 @@ export default function TopBar({
   lastRead,
   onlineProxy,
   onlineOn,
+  browserEnabled,
   settingsReady,
   settingsError,
   libraryBadge,
@@ -120,7 +122,7 @@ export default function TopBar({
             </span>
           </button>
 
-          {!safeMode && (
+          {!safeMode && browserEnabled && (
             <NavLink
               to="/browser"
               title={t("nav.browser")}

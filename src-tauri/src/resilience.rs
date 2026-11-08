@@ -221,27 +221,40 @@ fn safe_mode_path() -> Result<PathBuf, String> {
 pub(crate) async fn ensure_online_allowed() -> Result<(), String> {
     let result = tokio::task::spawn_blocking(|| {
         let path = safe_mode_path()?;
-        read_safe_mode_result(&path)
+        ensure_online_allowed_at(&path)
     })
     .await;
     match result {
-        Ok(Ok(state)) if !state.active => Ok(()),
-        Ok(Ok(_)) => {
-            Err("安全模式保障中，在线与浏览器功能已暂停（web-access-safe-mode）".to_string())
-        }
-        Ok(Err(error)) => {
-            crate::logging::log_error(
-                "safe_mode",
-                &format!("安全模式状态不可读，按安全模式阻断在线功能：{error}"),
-            );
-            Err("安全模式状态不可读，已阻断在线功能（safe-mode-unavailable）".to_string())
-        }
+        Ok(Ok(())) => Ok(()),
+        // 内核已经记录了日志，这里只把稳定错误码透出去。
+        Ok(Err(error)) => Err(error),
         Err(error) => {
             crate::logging::log_error(
                 "safe_mode",
                 &format!("安全模式检查后台任务失败，已阻断在线功能：{error}"),
             );
             Err("安全模式状态不可读，已阻断在线功能（safe-mode-unavailable）".to_string())
+        }
+    }
+}
+
+/// 同步内核：路径可注入，便于单测覆盖「文件缺失 / 未激活 / 已激活 / 损坏」
+/// 四条分支（正常启动必须放行，不能被误判成安全模式）。
+fn ensure_online_allowed_at(path: &Path) -> Result<(), String> {
+    match read_safe_mode_result(path) {
+        Ok(state) if !state.active => Ok(()),
+        Ok(_) => {
+            Err("安全模式保障中，在线与浏览器功能已暂停（web-access-safe-mode）".to_string())
+        }
+        Err(error) => {
+            crate::logging::log_error(
+                "safe_mode",
+                &format!("安全模式状态不可读，按安全模式阻断在线功能：{error}"),
+            );
+            Err("安全模式状态不可读，已阻断在线功能（safe-mode-unavailable）".to_string())
+        }
+    }
+}
         }
     }
 }
@@ -1141,6 +1154,46 @@ mod tests {
             "mr-resilience-{}-{tag}-{nanos}.json",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn online_is_allowed_when_safe_mode_is_absent_or_inactive() {
+        // 正常启动：没有 safe-mode.json，或文件写着 inactive，都必须放行。
+        // 这两条是「在线直读被误判成安全模式」的回归防线。
+        let missing = temp_path("safe-missing");
+        assert!(ensure_online_allowed_at(&missing).is_ok());
+
+        let inactive = temp_path("safe-inactive");
+        std::fs::write(
+            &inactive,
+            br#"{"active":false,"reason":null,"activatedAt":null}"#,
+        )
+        .expect("write");
+        assert!(ensure_online_allowed_at(&inactive).is_ok());
+
+        let _ = std::fs::remove_file(&missing);
+        let _ = std::fs::remove_file(&inactive);
+    }
+
+    #[test]
+    fn online_is_blocked_when_safe_mode_is_active_or_unreadable() {
+        let active = temp_path("safe-active");
+        std::fs::write(
+            &active,
+            br#"{"active":true,"reason":"manual","activatedAt":"2026-11-09T00:00:00"}"#,
+        )
+        .expect("write");
+        let err = ensure_online_allowed_at(&active).expect_err("must block");
+        assert!(err.contains("web-access-safe-mode"), "{err}");
+
+        // 损坏的状态文件按 fail-closed 阻断，但同样带稳定码。
+        let corrupt = temp_path("safe-corrupt");
+        std::fs::write(&corrupt, b"{ not json").expect("write");
+        let err = ensure_online_allowed_at(&corrupt).expect_err("must block");
+        assert!(err.contains("safe-mode-unavailable"), "{err}");
+
+        let _ = std::fs::remove_file(&active);
+        let _ = std::fs::remove_file(&corrupt);
     }
 
     #[test]

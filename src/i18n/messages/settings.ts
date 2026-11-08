@@ -6,7 +6,6 @@ const zhCN = {
   "settings.features.title": "功能开关",
   "settings.features.description":
     "每项功能可独立开启或关闭；关闭后入口隐藏，后端调用会被拒绝。更改立即生效。",
-  "settings.features.managedInGeneral": "由「功能开关」统一控制",
   "settings.features.browser.description":
     "用于站点验证与下载导入的辅助浏览器。关闭后顶栏入口隐藏。",
   "settings.features.pdf.title": "PDF 阅读",
@@ -412,7 +411,6 @@ const zhTW: SettingsMessages = {
   "settings.features.title": "功能開關",
   "settings.features.description":
     "每項功能可獨立開啟或關閉；關閉後入口隱藏，後端呼叫會被拒絕。變更立即生效。",
-  "settings.features.managedInGeneral": "由「功能開關」統一控制",
   "settings.features.browser.description":
     "用於站點驗證與下載匯入的輔助瀏覽器。關閉後頂欄入口隱藏。",
   "settings.features.pdf.title": "PDF 閱讀",
@@ -819,7 +817,6 @@ const en: SettingsMessages = {
   "settings.features.title": "Feature switches",
   "settings.features.description":
     "Enable or disable each feature independently. Turning one off hides its entry points and blocks backend calls. Changes apply immediately.",
-  "settings.features.managedInGeneral": "Managed by Feature switches",
   "settings.features.browser.description":
     "Auxiliary browser for site verification and download import. Turning it off hides the top-bar entry.",
   "settings.features.pdf.title": "PDF reading",
@@ -1241,7 +1238,6 @@ const es: SettingsMessages = {
   "settings.features.title": "Interruptores de funciones",
   "settings.features.description":
     "Activa o desactiva cada función de forma independiente. Al desactivarla se ocultan sus entradas y se bloquean las llamadas al backend. Los cambios se aplican al instante.",
-  "settings.features.managedInGeneral": "Gestionado por Interruptores de funciones",
   "settings.features.browser.description":
     "Navegador auxiliar para verificación de sitios e importación de descargas. Al desactivarlo se oculta la entrada de la barra superior.",
   "settings.features.pdf.title": "Lectura de PDF",
@@ -1678,7 +1674,6 @@ const ja: SettingsMessages = {
   "settings.features.title": "機能スイッチ",
   "settings.features.description":
     "各機能を個別にオン・オフできます。オフにすると入口が非表示になり、バックエンド呼び出しは拒否されます。変更は即時反映されます。",
-  "settings.features.managedInGeneral": "「機能スイッチ」で管理",
   "settings.features.browser.description":
     "サイト検証とダウンロード取り込み用の補助ブラウザー。オフにすると上部バーの入口が非表示になります。",
   "settings.features.pdf.title": "PDF 閲覧",
@@ -2112,7 +2107,6 @@ const ko: SettingsMessages = {
   "settings.features.title": "기능 스위치",
   "settings.features.description":
     "각 기능을 독립적으로 켜고 끌 수 있습니다. 끄면 진입점이 숨겨지고 백엔드 호출이 거부됩니다. 변경 사항은 즉시 적용됩니다.",
-  "settings.features.managedInGeneral": "기능 스위치에서 관리",
   "settings.features.browser.description":
     "사이트 확인과 다운로드 가져오기에 쓰는 보조 브라우저입니다. 끄면 상단 표시줄의 진입점이 숨겨집니다.",
   "settings.features.pdf.title": "PDF 읽기",

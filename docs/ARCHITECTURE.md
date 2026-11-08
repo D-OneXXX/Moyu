@@ -90,6 +90,21 @@ browser WebView
   sources or background crawlers.
 - Fetches go through the Rust backend so request headers, redirects, SSRF checks, filtering,
   and caching are consistent.
+- **Online direct reading is an optional feature** (`experimental_online`). It is toggled with a
+  switch that lives on the “online URL direct reading” card in the network settings; the same
+  switch also appears in the feature list. Both write the flag through the same command, so
+  the setting takes effect immediately and is never stale. When the feature is off, the browser
+  page offers an “enable now” action next to the error instead of a dead end.
+- The backend gate reads the in-memory feature snapshot, which is updated in the same write
+  that persists the flag. A safe-mode session blocks online access with the stable code
+  `safe-mode-blocked`.
+- **Address selection**: a hostname may resolve to several addresses. Only addresses that pass
+  the blocked-range list (loopback, private, link-local, CGNAT, cloud metadata) are kept, and a
+  public IPv4 is preferred over IPv6. A host that publishes both a public IPv4 and a private
+  IPv6 therefore still connects, instead of being rejected as a whole. The connection uses
+  exactly the validated addresses, so a blocked address is never contacted.
+- The TLS server name stays the original hostname even when the socket is pinned to a
+  validated IP, so certificate verification is unaffected.
 - Session request headers are scoped by origin and can be kept in memory only. They are never
   written to SQLite, logs, diagnostics, or backups.
 - The embedded browser is for user-driven navigation and download handoff. It has no IPC

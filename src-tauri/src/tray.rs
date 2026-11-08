@@ -15,7 +15,6 @@ use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
-
 use crate::state::AppState;
 use crate::web_access::{StopReason, WebAccessRuntime, WebAccessStatusView};
 

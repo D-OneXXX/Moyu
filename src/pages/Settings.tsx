@@ -97,6 +97,7 @@ import { localizeBackendError } from "@/features/errors/localize";
 import {
   DEFAULT_FEATURE_FLAGS,
   FEATURE_REGISTRY,
+  ONLINE_FEATURE,
   type FeatureDefinition,
   type FeatureId,
 } from "@/features/features";
@@ -1225,10 +1226,30 @@ export default function SettingsPage() {
                   icon={Wifi}
                   title={t("settings.online.urlTitle")}
                   description={t("settings.online.urlDescription")}
+                  rows={
+                    <SettingRow
+                      title={t(ONLINE_FEATURE.titleKey)}
+                      description={t(ONLINE_FEATURE.descriptionKey)}
+                      badge={
+                        <Badge variant={form.features.online ? "success" : "muted"}>
+                          {form.features.online
+                            ? t("common.enabled")
+                            : t("common.disabled")}
+                        </Badge>
+                      }
+                    >
+                      <Switch
+                        checked={form.features.online}
+                        disabled={featureBusy !== null || saving || loading}
+                        data-testid="online-direct-switch"
+                        aria-label={t(ONLINE_FEATURE.titleKey)}
+                        onCheckedChange={(checked) =>
+                          void toggleFeature(ONLINE_FEATURE, checked)
+                        }
+                      />
+                    </SettingRow>
+                  }
                 >
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    {t("settings.features.managedInGeneral")}
-                  </p>
                   <p className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
                     {t("settings.online.browserHint")}
                   </p>

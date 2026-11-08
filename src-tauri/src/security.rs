@@ -18,11 +18,15 @@ use crate::update::NativeUpdaterConfig;
 use crate::AppState;
 
 /// Capability files embedded at compile time (same sources as the generated ACL).
+/// Tauri scans every file under `capabilities/`, so all three must be embedded;
+/// missing one would let a relaxed capability go unnoticed by the audit.
 const CAPABILITIES_JSON: &str = concat!(
     "[",
     include_str!("../capabilities/default.json"),
     ",",
     include_str!("../capabilities/recovery.json"),
+    ",",
+    include_str!("../capabilities/updater.json"),
     "]"
 );
 
@@ -590,6 +594,24 @@ mod tests {
         );
         assert_eq!(evidence.remote_capabilities, 0);
         assert!(evidence.scoped);
+    }
+
+    #[test]
+    fn embedded_capabilities_include_the_updater_file() {
+        // 审计数据源必须与 Tauri 实际扫描的 capabilities/ 三文件一致。
+        assert!(CAPABILITIES_JSON.contains("updater:default"));
+        let evidence = parse_capability_evidence(CAPABILITIES_JSON).expect("capability 应可解析");
+        assert_eq!(evidence.remote_capabilities, 0);
+        assert!(evidence.scoped);
+        // updater.json 只授予 main，不得引入新的窗口标签。
+        assert_eq!(
+            evidence.windows,
+            vec![
+                "main".to_string(),
+                "recovery".to_string(),
+                "browser".to_string()
+            ]
+        );
     }
 
     #[test]

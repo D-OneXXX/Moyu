@@ -14,15 +14,17 @@ function read(): boolean {
 let cached = read();
 
 function subscribe(onChange: () => void): () => void {
-  const handler = () => {
+  const handler = () => onChange();
+  const storageHandler = (event: StorageEvent) => {
+    if (event.key !== STORAGE_KEY && event.key !== null) return;
     cached = read();
     onChange();
   };
   window.addEventListener(CHANGE_EVENT, handler);
-  window.addEventListener("storage", handler);
+  window.addEventListener("storage", storageHandler);
   return () => {
     window.removeEventListener(CHANGE_EVENT, handler);
-    window.removeEventListener("storage", handler);
+    window.removeEventListener("storage", storageHandler);
   };
 }
 

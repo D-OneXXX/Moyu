@@ -370,7 +370,11 @@ try {
   assert.equal(localClaimRequests, 1, "401 requests local pairing");
   assert.equal(await page.eval("document.querySelectorAll('.card').length"), 0);
   assert.ok(await page.eval("document.querySelector('.pair-card button') !== null"));
-  await page.send("Page.navigate", { url: `http://127.0.0.1:${port}/#pair_${"b".repeat(32)}` });
+  // A hash-only navigation would not reboot the app (boot clears and consumes
+  // the fragment once); add a query so this is a fresh document navigation.
+  await page.send("Page.navigate", {
+    url: `http://127.0.0.1:${port}/?pair=1#pair_${"b".repeat(32)}`,
+  });
 
   /* ---------------------------------------------------------------- pairing */
   await wait("document.querySelector('#pair-name') && document.querySelector('#pair-submit')");
@@ -624,7 +628,26 @@ try {
     await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5e3))]);
   }
   await new Promise((resolve) => server.close(resolve));
-  await fs.rm(profile, { recursive: true, force: true });
+  // Chrome can release profile handles a moment after the parent exits. Retry
+  // briefly and never let cleanup mask the test's original result.
+  let profileRemoved = false;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      await fs.rm(profile, { recursive: true, force: true });
+      profileRemoved = true;
+      break;
+    } catch (error) {
+      if (attempt === 5) {
+        console.warn(
+          `Cleanup warning: temporary profile not removed (${profile}): ${error.code || error.message}`,
+        );
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
   console.log(`L2 resources: mock HTTP 127.0.0.1:${port ?? "not-started"}; owned headless Chrome PID ${child?.pid ?? "not-started"}; CDP ${cdpPort ?? "not-started"}.`);
-  console.log("Cleanup: owned Chrome stopped, mock server closed, temporary browser profile removed.");
+  console.log(
+    `Cleanup: owned Chrome stopped, mock server closed, temporary browser profile ${profileRemoved ? "removed" : "cleanup deferred"}.`,
+  );
 }

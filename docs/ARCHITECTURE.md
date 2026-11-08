@@ -92,6 +92,9 @@ browser WebView
 - Backups contain a sanitized database snapshot and an explicit allowlist of preferences.
   They exclude image caches, online headers, proxies, cookies, filter events, and internal
   version markers.
+- Startup recovery verifies a staging database before replacing the live database. The prior
+  database and its WAL/SHM sidecars are quarantined as one recovery group; the three newest
+  groups are retained. Recovery is considered healthy only after restored settings normalize.
 - The application does not start a Python sidecar or background service.
 
 ## Updates

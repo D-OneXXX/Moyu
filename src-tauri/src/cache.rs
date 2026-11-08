@@ -188,8 +188,9 @@ impl ImageCache {
 
     /// 清空缩略图 LRU（「重新生成缩略图」用；磁盘侧由 render_cache 清）。
     pub fn clear_thumbs(&self) {
-        self.thumbs.lock().inner.clear();
-        self.thumbs.lock().bytes = 0;
+        let mut thumbs = self.thumbs.lock();
+        thumbs.inner.clear();
+        thumbs.bytes = 0;
     }
 
     /// 条漫切片缓存（虚拟化滚动的高频小对象，独立 48MB 预算）。

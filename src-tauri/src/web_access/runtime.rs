@@ -632,7 +632,7 @@ impl WebAccessRuntime {
     ) -> Result<WebAccessStatusView, RuntimeError> {
         let _operation = self.operation.lock().await;
         // Check after acquiring the same operation lock used by safe-mode stop.
-        if !self.allow_loopback && crate::resilience::ensure_online_allowed().is_err() {
+        if !self.allow_loopback && crate::resilience::ensure_online_allowed().await.is_err() {
             return Err(RuntimeError::SafeMode);
         }
         {
@@ -755,7 +755,7 @@ impl WebAccessRuntime {
     ) -> Result<WebAccessStatusView, RuntimeError> {
         let _operation = self.operation.lock().await;
         // Check after acquiring the same operation lock used by safe-mode stop.
-        if !self.allow_loopback && crate::resilience::ensure_online_allowed().is_err() {
+        if !self.allow_loopback && crate::resilience::ensure_online_allowed().await.is_err() {
             return Err(RuntimeError::SafeMode);
         }
         {
@@ -906,6 +906,18 @@ impl WebAccessRuntime {
             self.emit_state().await;
         }
         self.status().await
+    }
+
+    /// Bound the process exit caller even when another operation is stuck
+    /// while holding the lifecycle lock. Dropping the timed-out future may
+    /// leave shutdown incomplete; only process exit may use this best-effort
+    /// deadline because safety-mode/recovery callers must confirm the listener
+    /// is closed before returning.
+    pub(crate) async fn stop_for_exit(
+        &self,
+        timeout: Duration,
+    ) -> Result<WebAccessStatusView, tokio::time::error::Elapsed> {
+        tokio::time::timeout(timeout, self.stop(StopReason::Exit)).await
     }
 
     pub(crate) async fn pairing_start(&self) -> Result<PairingWindowView, RuntimeError> {
@@ -1451,6 +1463,19 @@ mod tests {
         assert!(service
             .authenticate(second_session.token.as_str())
             .is_none());
+        let _ = std::fs::remove_dir_all(wrapper);
+    }
+
+    #[tokio::test]
+    async fn bounded_stop_returns_when_lifecycle_lock_is_held() {
+        let wrapper = temp_path("runtime-stop-timeout");
+        let runtime = WebAccessRuntime::for_test(wrapper.join("ca"));
+        let _operation = runtime.operation.lock().await;
+
+        let stopped = runtime.stop_for_exit(Duration::from_millis(20)).await;
+
+        assert!(stopped.is_err());
+        drop(_operation);
         let _ = std::fs::remove_dir_all(wrapper);
     }
 

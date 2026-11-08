@@ -218,17 +218,30 @@ fn safe_mode_path() -> Result<PathBuf, String> {
 /// Online entry points call this before touching the network. Safe mode is a
 /// user-selected local-only session and must hold even if a stale UI path is
 /// invoked directly.
-pub(crate) fn ensure_online_allowed() -> Result<(), String> {
-    let path = safe_mode_path()?;
-    match read_safe_mode_result(&path) {
-        Ok(state) if !state.active => Ok(()),
-        Ok(_) => Err("安全模式保障中，在线与浏览器功能已暂停".to_string()),
-        Err(error) => {
+pub(crate) async fn ensure_online_allowed() -> Result<(), String> {
+    let result = tokio::task::spawn_blocking(|| {
+        let path = safe_mode_path()?;
+        read_safe_mode_result(&path)
+    })
+    .await;
+    match result {
+        Ok(Ok(state)) if !state.active => Ok(()),
+        Ok(Ok(_)) => {
+            Err("安全模式保障中，在线与浏览器功能已暂停（web-access-safe-mode）".to_string())
+        }
+        Ok(Err(error)) => {
             crate::logging::log_error(
                 "safe_mode",
                 &format!("安全模式状态不可读，按安全模式阻断在线功能：{error}"),
             );
-            Err(format!("安全模式状态不可读，已阻断在线功能：{error}"))
+            Err("安全模式状态不可读，已阻断在线功能（safe-mode-unavailable）".to_string())
+        }
+        Err(error) => {
+            crate::logging::log_error(
+                "safe_mode",
+                &format!("安全模式检查后台任务失败，已阻断在线功能：{error}"),
+            );
+            Err("安全模式状态不可读，已阻断在线功能（safe-mode-unavailable）".to_string())
         }
     }
 }
@@ -258,6 +271,39 @@ fn read_safe_mode_at(path: &Path) -> SafeModeState {
             }
         }
     }
+}
+
+fn read_safe_mode_from_disk() -> SafeModeState {
+    match safe_mode_path() {
+        Ok(path) => read_safe_mode_at(&path),
+        Err(error) => {
+            crate::logging::log_error("safe_mode", &error);
+            SafeModeState {
+                active: true,
+                reason: Some("unreadable".into()),
+                activated_at: Some(now_string()),
+            }
+        }
+    }
+}
+
+/// Synchronous recovery/watchdog paths still keep disk access on Tokio's
+/// blocking pool. These callers already run outside the async IPC executor.
+fn read_safe_mode_on_blocking_pool() -> SafeModeState {
+    tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(
+        read_safe_mode_from_disk,
+    ))
+    .unwrap_or_else(|error| {
+        crate::logging::log_error(
+            "safe_mode",
+            &format!("安全模式检查后台任务失败（safe-mode-unavailable）：{error}"),
+        );
+        SafeModeState {
+            active: true,
+            reason: Some("unreadable".into()),
+            activated_at: Some(now_string()),
+        }
+    })
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
@@ -536,9 +582,7 @@ fn current_context(
     detail: String,
 ) -> RecoveryContext {
     let (last_route, heartbeat_age_ms, responsive) = heartbeat_readiness(state);
-    let safe_mode = safe_mode_path()
-        .map(|path| read_safe_mode_at(&path))
-        .unwrap_or_default();
+    let safe_mode = read_safe_mode_on_blocking_pool();
     RecoveryContext {
         trigger,
         detail,
@@ -679,10 +723,24 @@ fn spawn_watchdog(app: AppHandle, state: Arc<ResilienceState>) {
 /// repeated startup failures (never auto-enables safe mode).
 pub fn initialize(app: &AppHandle, state: &Arc<ResilienceState>) -> Result<(), String> {
     let path = boot_guard_path()?;
-    let failures = begin_launch_at(&path).unwrap_or_else(|err| {
-        crate::logging::log_error("startup_guard", &format!("初始化启动守卫失败：{err}"));
-        0
-    });
+    let launch_path = path.clone();
+    let failures =
+        match tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+            begin_launch_at(&launch_path)
+        })) {
+            Ok(Ok(failures)) => failures,
+            Ok(Err(err)) => {
+                crate::logging::log_error("startup_guard", &format!("初始化启动守卫失败：{err}"));
+                0
+            }
+            Err(err) => {
+                crate::logging::log_error(
+                    "startup_guard",
+                    &format!("启动守卫后台任务失败（blocking-task-failed）：{err}"),
+                );
+                0
+            }
+        };
     crate::logging::log_error(
         "startup",
         &format!("应用启动；此前连续未完成启动次数：{failures}"),
@@ -690,9 +748,7 @@ pub fn initialize(app: &AppHandle, state: &Arc<ResilienceState>) -> Result<(), S
 
     spawn_watchdog(app.clone(), state.clone());
 
-    let safe_mode = safe_mode_path()
-        .map(|path| read_safe_mode_at(&path))
-        .unwrap_or_default();
+    let safe_mode = read_safe_mode_on_blocking_pool();
     if failures >= 2 && !safe_mode.active {
         let app = app.clone();
         let state = state.clone();
@@ -786,7 +842,7 @@ pub fn resilience_report_rage_click(
 }
 
 #[tauri::command]
-pub fn get_recovery_context(
+pub async fn get_recovery_context(
     app: AppHandle,
     state: State<'_, Arc<ResilienceState>>,
 ) -> Result<RecoveryContext, String> {
@@ -798,9 +854,7 @@ pub fn get_recovery_context(
     let (_, heartbeat_age_ms, responsive) = heartbeat_readiness(&state);
     context.heartbeat_age_ms = heartbeat_age_ms;
     context.responsive = responsive;
-    context.safe_mode = safe_mode_path()
-        .map(|path| read_safe_mode_at(&path))
-        .unwrap_or_default();
+    context.safe_mode = crate::commands::blocking(|| Ok(read_safe_mode_from_disk())).await?;
     *state.recovery_context.lock() = Some(context.clone());
     emit_context(&app, &context);
     Ok(context)
@@ -941,9 +995,8 @@ pub fn resilience_close_recovery(
 }
 
 #[tauri::command]
-pub fn get_safe_mode_state() -> Result<SafeModeState, String> {
-    let path = safe_mode_path()?;
-    Ok(read_safe_mode_at(&path))
+pub async fn get_safe_mode_state() -> Result<SafeModeState, String> {
+    crate::commands::blocking(|| Ok(read_safe_mode_from_disk())).await
 }
 
 #[tauri::command]
@@ -957,8 +1010,12 @@ pub async fn resilience_enable_safe_mode(
         reason: Some(reason.clone()),
         activated_at: Some(now_string()),
     };
-    let path = safe_mode_path()?;
-    write_safe_mode_at(&path, &state)?;
+    let persisted_state = state.clone();
+    crate::commands::blocking(move || {
+        let path = safe_mode_path().map_err(crate::source::BackendError::Msg)?;
+        write_safe_mode_at(&path, &persisted_state).map_err(crate::source::BackendError::Msg)
+    })
+    .await?;
     crate::logging::log_error("safe_mode", &format!("用户启用安全模式：{reason}"));
 
     // D1b: safe mode closes Web Access before the browser/main window changes.
@@ -1000,34 +1057,7 @@ pub async fn resilience_enable_safe_mode(
     if let Some(runtime) = app.try_state::<Arc<ResilienceState>>() {
         let runtime = runtime.inner().clone();
         if let Some(context) = runtime.recovery_context.lock().as_mut() {
-            context.safe_mode = state_from_file(&path);
-        }
-        let updated = runtime.recovery_context.lock().as_ref().cloned();
-        if let Some(context) = updated {
-            emit_context(&app, &context);
-        }
-    }
-    Ok(state_from_file(&path))
-}
-
-fn state_from_file(path: &Path) -> SafeModeState {
-    read_safe_mode_at(path)
-}
-
-#[tauri::command]
-pub fn resilience_disable_safe_mode(app: AppHandle) -> Result<SafeModeState, String> {
-    let path = safe_mode_path()?;
-    let state = SafeModeState {
-        active: false,
-        reason: None,
-        activated_at: None,
-    };
-    write_safe_mode_at(&path, &state)?;
-    crate::logging::log_error("safe_mode", "用户退出安全模式");
-    if let Some(runtime) = app.try_state::<Arc<ResilienceState>>() {
-        let runtime = runtime.inner().clone();
-        if let Some(context) = runtime.recovery_context.lock().as_mut() {
-            context.safe_mode = state_from_file(&path);
+            context.safe_mode = state.clone();
         }
         let updated = runtime.recovery_context.lock().as_ref().cloned();
         if let Some(context) = updated {
@@ -1038,9 +1068,39 @@ pub fn resilience_disable_safe_mode(app: AppHandle) -> Result<SafeModeState, Str
 }
 
 #[tauri::command]
-pub fn resilience_mark_ready() -> Result<(), String> {
-    let path = boot_guard_path()?;
-    mark_ready_at(&path)
+pub async fn resilience_disable_safe_mode(app: AppHandle) -> Result<SafeModeState, String> {
+    let state = SafeModeState {
+        active: false,
+        reason: None,
+        activated_at: None,
+    };
+    let persisted_state = state.clone();
+    crate::commands::blocking(move || {
+        let path = safe_mode_path().map_err(crate::source::BackendError::Msg)?;
+        write_safe_mode_at(&path, &persisted_state).map_err(crate::source::BackendError::Msg)
+    })
+    .await?;
+    crate::logging::log_error("safe_mode", "用户退出安全模式");
+    if let Some(runtime) = app.try_state::<Arc<ResilienceState>>() {
+        let runtime = runtime.inner().clone();
+        if let Some(context) = runtime.recovery_context.lock().as_mut() {
+            context.safe_mode = state.clone();
+        }
+        let updated = runtime.recovery_context.lock().as_ref().cloned();
+        if let Some(context) = updated {
+            emit_context(&app, &context);
+        }
+    }
+    Ok(state)
+}
+
+#[tauri::command]
+pub async fn resilience_mark_ready() -> Result<(), String> {
+    crate::commands::blocking(move || {
+        let path = boot_guard_path().map_err(crate::source::BackendError::Msg)?;
+        mark_ready_at(&path).map_err(crate::source::BackendError::Msg)
+    })
+    .await
 }
 
 #[cfg(test)]

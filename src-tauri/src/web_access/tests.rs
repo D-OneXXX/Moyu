@@ -2326,6 +2326,13 @@ async fn d4_headless_browser_uses_real_tls_and_database() {
     use image::ImageEncoder as _;
     use std::process::Stdio;
 
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
+    assert!(
+        script.exists(),
+        "missing tests/qa/web-reader-real-tls.mjs: real browser integration was not run"
+    );
+
     let ca = TestCa::new("d4-browser-integration");
     ca.initialize();
     let book_dir = ca.wrapper.join("synthetic-book");
@@ -2367,12 +2374,6 @@ async fn d4_headless_browser_uses_real_tls_and_database() {
         .parse()
         .unwrap();
     let window = runtime.pairing_start().await.unwrap();
-    let script =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
-    if !script.exists() {
-        eprintln!("skip: public snapshot does not include tests/qa/web-reader-real-tls.mjs");
-        return;
-    }
     let mut browser = tokio::process::Command::new("node")
         .arg(script)
         .env("MR_D4_TEST_URL", &window.url)
@@ -2425,6 +2426,13 @@ async fn d4_headless_browser_uses_real_tls_and_database() {
 async fn simple_lan_headless_browser_pairs_over_real_http() {
     use image::ImageEncoder as _;
     use std::process::Stdio;
+
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
+    assert!(
+        script.exists(),
+        "missing tests/qa/web-reader-real-tls.mjs: real browser integration was not run"
+    );
 
     let ca = TestCa::new("plain-browser-integration");
     let book_dir = ca.wrapper.join("synthetic-book");
@@ -2480,12 +2488,6 @@ async fn simple_lan_headless_browser_pairs_over_real_http() {
     let cross_origin = raw_http(addr, format!("POST /api/pair/claim HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://evil.example\r\nX-Moyu-Request: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")).await;
     assert!(cross_origin.starts_with("HTTP/1.1 403"), "{cross_origin}");
     let window = runtime.pairing_state().await.window.unwrap();
-    let script =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/qa/web-reader-real-tls.mjs");
-    if !script.exists() {
-        eprintln!("skip: public snapshot does not include tests/qa/web-reader-real-tls.mjs");
-        return;
-    }
     let mut browser = tokio::process::Command::new("node")
         .arg(script)
         .env("MR_D4_TEST_URL", &window.url)

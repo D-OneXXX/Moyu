@@ -260,7 +260,7 @@ export default function Reader() {
   // 退出阅读器回书库：显式请求恢复书库滚动位置（AppShell 在阅读期间是卸载的）。
   const backToLibrary = useCallback(() => {
     requestScrollRestore("/");
-    backToLibrary();
+    nav("/");
   }, [nav]);
   const ws = useWorkspace();
   const { t } = useI18n();

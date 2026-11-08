@@ -74,8 +74,13 @@ function heapSnapshot(): { usedMb: number; limitMb: number } | null {
 export default function CapabilityProbe() {
   const [ticks, setTicks] = useState<number[]>(() => readTicks());
   const visits = useMemo(() => {
-    const prev = Number(localStorage.getItem("mr-probe-visits") || "0");
-    const next = prev + 1;
+    let prev = 0;
+    try {
+      prev = Number(localStorage.getItem("mr-probe-visits") || "0");
+    } catch {
+      /* 隐私模式下 localStorage 可能不可读 */
+    }
+    const next = Number.isFinite(prev) ? prev + 1 : 1;
     try {
       localStorage.setItem("mr-probe-visits", String(next));
     } catch {

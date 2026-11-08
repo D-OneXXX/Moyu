@@ -51,10 +51,11 @@ snapshot ("Bug 诊断与 AI 排查提示词生成器"):
 
 The fingerprint exists so that bugs introduced by third-party modifications are
 not misattributed to official builds. When reporting a bug, attach the
-diagnostics snapshot so the build origin is unambiguous. Community builds
-receive **no official updater signatures**; the community build script
-(`npm run build:community`) disables updater artifact
-generation automatically so unsigned local builds compile out of the box.
+diagnostics snapshot so the build origin is unambiguous. Community builds receive **no official updater signatures**. The public snapshot
+does not provide a `build:community` script. The default Tauri configuration
+enables updater artifact generation; creating signed updater artifacts requires
+the appropriate signing key. Configure a separate local build for unsigned
+community packages rather than using the official signing key.
 
 ## 4. Update channels
 

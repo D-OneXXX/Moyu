@@ -14,6 +14,14 @@ use tauri::State;
 
 use super::ca_distribution::{CaDistributionError, CaDistributionRuntime, CaDistributionStatus};
 use crate::ca::{CaError, CaManager, CaStatus};
+use crate::AppState;
+
+fn ensure_enabled(state: &AppState) -> Result<(), String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::WebAccess,
+    )
+}
 
 /// CA state exposed to the settings UI. Fingerprints are already rendered as
 /// uppercase, colon-separated SHA-256 by the CA layer.
@@ -187,7 +195,9 @@ pub(crate) async fn web_access_ca_status(
 #[tauri::command]
 pub(crate) async fn web_access_ca_initialize(
     runtime: State<'_, Arc<CaDistributionRuntime>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<CaStatusView, String> {
+    ensure_enabled(state.inner())?;
     let ca_root = runtime.inner().ca_root().to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         let manager = CaManager::new(ca_root);
@@ -203,8 +213,10 @@ pub(crate) async fn web_access_ca_initialize(
 #[tauri::command]
 pub(crate) async fn web_access_ca_export_root(
     runtime: State<'_, Arc<CaDistributionRuntime>>,
+    state: State<'_, Arc<AppState>>,
     path: String,
 ) -> Result<CaExportView, String> {
+    ensure_enabled(state.inner())?;
     let ca_root = runtime.inner().ca_root().to_path_buf();
     let path = validate_export_path(&path, &ca_root)?;
     let result =
@@ -232,8 +244,10 @@ pub(crate) fn web_access_ca_distribution_addresses(
 #[tauri::command]
 pub(crate) async fn web_access_ca_distribution_start(
     runtime: State<'_, Arc<CaDistributionRuntime>>,
+    state: State<'_, Arc<AppState>>,
     ip: Option<String>,
 ) -> Result<CaDistributionStatusView, String> {
+    ensure_enabled(state.inner())?;
     let runtime = runtime.inner().clone();
     let status = match ip {
         Some(raw) => {

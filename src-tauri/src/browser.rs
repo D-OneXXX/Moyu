@@ -276,8 +276,16 @@ fn navigation_allowed(url: &Url) -> bool {
 }
 
 #[tauri::command]
-pub async fn open_browser_window(app: AppHandle, url: String) -> Result<(), String> {
+pub async fn open_browser_window(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<(), String> {
     crate::resilience::ensure_online_allowed()?;
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Browser,
+    )?;
     let url = validate_browser_url(&url)?;
     if let Some(window) = app.get_webview_window(BROWSER_LABEL) {
         window.show().map_err(|e| e.to_string())?;
@@ -306,8 +314,16 @@ pub async fn open_browser_window(app: AppHandle, url: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn navigate_browser(app: AppHandle, url: String) -> Result<(), String> {
+pub fn navigate_browser(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<(), String> {
     crate::resilience::ensure_online_allowed()?;
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Browser,
+    )?;
     let url = validate_browser_url(&url)?;
     let window = app
         .get_webview_window(BROWSER_LABEL)
@@ -322,6 +338,10 @@ pub fn navigate_browser(app: AppHandle, url: String) -> Result<(), String> {
 pub async fn list_browser_downloads(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<BrowserDownload>, String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Browser,
+    )?;
     let dir = downloads_dir()?;
     collect_downloads(&dir, |path| {
         let id = db::book_id_for_path(path);
@@ -342,6 +362,10 @@ pub async fn import_browser_download(
     state: State<'_, Arc<AppState>>,
     path: String,
 ) -> Result<Option<String>, String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Browser,
+    )?;
     let downloads = downloads_dir()?;
     let candidate =
         normalize_existing_path(Path::new(&path)).map_err(|e| format!("下载文件不存在：{e}"))?;

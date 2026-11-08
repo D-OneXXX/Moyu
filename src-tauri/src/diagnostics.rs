@@ -903,7 +903,14 @@ pub fn diagnostics_sanitize_description(
 
 /// Write the exact Markdown the user previewed. Explicit click only; no upload.
 #[tauri::command]
-pub fn diagnostics_export(markdown: String) -> Result<String, String> {
+pub fn diagnostics_export(
+    state: tauri::State<'_, Arc<AppState>>,
+    markdown: String,
+) -> Result<String, String> {
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Diagnostics,
+    )?;
     if markdown.trim().is_empty() {
         return Err("诊断内容为空".to_string());
     }

@@ -1592,6 +1592,7 @@ pub async fn get_pdf_chunk(
     offset: u64,
     length: u32,
 ) -> Result<PdfChunk, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Pdf)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     let result = blocking(move || -> Result<PdfChunk, BackendError> {
@@ -1680,6 +1681,7 @@ pub async fn put_pdf_thumbnail(
     book_id: String,
     data_base64: String,
 ) -> Result<(), String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Pdf)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     let result = blocking(move || -> Result<(), BackendError> {
@@ -1990,6 +1992,7 @@ pub async fn get_webtoon_layout(
     state: State<'_, Arc<AppState>>,
     book_id: String,
 ) -> Result<Vec<PageDim>, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Webtoon)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     blocking(move || crate::read_service::layout_sync(&st, &bid, true)).await
@@ -2007,6 +2010,7 @@ pub async fn get_webtoon_tile(
     tile: u32,
     max_width: u32,
 ) -> Result<PageImage, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Webtoon)?;
     let cache_epoch = state.refresh_epoch();
     let w = max_width.clamp(320, 2160);
     // 1) L1。
@@ -3711,6 +3715,7 @@ fn opds_target(runtime: &crate::opds::OpdsRuntime, raw: &str) -> Result<url::Url
 pub fn opds_get_config(
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::opds::OpdsConfigView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     state
         .db
         .with(|conn| crate::opds::load_config(conn).map_err(err))
@@ -3721,6 +3726,7 @@ pub fn opds_set_config(
     state: State<'_, Arc<AppState>>,
     config: crate::opds::OpdsConfigInput,
 ) -> Result<crate::opds::OpdsConfigView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     state
         .db
         .with(|conn| crate::opds::save_config(conn, config).map_err(err))
@@ -3729,6 +3735,7 @@ pub fn opds_set_config(
 /// 连接测试只读取目录第一页，不写库、不下载。
 #[tauri::command]
 pub async fn opds_test_connection(state: State<'_, Arc<AppState>>) -> Result<OnlineProbe, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3756,6 +3763,7 @@ pub async fn opds_browse(
     state: State<'_, Arc<AppState>>,
     url: Option<String>,
 ) -> Result<crate::opds::OpdsFeedView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3777,6 +3785,7 @@ pub async fn opds_browse(
 /// 这样封面 URL（可能含 Kavita API key）不会进入 `<img src>` 或日志。
 #[tauri::command]
 pub async fn opds_cover(state: State<'_, Arc<AppState>>, url: String) -> Result<PageImage, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3818,6 +3827,7 @@ pub async fn opds_download_entry(
     url: String,
     title: String,
 ) -> Result<BookInfo, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     let st_work = st.clone();

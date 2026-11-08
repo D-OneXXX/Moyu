@@ -45,13 +45,14 @@ const UPDATE_DIR_NAME: &str = "mangareader-updates";
 /// 用户无法删除）把本用户的更新通道永久卡死；Windows 临时目录本就按用户
 /// 隔离，保持原名。
 fn update_dir_name() -> String {
-    #[cfg(unix)]
+    // `libc` 只在本项目的 Linux target 依赖中声明；不要用更宽的 `cfg(unix)`。
+    #[cfg(target_os = "linux")]
     {
         // SAFETY: geteuid has no preconditions and cannot fail.
         let euid = unsafe { libc::geteuid() };
         format!("{UPDATE_DIR_NAME}-{euid}")
     }
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     {
         UPDATE_DIR_NAME.to_string()
     }

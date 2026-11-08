@@ -926,9 +926,13 @@ pub struct LibraryCounts {
 ///
 /// 口径：`removed=0` 的每一行都计入 `total_books`；`series_id` 非空的行才进入
 /// `series_counts`，其中 `source_type='local'` 同时进入 `local_series_counts`。
+/// ADR-036：`json_valid` 守卫兜住损坏 / NULL 的 `meta_json`——坏行只计入总数，
+/// 不进入合集映射，也不能让整条命令失败。
 pub fn library_stats(conn: &Connection) -> Result<LibraryCounts, BackendError> {
     let mut stmt = conn.prepare(
-        "SELECT source_type, json_extract(meta_json,'$.series_id') AS sid, COUNT(*)
+        "SELECT source_type,
+                json_extract(CASE WHEN json_valid(meta_json) THEN meta_json ELSE '{}' END,'$.series_id') AS sid,
+                COUNT(*)
          FROM books
          WHERE removed=0
          GROUP BY source_type, sid",
@@ -3883,6 +3887,39 @@ mod tests {
                 !stats.series_counts.contains_key(""),
                 "空 series_id 不是合法键"
             );
+        }
+        cleanup_db_files(&path);
+    }
+
+    /// ADR-036：损坏的 `meta_json` 不得让整条计数命令失败。
+    /// 坏行只计入 `total_books`，不进入合集映射（与空 series_id 同口径）。
+    #[test]
+    fn library_stats_tolerates_malformed_meta_json() {
+        let path = unique_temp_db("library-stats-bad-json");
+        {
+            let conn = open(&path).expect("打开临时库");
+            init_schema(&conn).expect("建表");
+            upsert_book(&conn, "ok", "p/ok", "正常", 1).unwrap();
+            conn.execute(
+                "UPDATE books SET meta_json=?1 WHERE id='ok'",
+                params![r#"{"schema":1,"series_id":"series-ok"}"#],
+            )
+            .unwrap();
+            upsert_book(&conn, "bad", "p/bad", "坏 JSON", 1).unwrap();
+            conn.execute(
+                "UPDATE books SET meta_json=?1 WHERE id='bad'",
+                params![r#"{"schema":1,"series_id":"#],
+            )
+            .unwrap();
+
+            let stats = library_stats(&conn).expect("坏 JSON 不得使聚合失败");
+            assert_eq!(stats.total_books, 2, "坏 JSON 行仍计入总数");
+            assert_eq!(
+                stats.series_counts.get("series-ok"),
+                Some(&1),
+                "合法行的合集计数不受坏行影响"
+            );
+            assert_eq!(stats.series_counts.len(), 1, "坏行不得进入合集映射");
         }
         cleanup_db_files(&path);
     }

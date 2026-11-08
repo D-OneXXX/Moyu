@@ -1844,34 +1844,41 @@ pub async fn clear_temp_cache(state: State<'_, Arc<AppState>>) -> Result<ClearCa
 
 #[tauri::command]
 pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
-    state.db.with(|conn| {
-        // Issue #236：计数与最近在读改为 SQL 聚合，不再加载全表 BookRow。
-        let counts = db::dashboard_counts(conn).map_err(err)?;
-        let today_pages = db::today_pages(conn).map_err(err)?;
-        // 182 天：覆盖前端热力图的 26 周视图（此前 90 天，左半边永远空白）。
-        let heat = db::heatmap(conn, 182).map_err(err)?;
-        let heatmap = heat
-            .into_iter()
-            .map(|(date, count)| HeatDay { date, count })
-            .collect();
-        let series = db::dashboard_series(conn)
-            .map_err(err)?
-            .into_iter()
-            .map(|b| SeriesProgress {
-                book_id: b.id,
-                title: b.title,
-                current_page: b.current_page,
-                page_count: b.page_count,
+    // ADR-036：SQLite 聚合同样移入 blocking 线程，避免占用 async 执行器。
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| {
+                // Issue #236：计数与最近在读改为 SQL 聚合，不再加载全表 BookRow。
+                let counts = db::dashboard_counts(conn).map_err(err)?;
+                let today_pages = db::today_pages(conn).map_err(err)?;
+                // 182 天：覆盖前端热力图的 26 周视图（此前 90 天，左半边永远空白）。
+                let heat = db::heatmap(conn, 182).map_err(err)?;
+                let heatmap = heat
+                    .into_iter()
+                    .map(|(date, count)| HeatDay { date, count })
+                    .collect();
+                let series = db::dashboard_series(conn)
+                    .map_err(err)?
+                    .into_iter()
+                    .map(|b| SeriesProgress {
+                        book_id: b.id,
+                        title: b.title,
+                        current_page: b.current_page,
+                        page_count: b.page_count,
+                    })
+                    .collect();
+                Ok(Dashboard {
+                    total_books: counts.total_books,
+                    reading: counts.reading,
+                    today_pages,
+                    heatmap,
+                    series,
+                })
             })
-            .collect();
-        Ok(Dashboard {
-            total_books: counts.total_books,
-            reading: counts.reading,
-            today_pages,
-            heatmap,
-            series,
-        })
+            .map_err(BackendError::Msg)
     })
+    .await
 }
 
 /// 逐日阅读页数：`bookId=null` 全局，`Some(id)` 只看该书（书库右栏明细表）。

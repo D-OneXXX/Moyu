@@ -55,9 +55,11 @@ import {
   LIBRARY_REFRESH_EVENT,
 } from "@/lib/events";
 import TopBar from "./TopBar";
+import ThemeDecorationLayer from "./ThemeDecorationLayer";
 import PrivacyDialog from "@/components/privacy/PrivacyDialog";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useGlobalShortcuts } from "@/features/shortcuts/useGlobalShortcuts";
+import { useScrollRestoration } from "@/features/scroll/useScrollRestoration";
 
 export default function AppShell() {
   const nav = useNavigate();
@@ -82,9 +84,8 @@ export default function AppShell() {
 
   // Page transitions must start at the top: the shell owns the scroll container,
   // so without this a previous page's scroll position can clip the next header.
-  useEffect(() => {
-    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
-  }, [loc.pathname]);
+  // Back/forward restores instead (see useScrollRestoration).
+  useScrollRestoration(mainRef);
 
   // 最小化 / 隐藏到托盘：释放后端页与条漫切片的内存 LRU，把常驻内存压到
   // 最低水位。只清派生缓存，不动书库与阅读进度；回到前台按需重渲染。
@@ -251,7 +252,17 @@ export default function AppShell() {
   useGlobalShortcuts(shellShortcuts, { editableExempt: ["w", "W"] });
 
   return (
-    <div className="flex h-screen w-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
+    <div className="relative flex h-screen w-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
+      {/* 皮肤壁纸层：默认 `none`（零绘制），注入一条 CSS 变量即可换底纹。 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-0"
+        style={{
+          backgroundImage: "var(--mr-surface-backdrop)",
+          backgroundSize: "var(--mr-surface-backdrop-size)",
+          opacity: "var(--mr-surface-backdrop-opacity)",
+        }}
+      />
       <TopBar
         lastRead={lastRead}
         onlineProxy={onlineProxy}
@@ -264,6 +275,7 @@ export default function AppShell() {
       />
       <main
         ref={mainRef}
+        data-shell-scroll
         className="relative w-full min-w-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
       >
         <div key={loc.pathname} className="view-fade min-h-full">
@@ -284,6 +296,8 @@ export default function AppShell() {
           </Suspense>
         </div>
       </main>
+      {/* 装饰层永远是内容层的兄弟节点：不参与布局、不拦截命中测试。 */}
+      <ThemeDecorationLayer />
       <Toaster />
       <PrivacyDialog />
     </div>

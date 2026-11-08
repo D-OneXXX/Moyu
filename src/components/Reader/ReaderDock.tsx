@@ -221,7 +221,7 @@ export default function ReaderDock({
 
         {slider}
 
-        <div className="mono shrink-0 whitespace-nowrap px-1 text-[11px] tabular-nums text-muted-foreground">
+        <div className="mono min-w-[4.5rem] shrink-0 whitespace-nowrap px-1 text-right text-[11px] tabular-nums text-muted-foreground">
           {pageLabel}
         </div>
 

@@ -233,7 +233,7 @@ function BookDetailSheetBody({
                   {t("book.chapterBadge", { number: book.chapterIndex })}
                 </Badge>
               )}
-              <span className="font-mono text-[11px] text-muted-foreground">
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
                 {t("book.pageCount", { count: book.pageCount })}
               </span>
             </div>
@@ -246,7 +246,7 @@ function BookDetailSheetBody({
               </span>
             </div>
 
-            <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+            <div className="mt-2 flex items-center justify-between text-[11px] tabular-nums text-muted-foreground">
               <span>
                 {t("book.readLabel")}{" "}
                 <span className="font-mono text-foreground">{read}</span> /{" "}

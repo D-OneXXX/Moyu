@@ -7,8 +7,6 @@ import {
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  BookOpen,
-  CalendarDays,
   Check,
   Command,
   FolderOpen,
@@ -17,6 +15,7 @@ import {
   HardDrive,
   Image as ImageIcon,
   Info,
+  KeyRound,
   Keyboard,
   Loader2,
   Monitor,
@@ -28,9 +27,9 @@ import {
   ScanLine,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Sun,
   Trash2,
-  TrendingUp,
   Upload,
   Wifi,
   type LucideIcon,
@@ -61,6 +60,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import { Slider } from "@/components/ui/slider";
 import {
   Select,
   SelectContent,
@@ -68,25 +68,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import {
   SettingRow,
   SettingsSection,
+  SettingsStat,
+  SettingsStatRow,
 } from "@/components/settings/SettingsSection";
 import UpdatesPanel from "@/components/settings/UpdatesPanel";
 import PrivacyPanel from "@/components/settings/PrivacyPanel";
-import SupportPanel from "@/components/settings/SupportPanel";
 import OnlineFilterPanel from "@/components/settings/OnlineFilterPanel";
 import OpdsPanel from "@/components/settings/OpdsPanel";
+import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
+import WebAccessSummaryCard from "@/components/settings/WebAccessSummaryCard";
+import WebAccessPanel from "@/components/settings/WebAccessPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
+import DiagnosticPanel from "@/components/diagnostics/DiagnosticPanel";
 import AppBrandIcon from "@/components/shell/AppBrandIcon";
 import { useBrandIcon } from "@/features/brand/BrandIconProvider";
 import {
@@ -103,13 +107,19 @@ import ErrorState from "@/components/ErrorState";
 import { APP_VERSION, BUILD_COMMIT } from "@/lib/version";
 import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
-import { localizeBackendError } from "@/features/errors/localize";
+import {
+  localizeBackendError,
+  localizeStableErrorCode,
+} from "@/features/errors/localize";
 import {
   DEFAULT_FEATURE_FLAGS,
   FEATURE_REGISTRY,
   type FeatureDefinition,
   type FeatureId,
 } from "@/features/features";
+import { useShortcutsEnabled } from "@/features/shortcuts/preferences";
+import { pickSkinArtwork } from "@/features/skin/api";
+import { useSkin } from "@/features/skin/SkinProvider";
 
 const DEFAULT_FORM: Settings = {
   theme: "system",
@@ -243,59 +253,32 @@ function cachePercent(used: number, limit: number): number {
   return Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
 }
 
-function MetricCard({
-  icon: Icon,
-  label,
-  value,
-  unit,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: number;
-  unit: string;
-}) {
-  const { formatNumber } = useI18n();
-  return (
-    <Card className="gap-3 p-5">
-      <div className="flex items-center justify-between gap-3">
-        <span className="grid size-9 place-items-center rounded-xl border border-border bg-secondary text-secondary-foreground shadow-hard-sm">
-          <Icon className="size-4" strokeWidth={2.2} />
-        </span>
-        <span className="text-xs font-semibold text-muted-foreground">
-          {label}
-        </span>
-      </div>
-      <div className="flex items-end gap-1.5">
-        <span className="text-3xl font-extrabold leading-none tracking-tight tabular-nums">
-          {formatNumber(value)}
-        </span>
-        <span className="pb-0.5 text-xs font-medium text-muted-foreground">
-          {unit}
-        </span>
-      </div>
-    </Card>
-  );
-}
-
 function MemoryTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-border bg-background/60 px-3 py-2.5">
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
-      <p className="font-mono mt-1 text-sm font-semibold tabular-nums">{value}</p>
+    <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+      <p className="truncate text-[11px] font-medium text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-0.5 truncate font-mono text-xs font-semibold tabular-nums">
+        {value}
+      </p>
     </div>
   );
 }
 
 /**
  * 设置页：常规与外观 / 网络与在线源 / 存储与数据 / 隐私与安全 / 关于与维护。
- * 保存时以「已加载设置 + 当前表单」整对象写回，保留当前页面未展示、
- * 但后端仍需要的字段（例如实验开关）。
+ *
+ * 信息架构（Task 2/8）：一级面板只保留状态摘要、高频即时开关与轻量入口行；
+ * 复杂低频模块全部下沉到 `SettingsSection.disclosure` 的二级 Sheet，关闭时
+ * 不挂载、不请求。保存时以「已加载设置 + 当前表单」整对象写回，保留当前
+ * 页面未展示、但后端仍需要的字段。
  */
 export default function SettingsPage() {
   const { mode, setMode } = useTheme();
   const { locale, setLocale, t, formatNumber } = useI18n();
   const { active: safeMode } = useSafeMode();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState<SettingsTab>(
     () => normalizeSettingsTab(searchParams.get("tab")) ?? "general",
   );
@@ -324,7 +307,10 @@ export default function SettingsPage() {
     reset: resetBrandIcon,
   } = useBrandIcon();
   const [brandIconBusy, setBrandIconBusy] = useState(false);
+  const [skinBusy, setSkinBusy] = useState(false);
   const brandIconInputRef = useRef<HTMLInputElement | null>(null);
+  const { skin, skins, setSkin, addSkin } = useSkin();
+  const [shortcutsEnabled, setShortcutsEnabled] = useShortcutsEnabled();
 
   // 最近一次成功读/写数据库的完整设置；保存时作为底稿保留隐藏字段。
   const loadedRef = useRef<Settings | null>(null);
@@ -380,6 +366,40 @@ export default function SettingsPage() {
       return;
     }
     recordBreadcrumb("settingsChange");
+  };
+
+  const onImportSkin = async () => {
+    if (skinBusy) return;
+    setSkinBusy(true);
+    try {
+      const payload = await pickSkinArtwork();
+      if (!payload) return;
+      const id = `custom-${Date.now()}`;
+      addSkin({
+        id,
+        nameKey: "settings.skin.customName",
+        descriptionKey: "settings.skin.importHint",
+        tokens: {},
+        decorations: [
+          {
+            id: `${id}-corner`,
+            slot: "corner-companion-bottom-right",
+            asset: { src: payload.dataUrl, sizePx: 120, motion: "bob" },
+          },
+        ],
+      });
+      setSkin(id);
+      recordBreadcrumb("settingsChange");
+      toast(t("settings.skin.importDone"));
+    } catch (error) {
+      const code =
+        typeof error === "string" && error.startsWith("skin-")
+          ? error
+          : "skin-read-failed";
+      toast(localizeStableErrorCode(code));
+    } finally {
+      setSkinBusy(false);
+    }
   };
 
   const load = useCallback(async () => {
@@ -453,7 +473,7 @@ export default function SettingsPage() {
   // top instead of inheriting the previous tab's scroll offset.
   useEffect(() => {
     document
-      .querySelector("main")
+      .querySelector("[data-shell-scroll]")
       ?.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [tab]);
 
@@ -699,6 +719,21 @@ export default function SettingsPage() {
     }
   };
 
+  /** 切换一级分区时同步 ?tab=，保证深链与后退行为一致。 */
+  const onTabChange = (value: string) => {
+    const next = normalizeSettingsTab(value);
+    if (!next) return;
+    setTab(next);
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        params.set("tab", next);
+        return params;
+      },
+      { replace: true },
+    );
+  };
+
   const ready = !loading && !loadError;
   /** 直连 = 未填代理；填了则按来源显示跟随系统 / 手动。 */
   const proxyMode: "system" | "manual" | "direct" = form.onlineProxy.trim()
@@ -728,17 +763,23 @@ export default function SettingsPage() {
         ? "bg-warning"
         : "bg-success";
 
+  const activeTheme =
+    THEME_OPTIONS.find((option) => option.value === mode) ?? THEME_OPTIONS[0];
+  const onlineFeature = FEATURE_REGISTRY.find((item) => item.id === "online");
+  const tabTriggerClass =
+    "h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm";
+
   return (
     <div className="mx-auto w-full max-w-6xl px-5 pb-24 pt-4 sm:px-8">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             {t("settings.page.eyebrow")}
           </p>
-          <h1 className="mt-1 text-3xl font-extrabold tracking-tight sm:text-4xl">
+          <h1 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl">
             {t("nav.settings")}
           </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+          <p className="mt-1.5 line-clamp-2 max-w-2xl text-xs leading-5 text-muted-foreground">
             {t("settings.page.description")}
           </p>
         </div>
@@ -762,27 +803,23 @@ export default function SettingsPage() {
           <PixelPet mode="loading" message={t("settings.page.loading")} />
         </Card>
       ) : (
-        <Tabs
-          value={tab}
-          onValueChange={setTab}
-          className="gap-4"
-        >
+        <Tabs value={tab} onValueChange={onTabChange} className="gap-4">
           {/* 单行 5 列：900px 最小窗口 + 六语长文案下不折行、不溢出。 */}
           <TabsList
             aria-label={t("settings.tabs.label")}
-            className="grid h-auto w-full grid-cols-5 gap-0.5 overflow-hidden rounded-full border border-border bg-card p-1.5 shadow-hard group-data-horizontal/tabs:h-auto"
+            className="grid h-auto w-full grid-cols-5 gap-0.5 overflow-hidden rounded-full border border-border bg-card p-1.5 shadow-elevation-sm group-data-horizontal/tabs:h-auto"
           >
             <TabsTrigger
               value="general"
               data-testid="settings-tab-general"
-              className="h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-hard-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm"
+              className={tabTriggerClass}
             >
               {t("settings.tabs.general")}
             </TabsTrigger>
             <TabsTrigger
               value="network"
               data-testid="settings-tab-network"
-              className="h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-hard-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm"
+              className={tabTriggerClass}
             >
               {t("settings.tabs.network")}
             </TabsTrigger>
@@ -790,58 +827,28 @@ export default function SettingsPage() {
             <TabsTrigger
               value="storage"
               data-testid="settings-tab-cache"
-              className="h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-hard-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm"
+              className={tabTriggerClass}
             >
               {t("settings.tabs.storage")}
             </TabsTrigger>
             <TabsTrigger
               value="privacy"
               data-testid="settings-tab-privacy"
-              className="h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-hard-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm"
+              className={tabTriggerClass}
             >
               {t("settings.tabs.privacy")}
             </TabsTrigger>
             <TabsTrigger
               value="about"
               data-testid="settings-tab-about"
-              className="h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-hard-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm"
+              className={tabTriggerClass}
             >
               {t("settings.tabs.about")}
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="general" className="mt-2 space-y-4">
-            <SettingsSection
-              icon={SlidersHorizontal}
-              title={t("settings.features.title")}
-              description={t("settings.features.description")}
-            >
-              {FEATURE_REGISTRY.map((feature) => {
-                const enabled = form.features[feature.settingKey];
-                return (
-                  <SettingRow
-                    key={feature.id}
-                    title={t(feature.titleKey)}
-                    description={t(feature.descriptionKey)}
-                    badge={
-                      <Badge variant={enabled ? "success" : "muted"}>
-                        {enabled ? t("common.enabled") : t("common.disabled")}
-                      </Badge>
-                    }
-                  >
-                    <Switch
-                      checked={enabled}
-                      disabled={featureBusy !== null || saving || loading}
-                      aria-label={t(feature.titleKey)}
-                      onCheckedChange={(checked) =>
-                        void toggleFeature(feature, checked)
-                      }
-                    />
-                  </SettingRow>
-                );
-              })}
-            </SettingsSection>
-
+          {/* ---------------------------------------------------------------- 常规 */}
+          <TabsContent value="general" className="mt-2 space-y-3">
             <SettingsSection
               icon={Palette}
               title={t("settings.theme.title")}
@@ -850,7 +857,7 @@ export default function SettingsPage() {
               <div
                 role="group"
                 aria-label={t("settings.theme.groupLabel")}
-                className="grid gap-2 sm:grid-cols-3"
+                className="flex w-full max-w-md rounded-full border border-border bg-background/60 p-1"
               >
                 {THEME_OPTIONS.map((option) => {
                   const Icon = option.icon;
@@ -860,44 +867,79 @@ export default function SettingsPage() {
                       key={option.value}
                       type="button"
                       aria-pressed={active}
-                      variant={active ? "pill-primary" : "pill"}
-                      size="pill"
-                      className="h-auto w-full min-w-0 flex-col items-start gap-1 rounded-2xl px-4 py-3 text-left"
+                      variant={active ? "pill-primary" : "pill-ghost"}
+                      size="pill-sm"
+                      className="min-w-0 flex-1"
                       onClick={() => onThemeChange(option.value)}
                       disabled={saving}
                     >
-                      <span className="flex w-full min-w-0 items-center gap-2">
-                        <Icon className="size-4 shrink-0" />
-                        <span className="min-w-0 font-semibold">
-                          {t(option.labelKey)}
-                        </span>
-                        {active ? (
-                          <Check className="ml-auto size-4 shrink-0" />
-                        ) : null}
-                      </span>
-                      <span
-                        className={cn(
-                          "text-[11px] font-normal",
-                          active
-                            ? "text-primary-foreground/75"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        {t(option.hintKey)}
-                      </span>
+                      <Icon className="size-4 shrink-0" />
+                      <span className="truncate">{t(option.labelKey)}</span>
                     </Button>
                   );
                 })}
               </div>
               <p className="text-xs text-muted-foreground">
-                {t("settings.theme.systemNote")}
+                {t(activeTheme.hintKey)}
               </p>
+
+              <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
+                <SettingRow
+                  title={t("settings.language.label")}
+                  description={t("settings.language.description")}
+                >
+                  <Select
+                    items={LOCALE_OPTIONS}
+                    value={locale}
+                    onValueChange={(value) => {
+                      if (isLocale(value)) {
+                        setLocale(value);
+                        recordBreadcrumb("localeChange");
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      id="ui-language"
+                      aria-label={t("settings.language.label")}
+                      className="w-40"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LOCALE_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </SettingRow>
+              </div>
             </SettingsSection>
 
             <SettingsSection
               icon={ImageIcon}
               title={t("settings.brandIcon.title")}
               description={t("settings.brandIcon.description")}
+              summary={
+                <div className="flex items-center gap-3 rounded-xl border border-border bg-background/60 px-3 py-2.5">
+                  <AppBrandIcon className="size-8" />
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-medium">
+                      {brandIcon.kind === "custom"
+                        ? t("settings.brandIcon.customActive")
+                        : t(BRAND_ICON_LABEL_KEYS[brandIcon.preset])}
+                    </p>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      {t("settings.brandIcon.current")}
+                    </p>
+                  </div>
+                </div>
+              }
+              disclosure={{
+                triggerLabel: t("settings.brandIcon.open"),
+                triggerHint: t("settings.brandIcon.openHint"),
+              }}
             >
               <input
                 ref={brandIconInputRef}
@@ -907,23 +949,10 @@ export default function SettingsPage() {
                 aria-label={t("settings.brandIcon.upload")}
                 onChange={onBrandIconFile}
               />
-              <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-background/60 px-3 py-3">
-                <AppBrandIcon className="size-10" />
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold">
-                    {t("settings.brandIcon.current")}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {brandIcon.kind === "custom"
-                      ? t("settings.brandIcon.customActive")
-                      : t(BRAND_ICON_LABEL_KEYS[brandIcon.preset])}
-                  </p>
-                </div>
-              </div>
               <div
                 role="group"
                 aria-label={t("settings.brandIcon.groupLabel")}
-                className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"
+                className="grid grid-cols-2 gap-2 sm:grid-cols-4"
               >
                 {BRAND_ICON_PRESETS.map((preset) => {
                   const active =
@@ -935,19 +964,19 @@ export default function SettingsPage() {
                       aria-pressed={active}
                       variant={active ? "pill-primary" : "pill"}
                       size="pill"
-                      className="h-auto w-full min-w-0 items-center justify-start gap-2 rounded-2xl px-4 py-3 text-left"
+                      className="h-auto w-full min-w-0 items-center justify-start gap-2 rounded-xl px-3 py-2.5 text-left"
                       onClick={() => applyBrandIcon({ kind: "preset", preset })}
                       disabled={brandIconBusy || saving}
                     >
                       <AppBrandIcon
                         selection={{ kind: "preset", preset }}
-                        className="size-9"
+                        className="size-7 shrink-0"
                       />
-                      <span className="min-w-0 font-semibold">
+                      <span className="min-w-0 truncate text-xs font-medium">
                         {t(BRAND_ICON_LABEL_KEYS[preset])}
                       </span>
                       {active ? (
-                        <Check className="ml-auto size-4 shrink-0" />
+                        <Check className="ml-auto size-3.5 shrink-0" />
                       ) : null}
                     </Button>
                   );
@@ -957,7 +986,7 @@ export default function SettingsPage() {
                 <Button
                   type="button"
                   variant="pill"
-                  size="pill"
+                  size="pill-sm"
                   onClick={() => brandIconInputRef.current?.click()}
                   disabled={brandIconBusy || saving}
                 >
@@ -971,7 +1000,7 @@ export default function SettingsPage() {
                 <Button
                   type="button"
                   variant="pill"
-                  size="pill"
+                  size="pill-sm"
                   onClick={onResetBrandIcon}
                   disabled={
                     brandIconBusy ||
@@ -987,45 +1016,125 @@ export default function SettingsPage() {
                   <Loader2 className="size-4 animate-spin text-muted-foreground" />
                 ) : null}
               </div>
-              <p className="text-xs leading-relaxed text-muted-foreground">
+              <p className="text-xs leading-5 text-muted-foreground">
                 {t("settings.brandIcon.hint")}
               </p>
             </SettingsSection>
 
             <SettingsSection
-              icon={Globe2}
-              title={t("settings.language.title")}
-              description={t("settings.language.description")}
+              icon={SlidersHorizontal}
+              title={t("settings.features.title")}
+              description={t("settings.features.description")}
+              rows={
+                <>
+                  {FEATURE_REGISTRY.map((feature) => {
+                    const enabled = form.features[feature.settingKey];
+                    return (
+                      <SettingRow
+                        key={feature.id}
+                        title={t(feature.titleKey)}
+                        description={t(feature.descriptionKey)}
+                        badge={
+                          <Badge variant={enabled ? "success" : "muted"}>
+                            {enabled
+                              ? t("common.enabled")
+                              : t("common.disabled")}
+                          </Badge>
+                        }
+                      >
+                        <Switch
+                          checked={enabled}
+                          disabled={featureBusy !== null || saving || loading}
+                          aria-label={t(feature.titleKey)}
+                          onCheckedChange={(checked) =>
+                            void toggleFeature(feature, checked)
+                          }
+                        />
+                      </SettingRow>
+                    );
+                  })}
+                </>
+              }
+            />
+
+            <SettingsSection
+              icon={Sparkles}
+              title={t("settings.skin.title")}
+              description={t("settings.skin.description")}
+              summary={
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{t(skin.nameKey)}</Badge>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {t("settings.skin.decorationCount", {
+                      count: skin.decorations?.length ?? 0,
+                    })}
+                  </span>
+                </div>
+              }
+              disclosure={{
+                triggerLabel: t("settings.skin.open"),
+                triggerHint: t("settings.skin.openHint"),
+                testId: "skin-open",
+              }}
             >
-              <div className="flex min-w-0 flex-col gap-2 sm:max-w-md">
-                <Label htmlFor="ui-language">
-                  {t("settings.language.label")}
-                </Label>
-                <Select
-                  items={LOCALE_OPTIONS}
-                  value={locale}
-                  onValueChange={(value) => {
-                    if (isLocale(value)) {
-                      setLocale(value);
-                      recordBreadcrumb("localeChange");
-                    }
-                  }}
+              <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
+                {skins.map((item) => {
+                  const active = item.id === skin.id;
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex min-h-12 items-center gap-3 px-3.5 py-2.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">
+                          {t(item.nameKey)}
+                        </p>
+                        {item.descriptionKey ? (
+                          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                            {t(item.descriptionKey)}
+                          </p>
+                        ) : null}
+                      </div>
+                      <Button
+                        type="button"
+                        variant={active ? "pill-primary" : "pill"}
+                        size="pill-sm"
+                        className="shrink-0"
+                        aria-pressed={active}
+                        disabled={active}
+                        onClick={() => setSkin(item.id)}
+                      >
+                        {active ? (
+                          <Check className="size-3.5" />
+                        ) : (
+                          <Sparkles className="size-3.5" />
+                        )}
+                        {active
+                          ? t("settings.skin.active")
+                          : t("settings.skin.apply")}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="pill-sm"
+                  disabled={skinBusy}
+                  onClick={() => void onImportSkin()}
                 >
-                  <SelectTrigger
-                    id="ui-language"
-                    aria-label={t("settings.language.label")}
-                    className="w-full"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LOCALE_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  {skinBusy ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="size-3.5" />
+                  )}
+                  {t("settings.skin.import")}
+                </Button>
+                <span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
+                  {t("settings.skin.importHint")}
+                </span>
               </div>
             </SettingsSection>
 
@@ -1033,14 +1142,62 @@ export default function SettingsPage() {
               icon={Keyboard}
               title={t("settings.shortcuts.title")}
               description={t("settings.shortcuts.description")}
+              summary={
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant={shortcutsEnabled ? "success" : "muted"}
+                    className="whitespace-nowrap"
+                  >
+                    {shortcutsEnabled
+                      ? t("settings.shortcuts.enabled")
+                      : t("settings.shortcuts.disabled")}
+                  </Badge>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {t("settings.shortcuts.count", {
+                      count: GLOBAL_SHORTCUTS.length,
+                    })}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="pill-ghost"
+                    size="pill-sm"
+                    className="ml-auto whitespace-nowrap"
+                    onClick={() => {
+                      setShortcutsEnabled(true);
+                      toast(t("settings.shortcuts.resetDone"));
+                    }}
+                  >
+                    <RotateCcw className="size-3.5" />
+                    {t("settings.shortcuts.reset")}
+                  </Button>
+                </div>
+              }
+              rows={
+                <SettingRow
+                  title={t("settings.shortcuts.toggle")}
+                  description={t("settings.shortcuts.toggleHint")}
+                >
+                  <Switch
+                    checked={shortcutsEnabled}
+                    aria-label={t("settings.shortcuts.toggle")}
+                    onCheckedChange={setShortcutsEnabled}
+                  />
+                </SettingRow>
+              }
+              disclosure={{
+                triggerLabel: t("settings.shortcuts.open"),
+                triggerHint: t("settings.shortcuts.openHint"),
+                description: t("settings.shortcuts.sheetDescription"),
+                testId: "shortcuts-open",
+              }}
             >
               <div className="grid gap-2 sm:grid-cols-2">
                 {GLOBAL_SHORTCUTS.map((row) => (
                   <div
                     key={row.keys}
-                    className="flex min-w-0 items-center justify-between gap-3 rounded-2xl border border-border bg-background/60 px-3 py-2.5"
+                    className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2.5"
                   >
-                    <span className="min-w-0 text-xs font-medium text-muted-foreground">
+                    <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
                       {t(row.actionKey)}
                     </span>
                     <Badge
@@ -1052,443 +1209,402 @@ export default function SettingsPage() {
                   </div>
                 ))}
               </div>
-              {/* 命令中心：文案自带键位，单独一行避免与键位胶囊重复。 */}
-              <div className="flex min-w-0 items-center gap-2 rounded-2xl border border-border bg-background/60 px-3 py-2.5">
+              <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border bg-background/60 px-3 py-2.5">
                 <Command className="size-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 text-xs font-medium">
+                <span className="min-w-0 truncate text-xs font-medium">
                   {t("settings.shortcuts.command")}
                 </span>
               </div>
-              <p className="text-xs leading-relaxed text-muted-foreground">
+              <p className="text-xs leading-5 text-muted-foreground">
                 {t("settings.shortcuts.note")}
               </p>
             </SettingsSection>
           </TabsContent>
 
-          <TabsContent value="about" className="mt-2 space-y-4">
-            <SettingsSection
-              icon={Info}
-              title={t("settings.about.title")}
-              description={t("settings.about.description")}
-            >
-              <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-xl border border-border bg-background/60 px-3 py-2.5">
-                  <dt className="text-[11px] font-medium text-muted-foreground">
-                    {t("settings.about.version")}
-                  </dt>
-                  <dd className="font-mono mt-1 text-sm font-semibold">
-                    v{APP_VERSION}
-                  </dd>
-                </div>
-                <div className="rounded-xl border border-border bg-background/60 px-3 py-2.5">
-                  <dt className="text-[11px] font-medium text-muted-foreground">
-                    {t("settings.about.commit")}
-                  </dt>
-                  <dd className="font-mono mt-1 truncate text-sm font-semibold" title={BUILD_COMMIT}>
-                    {BUILD_COMMIT}
-                  </dd>
-                </div>
-                <div className="rounded-xl border border-border bg-background/60 px-3 py-2.5">
-                  <dt className="text-[11px] font-medium text-muted-foreground">
-                    {t("settings.about.storage")}
-                  </dt>
-                  <dd className="mt-1 text-sm font-semibold">
-                    {t("settings.about.storageValue")}
-                  </dd>
-                </div>
-                <div className="rounded-xl border border-border bg-background/60 px-3 py-2.5">
-                  <dt className="text-[11px] font-medium text-muted-foreground">
-                    {t("settings.about.dataFlow")}
-                  </dt>
-                  <dd className="mt-1 text-sm font-semibold">
-                    {t("settings.about.dataFlowValue")}
-                  </dd>
-                </div>
-                <AboutBuildOriginCell />
-              </dl>
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {t("settings.about.note")}
-              </p>
-            </SettingsSection>
-
-            {form.features.updates ? <UpdatesPanel /> : null}
-            {form.features.diagnostics ? <SupportPanel /> : null}
-
-            {/* 非商用授权徽章（Build Origin）：常驻关于分区底部。 */}
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  variant="secondary"
-                  className="rounded-full border border-border px-3 py-1 text-xs font-semibold whitespace-nowrap"
-                >
-                  {t("settings.about.nonCommercial")}
-                </Badge>
-                <span className="text-xs font-medium">
-                  {t("settings.about.buildOriginLabel")}
-                </span>
-              </div>
-              <AboutBuildOriginValue />
-            </div>
-          </TabsContent>
-
-          <TabsContent value="privacy" className="mt-2 space-y-4">
-            <PrivacyPanel />
-          </TabsContent>
-
-          <TabsContent value="network" className="mt-2 space-y-4">
+          {/* ---------------------------------------------------------------- 网络 */}
+          <TabsContent value="network" className="mt-2 space-y-3">
             {safeMode ? (
-              <Card className="items-start gap-3 p-5">
-                <span className="grid size-10 shrink-0 place-items-center rounded-2xl border border-border bg-warning text-background shadow-hard-sm">
-                  <ShieldCheck className="size-4.5" aria-hidden />
+              <Card className="items-start gap-3 p-4">
+                <span className="grid size-9 shrink-0 place-items-center rounded-xl border border-border bg-warning text-background shadow-elevation-sm">
+                  <ShieldCheck className="size-4" aria-hidden />
                 </span>
                 <div className="min-w-0">
-                  <h2 className="text-base font-extrabold">
+                  <h2 className="text-sm font-medium">
                     {t("safeMode.settingsOnlinePausedTitle")}
                   </h2>
-                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                  <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
                     {t("safeMode.settingsOnlinePausedBody")}
                   </p>
                 </div>
               </Card>
             ) : (
               <>
-            {/* 卡片 1：网络代理配置（跟随系统 / 手动 / 直连合并为唯一一组胶囊 + 唯一输入框）。 */}
-            <SettingsSection
-              icon={Globe2}
-              title={t("settings.online.networkTitle")}
-              description={t("settings.online.networkDescription")}
-            >
-              <div className="min-w-0 space-y-2">
-                <Label htmlFor="online-proxy">
-                  {t("settings.online.proxyLabel")}
-                </Label>
-                <div
-                  className="flex flex-wrap gap-2"
-                  role="group"
-                  aria-label={t("settings.online.proxyLabel")}
+                <SettingsSection
+                  icon={Globe2}
+                  title={t("settings.online.networkTitle")}
+                  description={t("settings.online.networkDescription")}
                 >
-                  <Button
-                    type="button"
-                    variant={proxyMode === "system" ? "pill-primary" : "pill"}
-                    size="pill-sm"
-                    className="whitespace-nowrap"
-                    aria-pressed={proxyMode === "system"}
-                    onClick={() => void onDetectProxy()}
-                    disabled={detectingProxy || saving}
-                  >
-                    {detectingProxy ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      <Globe2 />
-                    )}
-                    {t("settings.online.proxyMode.system")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={proxyMode === "manual" ? "pill-primary" : "pill"}
-                    size="pill-sm"
-                    className="whitespace-nowrap"
-                    aria-pressed={proxyMode === "manual"}
-                    onClick={() => setProxySource("manual")}
-                    disabled={saving}
-                  >
-                    {t("settings.online.proxyMode.manual")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={proxyMode === "direct" ? "pill-primary" : "pill"}
-                    size="pill-sm"
-                    className="whitespace-nowrap"
-                    aria-pressed={proxyMode === "direct"}
-                    onClick={() => {
-                      setProxySource("manual");
-                      set("onlineProxy", "");
-                    }}
-                    disabled={saving}
-                  >
-                    {t("settings.online.proxyMode.direct")}
-                  </Button>
-                </div>
-                <Input
-                  id="online-proxy"
-                  value={form.onlineProxy}
-                  onChange={(event) => {
-                    setProxySource("manual");
-                    set("onlineProxy", event.currentTarget.value);
-                  }}
-                  placeholder={t("settings.online.proxyPlaceholder")}
-                  className="min-w-0 font-mono text-xs"
-                  spellCheck={false}
-                  disabled={saving || proxyMode === "direct"}
-                />
-                <p className="text-xs text-muted-foreground">
-                  {t("settings.online.proxyHint")}
-                </p>
-              </div>
-
-              <div className="min-w-0 space-y-2">
-                <Label>{t("settings.online.concurrencyLabel")}</Label>
-                <Select
-                  items={concurrencyItems}
-                  value={String(form.onlineConcurrency)}
-                  disabled={saving}
-                  onValueChange={(value) => {
-                    const next = Number(value);
-                    if (Number.isFinite(next)) {
-                      set(
-                        "onlineConcurrency",
-                        Math.min(8, Math.max(1, next)),
-                      );
-                    }
-                  }}
-                >
-                  <SelectTrigger
-                    aria-label={t("settings.online.concurrencyLabel")}
-                  >
-                    <SelectValue
-                      placeholder={t(
-                        "settings.online.concurrencyPlaceholder",
-                      )}
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      <Button
+                        type="button"
+                        variant={
+                          proxyMode === "system" ? "pill-primary" : "pill"
+                        }
+                        size="pill-sm"
+                        aria-pressed={proxyMode === "system"}
+                        onClick={() => void onDetectProxy()}
+                        disabled={detectingProxy || saving}
+                      >
+                        {detectingProxy ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <Globe2 />
+                        )}
+                        {t("settings.online.proxyMode.system")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={
+                          proxyMode === "manual" ? "pill-primary" : "pill"
+                        }
+                        size="pill-sm"
+                        aria-pressed={proxyMode === "manual"}
+                        onClick={() => setProxySource("manual")}
+                        disabled={saving}
+                      >
+                        {t("settings.online.proxyMode.manual")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={
+                          proxyMode === "direct" ? "pill-primary" : "pill"
+                        }
+                        size="pill-sm"
+                        aria-pressed={proxyMode === "direct"}
+                        onClick={() => {
+                          setProxySource("manual");
+                          set("onlineProxy", "");
+                        }}
+                        disabled={saving}
+                      >
+                        {t("settings.online.proxyMode.direct")}
+                      </Button>
+                    </div>
+                    <Input
+                      id="online-proxy"
+                      aria-label={t("settings.online.proxyLabel")}
+                      value={form.onlineProxy}
+                      onChange={(event) => {
+                        setProxySource("manual");
+                        set("onlineProxy", event.currentTarget.value);
+                      }}
+                      placeholder={t("settings.online.proxyPlaceholder")}
+                      className="min-w-0 font-mono text-xs"
+                      spellCheck={false}
+                      disabled={saving || proxyMode === "direct"}
                     />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {concurrencyItems.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  {t("settings.online.concurrencyHint")}
-                </p>
-              </div>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      {t("settings.online.proxyHint")}
+                    </p>
+                  </div>
 
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Label htmlFor="online-headers">
-                    {t("settings.online.headersLabel")}
-                  </Label>
-                  {sessionActive ? (
-                    <Badge variant="success">
-                      {t("settings.online.sessionActive")}
-                    </Badge>
-                  ) : null}
-                </div>
-                <Textarea
-                  id="online-headers"
-                  value={form.onlineHeaders}
-                  onChange={(event) =>
-                    set("onlineHeaders", event.currentTarget.value)
+                  <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
+                    <SettingRow
+                      title={t("settings.online.concurrencyLabel")}
+                      description={t("settings.online.concurrencyHint")}
+                    >
+                      <Select
+                        items={concurrencyItems}
+                        value={String(form.onlineConcurrency)}
+                        disabled={saving}
+                        onValueChange={(value) => {
+                          const next = Number(value);
+                          if (Number.isFinite(next)) {
+                            set(
+                              "onlineConcurrency",
+                              Math.min(8, Math.max(1, next)),
+                            );
+                          }
+                        }}
+                      >
+                        <SelectTrigger
+                          aria-label={t("settings.online.concurrencyLabel")}
+                          className="w-32"
+                        >
+                          <SelectValue
+                            placeholder={t(
+                              "settings.online.concurrencyPlaceholder",
+                            )}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {concurrencyItems.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </SettingRow>
+                  </div>
+                </SettingsSection>
+
+                <SettingsSection
+                  icon={KeyRound}
+                  title={t("settings.online.headersLabel")}
+                  description={t("settings.online.headersHint")}
+                  summary={
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant={sessionActive ? "success" : "muted"}
+                        className="whitespace-nowrap"
+                      >
+                        {sessionActive
+                          ? t("settings.online.sessionPresent")
+                          : t("settings.online.sessionAbsent")}
+                      </Badge>
+                      <Badge variant="secondary" className="whitespace-nowrap">
+                        {sessionHeaders
+                          ? t("settings.online.memoryOnly")
+                          : t("settings.online.persistLocal")}
+                      </Badge>
+                    </div>
                   }
-                  rows={3}
-                  placeholder={t("settings.online.headersPlaceholder")}
-                  className="min-h-28 font-mono text-xs"
-                  spellCheck={false}
-                  autoComplete="off"
-                  disabled={saving}
-                />
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {t("settings.online.headersHint")}
-                </p>
-              </div>
-
-              <div className="space-y-3 rounded-2xl border border-border bg-background/60 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold">
-                      {t("settings.online.storageMode")}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {t("settings.online.storageModeDescription")}
+                  disclosure={{
+                    triggerLabel: t("settings.online.headersLabel"),
+                    triggerHint: sessionHeaders
+                      ? t("settings.online.memoryOnly")
+                      : t("settings.online.persistLocal"),
+                    testId: "online-headers-open",
+                  }}
+                >
+                  <div className="space-y-2">
+                    <Label htmlFor="online-headers">
+                      {t("settings.online.headersLabel")}
+                    </Label>
+                    <Textarea
+                      id="online-headers"
+                      value={form.onlineHeaders}
+                      onChange={(event) =>
+                        set("onlineHeaders", event.currentTarget.value)
+                      }
+                      rows={5}
+                      placeholder={t("settings.online.headersPlaceholder")}
+                      className="select-text min-h-32 font-mono text-xs"
+                      spellCheck={false}
+                      autoComplete="off"
+                      disabled={saving}
+                    />
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      {t("settings.online.headersHint")}
                     </p>
                   </div>
-                  <div
-                    className="flex flex-wrap gap-2"
-                    role="group"
-                    aria-label={t("settings.online.storageModeGroup")}
-                  >
-                    <Button
-                      type="button"
-                      variant={sessionHeaders ? "pill-primary" : "pill"}
-                      size="pill-sm"
-                      className="whitespace-nowrap"
-                      aria-pressed={sessionHeaders}
-                      disabled={saving}
-                      onClick={() => {
-                        setSessionHeaders(true);
-                        setDirty(true);
-                      }}
-                    >
-                      {t("settings.online.memoryOnly")}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={!sessionHeaders ? "pill-primary" : "pill"}
-                      size="pill-sm"
-                      className="whitespace-nowrap"
-                      aria-pressed={!sessionHeaders}
-                      disabled={saving}
-                      onClick={() => {
-                        setSessionHeaders(false);
-                        setDirty(true);
-                      }}
-                    >
-                      {t("settings.online.persistLocal")}
-                    </Button>
+
+                  <div className="space-y-2 rounded-xl border border-border bg-background/60 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">
+                          {t("settings.online.storageMode")}
+                        </p>
+                        <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                          {t("settings.online.storageModeDescription")}
+                        </p>
+                      </div>
+                      <div
+                        className="flex flex-wrap gap-1.5"
+                        role="group"
+                        aria-label={t("settings.online.storageModeGroup")}
+                      >
+                        <Button
+                          type="button"
+                          variant={sessionHeaders ? "pill-primary" : "pill"}
+                          size="pill-sm"
+                          aria-pressed={sessionHeaders}
+                          disabled={saving}
+                          onClick={() => {
+                            setSessionHeaders(true);
+                            setDirty(true);
+                          }}
+                        >
+                          {t("settings.online.memoryOnly")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={!sessionHeaders ? "pill-primary" : "pill"}
+                          size="pill-sm"
+                          aria-pressed={!sessionHeaders}
+                          disabled={saving}
+                          onClick={() => {
+                            setSessionHeaders(false);
+                            setDirty(true);
+                          }}
+                        >
+                          {t("settings.online.persistLocal")}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="pill"
+                        size="pill-sm"
+                        className="whitespace-nowrap"
+                        onClick={() => void onClearSessionHeaders()}
+                        disabled={!sessionActive || saving}
+                      >
+                        <Trash2 />
+                        {t("settings.online.clearSession")}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        {sessionActive
+                          ? t("settings.online.sessionPresent")
+                          : t("settings.online.sessionAbsent")}
+                      </span>
+                    </div>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      {t("settings.online.storageModeNote")}
+                    </p>
                   </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="pill"
-                    size="pill-sm"
-                    className="whitespace-nowrap"
-                    onClick={() => void onClearSessionHeaders()}
-                    disabled={!sessionActive || saving}
-                  >
-                    <Trash2 />
-                    {t("settings.online.clearSession")}
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    {sessionActive
-                      ? t("settings.online.sessionPresent")
-                      : t("settings.online.sessionAbsent")}
-                  </span>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t("settings.online.storageModeNote")}
-              </p>
-            </SettingsSection>
+                </SettingsSection>
 
-            {form.features.online ? <OnlineFilterPanel /> : null}
+                {onlineFeature ? (
+                  <OnlineFilterPanel
+                    enabled={form.features.online}
+                    toggleBusy={featureBusy !== null || saving}
+                    onToggle={(value) =>
+                      void toggleFeature(onlineFeature, value)
+                    }
+                  />
+                ) : null}
 
-            {/* 自建 OPDS 1.2 远程书库：地址与凭据只存本机，密码只写不读。 */}
-            {form.features.opds ? <OpdsPanel /> : null}
+                {form.features.webAccess ? (
+                  <WebAccessSummaryCard>
+                    <WebAccessPanel />
+                    <CaDistributionPanel />
+                    {form.features.opds ? <OpdsPanel /> : null}
+                  </WebAccessSummaryCard>
+                ) : null}
 
-            {/* 卡片 3：在线直读开关（URL 解析与 Telegram 频道统一走「浏览器」页唯一地址栏）。 */}
-            <SettingsSection
-              icon={Wifi}
-              title={t("settings.online.urlTitle")}
-              description={t("settings.online.urlDescription")}
-            >
-              <p className="text-xs text-muted-foreground">
-                {t("settings.features.managedInGeneral")}
-              </p>
-              <p className="rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-                {t("settings.online.browserHint")}
-              </p>
-            </SettingsSection>
+                <SettingsSection
+                  icon={Wifi}
+                  title={t("settings.online.urlTitle")}
+                  description={t("settings.online.urlDescription")}
+                >
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {t("settings.features.managedInGeneral")}
+                  </p>
+                  <p className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                    {t("settings.online.browserHint")}
+                  </p>
+                </SettingsSection>
               </>
             )}
           </TabsContent>
 
-          <TabsContent value="storage" className="mt-2 space-y-4">
-            {/* 卡片 1：书库与阅读统计（指标 + 说明 + 书库目录/扫描的唯一入口）。 */}
+          {/* ---------------------------------------------------------------- 存储 */}
+          <TabsContent value="storage" className="mt-2 space-y-3">
             <SettingsSection
               icon={Gauge}
               title={t("settings.stats.title")}
               description={t("settings.stats.description")}
-            >
-              {dashError ? (
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex min-w-0 items-start gap-2.5">
-                    <Info className="mt-0.5 size-4 shrink-0 text-destructive" />
-                    <p className="text-sm text-muted-foreground">
-                      {t("settings.stats.loadError", { detail: dashError })}
-                    </p>
-                  </div>
+              action={
+                dashError ? (
                   <Button
                     type="button"
-                    variant="pill"
+                    variant="pill-ghost"
                     size="pill-sm"
                     onClick={() => void loadDashboard()}
                   >
                     <RefreshCw />
                     {t("common.retry")}
                   </Button>
-                </div>
-              ) : dashLoading || !dash ? (
-                <p className="text-sm text-muted-foreground" aria-busy="true">
-                  {t("settings.stats.loading")}
-                </p>
-              ) : (
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  <MetricCard
-                    icon={BookOpen}
-                    label={t("settings.stats.totalBooks")}
-                    value={dash.totalBooks}
-                    unit={t("settings.stats.unitBooks")}
-                  />
-                  <MetricCard
-                    icon={TrendingUp}
-                    label={t("settings.stats.reading")}
-                    value={dash.reading}
-                    unit={t("settings.stats.unitBooks")}
-                  />
-                  <MetricCard
-                    icon={CalendarDays}
-                    label={t("settings.stats.todayPages")}
-                    value={dash.todayPages}
-                    unit={t("common.pages")}
-                  />
-                  <MetricCard
-                    icon={Gauge}
-                    label={t("settings.stats.last7Pages")}
-                    value={last7Pages}
-                    unit={t("common.pages")}
-                  />
-                </div>
-              )}
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {t("settings.stats.note")}
-              </p>
-
-              <div className="space-y-3 rounded-2xl border border-border bg-background/60 p-4">
-                <div className="space-y-2">
-                  <Label htmlFor="library-dir">
-                    {t("settings.library.dirLabel")}
-                  </Label>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <Input
-                      id="library-dir"
-                      value={form.libraryDir}
-                      onChange={(event) =>
-                        set("libraryDir", event.currentTarget.value)
-                      }
-                      placeholder={t("settings.library.dirPlaceholder")}
-                      className="min-w-0 font-mono text-xs sm:flex-1"
-                      spellCheck={false}
-                      disabled={saving}
+                ) : undefined
+              }
+              summary={
+                dashError ? (
+                  <p className="line-clamp-2 text-xs leading-5 text-destructive">
+                    {t("settings.stats.loadError", { detail: dashError })}
+                  </p>
+                ) : dashLoading || !dash ? (
+                  <p className="text-xs text-muted-foreground" aria-busy="true">
+                    {t("settings.stats.loading")}
+                  </p>
+                ) : (
+                  <SettingsStatRow>
+                    <SettingsStat
+                      label={t("settings.stats.totalBooks")}
+                      value={formatNumber(dash.totalBooks)}
+                      unit={t("settings.stats.unitBooks")}
                     />
-                    <div className="flex shrink-0 gap-2">
-                      <Button
-                        type="button"
-                        variant="pill"
-                        size="pill"
-                        className="whitespace-nowrap"
-                        onClick={() => void onPickDir()}
-                        disabled={scanning || saving}
-                      >
-                        <FolderOpen />
-                        {t("settings.library.pick")}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="pill"
-                        size="pill-icon"
-                        aria-label={t("settings.library.clearDir")}
-                        title={t("settings.library.clearDir")}
-                        onClick={() => set("libraryDir", "")}
-                        disabled={!form.libraryDir || saving}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
+                    <SettingsStat
+                      label={t("settings.stats.reading")}
+                      value={formatNumber(dash.reading)}
+                      unit={t("settings.stats.unitBooks")}
+                    />
+                    <SettingsStat
+                      label={t("settings.stats.todayPages")}
+                      value={formatNumber(dash.todayPages)}
+                      unit={t("common.pages")}
+                    />
+                    <SettingsStat
+                      label={t("settings.stats.last7Pages")}
+                      value={formatNumber(last7Pages)}
+                      unit={t("common.pages")}
+                    />
+                  </SettingsStatRow>
+                )
+              }
+              disclosure={{
+                triggerLabel: t("settings.library.dirLabel"),
+                triggerHint:
+                  form.libraryDir.trim() ||
+                  t("settings.library.dirPlaceholder"),
+                testId: "library-dir-open",
+              }}
+            >
+              <div className="space-y-2">
+                <Label htmlFor="library-dir">
+                  {t("settings.library.dirLabel")}
+                </Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id="library-dir"
+                    value={form.libraryDir}
+                    onChange={(event) =>
+                      set("libraryDir", event.currentTarget.value)
+                    }
+                    placeholder={t("settings.library.dirPlaceholder")}
+                    className="min-w-0 font-mono text-xs sm:flex-1"
+                    spellCheck={false}
+                    disabled={saving}
+                  />
+                  <div className="flex shrink-0 gap-2">
+                    <Button
+                      type="button"
+                      variant="pill"
+                      size="pill"
+                      className="whitespace-nowrap"
+                      onClick={() => void onPickDir()}
+                      disabled={scanning || saving}
+                    >
+                      <FolderOpen />
+                      {t("settings.library.pick")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="pill"
+                      size="pill-icon"
+                      aria-label={t("settings.library.clearDir")}
+                      title={t("settings.library.clearDir")}
+                      onClick={() => set("libraryDir", "")}
+                      disabled={!form.libraryDir || saving}
+                    >
+                      <Trash2 />
+                    </Button>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
                     variant="pill-primary"
@@ -1506,18 +1622,16 @@ export default function SettingsPage() {
                       ? t("settings.library.scanning")
                       : t("settings.library.scanNow")}
                   </Button>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
                     {t("settings.library.scanHint")}
                   </span>
                 </div>
               </div>
+              <p className="text-xs leading-5 text-muted-foreground">
+                {t("settings.stats.note")}
+              </p>
             </SettingsSection>
 
-            {form.features.backup ? (
-              <DataBackupPanel onRestored={load} />
-            ) : null}
-
-            {/* 卡片 2：缓存管理与 LRU 配额（唯一占用展示 + 唯一滑杆 + 唯一清空按钮）。 */}
             <SettingsSection
               icon={HardDrive}
               title={t("settings.cache.manageTitle")}
@@ -1533,139 +1647,244 @@ export default function SettingsPage() {
                   {t("common.refresh")}
                 </Button>
               }
-            >
-              <div
-                className="flex flex-wrap items-center justify-between gap-2"
-                data-testid="disk-cache-usage"
-              >
-                <Label htmlFor="disk-cache-budget">
-                  {t("settings.cache.diskLabel")}
-                </Label>
-                <Badge
-                  variant="secondary"
-                  className="font-mono px-3 py-1 tabular-nums"
-                >
-                  {formatNumber(diskBudgetMb)} MB
-                </Badge>
-              </div>
-              <Slider
-                id="disk-cache-budget"
-                value={[diskBudgetMb]}
-                min={500}
-                max={10240}
-                step={256}
-                disabled={saving}
-                onValueChange={(value) =>
-                  set(
-                    "diskCacheBudgetMb",
-                    typeof value === "number" ? value : (value[0] ?? 2048),
-                  )
-                }
-                getAriaLabel={() => t("settings.cache.diskAria")}
-              />
-              <div className="flex justify-between text-[11px] text-muted-foreground">
-                <span>{formatNumber(500)} MB</span>
-                <span>{formatNumber(10240)} MB</span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t("settings.cache.diskHint")}
-              </p>
-
-              {mem ? (
-                <>
+              summary={
+                <div className="space-y-2" data-testid="disk-cache-usage">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="font-medium text-muted-foreground">
                       {t("settings.cache.diskUsage")}
                     </span>
                     <span className="font-mono font-semibold tabular-nums">
-                      {formatMb(mem.diskCacheBytes, locale)} /{" "}
-                      {formatMb(mem.diskCacheLimitBytes, locale)} ·{" "}
-                      {formatNumber(diskCachePct)}%
+                      {mem
+                        ? `${formatMb(mem.diskCacheBytes, locale)} / ${formatMb(
+                            mem.diskCacheLimitBytes,
+                            locale,
+                          )} · ${formatNumber(diskCachePct)}%`
+                        : t("settings.cache.diskEmpty")}
                     </span>
                   </div>
                   <Progress value={diskCachePct} />
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <MemoryTile
-                      label={t("settings.cache.diskRender")}
-                      value={formatMb(mem.renderCacheBytes, locale)}
-                    />
-                    <MemoryTile
-                      label={t("settings.cache.diskOnline")}
-                      value={formatMb(mem.onlineCacheBytes, locale)}
-                    />
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {t("settings.cache.budgetBadge", {
+                        size: formatNumber(diskBudgetMb),
+                      })}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="pill"
+                      size="pill-sm"
+                      className="whitespace-nowrap"
+                      data-testid="clear-temp-cache"
+                      onClick={() => void onClearTemp()}
+                      disabled={clearingTemp || saving}
+                    >
+                      {clearingTemp ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Trash2 />
+                      )}
+                      {clearingTemp
+                        ? t("settings.cache.clearingTemp")
+                        : t("settings.cache.clearTemp")}
+                    </Button>
                   </div>
-                </>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  {t("settings.cache.diskEmpty")}
+                </div>
+              }
+              disclosure={{
+                triggerLabel: t("settings.cache.detailOpen"),
+                triggerHint: t("settings.cache.detailOpenHint"),
+                testId: "cache-detail-open",
+              }}
+            >
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label htmlFor="disk-cache-budget">
+                    {t("settings.cache.diskLabel")}
+                  </Label>
+                  <Badge
+                    variant="secondary"
+                    className="px-3 py-1 font-mono tabular-nums"
+                  >
+                    {formatNumber(diskBudgetMb)} MB
+                  </Badge>
+                </div>
+                <Slider
+                  id="disk-cache-budget"
+                  value={[diskBudgetMb]}
+                  min={500}
+                  max={10240}
+                  step={256}
+                  disabled={saving}
+                  onValueChange={(value) =>
+                    set(
+                      "diskCacheBudgetMb",
+                      typeof value === "number" ? value : (value[0] ?? 2048),
+                    )
+                  }
+                  getAriaLabel={() => t("settings.cache.diskAria")}
+                />
+                <div className="flex justify-between text-[11px] tabular-nums text-muted-foreground">
+                  <span>{formatNumber(500)} MB</span>
+                  <span>{formatNumber(10240)} MB</span>
+                </div>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  {t("settings.cache.diskHint")}
                 </p>
-              )}
-
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="pill"
-                  className="whitespace-nowrap"
-                  data-testid="clear-temp-cache"
-                  onClick={() => void onClearTemp()}
-                  disabled={clearingTemp || saving}
-                >
-                  {clearingTemp ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <Trash2 />
-                  )}
-                  {clearingTemp
-                    ? t("settings.cache.clearingTemp")
-                    : t("settings.cache.clearTemp")}
-                </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
+
+              {mem ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <MemoryTile
+                    label={t("settings.cache.diskRender")}
+                    value={formatMb(mem.renderCacheBytes, locale)}
+                  />
+                  <MemoryTile
+                    label={t("settings.cache.diskOnline")}
+                    value={formatMb(mem.onlineCacheBytes, locale)}
+                  />
+                </div>
+              ) : null}
+              <p className="text-xs leading-5 text-muted-foreground">
                 {t("settings.cache.clearTempHint")}
               </p>
             </SettingsSection>
+
+            {form.features.backup ? (
+              <DataBackupPanel onRestored={load} />
+            ) : null}
           </TabsContent>
 
+          {/* ---------------------------------------------------------------- 隐私 */}
+          <TabsContent value="privacy" className="mt-2 space-y-3">
+            <PrivacyPanel />
+          </TabsContent>
+
+          {/* ---------------------------------------------------------------- 关于 */}
+          <TabsContent value="about" className="mt-2 space-y-3">
+            <SettingsSection
+              icon={Info}
+              title={t("settings.about.title")}
+              description={t("settings.about.description")}
+              summary={
+                <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                    <dt className="text-[11px] font-medium text-muted-foreground">
+                      {t("settings.about.version")}
+                    </dt>
+                    <dd className="mt-0.5 truncate font-mono text-xs font-semibold tabular-nums">
+                      v{APP_VERSION}
+                    </dd>
+                  </div>
+                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                    <dt className="text-[11px] font-medium text-muted-foreground">
+                      {t("settings.about.commit")}
+                    </dt>
+                    <dd
+                      className="mt-0.5 truncate font-mono text-xs font-semibold"
+                      title={BUILD_COMMIT}
+                    >
+                      {BUILD_COMMIT}
+                    </dd>
+                  </div>
+                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                    <dt className="text-[11px] font-medium text-muted-foreground">
+                      {t("settings.about.storage")}
+                    </dt>
+                    <dd className="mt-0.5 truncate text-xs font-semibold">
+                      {t("settings.about.storageValue")}
+                    </dd>
+                  </div>
+                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                    <dt className="text-[11px] font-medium text-muted-foreground">
+                      {t("settings.about.dataFlow")}
+                    </dt>
+                    <dd className="mt-0.5 truncate text-xs font-semibold">
+                      {t("settings.about.dataFlowValue")}
+                    </dd>
+                  </div>
+                  <AboutBuildOriginCell />
+                </dl>
+              }
+              rows={
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
+                  <Badge
+                    variant="secondary"
+                    className="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium"
+                  >
+                    {t("settings.about.nonCommercial")}
+                  </Badge>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {t("settings.about.buildOriginLabel")}
+                  </span>
+                  <AboutBuildOriginValue />
+                </div>
+              }
+            >
+              <p className="text-xs leading-5 text-muted-foreground">
+                {t("settings.about.note")}
+              </p>
+            </SettingsSection>
+
+            {form.features.updates ? <UpdatesPanel /> : null}
+
+            {form.features.diagnostics ? (
+              <SettingsSection
+                icon={ShieldCheck}
+                title={t("support.title")}
+                description={t("support.description")}
+                summary={
+                  <Badge variant="success" className="gap-1.5">
+                    <ShieldCheck className="size-3.5" aria-hidden />
+                    {t("support.localOnly")}
+                  </Badge>
+                }
+                disclosure={{
+                  triggerLabel: t("privacy.detail.exportTitle"),
+                  triggerHint: t("support.description"),
+                  testId: "diagnostics-open",
+                }}
+              >
+                <DiagnosticPanel />
+              </SettingsSection>
+            ) : null}
+          </TabsContent>
         </Tabs>
       )}
 
       {tab === "general" || tab === "network" || tab === "storage" ? (
-      <div className="sticky bottom-4 z-30 mt-6">
-        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-hard">
-          <div className="flex min-w-0 flex-1 items-center gap-2 text-xs font-medium text-muted-foreground">
-            <span
-              className={cn("size-2 shrink-0 rounded-full", statusDot)}
-              aria-hidden
-            />
-            <span className="truncate">{statusText}</span>
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-3">
-            {dirty && !saving ? (
-              <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">
-                {t("settings.status.saveHint")}
-              </span>
-            ) : null}
-            <Button
-              type="button"
-              variant="pill-primary"
-              size="pill"
-              className="min-w-32 whitespace-nowrap"
-              onClick={() => void onSave()}
-              disabled={!ready || saving || featureBusy !== null}
-            >
-              {saving ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Save />
-              )}
-              {saving
-                ? t("common.saving")
-                : t("settings.saveButton")}
-            </Button>
+        <div className="sticky bottom-4 z-30 mt-5">
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-2.5 shadow-hard">
+            <div className="flex min-w-0 flex-1 items-center gap-2 text-xs font-medium text-muted-foreground">
+              <span
+                className={cn("size-2 shrink-0 rounded-full", statusDot)}
+                aria-hidden
+              />
+              <span className="truncate">{statusText}</span>
+            </div>
+            <div className="ml-auto flex shrink-0 items-center gap-3">
+              {dirty && !saving ? (
+                <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">
+                  {t("settings.status.saveHint")}
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="pill-primary"
+                size="pill"
+                className="min-w-32 whitespace-nowrap"
+                onClick={() => void onSave()}
+                disabled={!ready || saving || featureBusy !== null}
+              >
+                {saving ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Save />
+                )}
+                {saving ? t("common.saving") : t("settings.saveButton")}
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
       ) : null}
     </div>
   );
@@ -1699,16 +1918,16 @@ function useBuildOrigin(): string | null {
   return origin;
 }
 
-/** 构建来源指纹格子（关于分区 dl 的第 5 格）。 */
+/** 构建来源指纹格子（关于分区 dl 的最后一格）。 */
 function AboutBuildOriginCell() {
   const { t } = useI18n();
   const origin = useBuildOrigin();
   return (
-    <div className="rounded-xl border border-border bg-background/60 px-3 py-2.5">
+    <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
       <dt className="text-[11px] font-medium text-muted-foreground">
         {t("settings.about.buildOrigin")}
       </dt>
-      <dd className="mt-1 text-sm font-semibold">
+      <dd className="mt-0.5 truncate text-xs font-semibold">
         {origin === "official"
           ? t("settings.about.buildOriginOfficial")
           : t("settings.about.buildOriginCommunity")}
@@ -1722,7 +1941,7 @@ function AboutBuildOriginValue() {
   const { t } = useI18n();
   const origin = useBuildOrigin();
   return (
-    <span className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+    <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
       {origin === "official"
         ? t("settings.about.buildOriginOfficial")
         : t("settings.about.buildOriginCommunity")}

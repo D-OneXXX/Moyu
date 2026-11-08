@@ -25,6 +25,7 @@ pub(crate) mod read_service;
 pub mod render_cache;
 mod resilience;
 mod security;
+pub mod skin;
 pub mod source;
 mod state;
 mod system_proxy;
@@ -665,6 +666,8 @@ pub fn run() {
             // 用户点击后的 restart_app；旧校验代码/负向测试仍可作为回归资产。
             update::get_app_info,
             update::restart_app,
+            // Task 7：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变。
+            skin::skin_import_asset,
             security::security_audit,
             security::clear_online_traces,
             // G1：仅根 CA 初始化/导出/短时分发；不含 D1b 配对或数据路由。

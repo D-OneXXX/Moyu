@@ -16,12 +16,12 @@ assert.ok(callback);
 const js = ts.transpile("(" + callback.getText(file) + ")");
 
 test("visit counter tolerates storage reads and writes that throw", () => {
-  for (const localStorage of [
-    { getItem() { throw Error("denied"); }, setItem() {} },
-    { getItem() { return "3"; }, setItem() { throw Error("denied"); } },
-  ]) {
-    assert.equal(runInNewContext(js, { localStorage })(), 1);
-  }
+  assert.equal(runInNewContext(js, { localStorage: {
+    getItem() { throw Error("denied"); }, setItem() {},
+  } })(), 1);
+  assert.equal(runInNewContext(js, { localStorage: {
+    getItem() { return "3"; }, setItem() { throw Error("denied"); },
+  } })(), 4);
   let saved;
   assert.equal(runInNewContext(js, { localStorage: {
     getItem: () => "3", setItem: (_, value) => { saved = value; },

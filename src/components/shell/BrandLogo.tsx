@@ -39,8 +39,8 @@ export default function BrandLogo() {
           strokeLinejoin="round"
         />
       </svg>
-      <span className="text-lg font-extrabold tracking-tight text-foreground">
-        Manga<span className="text-[#38A8F8]">Reader</span>
+      <span className="text-lg font-extrabold tracking-wider text-foreground">
+        Mo<span className="text-[#38A8F8]">yu</span>
       </span>
     </div>
   );

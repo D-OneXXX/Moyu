@@ -599,6 +599,7 @@ async function renderReader() {
         const part = node("div", null, "tile-pending");
         part.dataset.tile = String(i);
         part.style.width = "100%";
+        part.style.height = "auto";
         part.style.aspectRatio = reservedHeights[i];
         parts.push(part);
       }

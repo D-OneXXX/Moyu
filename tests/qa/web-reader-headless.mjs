@@ -230,6 +230,8 @@ try {
   await page.eval("document.querySelector('.book').click()");
   const expectedAtNewWidth = `(()=>{const tiles=document.querySelector('.tiles');if(!tiles)return false;const width=tiles.clientWidth;const pageHeight=Math.round(6400/640*width);const total=pageHeight*3;const top=${lastWrite.scrollPct}*Math.max(1,total-window.innerHeight);const local=Math.min(Math.max(0,pageHeight-window.innerHeight),Math.max(0,top-pageHeight));return Math.abs(window.scrollY-(tiles.getBoundingClientRect().top+window.scrollY+local))<3})()`;
   await wait("document.querySelector('.tiles img') && " + expectedAtNewWidth);
+  const pendingHeight = await page.eval("document.querySelector('.tiles .tile-pending')?.getBoundingClientRect().height ?? null");
+  assert.ok(pendingHeight == null || pendingHeight > 844, "reserved tile placeholders keep their predicted aspect-ratio height");
   await new Promise((resolve) => setTimeout(resolve, 900));
   assert.equal(writes, 3, "programmatic restore does not create another progress write");
   await page.eval("window.scrollBy(0,120)");

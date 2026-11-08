@@ -347,19 +347,44 @@ fn write_safe_mode_at(path: &Path, state: &SafeModeState) -> Result<(), String> 
 }
 
 fn read_boot_guard_at(path: &Path) -> BootGuard {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return BootGuard::default();
-    };
-    serde_json::from_str::<BootGuard>(&raw).unwrap_or_default()
+    // 首次启动没有文件：按干净状态处理。
+    // 文件存在但读不出/解析失败：故障关闭，按一次未完成启动计数，
+    // 让下一次 begin_launch 达到恢复提示阈值；不能让崩溃信号被静默清零。
+    match std::fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<BootGuard>(&raw) {
+            Ok(guard) => guard,
+            Err(error) => {
+                crate::logging::log_error(
+                    "boot_guard",
+                    &format!("启动守卫文件损坏，按未完成启动处理（boot-guard-corrupt）：{error}"),
+                );
+                unreadable_boot_guard()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BootGuard::default(),
+        Err(error) => {
+            crate::logging::log_error(
+                "boot_guard",
+                &format!("启动守卫文件不可读，按未完成启动处理（boot-guard-unreadable）：{error}"),
+            );
+            unreadable_boot_guard()
+        }
+    }
+}
+
+/// 守卫文件损坏/不可读时的故障关闭取值：至少累计一次未完成启动。
+fn unreadable_boot_guard() -> BootGuard {
+    BootGuard {
+        clean: false,
+        failures: 1,
+        last_launch_at: None,
+    }
 }
 
 fn write_boot_guard_at(path: &Path, guard: &BootGuard) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| format!("无法创建启动守卫目录：{err}"))?;
-    }
     let data =
         serde_json::to_vec_pretty(guard).map_err(|err| format!("无法序列化启动守卫：{err}"))?;
-    std::fs::write(path, data).map_err(|err| format!("无法写入启动守卫：{err}"))
+    atomic_write(path, &data).map_err(|err| format!("无法写入启动守卫：{err}"))
 }
 
 fn begin_launch_at(path: &Path) -> Result<u32, String> {
@@ -1314,6 +1339,52 @@ mod tests {
         mark_ready_at(&path).unwrap();
         assert_eq!(begin_launch_at(&path).unwrap(), 0);
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn corrupt_boot_guard_is_fail_closed_and_reaches_recovery_threshold() {
+        let path = temp_path("boot-corrupt");
+        std::fs::write(&path, "{not-json").unwrap();
+        // 损坏文件按一次未完成启动计，begin_launch 后必须达到恢复提示阈值。
+        assert!(
+            begin_launch_at(&path).unwrap() >= 2,
+            "损坏的启动守卫不得把崩溃计数清零"
+        );
+        assert_eq!(read_boot_guard_at(&path).failures, 2);
+        assert!(!read_boot_guard_at(&path).clean);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn boot_guard_write_is_atomic_and_leaves_no_temp_files() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("mr-resilience-boot-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(BOOT_GUARD_FILE);
+        let guard = BootGuard {
+            clean: false,
+            failures: 3,
+            last_launch_at: Some("2026-11-09T00:00:00Z".to_string()),
+        };
+        write_boot_guard_at(&path, &guard).unwrap();
+        let read_back = read_boot_guard_at(&path);
+        assert!(!read_back.clean);
+        assert_eq!(read_back.failures, 3);
+        assert_eq!(read_back.last_launch_at, guard.last_launch_at);
+
+        // 原子写用 tmp-* 过渡文件，成功后不得残留。
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件：{leftovers:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

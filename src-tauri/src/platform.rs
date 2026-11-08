@@ -184,7 +184,12 @@ fn linux_pre_setup_data_dir() -> Option<std::path::PathBuf> {
     if let Some(raw) = std::env::var_os("MR_DATA_DIR") {
         let trimmed = raw.to_string_lossy().trim().to_string();
         if !trimmed.is_empty() {
-            return Some(std::path::PathBuf::from(trimmed));
+            let path = std::path::PathBuf::from(&trimmed);
+            // 与 lib::data_dir 保持同一契约：相对路径绝不落到 CWD。
+            if path.is_absolute() {
+                return Some(path);
+            }
+            eprintln!("[platform] MR_DATA_DIR 不是绝对路径，已忽略并回落到 XDG 目录");
         }
     }
     let base = std::env::var_os("XDG_DATA_HOME")

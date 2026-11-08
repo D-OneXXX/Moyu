@@ -13,6 +13,11 @@ function recordBreadcrumb(kind) {
   if (breadcrumbs.length > 20) breadcrumbs.shift();
 }
 let blobs = [], observer = null, queue = [], inflight = 0, controllers = [];
+let layoutDims = null, layoutGeometryCache = null, savedScrollPct = -1;
+let scrollSaveTimer = 0, scrollListener = null, scrollRestoreFrame = 0, scrollRestoreTimer = 0;
+let pendingScrollPct = null, progressWriteChain = Promise.resolve();
+let restoringScroll = false, restoringScrollY = null, scrollReady = false, lastScrollSaveAt = 0;
+const WEBTOON_TILE_H = 2048, SCROLL_SAVE_INTERVAL_MS = 750, MAX_LAYOUT_CSS_HEIGHT = 16e6;
 function node(tag, text, className) {
   const el = document.createElement(tag);
   if (text != null) el.textContent = text;
@@ -28,6 +33,18 @@ function button(label, fn, cls) {
 function clearReader() {
   generation++;
   busy = false;
+  if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = 0;
+  if (scrollListener) window.removeEventListener("scroll", scrollListener);
+  scrollListener = null;
+  if (scrollRestoreFrame) cancelAnimationFrame(scrollRestoreFrame);
+  scrollRestoreFrame = 0;
+  if (scrollRestoreTimer) clearTimeout(scrollRestoreTimer);
+  scrollRestoreTimer = 0;
+  pendingScrollPct = null;
+  restoringScroll = false;
+  restoringScrollY = null;
+  scrollReady = false;
   if (observer) observer.disconnect();
   observer = null;
   for (const c of controllers) c.abort();
@@ -36,6 +53,141 @@ function clearReader() {
   inflight = 0;
   for (const u of blobs) URL.revokeObjectURL(u);
   blobs = [];
+}
+function validatedLayout(layout, count) {
+  const pages = layout?.pages;
+  if (!Array.isArray(pages) || pages.length !== count) return null;
+  for (let i = 0; i < pages.length; i++) {
+    const d = pages[i];
+    if (d?.index !== i || !Number.isSafeInteger(d.width) || !Number.isSafeInteger(d.height) || d.width < 1 || d.height < 1) return null;
+  }
+  return pages;
+}
+function layoutGeometry(tiles) {
+  if (!layoutDims || !tiles) return null;
+  const width = Math.max(1, Math.round(tiles.clientWidth || tiles.getBoundingClientRect().width));
+  if (layoutGeometryCache?.width === width) return layoutGeometryCache;
+  const pages = [];
+  let total = 0;
+  for (const d of layoutDims) {
+    const height = Math.max(1, Math.round(d.height / d.width * width));
+    pages.push({ start: total, height });
+    total += height;
+    if (!Number.isSafeInteger(total) || total > MAX_LAYOUT_CSS_HEIGHT) return null;
+  }
+  layoutGeometryCache = { width, total, pages };
+  return layoutGeometryCache;
+}
+function currentBookScrollPct(tiles) {
+  const geometry = layoutGeometry(tiles);
+  const current = geometry?.pages[page];
+  if (!geometry || !current) return null;
+  const viewport = Math.max(1, window.innerHeight || 1);
+  const pageRange = Math.max(0, current.height - viewport);
+  if (pageRange <= 0) return null;
+  const tilesTop = tiles.getBoundingClientRect().top + window.scrollY;
+  const localTop = Math.min(pageRange, Math.max(0, window.scrollY - tilesTop));
+  const bookRange = Math.max(1, geometry.total - viewport);
+  const pct = Math.min(1, Math.max(0, (current.start + localTop) / bookRange));
+  return Math.round(pct * 1e5) / 1e5;
+}
+function restoreBookScroll(tiles, pct, token) {
+  if (!layoutGeometry(tiles)) return;
+  if (scrollRestoreFrame) cancelAnimationFrame(scrollRestoreFrame);
+  scrollRestoreFrame = requestAnimationFrame(() => {
+    scrollRestoreFrame = requestAnimationFrame(() => {
+      scrollRestoreFrame = 0;
+      if (token !== generation || !activeBook) return;
+      const geometry = layoutGeometry(tiles);
+      const current = geometry?.pages[page];
+      if (pct >= 0 && pct <= 1 && geometry && current) {
+        const viewport = Math.max(1, window.innerHeight || 1);
+        const globalTop = pct * Math.max(1, geometry.total - viewport);
+        const localTop = Math.min(Math.max(0, current.height - viewport), Math.max(0, globalTop - current.start));
+        const tilesTop = tiles.getBoundingClientRect().top + window.scrollY;
+        restoringScroll = true;
+        window.scrollTo(0, Math.max(0, tilesTop + localTop));
+        restoringScrollY = window.scrollY;
+        if (scrollRestoreTimer) clearTimeout(scrollRestoreTimer);
+        scrollRestoreTimer = setTimeout(() => {
+          restoringScroll = false;
+          restoringScrollY = null;
+          scrollRestoreTimer = 0;
+        }, 300);
+      }
+      scrollReady = true;
+    });
+  });
+}
+function queueProgressWrite(nextPage, scrollPct, baseRev, token) {
+  const body = { page: nextPage };
+  if (Number.isFinite(scrollPct) && scrollPct >= 0 && scrollPct <= 1) body.scrollPct = scrollPct;
+  const write = progressWriteChain.catch(() => {}).then(async () => {
+    if (token !== generation || !activeBook || conflict) return;
+    body.baseRev = Number.isInteger(baseRev) ? baseRev : revision;
+    const controller = new AbortController();
+    controllers.push(controller);
+    try {
+      const result = await api("/api/books/" + activeBook.id + "/progress", {
+        method: "PUT",
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      if (token !== generation) return;
+      page = result.page;
+      revision = result.rev;
+      savedScrollPct = body.scrollPct ?? -1;
+      lastScrollSaveAt = Date.now();
+      conflict = null;
+      return result;
+    } catch (e) {
+      if (token !== generation || e.name === "AbortError") return;
+      if (e.code === "progress-conflict" && e.details) {
+        recordBreadcrumb("progress_conflict");
+        conflict = {
+          desiredPage: nextPage,
+          desiredScrollPct: body.scrollPct,
+          currentPage: e.details.currentPage,
+          currentRev: e.details.currentRev
+        };
+        renderTools();
+      } else {
+        showError(app, e);
+      }
+    } finally {
+      controllers = controllers.filter((item) => item !== controller);
+    }
+  });
+  progressWriteChain = write;
+  return write;
+}
+function flushScrollProgress() {
+  if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = 0;
+  if (pendingScrollPct == null || !activeBook || conflict) return progressWriteChain;
+  const pct = pendingScrollPct;
+  pendingScrollPct = null;
+  const token = generation;
+  return queueProgressWrite(page, pct, null, token);
+}
+function scheduleScrollProgress(tiles) {
+  if (restoringScroll) {
+    if (restoringScrollY != null && Math.abs(window.scrollY - restoringScrollY) <= 2) return;
+    restoringScroll = false;
+    restoringScrollY = null;
+    if (scrollRestoreTimer) clearTimeout(scrollRestoreTimer);
+    scrollRestoreTimer = 0;
+  }
+  if (!scrollReady || conflict || busy || !activeBook) return;
+  const pct = currentBookScrollPct(tiles);
+  if (pct == null) return;
+  pendingScrollPct = pct;
+  if (scrollSaveTimer) return;
+  const wait = Math.max(0, SCROLL_SAVE_INTERVAL_MS - (Date.now() - lastScrollSaveAt));
+  scrollSaveTimer = setTimeout(() => {
+    scrollSaveTimer = 0;
+    void flushScrollProgress();
+  }, wait);
 }
 function showError(container, err, retry) {
   const code = err && err.code;
@@ -241,6 +393,7 @@ async function library(query = "", cursor = null, append = false) {
 async function openBook(book) {
   recordBreadcrumb("open_book");
   clearReader();
+  window.scrollTo(0, 0);
   const token = generation;
   activeBook = book;
   app.replaceChildren(node("p", t(15)));
@@ -261,6 +414,16 @@ async function openBook(book) {
     page = Math.min(progress.page, progress.pageCount - 1);
     pageCount = progress.pageCount;
     revision = progress.rev;
+    let layout = null;
+    try {
+      layout = await api("/api/books/" + book.id + "/layout");
+    } catch {
+      layout = null;
+    }
+    if (token !== generation) return;
+    layoutDims = validatedLayout(layout, pageCount);
+    layoutGeometryCache = null;
+    savedScrollPct = clampedProgressNotice || !Number.isFinite(progress.scrollPct) ? -1 : progress.scrollPct;
     conflict = null;
     renderReader();
   } catch (e) {
@@ -269,37 +432,36 @@ async function openBook(book) {
     showError(app, e);
   }
 }
-async function changePage(next, base = revision) {
+async function changePage(next, base = null, scrollPct = null) {
   if (busy || !activeBook || next < 0 || next >= pageCount) return;
   const token = generation;
   recordBreadcrumb("change_page");
   busy = true;
   renderTools();
+  let result = null;
   try {
-    const result = await api("/api/books/" + activeBook.id + "/progress", { method: "PUT", body: JSON.stringify({ page: next, baseRev: base }) });
-    if (token !== generation) return;
-    page = result.page;
-    clampedProgressNotice = false;
-    revision = result.rev;
-    conflict = null;
-    renderReader();
-    window.scrollTo(0, 0);
-  } catch (e) {
-    if (token !== generation) return;
-    if (e.code === "progress-conflict" && e.details) {
-      recordBreadcrumb("progress_conflict");
-      conflict = { desired: next, ...e.details };
-      renderTools();
-    } else {
-      renderTools();
-      showError(app, e);
+    if (base == null && !conflict) {
+      await flushScrollProgress();
+      await progressWriteChain;
+      if (token !== generation || conflict) return;
     }
+    pendingScrollPct = null;
+    if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+    scrollSaveTimer = 0;
+    result = await queueProgressWrite(next, scrollPct, base, token);
   } finally {
     if (token === generation) {
       busy = false;
       renderTools();
     }
   }
+  if (!result || token !== generation) return;
+  page = result.page;
+  clampedProgressNotice = false;
+  savedScrollPct = scrollPct == null ? -1 : scrollPct;
+  pendingScrollPct = null;
+  renderReader();
+  window.scrollTo(0, 0);
 }
 function renderTools() {
   const tools = document.getElementById("tools");
@@ -313,15 +475,43 @@ function renderTools() {
   tools.append(prev, node("span", `${t(14)} ${page + 1} / ${pageCount}`), next);
   if (conflict) {
     const box = node("div", t(19), "panel error");
-    box.append(button(t(20), () => {
-      page = Math.min(conflict.currentPage, pageCount - 1);
-      clampedProgressNotice = conflict.currentPage >= pageCount;
-      revision = conflict.currentRev;
+    box.append(button(t(20), async () => {
+      const token = generation;
+      try {
+        const current = await api("/api/books/" + activeBook.id + "/progress");
+        if (token !== generation) return;
+        page = Math.min(current.page, current.pageCount - 1);
+        pageCount = current.pageCount;
+        clampedProgressNotice = current.page >= current.pageCount;
+        revision = current.rev;
+        savedScrollPct = clampedProgressNotice || !Number.isFinite(current.scrollPct) ? -1 : current.scrollPct;
+        conflict = null;
+        renderReader();
+      } catch (e) {
+        if (token === generation) showError(app, e);
+      }
+    }), button(t(21), () => {
+      const desired = conflict;
       conflict = null;
-      renderReader();
-    }), button(t(21), () => changePage(conflict.desired, conflict.currentRev)));
+      void changePage(desired.desiredPage, desired.currentRev, desired.desiredScrollPct);
+    }));
     tools.append(box);
   }
+}
+function tileAspectRatios(dim, requestedWidth, count) {
+  if (!dim || dim.width < 1 || dim.height < 1 || count < 1) return null;
+  const bucketWidth = Math.min(2160, Math.max(320, Math.floor((Math.min(2160, Math.max(320, requestedWidth)) + 32) / 64) * 64));
+  const outputWidth = Math.min(dim.width, bucketWidth);
+  const outputHeight = Math.max(1, Math.round(dim.height * outputWidth / dim.width));
+  if (count > outputHeight) return null;
+  const ratios = [];
+  let previous = 0;
+  for (let i = 1; i <= count; i++) {
+    const pixelEnd = i === count ? outputHeight : Math.round(i * outputHeight / count);
+    ratios.push(`${outputWidth} / ${Math.max(1, pixelEnd - previous)}`);
+    previous = pixelEnd;
+  }
+  return ratios;
 }
 async function renderReader() {
   if (!activeBook) return;
@@ -339,12 +529,13 @@ async function renderReader() {
   area.append(tiles, tools);
   app.append(area);
   renderTools();
+  const restorePct = savedScrollPct;
   const width = Math.max(320, Math.min(2160, Math.round((window.innerWidth || 1080) * (window.devicePixelRatio || 1))));
   const base = "/api/books/" + activeBook.id + "/pages/" + page + "/tiles/";
   const controller = new AbortController();
   controllers.push(controller);
   try {
-    let setImage = function(img2, blob, container) {
+    let setImage = function(img2, blob, container, reservedAspectRatio) {
       img2.addEventListener("error", () => {
         if (token !== generation) return;
         img2.remove();
@@ -352,6 +543,7 @@ async function renderReader() {
         error.code = "image-failed";
         showError(container, error, () => renderReader());
       }, { once: true });
+      if (typeof reservedAspectRatio === "string") img2.style.aspectRatio = reservedAspectRatio;
       const u = URL.createObjectURL(blob);
       blobs.push(u);
       img2.src = u;
@@ -398,12 +590,46 @@ async function renderReader() {
     }
     const count = Number(first.headers.get("X-Tile-Count"));
     if (!Number.isInteger(count) || count < 1 || count > 1e4) throw new Error("tile count");
+    const dim = layoutDims?.[page];
+    const reservedHeights = dim ? tileAspectRatios(dim, width, count) : null;
+    let firstPart = null;
+    if (reservedHeights?.length === count) {
+      const parts = [];
+      for (let i = 0; i < count; i++) {
+        const part = node("div", null, "tile-pending");
+        part.dataset.tile = String(i);
+        part.style.width = "100%";
+        part.style.aspectRatio = reservedHeights[i];
+        parts.push(part);
+      }
+      tiles.replaceChildren(...parts);
+      firstPart = parts[0];
+      observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) if (entry.isIntersecting) {
+          observer.unobserve(entry.target);
+          queue.push(entry.target);
+          pump();
+        }
+      }, { rootMargin: "800px" });
+      for (let i = 1; i < parts.length; i++) observer.observe(parts[i]);
+    }
     const firstBlob = await first.blob();
     if (token !== generation) return;
     const img = node("img");
     img.alt = "";
-    setImage(img, firstBlob, tiles);
-    tiles.append(img);
+    setImage(img, firstBlob, firstPart || tiles, reservedHeights?.[0]);
+    if (firstPart) {
+      firstPart.replaceChildren(img);
+      firstPart.classList.remove("tile-pending");
+      if (layoutGeometry(tiles)) {
+        scrollListener = () => scheduleScrollProgress(tiles);
+        window.addEventListener("scroll", scrollListener, { passive: true });
+        restoreBookScroll(tiles, restorePct, token);
+      }
+    } else {
+      tiles.append(img);
+    }
+    if (!firstPart) {
     observer = new IntersectionObserver((entries) => {
       for (const entry of entries) if (entry.isIntersecting) {
         observer.unobserve(entry.target);
@@ -416,6 +642,7 @@ async function renderReader() {
       part.dataset.tile = String(i);
       tiles.append(part);
       observer.observe(part);
+    }
     }
   } catch (e) {
     if (token === generation && e.name !== "AbortError") showError(tiles, e, () => renderReader());

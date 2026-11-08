@@ -10,6 +10,9 @@ const CJK = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
  */
 const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "feature-disabled", key: "error.featureDisabled" },
+  { code: "cache-clear-failed", key: "error.cacheClearFailed" },
+  { code: "safe-mode-unavailable", key: "error.safeModeUnavailable" },
+  { code: "blocking-task-failed", key: "error.blockingTaskFailed" },
   { code: "archive-disguised-rar", key: "error.archiveDisguisedRar" },
   { code: "archive-disguised-7z", key: "error.archiveDisguised7z" },
   { code: "archive-not-zip", key: "error.archiveNotZip" },

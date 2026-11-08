@@ -1,6 +1,9 @@
 //! 通用内嵌浏览器窗口与下载导入。
 
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use chrono::TimeZone;
@@ -27,6 +30,8 @@ const BROWSER_HEIGHT: f64 = 820.0;
 
 /// 下载文件名长度上限（保留扩展名后按字符截断）。
 const MAX_DOWNLOAD_FILENAME_CHARS: usize = 120;
+const MAX_DOWNLOAD_EXTENSION_CHARS: usize = 16;
+static DOWNLOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrowserDownload {
@@ -65,9 +70,11 @@ fn sanitize_download_filename(raw: &str) -> String {
     let mut stem = clean_filename_part(stem)
         .trim_matches(|c| c == ' ' || c == '.')
         .to_string();
-    let ext = clean_filename_part(ext)
+    let ext: String = clean_filename_part(ext)
         .trim_matches(|c| c == ' ' || c == '.')
-        .to_string();
+        .chars()
+        .take(MAX_DOWNLOAD_EXTENSION_CHARS)
+        .collect();
     if stem.is_empty() {
         stem = "download".into();
     }
@@ -88,24 +95,36 @@ fn sanitize_download_filename(raw: &str) -> String {
 }
 
 fn unique_download_path(dir: &Path, filename: &str) -> PathBuf {
-    let candidate = dir.join(filename);
-    if !candidate.exists() {
-        return candidate;
-    }
     let (stem, ext) = split_extension(filename);
-    for i in 1u32.. {
-        let suffix = format!(" ({i})");
-        let name = if ext.is_empty() {
-            format!("{stem}{suffix}")
-        } else {
-            format!("{stem}{suffix}.{ext}")
-        };
-        let path = dir.join(name);
-        if !path.exists() {
-            return path;
-        }
+    let sequence = DOWNLOAD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    // The WebView download callback must synchronously provide a destination.
+    // Use a process-local sequence and randomized suffix instead of filesystem
+    // existence probes on that callback thread. This avoids callback-thread IO;
+    // the WebView API does not provide an asynchronous destination reservation.
+    let mut nonce = String::with_capacity(64);
+    for round in 0..4u8 {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        hasher.write_u128(timestamp);
+        hasher.write_u64(sequence);
+        hasher.write_u8(round);
+        nonce.push_str(&format!("{:016x}", hasher.finish()));
     }
-    unreachable!("文件名后缀空间耗尽")
+    let unique_suffix = format!("-{nonce}");
+    let extension = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{ext}")
+    };
+    let max_stem = MAX_DOWNLOAD_FILENAME_CHARS
+        .saturating_sub(unique_suffix.chars().count() + extension.chars().count())
+        .max(1);
+    let stem: String = stem.chars().take(max_stem).collect();
+    dir.join(format!("{stem}{unique_suffix}{extension}"))
 }
 
 fn url_download_name(url: &Url) -> Option<String> {
@@ -117,22 +136,14 @@ fn url_download_name(url: &Url) -> Option<String> {
     )
 }
 
-fn prepare_download_destination(
-    downloads_dir: &Path,
-    url: &Url,
-    suggested: &Path,
-) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(downloads_dir).map_err(|e| format!("创建下载目录失败：{e}"))?;
+fn prepare_download_destination(downloads_dir: &Path, url: &Url, suggested: &Path) -> PathBuf {
     let raw = suggested
         .file_name()
         .and_then(|name| name.to_str())
         .map(str::to_string)
         .or_else(|| url_download_name(url))
         .unwrap_or_else(|| "download".into());
-    Ok(unique_download_path(
-        downloads_dir,
-        &sanitize_download_filename(&raw),
-    ))
+    unique_download_path(downloads_dir, &sanitize_download_filename(&raw))
 }
 
 fn is_importable_download(path: &Path) -> bool {
@@ -192,17 +203,14 @@ fn finish_download(app: AppHandle, path: PathBuf) {
                     if let Err(e) = commands::set_file_readonly(&path) {
                         crate::logging::log_error(
                             "browser_import",
-                            &format!("设置只读失败 {}：{e}", path.display()),
+                            &format!("设置下载文件只读失败：{e}"),
                         );
                     }
                 }
                 book_id
             }
             Err(e) => {
-                crate::logging::log_error(
-                    "browser_import",
-                    &format!("导入下载失败 {}：{e}", path.display()),
-                );
+                crate::logging::log_error("browser_import", &format!("导入下载失败：{e}"));
                 None
             }
         }
@@ -226,21 +234,11 @@ fn finish_download(app: AppHandle, path: PathBuf) {
     }
 }
 
-fn handle_download_event(app: &AppHandle, event: DownloadEvent<'_>) -> bool {
+fn handle_download_event(app: &AppHandle, downloads: &Path, event: DownloadEvent<'_>) -> bool {
     match event {
         DownloadEvent::Requested { url, destination } => {
-            let result = downloads_dir()
-                .and_then(|dir| prepare_download_destination(&dir, &url, destination));
-            match result {
-                Ok(path) => {
-                    *destination = path;
-                    true
-                }
-                Err(e) => {
-                    crate::logging::log_error("browser_download", &format!("准备下载失败：{e}"));
-                    false
-                }
-            }
+            *destination = prepare_download_destination(downloads, &url, destination);
+            true
         }
         DownloadEvent::Finished {
             path: Some(path),
@@ -248,7 +246,7 @@ fn handle_download_event(app: &AppHandle, event: DownloadEvent<'_>) -> bool {
             ..
         } => {
             let app = app.clone();
-            std::thread::spawn(move || finish_download(app, path));
+            tauri::async_runtime::spawn_blocking(move || finish_download(app, path));
             true
         }
         _ => true,
@@ -281,12 +279,16 @@ pub async fn open_browser_window(
     state: State<'_, Arc<AppState>>,
     url: String,
 ) -> Result<(), String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     crate::features::ensure_enabled(
         &state.settings.lock().features,
         crate::features::FeatureId::Browser,
     )?;
     let url = validate_browser_url(&url)?;
+    let downloads = commands::blocking(|| {
+        downloads_dir().map_err(|error| crate::source::BackendError::Msg(error.to_string()))
+    })
+    .await?;
     if let Some(window) = app.get_webview_window(BROWSER_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
@@ -297,29 +299,32 @@ pub async fn open_browser_window(
     // WebView 构建不能占住 async IPC 线程/主事件循环；移到阻塞池。
     tauri::async_runtime::spawn_blocking(move || {
         let download_app = app.clone();
+        let download_dir = downloads;
         WebviewWindowBuilder::new(&app, BROWSER_LABEL, WebviewUrl::External(url))
             .title(BROWSER_TITLE)
             .inner_size(BROWSER_WIDTH, BROWSER_HEIGHT)
             // §4.3：辅助浏览器只服务当次人工验证，不持久化第三方 Cookie
             // 或站点存储；关闭窗口即丢弃，避免下次启动复用上一站凭据。
             .incognito(true)
-            .on_download(move |_webview, event| handle_download_event(&download_app, event))
+            .on_download(move |_webview, event| {
+                handle_download_event(&download_app, &download_dir, event)
+            })
             .on_navigation(navigation_allowed)
             .build()
             .map(|_| ())
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("浏览器窗口任务失败：{e}"))?
+    .map_err(|_| "浏览器窗口任务失败（blocking-task-failed）".to_string())?
 }
 
 #[tauri::command]
-pub fn navigate_browser(
+pub async fn navigate_browser(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     url: String,
 ) -> Result<(), String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     crate::features::ensure_enabled(
         &state.settings.lock().features,
         crate::features::FeatureId::Browser,
@@ -372,29 +377,38 @@ pub async fn import_browser_download(
         &state.settings.lock().features,
         crate::features::FeatureId::Browser,
     )?;
-    let downloads = downloads_dir()?;
-    let candidate =
-        normalize_existing_path(Path::new(&path)).map_err(|e| format!("下载文件不存在：{e}"))?;
-    if !is_within(&downloads, &candidate) || !candidate.is_file() {
-        return Err("只能导入下载目录中的文件".into());
-    }
-    if !is_importable_download(&candidate) {
-        return Ok(None);
-    }
-
     let db_path = state.db_path();
-    let import_path = candidate.clone();
-    let book_id =
-        commands::blocking(move || commands::import_local_archive(db_path, &import_path)).await?;
-    if book_id.is_some() {
-        if let Err(e) = commands::set_file_readonly(&candidate) {
-            crate::logging::log_error(
-                "browser_import",
-                &format!("设置只读失败 {}：{e}", candidate.display()),
-            );
+    commands::blocking(move || {
+        // Path canonicalization, metadata checks, import, and permissions are
+        // all synchronous filesystem operations; keep the full operation on
+        // the blocking pool instead of doing path checks before the await.
+        let downloads =
+            downloads_dir().map_err(|error| crate::source::BackendError::Msg(error.to_string()))?;
+        let candidate = normalize_existing_path(Path::new(&path)).map_err(|error| {
+            crate::source::BackendError::Msg(format!("下载文件不存在：{error}"))
+        })?;
+        if !is_within(&downloads, &candidate) || !candidate.is_file() {
+            return Err(crate::source::BackendError::Msg(
+                "只能导入下载目录中的文件".into(),
+            ));
         }
-    }
-    Ok(book_id)
+        if !is_importable_download(&candidate) {
+            return Ok(None);
+        }
+
+        let book_id = commands::import_local_archive(db_path, &candidate)?;
+        if book_id.is_some() {
+            if let Err(error) = commands::set_file_readonly(&candidate) {
+                // Paths must not enter logs; the operation remains best-effort.
+                crate::logging::log_error(
+                    "browser_import",
+                    &format!("设置下载文件只读失败：{error}"),
+                );
+            }
+        }
+        Ok(book_id)
+    })
+    .await
 }
 
 fn collect_downloads(
@@ -518,10 +532,12 @@ mod tests {
             "{}",
             name.chars().count()
         );
+        let long_extension = sanitize_download_filename(&format!("book.{}", "x".repeat(300)));
+        assert!(long_extension.chars().count() <= MAX_DOWNLOAD_FILENAME_CHARS);
     }
 
     #[test]
-    fn destination_is_inside_download_dir_and_never_overwrites() {
+    fn destination_is_inside_download_dir_and_preserves_existing_basename() {
         let dir = temp_dir("dest");
         let original = dir.join("book.zip");
         std::fs::write(&original, b"keep").unwrap();
@@ -531,9 +547,13 @@ mod tests {
             &dir,
             &url,
             Path::new("C:/Users/alice/Downloads/book.zip"),
-        )
-        .unwrap();
-        assert_eq!(first, dir.join("book (1).zip"));
+        );
+        assert!(first.starts_with(&dir));
+        assert!(first
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("book-"));
         assert!(first.is_absolute());
         assert_eq!(std::fs::read(&original).unwrap(), b"keep");
 
@@ -542,9 +562,9 @@ mod tests {
             &dir,
             &url,
             Path::new("C:/Users/alice/Downloads/book.zip"),
-        )
-        .unwrap();
-        assert_eq!(second, dir.join("book (2).zip"));
+        );
+        assert_ne!(second, first);
+        assert!(second.starts_with(&dir));
         assert_eq!(std::fs::read(&original).unwrap(), b"keep");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -554,8 +574,16 @@ mod tests {
     fn destination_falls_back_to_url_filename() {
         let dir = temp_dir("fallback");
         let url = url::Url::parse("https://example.com/files/fallback.cbz?x=1").unwrap();
-        let path = prepare_download_destination(&dir, &url, Path::new("")).unwrap();
-        assert_eq!(path, dir.join("fallback.cbz"));
+        let path = prepare_download_destination(&dir, &url, Path::new(""));
+        assert!(path.starts_with(&dir));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("fallback-"));
+        assert!(path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cbz")));
         std::fs::remove_dir_all(&dir).ok();
     }
 

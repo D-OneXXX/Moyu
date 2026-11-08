@@ -458,7 +458,11 @@ impl PairingHttp {
         let Some(secret) = claim_cookie(request.headers()) else {
             return error_response(StatusCode::UNAUTHORIZED, "unauthorized", None);
         };
-        match self.service.consume(claim_id, secret.as_str()) {
+        let user_agent = single_header(request.headers(), "user-agent");
+        match self
+            .service
+            .consume_with_client(claim_id, secret.as_str(), user_agent)
+        {
             Ok(issued) => consumed_response(issued),
             Err(error) => auth_error_response(&error),
         }

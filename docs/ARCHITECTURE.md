@@ -44,6 +44,11 @@ browser WebView
 - Library metadata, progress, statistics, settings, and filter rules live in SQLite under
   Tauri’s `app_data_dir`.
 - Database connections use WAL, a busy timeout, foreign keys, and normal synchronous mode.
+- Related settings keys commit in one SQLite transaction. Cache/settings memory changes happen
+  only after commit; disabling an optional feature persists its gate before runtime cleanup.
+- `DbSlot` guards are held only while reading or writing SQLite. Large metadata parsing,
+  sorting, and filesystem checks run after an owned row snapshot leaves the lock, but remain
+  inside `spawn_blocking`.
 - Schema versions move forward only; migrations and startup checks are part of the boot path.
 - Rendered pages and online images share a bounded disk cache under `app_cache_dir`. Cache
   cleanup removes derived data only, never `library.db` or reading progress.
@@ -89,6 +94,9 @@ browser WebView
 - Backups contain a sanitized database snapshot and an explicit allowlist of preferences.
   They exclude image caches, online headers, proxies, cookies, filter events, and internal
   version markers.
+- Startup recovery verifies a staging database before replacing the live database. The prior
+  database and its WAL/SHM sidecars are quarantined as one recovery group; the three newest
+  groups are retained. Recovery is considered healthy only after restored settings normalize.
 - The application does not start a Python sidecar or background service.
 
 ## Updates

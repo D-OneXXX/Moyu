@@ -29,6 +29,7 @@ pub mod skin;
 pub mod source;
 mod state;
 mod system_proxy;
+mod tray;
 pub mod update;
 mod versioning;
 pub mod web_access;
@@ -228,6 +229,9 @@ pub struct Settings {
     pub online_concurrency: u32,
     /// 手动请求头：JSON 对象或单行 Cookie；仅用于自建/授权源。
     pub online_headers: String,
+    /// 关闭主窗口时隐藏到系统托盘。局域网阅读运行中始终拦截关闭。
+    #[serde(default)]
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -241,6 +245,7 @@ impl Default for Settings {
             online_proxy: String::new(),
             online_concurrency: 3,
             online_headers: String::new(),
+            close_to_tray: false,
         }
     }
 }
@@ -299,6 +304,9 @@ pub(crate) fn hydrate_settings(conn: &rusqlite::Connection, s: &mut Settings) {
     }
     if let Some(v) = get("online_headers") {
         s.online_headers = v;
+    }
+    if let Some(v) = get("close_to_tray") {
+        s.close_to_tray = v == "true" || v == "1";
     }
 }
 
@@ -521,6 +529,33 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // 官方 Updater：GitHub Releases latest.json + minisign 校验。
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 关闭主窗口：LAN 服务运行中或用户开启「关闭到托盘」时只隐藏，
+        // 不触发退出；托盘「彻底退出」走 app.exit（不产生 CloseRequested）。
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            if window.label() != "main" || tray::is_exiting() {
+                return;
+            }
+            let app = window.app_handle();
+            let close_to_tray = app
+                .try_state::<Arc<AppState>>()
+                .map(|state| state.settings.lock().close_to_tray)
+                .unwrap_or(false);
+            let running = app
+                .try_state::<Arc<web_access::WebAccessRuntime>>()
+                .map(|runtime| runtime.is_running_snapshot())
+                .unwrap_or(false);
+            if close_to_tray || running {
+                if !tray::is_available(app) {
+                    // No tray host: let the window close instead of stranding it.
+                    return;
+                }
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(move |app| {
             diagnostics::install_panic_hook();
             // 1) 先锚定数据/缓存根（app_data_dir / app_cache_dir），再初始化日志。
@@ -556,6 +591,10 @@ pub fn run() {
             if init_app(app).is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。
                 logging::log_error("startup", "后端初始化失败（db-init-failed）");
+            }
+            // 系统托盘：DB 与运行时都已就绪，才能读取上次的托盘语言。
+            if let Err(error) = tray::install(app.handle()) {
+                logging::log_error("tray", &format!("系统托盘初始化失败：{error}"));
             }
             // 4) 文件关联/命令行直开：首次启动在后台导入，完成后 ping 前端。
             open_with::handle_launch(
@@ -691,6 +730,8 @@ pub fn run() {
             web_access::commands::web_access_pairing_cancel,
             web_access::commands::web_access_devices_list,
             web_access::commands::web_access_device_revoke,
+            tray::tray_set_locale,
+            tray::tray_set_icon,
             diagnostics::diagnostics_record_frontend_error,
             diagnostics::diagnostics_record_breadcrumb,
             diagnostics::diagnostics_update_context,

@@ -6,7 +6,8 @@
 use tauri::{AppHandle, Emitter};
 
 use super::runtime::{
-    PairingEventView, WebAccessEventSink, WebAccessStatusView, PAIRING_EVENT, STATE_EVENT,
+    PairingEventView, WebAccessEventSink, WebAccessStatusView, DEVICES_EVENT, PAIRING_EVENT,
+    STATE_EVENT,
 };
 
 pub(crate) struct TauriEventSink {
@@ -25,9 +26,16 @@ impl WebAccessEventSink for TauriEventSink {
         // receive claim ids/device names. Only the main settings window needs
         // these wake-up events.
         let _ = self.app.emit_to("main", STATE_EVENT, status.clone());
+        // Keep the tray status line/tooltip in lockstep; no polling timer.
+        crate::tray::apply_status(&self.app, status);
     }
 
     fn emit_pairing(&self, event: &PairingEventView) {
         let _ = self.app.emit_to("main", PAIRING_EVENT, event.clone());
+    }
+
+    fn emit_devices_changed(&self) {
+        // Payload-free wake-up: the panel re-reads the device list itself.
+        let _ = self.app.emit_to("main", DEVICES_EVENT, ());
     }
 }

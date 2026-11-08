@@ -12,7 +12,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{Local, NaiveDateTime, TimeZone};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 
 use crate::source::BackendError;
@@ -37,6 +37,17 @@ pub(crate) fn configure(conn: &Connection) -> Result<(), BackendError> {
 pub(crate) fn open(path: impl AsRef<Path>) -> Result<Connection, BackendError> {
     let conn = Connection::open(path)?;
     configure(&conn)?;
+    Ok(conn)
+}
+
+/// Open a database strictly for read-only validation without switching it to
+/// WAL mode or creating SQLite sidecar files. Used for extracted backup
+/// snapshots; production library databases must use [`open`].
+pub(crate) fn open_readonly(path: impl AsRef<Path>) -> Result<Connection, BackendError> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "query_only", "ON")?;
     Ok(conn)
 }
 
@@ -1433,6 +1444,20 @@ pub fn set_setting(conn: &Connection, k: &str, v: &str) -> Result<(), BackendErr
     Ok(())
 }
 
+/// Persist a related group of settings atomically. If any write fails, dropping
+/// the transaction rolls back every earlier key in the group.
+pub fn set_settings_atomic(
+    conn: &Connection,
+    pairs: &[(&str, String)],
+) -> Result<(), BackendError> {
+    let tx = conn.unchecked_transaction()?;
+    for (key, value) in pairs {
+        set_setting(&tx, key, value)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Internal app metadata (not user settings): schema/compatibility markers.
 pub fn get_meta(conn: &Connection, k: &str) -> Result<Option<String>, BackendError> {
     let value: Option<String> = conn
@@ -1832,6 +1857,76 @@ mod tests {
             assert_eq!(fk, 1);
         }
         cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn readonly_open_sets_safe_pragmas_without_enabling_wal_or_writes() {
+        let path = unique_temp_db("readonly");
+        {
+            let conn = Connection::open(&path).expect("创建只读测试库");
+            conn.execute_batch("CREATE TABLE sample(value TEXT);")
+                .expect("创建测试表");
+        }
+
+        {
+            let conn = open_readonly(&path).expect("只读打开快照");
+            assert!(conn.is_readonly("main").expect("读取只读标志"));
+            let busy: i64 = conn
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .expect("读取 busy_timeout");
+            assert_eq!(busy, BUSY_TIMEOUT.as_millis() as i64);
+            let foreign_keys: i64 = conn
+                .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+                .expect("读取 foreign_keys");
+            assert_eq!(foreign_keys, 1);
+            let query_only: i64 = conn
+                .query_row("PRAGMA query_only", [], |row| row.get(0))
+                .expect("读取 query_only");
+            assert_eq!(query_only, 1);
+            assert!(conn
+                .execute("INSERT INTO sample(value) VALUES ('blocked')", [])
+                .is_err());
+            let journal_mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("读取 journal_mode");
+            assert_eq!(journal_mode.to_ascii_lowercase(), "delete");
+            assert!(!std::path::PathBuf::from(format!("{}-wal", path.display())).exists());
+            assert!(!std::path::PathBuf::from(format!("{}-shm", path.display())).exists());
+        }
+
+        cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn atomic_settings_write_rolls_back_prior_keys_after_failure() {
+        let conn = mem();
+        set_setting(&conn, "theme", "dark").expect("seed previous value");
+        conn.execute_batch(
+            "CREATE TRIGGER reject_theme_update
+             BEFORE UPDATE ON settings
+             WHEN NEW.k = 'theme'
+             BEGIN SELECT RAISE(ABORT, 'injected settings failure'); END;",
+        )
+        .expect("install failure trigger");
+
+        let result = set_settings_atomic(
+            &conn,
+            &[
+                ("feature_browser", "false".to_string()),
+                ("theme", "light".to_string()),
+            ],
+        );
+
+        assert!(result.is_err(), "injected write must fail");
+        assert_eq!(
+            get_setting(&conn, "feature_browser").unwrap(),
+            None,
+            "earlier inserts in the group must roll back"
+        );
+        assert_eq!(
+            get_setting(&conn, "theme").unwrap().as_deref(),
+            Some("dark")
+        );
     }
 
     #[test]

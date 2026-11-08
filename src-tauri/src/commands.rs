@@ -275,73 +275,118 @@ fn pick_next(current: &db::BookRow, candidates: Vec<db::BookRow>) -> Option<db::
         })
 }
 
-pub(crate) fn get_next_book_impl(
+/// Owned rows needed to choose a following chapter. SQLite access and the
+/// single current-row link lookup happen while the DbSlot lock is held;
+/// candidate JSON parsing, selection, sorting, and filesystem checks happen
+/// after the snapshot leaves the lock.
+pub(crate) struct NextBookSnapshot {
+    current: db::BookRow,
+    current_series_id: Option<String>,
+    direct_next: Option<db::BookRow>,
+    candidates: Vec<db::BookRow>,
+}
+
+impl NextBookSnapshot {
+    pub(crate) fn resolve_next_row(self) -> Option<db::BookRow> {
+        if let Some(row) = self.direct_next {
+            return Some(row);
+        }
+
+        let mut series_candidates = Vec::new();
+        if let Some(series_id) = self.current_series_id.as_deref() {
+            for book in &self.candidates {
+                if book.id == self.current.id {
+                    continue;
+                }
+                let Ok(meta) = serde_json::from_str::<crate::online::StoredMeta>(&book.meta_json)
+                else {
+                    continue;
+                };
+                if meta.series_id.as_deref() == Some(series_id) {
+                    series_candidates.push(book.clone());
+                }
+            }
+        }
+
+        if !series_candidates.is_empty() {
+            return pick_next(&self.current, series_candidates);
+        }
+
+        let prefix = title_prefix(&self.current.title);
+        if prefix.is_empty() {
+            return None;
+        }
+        let candidates = self
+            .candidates
+            .into_iter()
+            .filter(|book| {
+                book.id != self.current.id
+                    && book.title != self.current.title
+                    && book.title.starts_with(&prefix)
+            })
+            .collect();
+        pick_next(&self.current, candidates)
+    }
+}
+
+pub(crate) fn get_next_book_snapshot(
     conn: &rusqlite::Connection,
     book_id: &str,
-) -> Result<Option<BookInfo>, BackendError> {
+) -> Result<Option<NextBookSnapshot>, BackendError> {
     let Some(current) = db::get_book(conn, book_id)? else {
         return Ok(None);
     };
-    let stored = serde_json::from_str::<crate::online::StoredMeta>(&current.meta_json).ok();
+    get_next_book_snapshot_from_current(conn, current).map(Some)
+}
 
+/// The Web detail endpoint already loaded an active current row. Reuse that
+/// row so its current-book and next-book lookups stay within one DbSlot guard.
+pub(crate) fn get_next_book_snapshot_from_current(
+    conn: &rusqlite::Connection,
+    current: db::BookRow,
+) -> Result<NextBookSnapshot, BackendError> {
+    let stored = serde_json::from_str::<crate::online::StoredMeta>(&current.meta_json).ok();
+    let current_series_id = stored.as_ref().and_then(|meta| meta.series_id.clone());
     if let Some(next) = stored.as_ref().and_then(|meta| meta.next_url.as_deref()) {
         if let Ok(next) = crate::online::normalize_url(next) {
             let next_id = db::book_id_for_path(next.as_str());
             if next_id != current.id {
                 if let Some(row) = db::get_book(conn, &next_id)? {
-                    return Ok(Some(to_book_info(row)));
+                    return Ok(NextBookSnapshot {
+                        current,
+                        current_series_id,
+                        direct_next: Some(row),
+                        candidates: Vec::new(),
+                    });
                 }
             }
         }
     }
 
-    let books = db::list_books(conn, None)?;
-    let mut series_candidates = Vec::new();
-    if let Some(series_id) = stored.as_ref().and_then(|meta| meta.series_id.as_deref()) {
-        for book in &books {
-            if book.id == current.id {
-                continue;
-            }
-            let Ok(meta) = serde_json::from_str::<crate::online::StoredMeta>(&book.meta_json)
-            else {
-                continue;
-            };
-            if meta.series_id.as_deref() == Some(series_id) {
-                series_candidates.push(book.clone());
-            }
-        }
-    }
-
-    let next = if !series_candidates.is_empty() {
-        pick_next(&current, series_candidates)
-    } else {
-        let prefix = title_prefix(&current.title);
-        if prefix.is_empty() {
-            None
-        } else {
-            let candidates = books
-                .into_iter()
-                .filter(|book| {
-                    book.id != current.id
-                        && book.title != current.title
-                        && book.title.starts_with(&prefix)
-                })
-                .collect();
-            pick_next(&current, candidates)
-        }
-    };
-    Ok(next.map(to_book_info))
+    Ok(NextBookSnapshot {
+        current,
+        current_series_id,
+        direct_next: None,
+        candidates: db::list_books(conn, None)?,
+    })
 }
 
-fn get_series_books_impl(
+fn series_books_snapshot(
     conn: &rusqlite::Connection,
     series_id: &str,
-) -> Result<Vec<BookInfo>, BackendError> {
+) -> Result<Vec<db::BookRow>, BackendError> {
     if series_id.trim().is_empty() {
         return Ok(Vec::new());
     }
+    db::list_books(conn, None)
+}
+
+fn project_series_books(snapshot_rows: Vec<db::BookRow>, series_id: &str) -> Vec<BookInfo> {
+    if series_id.trim().is_empty() {
+        return Vec::new();
+    }
     let mut rows = Vec::new();
-    for book in db::list_books(conn, None)? {
+    for book in snapshot_rows {
         let Ok(meta) = serde_json::from_str::<crate::online::StoredMeta>(&book.meta_json) else {
             continue;
         };
@@ -357,7 +402,7 @@ fn get_series_books_impl(
             .then_with(|| a.updated_at.cmp(&b.updated_at))
             .then_with(|| a.id.cmp(&b.id))
     });
-    Ok(rows.into_iter().map(|(_, row)| to_book_info(row)).collect())
+    rows.into_iter().map(|(_, row)| to_book_info(row)).collect()
 }
 
 /// 从文件/目录名推导书名（去扩展名）。
@@ -1130,9 +1175,11 @@ pub async fn get_next_book(
 ) -> Result<Option<BookInfo>, String> {
     let st = state.inner().clone();
     blocking(move || {
-        st.db
-            .with(|conn| get_next_book_impl(conn, &book_id).map_err(err))
-            .map_err(BackendError::Msg)
+        let snapshot = st
+            .db
+            .with(|conn| get_next_book_snapshot(conn, &book_id).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(snapshot.and_then(|snapshot| snapshot.resolve_next_row().map(to_book_info)))
     })
     .await
 }
@@ -1143,10 +1190,13 @@ pub async fn get_series_books(
     series_id: String,
 ) -> Result<Vec<BookInfo>, String> {
     let st = state.inner().clone();
+    let query = series_id.clone();
     blocking(move || {
-        st.db
-            .with(|conn| get_series_books_impl(conn, &series_id).map_err(err))
-            .map_err(BackendError::Msg)
+        let snapshot = st
+            .db
+            .with(|conn| series_books_snapshot(conn, &query).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(project_series_books(snapshot, &query))
     })
     .await
 }
@@ -1536,12 +1586,12 @@ pub async fn get_thumbnail(
     let st = state.inner().clone();
     let book = book_id.clone();
     let rendered = match blocking(move || {
-        // L2 磁盘复用同一套渲染缓存（键 = 首页 + edge 桶）。
-        if let Some(bytes) = st.render.get(&book, 0, edge, edge) {
+        // 封面有独立的 L2 命名空间，不与普通第 1 页共用尺寸键。
+        if let Some(bytes) = st.render.get_cover(&book, edge) {
             match assembled_page(bytes, 0, 0) {
                 Ok(page) => return Ok(page),
                 Err(e) => {
-                    st.render.remove_page(&book, 0, edge, edge);
+                    st.render.remove_cover(&book, edge);
                     crate::logging::log_error(
                         "get_thumbnail",
                         &format!("封面 L2 缓存损坏，已丢弃并重建：{e}"),
@@ -1554,7 +1604,7 @@ pub async fn get_thumbnail(
         let raw_bytes = raw.bytes.len();
         let page = pipeline::render_raw(&raw, Some(edge), Some(edge))?;
         st.cache_if_current(cache_epoch, || {
-            st.render.put(&book, 0, edge, edge, &page.bytes)
+            st.render.put_cover(&book, edge, &page.bytes)
         });
         st.note_cache_write(raw_bytes.saturating_add(page.bytes.len()));
         Ok(page)
@@ -1580,7 +1630,7 @@ pub async fn get_thumbnail(
     Ok(to_page_image(0, rendered))
 }
 
-/// PDF 封面读取：固定边长（[`pdf::PDF_COVER_EDGE`]）的 L2 缓存成品。
+/// PDF 封面读取：独立封面命名空间中的固定边长（[`pdf::PDF_COVER_EDGE`]）缓存成品。
 ///
 /// 与图片书不同：PDF 没有首页图，封面由前端 PDF.js 渲染后经
 /// `put_pdf_thumbnail` 写回缓存。缓存缺失时返回稳定错误码
@@ -1589,10 +1639,7 @@ async fn pdf_thumbnail(state: &Arc<AppState>, book_id: &str) -> Result<PageImage
     let st = state.clone();
     let book = book_id.to_string();
     let rendered = blocking(move || -> Result<RenderedPage, BackendError> {
-        let Some(bytes) = st
-            .render
-            .get_raw(&book, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE)
-        else {
+        let Some(bytes) = st.render.get_cover_raw(&book, pdf::PDF_COVER_EDGE) else {
             return Err(BackendError::Msg(
                 "PDF 封面尚未生成（pdf-cover-missing）".into(),
             ));
@@ -1601,8 +1648,7 @@ async fn pdf_thumbnail(state: &Arc<AppState>, book_id: &str) -> Result<PageImage
             Ok(page) => Ok(page),
             Err(error) => {
                 // 坏缓存自愈：删掉后让前端重新生成封面。
-                st.render
-                    .remove_page(&book, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE);
+                st.render.remove_cover(&book, pdf::PDF_COVER_EDGE);
                 Err(error)
             }
         }
@@ -1719,8 +1765,8 @@ async fn set_book_page_count_blocking(
 /// 写入 PDF 封面（PDF-2）：前端 PDF.js 渲染首页后回传缓存。
 ///
 /// - 只允许 PDF 书；
-/// - base64 解码后必须 ≤ 2 MiB，且必须是 JPEG / PNG（任意字节不得进缓存）；
-/// - 以**固定边长**（[`pdf::PDF_COVER_EDGE`]）落 L2 渲染缓存的第 0 页，
+/// - base64 解码后必须 ≤ 2 MiB，且必须是 JPEG（历史 PNG 只在读取路径兼容）；
+/// - 以**固定边长**（[`pdf::PDF_COVER_EDGE`]）落 L2 封面命名空间，
 ///   与 `get_thumbnail` 的读取键严格一致（不受 `max_size` 影响）。
 #[tauri::command]
 pub async fn put_pdf_thumbnail(
@@ -1781,21 +1827,21 @@ fn decode_base64_lenient(raw: &str) -> Option<Vec<u8>> {
     })
 }
 
-/// 把校验过的 PDF 封面字节写入 L2 渲染缓存（第 0 页，固定边长）。
+/// 把校验过的 PDF 封面字节写入 L2 独立封面命名空间（固定边长）。
 fn store_pdf_cover(st: &Arc<AppState>, book_id: &str, bytes: &[u8]) -> Result<(), BackendError> {
     pdf::validate_pdf_cover(bytes)?;
-    st.render
-        .put(book_id, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE, bytes);
+    st.render.put_cover(book_id, pdf::PDF_COVER_EDGE, bytes);
     st.note_cache_write(bytes.len());
     Ok(())
 }
 
-/// 清空缩略图缓存（内存 LRU + 磁盘首页成品），重新进入书库自动重建。
+/// 清空封面缩略图缓存（内存 LRU + 磁盘独立封面命名空间），重新进入书库自动重建。
 /// 设置页「重新生成缩略图」按钮的数据面。
 #[tauri::command]
 pub async fn clear_thumbnail_cache(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
     state.cache.clear_thumbs();
-    let n = state.render.clear_thumb_files();
+    let render = state.render.clone();
+    let n = blocking(move || Ok::<_, BackendError>(render.clear_thumb_files())).await?;
     crate::logging::log_error(
         "clear_thumbnail_cache",
         &format!("已清除 {n} 个封面缓存文件"),
@@ -2236,6 +2282,7 @@ fn settings_persist_pairs(s: &Settings) -> Vec<(&'static str, String)> {
     pairs.push(("online_proxy", s.online_proxy.clone()));
     pairs.push(("online_concurrency", s.online_concurrency.to_string()));
     pairs.push(("online_headers", s.online_headers.clone()));
+    pairs.push(("close_to_tray", bool_str(s.close_to_tray)));
     pairs
 }
 
@@ -2272,12 +2319,7 @@ async fn persist_feature_enabled_locked(
     blocking(move || {
         db_state
             .db
-            .with(|conn| {
-                for (key, value) in &pairs {
-                    db::set_setting(conn, key, value).map_err(err)?;
-                }
-                Ok(())
-            })
+            .with(|conn| db::set_settings_atomic(conn, &pairs).map_err(err))
             .map_err(BackendError::Msg)
     })
     .await?;
@@ -2285,6 +2327,25 @@ async fn persist_feature_enabled_locked(
     let mut settings = state.settings.lock();
     feature.set(&mut settings.features, enabled);
     Ok(settings.clone())
+}
+
+async fn persist_feature_then_shutdown<F, Fut>(
+    state: &Arc<AppState>,
+    feature: crate::features::FeatureId,
+    enabled: bool,
+    shutdown: F,
+) -> Result<Settings, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    // Persist and publish the disabled gate before stopping its runtime. A DB
+    // failure must return before any listener, window, or session is cleaned up.
+    let settings = persist_feature_enabled_locked(state, feature, enabled).await?;
+    if !enabled {
+        shutdown().await;
+    }
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -2300,25 +2361,29 @@ pub async fn set_feature_enabled(
     // Keep feature stop/start side effects, DB persistence, and the in-memory
     // feature flag in one serialized operation across the blocking-pool await.
     let _settings_guard = st.settings_write_lock.lock().await;
-    if !enabled {
+    let shutdown_state = st.clone();
+    let shutdown_app = app.clone();
+    let shutdown_web_access = web_access.inner().clone();
+    let shutdown_ca = ca.inner().clone();
+    persist_feature_then_shutdown(&st, feature, enabled, move || async move {
         match feature {
             crate::features::FeatureId::Online => {
-                crate::online::handoff::stop_handoff(&app, &st);
-                st.invalidate_sources();
+                crate::online::handoff::stop_handoff(&shutdown_app, &shutdown_state);
+                shutdown_state.invalidate_sources();
             }
             crate::features::FeatureId::Browser => {
-                crate::browser::close_browser_window(&app);
+                crate::browser::close_browser_window(&shutdown_app);
             }
             crate::features::FeatureId::WebAccess => {
-                let _ = web_access
+                let _ = shutdown_web_access
                     .stop(crate::web_access::StopReason::Stopped)
                     .await;
-                let _ = ca.stop().await;
+                let _ = shutdown_ca.stop().await;
             }
             _ => {}
         }
-    }
-    persist_feature_enabled_locked(&st, feature, enabled).await
+    })
+    .await
 }
 
 /// 前端已解析出的页面列表入库前整理：规范化 URL、去重、页数上限。
@@ -3789,12 +3854,7 @@ async fn update_settings(state: Arc<AppState>, mut settings: Settings) -> Result
     blocking(move || {
         db_state
             .db
-            .with(|conn| {
-                for (key, value) in persist {
-                    db::set_setting(conn, key, &value).map_err(err)?;
-                }
-                Ok(())
-            })
+            .with(|conn| db::set_settings_atomic(conn, &persist).map_err(err))
             .map_err(BackendError::Msg)
     })
     .await?;
@@ -4225,6 +4285,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multi_key_settings_failure_rolls_back_database_and_keeps_memory_unchanged() {
+        let state = online_state();
+        let mut previous = Settings::default();
+        previous.theme = "dark".into();
+        previous.cache_budget_mb = 64;
+        *state.settings.lock() = previous.clone();
+        state
+            .db
+            .with(|conn| {
+                db::set_setting(conn, "theme", "dark").map_err(err)?;
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_theme_update
+                     BEFORE UPDATE ON settings
+                     WHEN NEW.k = 'theme'
+                     BEGIN SELECT RAISE(ABORT, 'injected settings failure'); END;",
+                )
+                .map_err(err)?;
+                Ok(())
+            })
+            .expect("seed settings and install failure trigger");
+
+        let budget_before = state.cache.stats().1;
+        let mut incoming = previous.clone();
+        incoming.theme = "light".into();
+        incoming.cache_budget_mb = 128;
+        assert!(update_settings(state.clone(), incoming).await.is_err());
+
+        assert_eq!(state.settings.lock().theme, "dark");
+        assert_eq!(state.settings.lock().cache_budget_mb, 64);
+        assert_eq!(state.cache.stats().1, budget_before);
+        let persisted = state
+            .db
+            .with(|conn| {
+                Ok((
+                    db::get_setting(conn, "theme").map_err(err)?,
+                    db::get_setting(conn, "feature_browser").map_err(err)?,
+                ))
+            })
+            .expect("read settings after rollback");
+        assert_eq!(persisted.0.as_deref(), Some("dark"));
+        assert_eq!(persisted.1, None, "earlier feature writes must roll back");
+    }
+
+    #[tokio::test]
     async fn feature_flag_updates_memory_only_after_persistence() {
         let state = online_state();
         {
@@ -4255,6 +4359,79 @@ mod tests {
             before_failure,
             "failed persistence must not change the memory flag"
         );
+    }
+
+    #[tokio::test]
+    async fn feature_shutdown_runs_after_disabled_state_is_persisted() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let state = online_state();
+        let shutdown_observed = Arc::new(AtomicBool::new(false));
+        let shutdown_state = state.clone();
+        let observed = shutdown_observed.clone();
+        let _guard = state.settings_write_lock.lock().await;
+        persist_feature_then_shutdown(
+            &state,
+            crate::features::FeatureId::Browser,
+            false,
+            move || async move {
+                assert!(!crate::features::FeatureId::Browser
+                    .get(&shutdown_state.settings.lock().features));
+                let persisted = shutdown_state
+                    .db
+                    .with(|conn| db::get_setting(conn, "feature_browser").map_err(err))
+                    .expect("read disabled feature flag")
+                    .expect("feature flag persisted before shutdown");
+                assert_eq!(persisted, "false");
+                observed.store(true, Ordering::SeqCst);
+            },
+        )
+        .await
+        .expect("feature disable succeeds");
+
+        assert!(shutdown_observed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn failed_feature_disable_does_not_run_shutdown_or_publish_disabled_flag() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let state = online_state();
+        state
+            .db
+            .with(|conn| {
+                db::set_setting(conn, "feature_browser", "true").map_err(err)?;
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_browser_feature_update
+                     BEFORE UPDATE ON settings
+                     WHEN NEW.k = 'feature_browser'
+                     BEGIN SELECT RAISE(ABORT, 'injected feature failure'); END;",
+                )
+                .map_err(err)?;
+                Ok(())
+            })
+            .expect("seed enabled feature and install failure trigger");
+
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let called = shutdown_called.clone();
+        let _guard = state.settings_write_lock.lock().await;
+        assert!(persist_feature_then_shutdown(
+            &state,
+            crate::features::FeatureId::Browser,
+            false,
+            move || async move { called.store(true, Ordering::SeqCst) },
+        )
+        .await
+        .is_err());
+
+        assert!(!shutdown_called.load(Ordering::SeqCst));
+        assert!(state.settings.lock().features.browser);
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "feature_browser").map_err(err))
+            .expect("read feature after failed write")
+            .expect("original feature flag remains persisted");
+        assert_eq!(persisted, "true");
     }
 
     #[tokio::test]
@@ -5277,6 +5454,20 @@ mod tests {
         id
     }
 
+    fn next_book_for_test(st: &AppState, book_id: &str) -> Result<Option<BookInfo>, String> {
+        let snapshot = st.db.with(|conn| {
+            get_next_book_snapshot(conn, book_id).map_err(|error| error.to_string())
+        })?;
+        Ok(snapshot.and_then(|snapshot| snapshot.resolve_next_row().map(to_book_info)))
+    }
+
+    fn series_books_for_test(st: &AppState, series_id: &str) -> Result<Vec<BookInfo>, String> {
+        let snapshot = st.db.with(|conn| {
+            series_books_snapshot(conn, series_id).map_err(|error| error.to_string())
+        })?;
+        Ok(project_series_books(snapshot, series_id))
+    }
+
     #[test]
     fn natural_cmp_and_title_prefix_follow_contract() {
         assert_eq!(natural_cmp("第2话", "第10话"), std::cmp::Ordering::Less);
@@ -5317,27 +5508,17 @@ mod tests {
         let b = insert_linked(&st, "http://e/b", "第2话", Some("S"), None);
         let c = insert_linked(&st, "http://e/c", "第10话", Some("S"), None);
 
-        st.db
-            .with(|conn| {
-                let next = get_next_book_impl(conn, &a).unwrap().unwrap();
-                assert_eq!(next.id, c, "next_url 直链应优先于自然排序");
-                let next = get_next_book_impl(conn, &b).unwrap().unwrap();
-                assert_eq!(next.id, c);
-                assert!(get_next_book_impl(conn, &c).unwrap().is_none());
-                Ok(())
-            })
-            .unwrap();
+        let next = next_book_for_test(&st, &a).unwrap().unwrap();
+        assert_eq!(next.id, c, "next_url 直链应优先于自然排序");
+        let next = next_book_for_test(&st, &b).unwrap().unwrap();
+        assert_eq!(next.id, c);
+        assert!(next_book_for_test(&st, &c).unwrap().is_none());
 
         let d = insert_linked(&st, "http://e/d", "漫画 第2话", None, None);
         insert_linked(&st, "http://e/e", "漫画 第10话", None, None);
         let f = insert_linked(&st, "http://e/f", "漫画 第3话", None, None);
-        st.db
-            .with(|conn| {
-                let next = get_next_book_impl(conn, &d).unwrap().unwrap();
-                assert_eq!(next.id, f);
-                Ok(())
-            })
-            .unwrap();
+        let next = next_book_for_test(&st, &d).unwrap().unwrap();
+        assert_eq!(next.id, f);
         let _ = b;
     }
 
@@ -5358,12 +5539,12 @@ mod tests {
                     rusqlite::params![newer],
                 )
                 .unwrap();
-                let next = get_next_book_impl(conn, &older).unwrap().unwrap();
-                assert_eq!(next.id, newer);
-                assert!(get_next_book_impl(conn, &newer).unwrap().is_none());
                 Ok(())
             })
             .unwrap();
+        let next = next_book_for_test(&st, &older).unwrap().unwrap();
+        assert_eq!(next.id, newer);
+        assert!(next_book_for_test(&st, &newer).unwrap().is_none());
     }
 
     fn insert_series_book(
@@ -5413,22 +5594,17 @@ mod tests {
         let extra = insert_series_book(&st, "http://e/sx", "番外", "S", "Series", None);
         let other = insert_series_book(&st, "http://e/o1", "第1话", "Other", "Other", Some(1));
 
-        st.db
-            .with(|conn| {
-                let books = get_series_books_impl(conn, "S").unwrap();
-                let ids: Vec<&str> = books.iter().map(|b| b.id.as_str()).collect();
-                assert_eq!(
-                    ids,
-                    vec![c1.as_str(), c2.as_str(), c3.as_str(), extra.as_str()]
-                );
-                assert_eq!(books[0].series_title.as_deref(), Some("Series"));
-                assert_eq!(books[0].chapter_index, Some(1));
-                assert!(books.iter().all(|b| b.id != other));
-                assert!(get_series_books_impl(conn, "").unwrap().is_empty());
-                assert!(get_series_books_impl(conn, "missing").unwrap().is_empty());
-                Ok(())
-            })
-            .unwrap();
+        let books = series_books_for_test(&st, "S").unwrap();
+        let ids: Vec<&str> = books.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![c1.as_str(), c2.as_str(), c3.as_str(), extra.as_str()]
+        );
+        assert_eq!(books[0].series_title.as_deref(), Some("Series"));
+        assert_eq!(books[0].chapter_index, Some(1));
+        assert!(books.iter().all(|b| b.id != other));
+        assert!(series_books_for_test(&st, "").unwrap().is_empty());
+        assert!(series_books_for_test(&st, "missing").unwrap().is_empty());
     }
 
     #[test]
@@ -5692,8 +5868,7 @@ mod tests {
 
     /// 非 JPEG 字节与超限载荷一律拒绝；合法 JPEG 能落缓存并原样读回。
     ///
-    /// 写回**只收 JPEG**：L2 缓存文件名固定 `.jpg`，PNG 会被 `RenderCache::get`
-    /// 当成坏缓存删掉，等于静默丢封面（详见 `pdf::validate_pdf_cover` 的注释）。
+    /// 写回**只收 JPEG**；独立封面缓存以原始字节读取，PNG 仍只在读取路径兼容历史条目。
     #[test]
     fn pdf_cover_rejects_non_image_bytes_and_oversized_payloads() {
         let (state, dir) = pdf_test_state("pdf-cover");
@@ -5721,16 +5896,16 @@ mod tests {
         let err = store_pdf_cover(&state, book, &[]).unwrap_err().to_string();
         assert!(err.contains("pdf-cover-invalid"), "got: {err}");
 
-        // 合法 JPEG → 写入固定边长的第 0 页，并能原样读回。
+        // 合法 JPEG → 写入固定边长的封面命名空间，并能原样读回。
         let jpeg = tiny_jpeg();
         store_pdf_cover(&state, book, &jpeg).unwrap();
         let stored = state
             .render
-            .get_raw(book, 0, pdf::PDF_COVER_EDGE, pdf::PDF_COVER_EDGE)
-            .expect("封面必须落在固定边长的第 0 页");
+            .get_cover_raw(book, pdf::PDF_COVER_EDGE)
+            .expect("封面必须落在独立封面命名空间");
         assert_eq!(stored, jpeg, "封面字节必须原样落盘");
         // 其它边长读不到（固定边长是唯一键）。
-        assert!(state.render.get_raw(book, 0, 240, 240).is_none());
+        assert!(state.render.get_cover_raw(book, 240).is_none());
 
         // 读回后能解析尺寸并组装成 PageImage。
         let page = pdf_cover_page(stored).unwrap();

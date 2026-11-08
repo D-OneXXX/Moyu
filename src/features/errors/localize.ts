@@ -17,6 +17,10 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "db-open-failed", key: "dbRecovery.openFailed" },
   { code: "db-schema-failed", key: "dbRecovery.schemaFailed" },
   { code: "db-quick-check-failed", key: "dbRecovery.quickCheckFailed" },
+  {
+    code: "db-settings-normalize-failed",
+    key: "dbRecovery.settingsNormalizeFailed",
+  },
   { code: "db-already-healthy", key: "dbRecovery.unknown" },
   { code: "linux-manual-install", key: "updates.linux.manualBlocked" },
   { code: "backup-file-missing", key: "error.backupFileMissing" },

@@ -288,12 +288,10 @@ pub fn validate_cover_dimensions(width: u32, height: u32) -> Result<(), BackendE
 /// 纯函数（不碰缓存），命令层与单测共用同一份规则：
 /// 绝不允许任意字节进入渲染缓存。
 ///
-/// **为什么写回只收 JPEG**：L2 渲染缓存的文件名后缀是写死的 `.jpg`
-/// （`render_cache::RenderCache::file_path`），而 `RenderCache::get` 只认 JPEG，
-/// 落进来的 PNG 会被当成坏缓存**直接删掉**——等于静默丢掉封面。
-/// 前端本来就只用 `canvas.toDataURL("image/jpeg", 0.9)` 生成封面，
-/// 所以写回收紧成「只收 JPEG」是最小且安全的改法；
-/// 读取路径仍容忍历史 PNG（见 [`validate_pdf_cover_read`]），不删已有条目。
+/// **为什么写回只收 JPEG**：桌面 PDF.js 现有封面生成路径固定使用
+/// `canvas.toDataURL("image/jpeg", 0.9)`；保持此格式可兼容当前写入协议。
+/// 独立封面缓存按原始字节读取，读取路径继续容忍历史 PNG
+/// （见 [`validate_pdf_cover_read`]），不删已有条目。
 pub fn validate_pdf_cover(bytes: &[u8]) -> Result<(), BackendError> {
     if bytes.is_empty() {
         return Err(BackendError::Msg(
@@ -569,11 +567,8 @@ mod tests {
 
     /// 写回路径的封面契约：**只收 JPEG**，且字节数 / 尺寸都有界。
     ///
-    /// 为什么 PNG 写不进来：L2 渲染缓存的文件名后缀固定是 `.jpg`
-    /// （`render_cache::RenderCache::file_path`），而 `RenderCache::get` 只认 JPEG，
-    /// 落进来的 PNG 会被当成坏缓存**直接删掉**——等于静默丢封面。
-    /// 所以写回收紧成「只收 JPEG」；读取路径仍容忍历史 PNG（见
-    /// `validate_pdf_cover_read` 的用例）。
+    /// 写回固定为 JPEG，匹配桌面 PDF.js 当前的 `canvas.toDataURL` 协议；
+    /// 独立封面缓存读取路径仍容忍历史 PNG（见 `validate_pdf_cover_read` 的用例）。
     #[test]
     fn cover_bytes_must_be_jpeg_and_dimension_bounded() {
         // 合法 JPEG（真实编码器产物）→ 放行。

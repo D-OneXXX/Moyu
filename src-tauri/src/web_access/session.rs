@@ -66,6 +66,9 @@ impl SessionError {
 pub(crate) struct Reservation {
     pub id: String,
     pub device_name: String,
+    /// Peer IPv4 captured when the claim was created; never trusted from a
+    /// header. `None` only for tests that issue sessions without HTTP.
+    pub source_ip: Option<std::net::Ipv4Addr>,
     pub expires_at: Instant,
 }
 
@@ -80,6 +83,10 @@ pub(crate) struct SessionIssued {
 pub(crate) struct SessionView {
     pub id: String,
     pub device_name: String,
+    /// Claim-time private IPv4; never a token, hash, or path.
+    pub source_ip: Option<std::net::Ipv4Addr>,
+    /// Consume-time User-Agent (already sanitized/truncated).
+    pub user_agent: Option<String>,
     pub issued_at: Instant,
     pub expires_at: Instant,
     pub absolute_expires_at: Instant,
@@ -120,6 +127,8 @@ pub(crate) struct SessionState {
 struct SessionRecord {
     id: String,
     device_name: String,
+    source_ip: Option<std::net::Ipv4Addr>,
+    user_agent: Option<String>,
     token_hash: [u8; 32],
     issued_at: Instant,
     last_refreshed_at: Instant,
@@ -138,6 +147,8 @@ impl SessionRecord {
         SessionView {
             id: self.id.clone(),
             device_name: self.device_name.clone(),
+            source_ip: self.source_ip,
+            user_agent: self.user_agent.clone(),
             issued_at: self.issued_at,
             expires_at: self.expires_at,
             absolute_expires_at: self.absolute_expires_at,
@@ -145,6 +156,28 @@ impl SessionRecord {
             last_seen_at: self.last_seen_at,
         }
     }
+}
+
+/// Consume-time User-Agent for the desktop device list. Control and
+/// zero-width characters are dropped, the value is capped at 256 scalars, and
+/// empty input is stored as `None` (never an empty string).
+fn sanitize_user_agent(raw: Option<&str>) -> Option<String> {
+    const MAX_UA_SCALARS: usize = 256;
+    let raw = raw?;
+    let mut sanitized = String::new();
+    let mut scalars = 0usize;
+    for c in raw.chars() {
+        if c.is_control() || matches!(c, '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}') {
+            continue;
+        }
+        if scalars == MAX_UA_SCALARS {
+            break;
+        }
+        sanitized.push(c);
+        scalars += 1;
+    }
+    let trimmed = sanitized.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 impl Drop for SessionRecord {
@@ -166,15 +199,33 @@ impl SessionStore {
 
     /// Reserve a future session slot without issuing a token yet.
     pub(crate) fn reserve(&self, device_name: &str) -> Result<Reservation, SessionError> {
+        self.reserve_client(device_name, None)
+    }
+
+    /// Reserve a slot with the claim-time peer address (desktop device list).
+    pub(crate) fn reserve_client(
+        &self,
+        device_name: &str,
+        source_ip: Option<std::net::Ipv4Addr>,
+    ) -> Result<Reservation, SessionError> {
         let now = self.clock.now();
-        self.lock().reserve_locked(device_name, now)
+        self.lock().reserve_locked(device_name, source_ip, now)
     }
 
     /// Turn a reservation into a session. This is the only token issuance
     /// point; the same reservation can never be committed twice.
     pub(crate) fn commit(&self, reservation: Reservation) -> Result<SessionIssued, SessionError> {
+        self.commit_with_user_agent(reservation, None)
+    }
+
+    /// Commit with the consume request's User-Agent for the desktop list.
+    pub(crate) fn commit_with_user_agent(
+        &self,
+        reservation: Reservation,
+        user_agent: Option<&str>,
+    ) -> Result<SessionIssued, SessionError> {
         let now = self.clock.now();
-        self.lock().commit_locked(&reservation.id, now)
+        self.lock().commit_locked(&reservation.id, now, user_agent)
     }
 
     /// Drop a reservation that will never be consumed.
@@ -288,6 +339,7 @@ impl SessionState {
     pub(crate) fn reserve_locked(
         &mut self,
         device_name: &str,
+        source_ip: Option<std::net::Ipv4Addr>,
         now: Instant,
     ) -> Result<Reservation, SessionError> {
         self.purge_locked(now);
@@ -297,6 +349,7 @@ impl SessionState {
         let reservation = Reservation {
             id: format!("{RESERVATION_ID_PREFIX}{}", random_hex(ID_BYTES)),
             device_name: sanitize_device_name(device_name),
+            source_ip,
             expires_at: now + RESERVATION_TTL,
         };
         self.reservations.push(reservation.clone());
@@ -307,6 +360,7 @@ impl SessionState {
         &mut self,
         reservation_id: &str,
         now: Instant,
+        user_agent: Option<&str>,
     ) -> Result<SessionIssued, SessionError> {
         self.purge_locked(now);
         let index = self
@@ -328,6 +382,8 @@ impl SessionState {
         let record = SessionRecord {
             id: format!("{SESSION_ID_PREFIX}{}", random_hex(ID_BYTES)),
             device_name: reservation.device_name,
+            source_ip: reservation.source_ip,
+            user_agent: sanitize_user_agent(user_agent),
             token_hash: sha256_bytes(token.as_str()),
             issued_at: now,
             last_refreshed_at: now,
@@ -841,6 +897,7 @@ mod tests {
         let replay = Reservation {
             id,
             device_name: "Pixel".into(),
+            source_ip: None,
             expires_at,
         };
         let error = store

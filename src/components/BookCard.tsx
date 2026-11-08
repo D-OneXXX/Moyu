@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, BookOpen, Check, Layers } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { api, type BookInfo } from "@/lib/tauri";
-import { ensurePdfCover, hasPdfErrorCode } from "@/features/pdf";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -91,12 +90,28 @@ export default function BookCard({
         if (!alive) return;
         // PDF：封面缺失不是错误——用 pdf.js 渲染首页并回写缓存。
         // 封面生成走模块级串行队列，整座书库同一时刻只开一份 PDF。
-        if (isPdf && hasPdfErrorCode(error, "pdf-cover-missing")) {
-          void ensurePdfCover(book.id).then((dataUrl) => {
-            if (!alive) return;
-            setCover(dataUrl);
-            setCoverLoading(false);
-          });
+        // pdf 能力按需加载，不进入书卡片的首屏依赖图。
+        if (isPdf) {
+          void import("@/features/pdf").then(
+            ({ ensurePdfCover, hasPdfErrorCode }) => {
+              if (!alive) return;
+              if (hasPdfErrorCode(error, "pdf-cover-missing")) {
+                void ensurePdfCover(book.id).then((dataUrl) => {
+                  if (!alive) return;
+                  setCover(dataUrl);
+                  setCoverLoading(false);
+                });
+                return;
+              }
+              setCover(null);
+              setCoverLoading(false);
+            },
+            () => {
+              if (!alive) return;
+              setCover(null);
+              setCoverLoading(false);
+            },
+          );
           return;
         }
         setCover(null);

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde::Serialize;
@@ -828,54 +828,13 @@ fn epoch_iso() -> String {
 /// Cursor payload: one flag byte plus either an 8-byte local timestamp or
 /// nothing, followed by the 32-byte book id. Empty `updated_at` is a real
 /// state for newly imported books and must not collapse to the epoch key.
+/// 编解码逻辑下沉到 `db`（桌面分页共用同一套助手），此处只保留字段绑定。
 fn encode_cursor(row: &BookRow) -> Option<String> {
-    let id = hex::decode(&row.id).ok()?;
-    if id.len() != 32 {
-        return None;
-    }
-    let mut raw = Vec::with_capacity(41);
-    if row.updated_at.is_empty() {
-        raw.push(0);
-    } else {
-        let seconds = NaiveDateTime::parse_from_str(&row.updated_at, "%Y-%m-%d %H:%M:%S")
-            .ok()
-            .and_then(|naive| Local.from_local_datetime(&naive).earliest())
-            .map(|value| value.timestamp())
-            .unwrap_or(0);
-        raw.push(1);
-        raw.extend_from_slice(&seconds.to_be_bytes());
-    }
-    raw.extend_from_slice(&id);
-    Some(URL_SAFE_NO_PAD.encode(raw))
+    db::encode_book_cursor(&row.updated_at, &row.id)
 }
 
 fn decode_cursor(raw: &str) -> Option<(String, String)> {
-    if raw.len() > 64 {
-        return None;
-    }
-    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
-    let (updated, id_bytes) = match (bytes.first().copied()?, bytes.len()) {
-        (0, 33) => (String::new(), &bytes[1..]),
-        (1, 41) => {
-            let seconds = i64::from_be_bytes(bytes[1..9].try_into().ok()?);
-            let updated = Local
-                .timestamp_opt(seconds, 0)
-                .single()?
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string();
-            (updated, &bytes[9..])
-        }
-        _ => return None,
-    };
-    let id = hex::encode(id_bytes);
-    if id.len() != 64
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return None;
-    }
-    Some((updated, id))
+    db::decode_book_cursor(raw)
 }
 
 #[cfg(test)]
@@ -890,6 +849,7 @@ mod tests {
     use super::*;
     use crate::db::{self, BOOK_FORMAT_PDF};
     use crate::state::AppState;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     fn id_for(seed: char) -> String {
         seed.to_string().repeat(64)

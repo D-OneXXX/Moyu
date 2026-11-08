@@ -20,7 +20,7 @@ export const BACKUP_PREFERENCE_KEYS = [
   "mr-reader-wt-width",
   "mr-wt-width",
   "mr-exp-wt",
-  "mr-exp-online",
+  "mr-feature-webtoon",
   "mr-library-group-series",
   "mr-library-source-filter",
   "mr-privacy-ack",

@@ -831,17 +831,180 @@ pub async fn remove_books(
     })
 }
 
+/// 桌面书库分页返回体（ADR-018 冻结契约；WS5 消费）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BooksPage {
+    pub items: Vec<BookInfo>,
+    pub next_cursor: Option<String>,
+}
+
+/// 参数校验失败的稳定错误码（kebab-case，附在文案尾部供前端本地化）。
+const ERR_INVALID_PAGE_LIMIT: &str = "invalid-page-limit";
+const ERR_INVALID_PAGE_QUERY: &str = "invalid-page-query";
+const ERR_INVALID_PAGE_CURSOR: &str = "invalid-page-cursor";
+
+const BOOKS_PAGE_DEFAULT_LIMIT: u32 = 60;
+const BOOKS_PAGE_MAX_LIMIT: u32 = 100;
+const BOOKS_PAGE_MAX_QUERY_CHARS: usize = 128;
+
+#[derive(Debug)]
+struct BooksPageParams {
+    query: Option<String>,
+    cursor_last_opened: Option<String>,
+    cursor_id: Option<String>,
+    limit: u32,
+}
+
+/// 命令层参数校验（纯函数，可单测）：limit 默认 60 / 1..=100，query ≤128 字符，
+/// 游标 ≤64 字符且可解码；失败返回带稳定错误码的中文文案。
+fn validate_books_page_params(
+    query: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<BooksPageParams, String> {
+    let limit = limit.unwrap_or(BOOKS_PAGE_DEFAULT_LIMIT);
+    if !(1..=BOOKS_PAGE_MAX_LIMIT).contains(&limit) {
+        return Err(format!(
+            "书库分页参数无效：limit 需在 1..=100（{ERR_INVALID_PAGE_LIMIT}）"
+        ));
+    }
+    let query = query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if query
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > BOOKS_PAGE_MAX_QUERY_CHARS)
+    {
+        return Err(format!(
+            "书库分页参数无效：query 不得超过 128 字符（{ERR_INVALID_PAGE_QUERY}）"
+        ));
+    }
+    let (cursor_last_opened, cursor_id) = match cursor {
+        Some(raw) => {
+            let (timestamp, id) = db::decode_book_cursor(raw).ok_or_else(|| {
+                format!("书库分页参数无效：游标非法（{ERR_INVALID_PAGE_CURSOR}）")
+            })?;
+            (Some(timestamp), Some(id))
+        }
+        None => (None, None),
+    };
+    Ok(BooksPageParams {
+        query,
+        cursor_last_opened,
+        cursor_id,
+        limit,
+    })
+}
+
+/// 桌面书库分页（ADR-018）：`last_opened_at DESC, id ASC`，title+path 搜索，
+/// `(last_opened_at, id)` base64url 游标；阻塞工作整体移入 `spawn_blocking`。
+#[tauri::command]
+pub async fn list_books_page(
+    state: State<'_, Arc<AppState>>,
+    query: Option<String>,
+    cursor: Option<String>,
+    limit: Option<u32>,
+) -> Result<BooksPage, String> {
+    let params = validate_books_page_params(query.as_deref(), cursor.as_deref(), limit)?;
+    let st = state.inner().clone();
+    blocking(move || {
+        // 只把 SQL 放在 DbSlot 锁内；symlink_metadata 与 meta_json 解析在锁外。
+        let mut rows = st
+            .db
+            .with(|conn| {
+                db::list_books_page_desktop(
+                    conn,
+                    params.query.as_deref(),
+                    params.cursor_last_opened.as_deref(),
+                    params.cursor_id.as_deref(),
+                    params.limit,
+                )
+                .map_err(err)
+            })
+            .map_err(BackendError::Msg)?;
+        let has_more = rows.len() > params.limit as usize;
+        rows.truncate(params.limit as usize);
+        let next_cursor = if has_more {
+            rows.last()
+                .and_then(|row| db::encode_book_cursor(&row.last_opened_at, &row.id))
+        } else {
+            None
+        };
+        Ok(BooksPage {
+            items: rows.into_iter().map(to_book_info).collect(),
+            next_cursor,
+        })
+    })
+    .await
+}
+
+/// ADR-032 冻结契约：书库合集计数（camelCase IPC）。
+///
+/// 只做一次 SQLite 分组聚合，不逐书 `symlink_metadata`、不解析 `meta_json`、
+/// 不返回 `BookInfo`；`seriesCounts` / `localSeriesCounts` 为 `seriesId -> 章节数`。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStats {
+    pub total_books: u32,
+    pub series_counts: std::collections::BTreeMap<String, u32>,
+    pub local_series_counts: std::collections::BTreeMap<String, u32>,
+}
+
+/// 书库合集计数（ADR-032）：搜索/筛选不再是取全量列表的理由。
+#[tauri::command]
+pub async fn library_stats(state: State<'_, Arc<AppState>>) -> Result<LibraryStats, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let counts = st
+            .db
+            .with(|conn| db::library_stats(conn).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(LibraryStats {
+            total_books: counts.total_books,
+            series_counts: counts.series_counts,
+            local_series_counts: counts.local_series_counts,
+        })
+    })
+    .await
+}
+
+/// ADR-034：「继续阅读」轻量查询：只取最近打开、已开始且未读完的一本，
+/// 替代 AppShell 每次路由变化都取全量 `listBooks()` 的做法。
+#[tauri::command]
+pub async fn get_last_read(
+    state: State<'_, Arc<AppState>>,
+    local_only: Option<bool>,
+) -> Result<Option<BookInfo>, String> {
+    let st = state.inner().clone();
+    let local_only = local_only.unwrap_or(false);
+    blocking(move || {
+        let row = st
+            .db
+            .with(|conn| db::last_read_book(conn, local_only).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(row.map(to_book_info))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn list_books(
     state: State<'_, Arc<AppState>>,
     query: Option<String>,
 ) -> Result<Vec<BookInfo>, String> {
-    // 只把 SQL 放在 DbSlot 锁内：逐本 symlink_metadata 与 meta_json 解析在锁外，
-    // 大书库列表不会拖住阅读器的高频 set_progress。
-    let rows = state
-        .db
-        .with(|conn| db::list_books(conn, query.as_deref()).map_err(err))?;
-    Ok(rows.into_iter().map(to_book_info).collect())
+    // 行为不变，但 SQL 与逐本 symlink_metadata / meta_json 解析整体移入
+    // spawn_blocking，不再占用 async 执行器线程。
+    let st = state.inner().clone();
+    blocking(move || {
+        let rows = st
+            .db
+            .with(|conn| db::list_books(conn, query.as_deref()).map_err(err))
+            .map_err(BackendError::Msg)?;
+        Ok(rows.into_iter().map(to_book_info).collect())
+    })
+    .await
 }
 
 /// 单书查询（阅读器打开直达上次页，避免全量 `list_books`）。
@@ -1114,6 +1277,9 @@ pub async fn get_page(
     max_height: Option<u32>,
 ) -> Result<PageImage, String> {
     let cache_epoch = state.refresh_epoch();
+    // 每书预取世代在请求入口即 bump（L1 查表之前）：L1 命中同样要作废
+    // 此前在途的预取批次。世代与 refresh_epoch（清单/设置刷新失效）相互独立。
+    let (prefetch_epoch, prefetch_captured) = bump_prefetch_epoch(state.inner(), &book_id);
     // Bound caller-supplied cache dimensions while preserving 0/None as the
     // existing unconstrained sentinel and retaining smaller requested sizes.
     let max_width = max_width.map(|value| value.min(8192));
@@ -1187,8 +1353,54 @@ pub async fn get_page(
             .cache
             .put_page(&book_id, index, w, h, rendered.clone());
     });
-    prefetch_neighbors(&state, &book_id, is_online, index, w, h);
+    // 非命中路径把入口处捕获的世代透传给预取批次：若期间已有更新的页请求
+    // bump 过世代，本批次会在第一次守卫处立即短路。
+    prefetch_neighbors(
+        &state,
+        &book_id,
+        is_online,
+        index,
+        w,
+        h,
+        prefetch_epoch,
+        prefetch_captured,
+    );
     Ok(to_page_image(index, rendered))
+}
+
+/// 请求入口 bump 每书预取世代，返回世代句柄与本次捕获值。
+/// `get_page` 在 L1 查表**之前**调用它：L1 命中是毫秒级返回，也必须作废
+/// 此前在途的预取批次，否则旧批次会继续解码/写缓存已过期的邻页。
+fn begin_page_request(
+    epochs: &parking_lot::Mutex<
+        std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>,
+    >,
+    book_id: &str,
+) -> (Arc<std::sync::atomic::AtomicU64>, u64) {
+    let epoch = epochs
+        .lock()
+        .entry(book_id.to_string())
+        .or_default()
+        .clone();
+    let captured = epoch
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        .wrapping_add(1);
+    (epoch, captured)
+}
+
+/// 在主取页请求侧 bump 每书预取世代，返回世代句柄与捕获值供预取任务使用。
+/// 任务捕获的是 bump 之后的新值，故不会被自身 bump 立即判为过期；
+/// 只有后续新页请求再次 bump 才会让在途批次短路。
+fn bump_prefetch_epoch(
+    state: &AppState,
+    book_id: &str,
+) -> (Arc<std::sync::atomic::AtomicU64>, u64) {
+    begin_page_request(&state.prefetch_epochs, book_id)
+}
+
+/// 纯守卫：任务捕获的世代与当前世代一致才允许继续解码/写缓存。
+pub(crate) fn prefetch_is_current(captured: u64, current: u64) -> bool {
+    captured == current
 }
 
 /// 服务端邻页预取：主请求落地后，后台把邻页灌进 L1/L2，
@@ -1201,7 +1413,11 @@ fn prefetch_neighbors(
     index: u32,
     w: u32,
     h: u32,
+    epoch: Arc<std::sync::atomic::AtomicU64>,
+    captured: u64,
 ) {
+    use std::sync::atomic::Ordering;
+
     let st = state.inner().clone();
     let book = book_id.to_string();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1219,6 +1435,10 @@ fn prefetch_neighbors(
                 continue;
             }
             let t = target as u32;
+            // 世代短路（解码前）：新页请求已取代本批次，停止后续读盘/解码。
+            if !prefetch_is_current(captured, epoch.load(Ordering::SeqCst)) {
+                break;
+            }
             if st.cache.get_page(&book, t, w, h).is_some() {
                 continue;
             }
@@ -1233,6 +1453,10 @@ fn prefetch_neighbors(
                 .get(&book, t, w, h)
                 .map(|bytes| assembled_page(bytes, 0, 0))
                 .unwrap_or_else(|| {
+                    // 解码前再确认一次世代：挡住 L2 探测期间到达的新页请求。
+                    if !prefetch_is_current(captured, epoch.load(Ordering::SeqCst)) {
+                        return Err(BackendError::Msg("预取已被新页请求取代".into()));
+                    }
                     handle.read_raw(t as usize).and_then(|raw| {
                         let p = pipeline::render_raw(&raw, mw, mh)?;
                         st.cache_if_current(cache_epoch, || {
@@ -1243,8 +1467,11 @@ fn prefetch_neighbors(
                 });
             if let Ok(p) = page {
                 let written = p.bytes.len();
-                st.cache_if_current(cache_epoch, || st.cache.put_page(&book, t, w, h, p));
-                st.note_cache_write(written);
+                // 写缓存前最后确认：过期任务不得灌 L1，也不得触发 trim 压力计数。
+                if prefetch_is_current(captured, epoch.load(Ordering::SeqCst)) {
+                    st.cache_if_current(cache_epoch, || st.cache.put_page(&book, t, w, h, p));
+                    st.note_cache_write(written);
+                }
             }
             st.prefetching.lock().remove(&key);
         }
@@ -1365,6 +1592,7 @@ pub async fn get_pdf_chunk(
     offset: u64,
     length: u32,
 ) -> Result<PdfChunk, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Pdf)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     let result = blocking(move || -> Result<PdfChunk, BackendError> {
@@ -1453,6 +1681,7 @@ pub async fn put_pdf_thumbnail(
     book_id: String,
     data_base64: String,
 ) -> Result<(), String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Pdf)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     let result = blocking(move || -> Result<(), BackendError> {
@@ -1617,39 +1846,41 @@ pub async fn clear_temp_cache(state: State<'_, Arc<AppState>>) -> Result<ClearCa
 
 #[tauri::command]
 pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
-    state.db.with(|conn| {
-        let rows = db::list_books(conn, None).map_err(err)?;
-        let total_books = rows.len() as u32;
-        let reading = rows
-            .iter()
-            .filter(|b| b.current_page > 0 && b.current_page + 1 < b.page_count)
-            .count() as u32;
-        let today_pages = db::today_pages(conn).map_err(err)?;
-        // 182 天：覆盖前端热力图的 26 周视图（此前 90 天，左半边永远空白）。
-        let heat = db::heatmap(conn, 182).map_err(err)?;
-        let heatmap = heat
-            .into_iter()
-            .map(|(date, count)| HeatDay { date, count })
-            .collect();
-        let series = rows
-            .into_iter()
-            .filter(|b| b.current_page > 0)
-            .take(20)
-            .map(|b| SeriesProgress {
-                book_id: b.id,
-                title: b.title,
-                current_page: b.current_page,
-                page_count: b.page_count,
+    // ADR-036：SQLite 聚合同样移入 blocking 线程，避免占用 async 执行器。
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| {
+                // Issue #236：计数与最近在读改为 SQL 聚合，不再加载全表 BookRow。
+                let counts = db::dashboard_counts(conn).map_err(err)?;
+                let today_pages = db::today_pages(conn).map_err(err)?;
+                // 182 天：覆盖前端热力图的 26 周视图（此前 90 天，左半边永远空白）。
+                let heat = db::heatmap(conn, 182).map_err(err)?;
+                let heatmap = heat
+                    .into_iter()
+                    .map(|(date, count)| HeatDay { date, count })
+                    .collect();
+                let series = db::dashboard_series(conn)
+                    .map_err(err)?
+                    .into_iter()
+                    .map(|b| SeriesProgress {
+                        book_id: b.id,
+                        title: b.title,
+                        current_page: b.current_page,
+                        page_count: b.page_count,
+                    })
+                    .collect();
+                Ok(Dashboard {
+                    total_books: counts.total_books,
+                    reading: counts.reading,
+                    today_pages,
+                    heatmap,
+                    series,
+                })
             })
-            .collect();
-        Ok(Dashboard {
-            total_books,
-            reading,
-            today_pages,
-            heatmap,
-            series,
-        })
+            .map_err(BackendError::Msg)
     })
+    .await
 }
 
 /// 逐日阅读页数：`bookId=null` 全局，`Some(id)` 只看该书（书库右栏明细表）。
@@ -1768,6 +1999,7 @@ pub async fn get_webtoon_layout(
     state: State<'_, Arc<AppState>>,
     book_id: String,
 ) -> Result<Vec<PageDim>, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Webtoon)?;
     let st = state.inner().clone();
     let bid = book_id.clone();
     blocking(move || crate::read_service::layout_sync(&st, &bid, true)).await
@@ -1785,6 +2017,7 @@ pub async fn get_webtoon_tile(
     tile: u32,
     max_width: u32,
 ) -> Result<PageImage, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Webtoon)?;
     let cache_epoch = state.refresh_epoch();
     let w = max_width.clamp(320, 2160);
     // 1) L1。
@@ -1850,7 +2083,14 @@ pub async fn get_webtoon_tile(
             });
         }
         st.note_cache_write(written);
-        Ok(pages.into_iter().nth(tile as usize).expect("切片在界内"))
+        // 仅对所请求的这一片按需编码 data URL：整页物化阶段不再为全部切片
+        // 预生成 base64（bytes-only），前端 PageImage.dataUrl 契约保持不变。
+        // 顺序关键：本补生成位于 blocking 闭包内，rendered 带 data_url 后才会在
+        // 下方写回 L1（put_tile）；若放到 to_page_image 或 L1 回写之后，L1 会缓存
+        // 空 dataUrl，后续滚动命中将返回黑块。单次请求只在此编码 1 次。
+        let mut requested = pages.into_iter().nth(tile as usize).expect("切片在界内");
+        requested.data_url = requested.data_url_from_bytes();
+        Ok(requested)
     })
     .await
     {
@@ -1881,39 +2121,102 @@ pub async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, S
     Ok(state.settings.lock().clone())
 }
 
+fn bool_str(value: bool) -> String {
+    if value { "true" } else { "false" }.to_string()
+}
+
+fn feature_persist_pairs(flags: &crate::features::FeatureFlags) -> Vec<(&'static str, String)> {
+    crate::features::FeatureId::ALL
+        .iter()
+        .map(|feature| (feature.key(), bool_str(feature.get(flags))))
+        .collect()
+}
+
 /// set_settings 持久化到 settings 表的字段对(其余只透传内存)。
 /// 注意:hydrate_settings(lib.rs 侧)按同一批 key 回读,两处必须同步维护。
 fn settings_persist_pairs(s: &Settings) -> Vec<(&'static str, String)> {
-    vec![
-        ("theme", s.theme.clone()),
-        ("cache_budget_mb", s.cache_budget_mb.to_string()),
-        (
-            "disk_cache_budget_mb",
-            crate::disk_cache::clamp_budget_mb(s.disk_cache_budget_mb).to_string(),
-        ),
-        ("library_dir", s.library_dir.clone()),
-        (
-            "experimental_webtoon",
-            if s.experimental_webtoon {
-                "true"
-            } else {
-                "false"
+    let mut pairs = feature_persist_pairs(&s.features);
+    // 旧键只用于升级/降级兼容；新值以 feature_* 为准。
+    pairs.push(("experimental_webtoon", bool_str(s.features.webtoon)));
+    pairs.push(("experimental_online", bool_str(s.features.online)));
+    pairs.push(("theme", s.theme.clone()));
+    pairs.push(("cache_budget_mb", s.cache_budget_mb.to_string()));
+    pairs.push((
+        "disk_cache_budget_mb",
+        crate::disk_cache::clamp_budget_mb(s.disk_cache_budget_mb).to_string(),
+    ));
+    pairs.push(("library_dir", s.library_dir.clone()));
+    pairs.push(("online_proxy", s.online_proxy.clone()));
+    pairs.push(("online_concurrency", s.online_concurrency.to_string()));
+    pairs.push(("online_headers", s.online_headers.clone()));
+    pairs
+}
+
+fn preserve_features(mut incoming: Settings, current: &Settings) -> Settings {
+    incoming.features = current.features.clone();
+    incoming
+}
+
+fn ensure_feature(state: &AppState, feature: crate::features::FeatureId) -> Result<(), String> {
+    crate::features::ensure_enabled(&state.settings.lock().features, feature)
+}
+
+#[tauri::command]
+pub fn assert_feature_enabled(
+    state: State<'_, Arc<AppState>>,
+    feature: crate::features::FeatureId,
+) -> Result<(), String> {
+    ensure_feature(state.inner(), feature)
+}
+
+#[tauri::command]
+pub async fn set_feature_enabled(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    web_access: State<'_, Arc<crate::web_access::WebAccessRuntime>>,
+    ca: State<'_, Arc<crate::web_access::CaDistributionRuntime>>,
+    feature: crate::features::FeatureId,
+    enabled: bool,
+) -> Result<Settings, String> {
+    if !enabled {
+        match feature {
+            crate::features::FeatureId::Online => {
+                crate::online::handoff::stop_handoff(&app, state.inner());
+                state.invalidate_sources();
             }
-            .to_string(),
-        ),
-        (
-            "experimental_online",
-            if s.experimental_online {
-                "true"
-            } else {
-                "false"
+            crate::features::FeatureId::Browser => {
+                crate::browser::close_browser_window(&app);
             }
-            .to_string(),
-        ),
-        ("online_proxy", s.online_proxy.clone()),
-        ("online_concurrency", s.online_concurrency.to_string()),
-        ("online_headers", s.online_headers.clone()),
-    ]
+            crate::features::FeatureId::WebAccess => {
+                let _ = web_access
+                    .stop(crate::web_access::StopReason::Stopped)
+                    .await;
+                let _ = ca.stop().await;
+            }
+            _ => {}
+        }
+    }
+
+    let pairs = {
+        let mut pairs = vec![(feature.key(), bool_str(enabled))];
+        if let Some(legacy) = feature.legacy_key() {
+            pairs.push((legacy, bool_str(enabled)));
+        }
+        pairs
+    };
+    state.db.with(|conn| {
+        for (key, value) in &pairs {
+            db::set_setting(conn, key, value).map_err(err)?;
+        }
+        Ok(())
+    })?;
+
+    let updated = {
+        let mut settings = state.settings.lock();
+        feature.set(&mut settings.features, enabled);
+        settings.clone()
+    };
+    Ok(updated)
 }
 
 /// 前端已解析出的页面列表入库前整理：规范化 URL、去重、页数上限。
@@ -2058,9 +2361,8 @@ pub async fn resolve_online_url(
     let st = state.inner().clone();
     let (row, changed) = blocking(move || {
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let session_headers = st.session_online_headers.lock().clone();
         let headers =
             crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
@@ -2100,9 +2402,10 @@ pub async fn import_resolved_pages(
     page_urls: Vec<String>,
 ) -> Result<BookInfo, String> {
     crate::resilience::ensure_online_allowed()?;
-    if !state.settings.lock().experimental_online {
-        return Err("在线直读未开启".into());
-    }
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Online,
+    )?;
     let st = state.inner().clone();
     blocking(move || ingest_resolved_pages(&st, &url, &title, &page_urls)).await
 }
@@ -2113,9 +2416,10 @@ pub async fn resolve_online_batch(
     payload_json: String,
 ) -> Result<Vec<BookInfo>, String> {
     crate::resilience::ensure_online_allowed()?;
-    if !state.settings.lock().experimental_online {
-        return Err("在线直读未开启".into());
-    }
+    crate::features::ensure_enabled(
+        &state.settings.lock().features,
+        crate::features::FeatureId::Online,
+    )?;
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
@@ -2156,9 +2460,8 @@ pub async fn test_online_connection(
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let session_headers = st.session_online_headers.lock().clone();
         let headers =
             crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
@@ -2938,9 +3241,8 @@ pub async fn resolve_telegram_channel(
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let session_headers = st.session_online_headers.lock().clone();
         let headers =
             crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
@@ -2999,9 +3301,8 @@ pub async fn download_telegram_document(
     let row = blocking(move || {
         let st = st_work;
         let s = st.settings.lock().clone();
-        if !s.experimental_online {
-            return Err(BackendError::Msg("在线直读未开启".into()));
-        }
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
         let canonical = crate::online::normalize_url(&url)?;
         let lower_path = canonical.path().to_ascii_lowercase();
         let lower_name = filename.to_ascii_lowercase();
@@ -3366,7 +3667,7 @@ pub fn get_session_online_headers(state: State<'_, Arc<AppState>>) -> Option<Str
 pub async fn set_settings(
     state: State<'_, Arc<AppState>>,
     mut settings: Settings,
-) -> Result<(), String> {
+) -> Result<Settings, String> {
     // 在线源连接参数与请求头先校验；非法输入不落库、不改内存态。
     crate::online::validate_proxy(&settings.online_proxy)?;
     crate::online::validate_headers(&settings.online_headers)?;
@@ -3380,6 +3681,8 @@ pub async fn set_settings(
     state.cache.set_budgets(budget);
 
     let old = state.settings.lock().clone();
+    // 功能开关只能经 set_feature_enabled 修改，避免旧表单覆盖。
+    settings = preserve_features(settings, &old);
     // 代理/并发/请求头变化后，旧源句柄（含已解析 URL 与 Cookie 上下文）全部作废。
     let online_conn_changed = old.online_proxy != settings.online_proxy
         || old.online_concurrency != settings.online_concurrency
@@ -3392,13 +3695,14 @@ pub async fn set_settings(
         }
         Ok(())
     });
-    *state.settings.lock() = settings;
+    *state.settings.lock() = settings.clone();
     state.trim_disk_cache_async();
     if online_conn_changed {
         state.invalidate_sources();
     }
     // 数据库不可用必须显式失败；启动恢复门会阻止用户在坏库上改设置。
-    res
+    res?;
+    Ok(settings)
 }
 
 // ---------- OPDS 远程书库（仅用户自建服务；配置只存本地） ----------
@@ -3418,6 +3722,7 @@ fn opds_target(runtime: &crate::opds::OpdsRuntime, raw: &str) -> Result<url::Url
 pub fn opds_get_config(
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::opds::OpdsConfigView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     state
         .db
         .with(|conn| crate::opds::load_config(conn).map_err(err))
@@ -3428,6 +3733,7 @@ pub fn opds_set_config(
     state: State<'_, Arc<AppState>>,
     config: crate::opds::OpdsConfigInput,
 ) -> Result<crate::opds::OpdsConfigView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     state
         .db
         .with(|conn| crate::opds::save_config(conn, config).map_err(err))
@@ -3436,6 +3742,7 @@ pub fn opds_set_config(
 /// 连接测试只读取目录第一页，不写库、不下载。
 #[tauri::command]
 pub async fn opds_test_connection(state: State<'_, Arc<AppState>>) -> Result<OnlineProbe, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3463,6 +3770,7 @@ pub async fn opds_browse(
     state: State<'_, Arc<AppState>>,
     url: Option<String>,
 ) -> Result<crate::opds::OpdsFeedView, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3484,6 +3792,7 @@ pub async fn opds_browse(
 /// 这样封面 URL（可能含 Kavita API key）不会进入 `<img src>` 或日志。
 #[tauri::command]
 pub async fn opds_cover(state: State<'_, Arc<AppState>>, url: String) -> Result<PageImage, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     blocking(move || {
@@ -3525,6 +3834,7 @@ pub async fn opds_download_entry(
     url: String,
     title: String,
 ) -> Result<BookInfo, String> {
+    ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
     crate::resilience::ensure_online_allowed()?;
     let st = state.inner().clone();
     let st_work = st.clone();
@@ -3551,6 +3861,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prefetch_epoch_guard_rejects_stale_and_accepts_current() {
+        assert!(prefetch_is_current(7, 7));
+        assert!(!prefetch_is_current(7, 8));
+        assert!(!prefetch_is_current(8, 7));
+        assert!(prefetch_is_current(0, 0));
+    }
+
+    /// 请求入口世代语义：连续两次 bump 后，旧请求捕获的世代必须判为过期
+    /// （这正是 L1 命中也要 bump 的依据）；世代按书隔离，互不干扰。
+    #[test]
+    fn page_request_bump_stales_previous_captured_epoch() {
+        use std::sync::atomic::Ordering;
+        let epochs = parking_lot::Mutex::new(std::collections::HashMap::new());
+        let (handle, first) = begin_page_request(&epochs, "book-a");
+        let (again, second) = begin_page_request(&epochs, "book-a");
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert!(std::sync::Arc::ptr_eq(&handle, &again), "同书共用世代句柄");
+        assert_eq!(handle.load(Ordering::SeqCst), second);
+        assert!(!prefetch_is_current(first, second), "旧捕获必须作废");
+        assert!(prefetch_is_current(second, second), "新请求自身有效");
+        let (_, other_book) = begin_page_request(&epochs, "book-b");
+        assert_eq!(other_book, 1, "世代按书隔离");
+        assert!(!prefetch_is_current(second, other_book));
+    }
+
+    #[test]
     fn short_book_reference_handles_unicode_boundaries() {
         assert_eq!(short_book_ref("漫画测试漫画测试更多"), "漫画测试漫画测试");
         assert_eq!(short_book_ref("abc"), "abc");
@@ -3575,9 +3912,28 @@ mod tests {
             "online_proxy",
             "online_concurrency",
             "online_headers",
+            "feature_webtoon",
+            "feature_online",
+            "feature_browser",
+            "feature_pdf",
+            "feature_opds",
+            "feature_web_access",
+            "feature_updates",
+            "feature_backup",
+            "feature_diagnostics",
         ] {
             assert!(keys.contains(&k), "persist 清单缺少 {k}");
         }
+    }
+
+    #[test]
+    fn set_settings_preserves_current_feature_flags() {
+        let mut current = Settings::default();
+        current.features.browser = false;
+        let mut incoming = Settings::default();
+        incoming.features.browser = true;
+        let merged = preserve_features(incoming, &current);
+        assert!(!merged.features.browser);
     }
 
     fn test_temp_dir(tag: &str) -> PathBuf {
@@ -5102,5 +5458,113 @@ mod tests {
         let pdf = db::get_book(&conn, "p1").unwrap().unwrap();
         assert_eq!(clamp_reading_page(&pdf, 3), 3);
         assert_eq!(clamp_reading_page(&pdf, 99), 3, "页数已知后必须钳制");
+    }
+
+    // ---------- 桌面书库分页命令参数校验（ADR-018 / Issue #227）----------
+
+    #[test]
+    fn books_page_limit_defaults_to_60_and_rejects_zero_and_101() {
+        assert_eq!(
+            validate_books_page_params(None, None, None).unwrap().limit,
+            60,
+            "limit 缺省必须是 60"
+        );
+        assert!(validate_books_page_params(None, None, Some(1)).is_ok());
+        assert!(validate_books_page_params(None, None, Some(100)).is_ok());
+        for bad in [0u32, 101] {
+            let err = validate_books_page_params(None, None, Some(bad)).unwrap_err();
+            assert!(
+                err.contains("invalid-page-limit"),
+                "limit {bad} 必须返回稳定错误码，实际：{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn books_page_query_over_128_chars_is_rejected() {
+        let at_limit = "a".repeat(128);
+        assert!(validate_books_page_params(Some(&at_limit), None, None).is_ok());
+        let over = "a".repeat(129);
+        let err = validate_books_page_params(Some(&over), None, None).unwrap_err();
+        assert!(err.contains("invalid-page-query"), "实际：{err}");
+    }
+
+    #[test]
+    fn books_page_invalid_cursor_returns_stable_code() {
+        for invalid in ["not-a-cursor", "", "AAAA", &"a".repeat(65)] {
+            let err = validate_books_page_params(None, Some(invalid), None).unwrap_err();
+            assert!(
+                err.contains("invalid-page-cursor"),
+                "游标 {invalid:?} 必须返回稳定错误码，实际：{err}"
+            );
+        }
+    }
+
+    /// ADR-018 裁定 limit 为「校验拒绝」而非「钳制」：连 u32::MAX 也必须带稳定码拒绝。
+    #[test]
+    fn books_page_limit_rejects_u32_max_with_stable_code() {
+        let err = validate_books_page_params(None, None, Some(u32::MAX)).unwrap_err();
+        assert!(err.contains("invalid-page-limit"), "实际：{err}");
+    }
+
+    /// query 长度按字符数判定：129 个中文字符（String::len() 为 387 字节）必须拒绝，
+    /// 128 个中文字符必须接受，防止按字节误判。
+    #[test]
+    fn books_page_query_counts_chars_not_bytes() {
+        let at_limit = "漫".repeat(128);
+        assert!(validate_books_page_params(Some(&at_limit), None, None).is_ok());
+        let over = "漫".repeat(129);
+        let err = validate_books_page_params(Some(&over), None, None).unwrap_err();
+        assert!(err.contains("invalid-page-query"), "实际：{err}");
+    }
+
+    /// 契约级回归守卫：WS5 的 api.listBooksPage 消费 `nextCursor`，字段名漂移
+    /// 在编译期与静态守卫都无法发现，必须在序列化层断言（ADR-018 / ADR-022）。
+    #[test]
+    fn books_page_serializes_camel_case_contract_fields() {
+        let value = serde_json::to_value(BooksPage {
+            items: Vec::new(),
+            next_cursor: Some("abc".to_string()),
+        })
+        .expect("BooksPage 必须可序列化");
+        let object = value.as_object().expect("必须是 JSON 对象");
+        assert!(object.contains_key("items"), "必须输出 items");
+        assert!(
+            object.contains_key("nextCursor"),
+            "必须输出 camelCase 的 nextCursor 供 WS5 消费"
+        );
+        assert!(
+            !object.contains_key("next_cursor"),
+            "不得泄漏 snake_case 字段名"
+        );
+        assert_eq!(
+            object.get("nextCursor").and_then(|v| v.as_str()),
+            Some("abc")
+        );
+    }
+
+    /// ADR-032 冻结契约：IPC 字段必须是 camelCase 的
+    /// `totalBooks` / `seriesCounts` / `localSeriesCounts`，前端 `api.libraryStats()`
+    /// 直接按这些键消费；字段名漂移在编译期与静态守卫都无法发现。
+    #[test]
+    fn library_stats_serializes_camel_case_contract_fields() {
+        let mut counts = std::collections::BTreeMap::new();
+        counts.insert("series-1".to_string(), 3u32);
+        let value = serde_json::to_value(LibraryStats {
+            total_books: 7,
+            series_counts: counts.clone(),
+            local_series_counts: counts,
+        })
+        .expect("LibraryStats 必须可序列化");
+        let object = value.as_object().expect("必须是 JSON 对象");
+        for key in ["totalBooks", "seriesCounts", "localSeriesCounts"] {
+            assert!(object.contains_key(key), "必须输出 camelCase 字段 {key}");
+        }
+        for key in ["total_books", "series_counts", "local_series_counts"] {
+            assert!(!object.contains_key(key), "不得泄漏 snake_case 字段 {key}");
+        }
+        assert_eq!(object["totalBooks"].as_u64(), Some(7));
+        assert_eq!(object["seriesCounts"]["series-1"].as_u64(), Some(3));
+        assert_eq!(object["localSeriesCounts"]["series-1"].as_u64(), Some(3));
     }
 }

@@ -188,7 +188,7 @@ async function createDocument(bookId: string): Promise<PdfDocumentHandle> {
   const loadingTask = pdfjs.getDocument({
     range: transport,
     rangeChunkSize: PDF_RANGE_CHUNK_SIZE,
-    disableAutoFetch: false,
+    disableAutoFetch: true,
     cMapUrl: PDF_CMAP_URL,
     cMapPacked: true,
     standardFontDataUrl: PDF_STANDARD_FONT_URL,

@@ -19,6 +19,7 @@ import {
   Save,
   ScanLine,
   ShieldCheck,
+  SlidersHorizontal,
   Sun,
   Trash2,
   TrendingUp,
@@ -84,14 +85,19 @@ import { APP_VERSION, BUILD_COMMIT } from "@/lib/version";
 import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
+import {
+  DEFAULT_FEATURE_FLAGS,
+  FEATURE_REGISTRY,
+  type FeatureDefinition,
+  type FeatureId,
+} from "@/features/features";
 
 const DEFAULT_FORM: Settings = {
   theme: "system",
   cacheBudgetMb: 128,
   diskCacheBudgetMb: 2048,
   libraryDir: "",
-  experimentalWebtoon: false,
-  experimentalOnline: false,
+  features: DEFAULT_FEATURE_FLAGS,
   onlineProxy: "",
   onlineConcurrency: 3,
   onlineHeaders: "",
@@ -267,9 +273,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [demoVisible, setDemoVisible] = useState(false);
-  const [experimentalBusy, setExperimentalBusy] = useState<
-    "experimentalOnline" | null
-  >(null);
+  const [featureBusy, setFeatureBusy] = useState<FeatureId | null>(null);
   const [scanning, setScanning] = useState(false);
   const [detectingProxy, setDetectingProxy] = useState(false);
   const [sessionHeaders, setSessionHeaders] = useState(false);
@@ -338,6 +342,7 @@ export default function SettingsPage() {
       setForm({
         ...DEFAULT_FORM,
         ...settings,
+        features: { ...DEFAULT_FEATURE_FLAGS, ...(settings.features ?? {}) },
         theme,
         ...(sessionValue ? { onlineHeaders: sessionValue } : {}),
       });
@@ -458,34 +463,37 @@ export default function SettingsPage() {
     }
   };
 
-  // 实验开关立即持久化，但只写「数据库最新值 + 本开关」，
-  // 不会把表单里尚未保存的代理、请求头、目录等一起写库。
-  const toggleExperimental = async (
-    key: "experimentalOnline",
+  // 功能开关立即持久化；只写单个功能键，不会把表单里尚未保存的
+  // 代理、请求头、目录等一起写库。
+  const toggleFeature = async (
+    feature: FeatureDefinition,
     value: boolean,
   ) => {
-    if (experimentalBusy !== null || saving || loading) return;
-    const previous = form[key];
-    const feature = t("settings.online.urlTitle");
-    setExperimentalBusy(key);
-    setForm((prev) => ({ ...prev, [key]: value }));
+    if (featureBusy !== null || saving || loading) return;
+    const previous = form.features;
+    setFeatureBusy(feature.id);
+    setForm((prev) => ({
+      ...prev,
+      features: { ...prev.features, [feature.settingKey]: value },
+    }));
     try {
-      const persisted = await api.getSettings();
-      const next = { ...persisted, [key]: value };
-      await api.setSettings(next);
-      loadedRef.current = next;
-      setForm((prev) => ({ ...prev, [key]: value }));
+      const next = await api.setFeatureEnabled(feature.id, value);
+      if (loadedRef.current) {
+        loadedRef.current = { ...loadedRef.current, features: next.features };
+      }
+      setForm((prev) => ({ ...prev, features: next.features }));
+      recordBreadcrumb("settingsChange");
       toast(
         t(
           value ? "settings.toast.featureOn" : "settings.toast.featureOff",
-          { feature },
+          { feature: t(feature.titleKey) },
         ),
       );
     } catch (e) {
-      setForm((prev) => ({ ...prev, [key]: previous }));
-      toastErr("set_settings", e);
+      setForm((prev) => ({ ...prev, features: previous }));
+      toastErr("set_feature_enabled", e);
     } finally {
-      setExperimentalBusy(null);
+      setFeatureBusy(null);
     }
   };
 
@@ -579,7 +587,7 @@ export default function SettingsPage() {
 
   const onSave = async () => {
     // 设置尚未载入（或载入失败）时表单仍是默认值，禁止写库。
-    if (loading || loadError || saving || experimentalBusy !== null) return;
+    if (loading || loadError || saving || featureBusy !== null) return;
     const base: Settings = {
       ...(loadedRef.current ?? DEFAULT_FORM),
       ...form,
@@ -591,13 +599,15 @@ export default function SettingsPage() {
         await api.setSessionOnlineHeaders(form.onlineHeaders);
         setSessionActive(form.onlineHeaders.trim().length > 0);
         const persisted: Settings = { ...base, onlineHeaders: "" };
-        await api.setSettings(persisted);
-        loadedRef.current = persisted;
+        const saved = await api.setSettings(persisted);
+        loadedRef.current = saved;
+        setForm((prev) => ({ ...prev, features: saved.features }));
       } else {
         await api.clearSessionOnlineHeaders();
         setSessionActive(false);
-        await api.setSettings(base);
-        loadedRef.current = base;
+        const saved = await api.setSettings(base);
+        loadedRef.current = saved;
+        setForm((prev) => ({ ...prev, features: saved.features }));
       }
       setDirty(false);
       recordBreadcrumb("settingsChange");
@@ -726,6 +736,37 @@ export default function SettingsPage() {
           </TabsList>
 
           <TabsContent value="general" className="mt-2 space-y-4">
+            <SettingsSection
+              icon={SlidersHorizontal}
+              title={t("settings.features.title")}
+              description={t("settings.features.description")}
+            >
+              {FEATURE_REGISTRY.map((feature) => {
+                const enabled = form.features[feature.settingKey];
+                return (
+                  <SettingRow
+                    key={feature.id}
+                    title={t(feature.titleKey)}
+                    description={t(feature.descriptionKey)}
+                    badge={
+                      <Badge variant={enabled ? "success" : "muted"}>
+                        {enabled ? t("common.enabled") : t("common.disabled")}
+                      </Badge>
+                    }
+                  >
+                    <Switch
+                      checked={enabled}
+                      disabled={featureBusy !== null || saving || loading}
+                      aria-label={t(feature.titleKey)}
+                      onCheckedChange={(checked) =>
+                        void toggleFeature(feature, checked)
+                      }
+                    />
+                  </SettingRow>
+                );
+              })}
+            </SettingsSection>
+
             <SettingsSection
               icon={Palette}
               title={t("settings.theme.title")}
@@ -925,8 +966,8 @@ export default function SettingsPage() {
               ) : null}
             </SettingsSection>
 
-            <UpdatesPanel />
-            <SupportPanel />
+            {form.features.updates ? <UpdatesPanel /> : null}
+            {form.features.diagnostics ? <SupportPanel /> : null}
 
             {/* 非商用授权徽章（Build Origin）：常驻关于分区底部。 */}
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3">
@@ -1176,10 +1217,10 @@ export default function SettingsPage() {
               </p>
             </SettingsSection>
 
-            <OnlineFilterPanel />
+            {form.features.online ? <OnlineFilterPanel /> : null}
 
             {/* 自建 OPDS 1.2 远程书库：地址与凭据只存本机，密码只写不读。 */}
-            <OpdsPanel />
+            {form.features.opds ? <OpdsPanel /> : null}
 
             {/* 卡片 3：在线直读开关（URL 解析与 Telegram 频道统一走「浏览器」页唯一地址栏）。 */}
             <SettingsSection
@@ -1187,30 +1228,8 @@ export default function SettingsPage() {
               title={t("settings.online.urlTitle")}
               description={t("settings.online.urlDescription")}
             >
-              <SettingRow
-                title={t("settings.online.enableTitle")}
-                description={t("settings.online.enableDescription")}
-                badge={
-                  <Badge
-                    variant={form.experimentalOnline ? "success" : "muted"}
-                  >
-                    {form.experimentalOnline
-                      ? t("common.enabled")
-                      : t("common.disabled")}
-                  </Badge>
-                }
-              >
-                <Switch
-                  aria-label={t("settings.online.enableTitle")}
-                  checked={form.experimentalOnline}
-                  disabled={experimentalBusy !== null || saving}
-                  onCheckedChange={(checked) =>
-                    void toggleExperimental("experimentalOnline", checked)
-                  }
-                />
-              </SettingRow>
               <p className="text-xs text-muted-foreground">
-                {t("settings.online.enableNote")}
+                {t("settings.features.managedInGeneral")}
               </p>
               <p className="rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
                 {t("settings.online.browserHint")}
@@ -1349,7 +1368,9 @@ export default function SettingsPage() {
               </div>
             </SettingsSection>
 
-            <DataBackupPanel onRestored={load} />
+            {form.features.backup ? (
+              <DataBackupPanel onRestored={load} />
+            ) : null}
 
             {/* 卡片 2：缓存管理与 LRU 配额（唯一占用展示 + 唯一滑杆 + 唯一清空按钮）。 */}
             <SettingsSection
@@ -1486,7 +1507,7 @@ export default function SettingsPage() {
               size="pill"
               className="min-w-32 whitespace-nowrap"
               onClick={() => void onSave()}
-              disabled={!ready || saving || experimentalBusy !== null}
+              disabled={!ready || saving || featureBusy !== null}
             >
               {saving ? (
                 <Loader2 className="animate-spin" />

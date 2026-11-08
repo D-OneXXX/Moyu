@@ -9,6 +9,7 @@ const CJK = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
  * `linux-manual-install` 先例同一套路。新增码时同步补 common.ts 六语键。
  */
 const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
+  { code: "feature-disabled", key: "error.featureDisabled" },
   { code: "archive-disguised-rar", key: "error.archiveDisguisedRar" },
   { code: "archive-disguised-7z", key: "error.archiveDisguised7z" },
   { code: "archive-not-zip", key: "error.archiveNotZip" },
@@ -121,6 +122,9 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "device-limit", key: "error.webAccessDeviceLimit" },
   { code: "pairing-rate-limited", key: "error.webAccessRateLimited" },
   { code: "invalid-parameter", key: "error.webAccessInvalidParameter" },
+  { code: "invalid-page-limit", key: "error.pageInvalidLimit" },
+  { code: "invalid-page-query", key: "error.pageInvalidQuery" },
+  { code: "invalid-page-cursor", key: "error.pageInvalidCursor" },
 ];
 
 /**

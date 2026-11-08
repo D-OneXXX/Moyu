@@ -44,6 +44,8 @@ browser WebView
 - Library metadata, progress, statistics, settings, and filter rules live in SQLite under
   Tauri’s `app_data_dir`.
 - Database connections use WAL, a busy timeout, foreign keys, and normal synchronous mode.
+- Related settings keys commit in one SQLite transaction. Cache/settings memory changes happen
+  only after commit; disabling an optional feature persists its gate before runtime cleanup.
 - Schema versions move forward only; migrations and startup checks are part of the boot path.
 - Rendered pages and online images share a bounded disk cache under `app_cache_dir`. Cache
   cleanup removes derived data only, never `library.db` or reading progress.

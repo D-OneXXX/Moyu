@@ -1444,6 +1444,20 @@ pub fn set_setting(conn: &Connection, k: &str, v: &str) -> Result<(), BackendErr
     Ok(())
 }
 
+/// Persist a related group of settings atomically. If any write fails, dropping
+/// the transaction rolls back every earlier key in the group.
+pub fn set_settings_atomic(
+    conn: &Connection,
+    pairs: &[(&str, String)],
+) -> Result<(), BackendError> {
+    let tx = conn.unchecked_transaction()?;
+    for (key, value) in pairs {
+        set_setting(&tx, key, value)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Internal app metadata (not user settings): schema/compatibility markers.
 pub fn get_meta(conn: &Connection, k: &str) -> Result<Option<String>, BackendError> {
     let value: Option<String> = conn
@@ -1881,6 +1895,38 @@ mod tests {
         }
 
         cleanup_db_files(&path);
+    }
+
+    #[test]
+    fn atomic_settings_write_rolls_back_prior_keys_after_failure() {
+        let conn = mem();
+        set_setting(&conn, "theme", "dark").expect("seed previous value");
+        conn.execute_batch(
+            "CREATE TRIGGER reject_theme_update
+             BEFORE UPDATE ON settings
+             WHEN NEW.k = 'theme'
+             BEGIN SELECT RAISE(ABORT, 'injected settings failure'); END;",
+        )
+        .expect("install failure trigger");
+
+        let result = set_settings_atomic(
+            &conn,
+            &[
+                ("feature_browser", "false".to_string()),
+                ("theme", "light".to_string()),
+            ],
+        );
+
+        assert!(result.is_err(), "injected write must fail");
+        assert_eq!(
+            get_setting(&conn, "feature_browser").unwrap(),
+            None,
+            "earlier inserts in the group must roll back"
+        );
+        assert_eq!(
+            get_setting(&conn, "theme").unwrap().as_deref(),
+            Some("dark")
+        );
     }
 
     #[test]

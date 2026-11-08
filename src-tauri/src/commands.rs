@@ -2269,12 +2269,7 @@ async fn persist_feature_enabled_locked(
     blocking(move || {
         db_state
             .db
-            .with(|conn| {
-                for (key, value) in &pairs {
-                    db::set_setting(conn, key, value).map_err(err)?;
-                }
-                Ok(())
-            })
+            .with(|conn| db::set_settings_atomic(conn, &pairs).map_err(err))
             .map_err(BackendError::Msg)
     })
     .await?;
@@ -2282,6 +2277,25 @@ async fn persist_feature_enabled_locked(
     let mut settings = state.settings.lock();
     feature.set(&mut settings.features, enabled);
     Ok(settings.clone())
+}
+
+async fn persist_feature_then_shutdown<F, Fut>(
+    state: &Arc<AppState>,
+    feature: crate::features::FeatureId,
+    enabled: bool,
+    shutdown: F,
+) -> Result<Settings, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    // Persist and publish the disabled gate before stopping its runtime. A DB
+    // failure must return before any listener, window, or session is cleaned up.
+    let settings = persist_feature_enabled_locked(state, feature, enabled).await?;
+    if !enabled {
+        shutdown().await;
+    }
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -2297,25 +2311,29 @@ pub async fn set_feature_enabled(
     // Keep feature stop/start side effects, DB persistence, and the in-memory
     // feature flag in one serialized operation across the blocking-pool await.
     let _settings_guard = st.settings_write_lock.lock().await;
-    if !enabled {
+    let shutdown_state = st.clone();
+    let shutdown_app = app.clone();
+    let shutdown_web_access = web_access.inner().clone();
+    let shutdown_ca = ca.inner().clone();
+    persist_feature_then_shutdown(&st, feature, enabled, move || async move {
         match feature {
             crate::features::FeatureId::Online => {
-                crate::online::handoff::stop_handoff(&app, &st);
-                st.invalidate_sources();
+                crate::online::handoff::stop_handoff(&shutdown_app, &shutdown_state);
+                shutdown_state.invalidate_sources();
             }
             crate::features::FeatureId::Browser => {
-                crate::browser::close_browser_window(&app);
+                crate::browser::close_browser_window(&shutdown_app);
             }
             crate::features::FeatureId::WebAccess => {
-                let _ = web_access
+                let _ = shutdown_web_access
                     .stop(crate::web_access::StopReason::Stopped)
                     .await;
-                let _ = ca.stop().await;
+                let _ = shutdown_ca.stop().await;
             }
             _ => {}
         }
-    }
-    persist_feature_enabled_locked(&st, feature, enabled).await
+    })
+    .await
 }
 
 /// 前端已解析出的页面列表入库前整理：规范化 URL、去重、页数上限。
@@ -3786,12 +3804,7 @@ async fn update_settings(state: Arc<AppState>, mut settings: Settings) -> Result
     blocking(move || {
         db_state
             .db
-            .with(|conn| {
-                for (key, value) in persist {
-                    db::set_setting(conn, key, &value).map_err(err)?;
-                }
-                Ok(())
-            })
+            .with(|conn| db::set_settings_atomic(conn, &persist).map_err(err))
             .map_err(BackendError::Msg)
     })
     .await?;
@@ -4222,6 +4235,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multi_key_settings_failure_rolls_back_database_and_keeps_memory_unchanged() {
+        let state = online_state();
+        let mut previous = Settings::default();
+        previous.theme = "dark".into();
+        previous.cache_budget_mb = 64;
+        *state.settings.lock() = previous.clone();
+        state
+            .db
+            .with(|conn| {
+                db::set_setting(conn, "theme", "dark").map_err(err)?;
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_theme_update
+                     BEFORE UPDATE ON settings
+                     WHEN NEW.k = 'theme'
+                     BEGIN SELECT RAISE(ABORT, 'injected settings failure'); END;",
+                )
+                .map_err(err)?;
+                Ok(())
+            })
+            .expect("seed settings and install failure trigger");
+
+        let budget_before = state.cache.stats().1;
+        let mut incoming = previous.clone();
+        incoming.theme = "light".into();
+        incoming.cache_budget_mb = 128;
+        assert!(update_settings(state.clone(), incoming).await.is_err());
+
+        assert_eq!(state.settings.lock().theme, "dark");
+        assert_eq!(state.settings.lock().cache_budget_mb, 64);
+        assert_eq!(state.cache.stats().1, budget_before);
+        let persisted = state
+            .db
+            .with(|conn| {
+                Ok((
+                    db::get_setting(conn, "theme").map_err(err)?,
+                    db::get_setting(conn, "feature_browser").map_err(err)?,
+                ))
+            })
+            .expect("read settings after rollback");
+        assert_eq!(persisted.0.as_deref(), Some("dark"));
+        assert_eq!(persisted.1, None, "earlier feature writes must roll back");
+    }
+
+    #[tokio::test]
     async fn feature_flag_updates_memory_only_after_persistence() {
         let state = online_state();
         {
@@ -4252,6 +4309,79 @@ mod tests {
             before_failure,
             "failed persistence must not change the memory flag"
         );
+    }
+
+    #[tokio::test]
+    async fn feature_shutdown_runs_after_disabled_state_is_persisted() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let state = online_state();
+        let shutdown_observed = Arc::new(AtomicBool::new(false));
+        let shutdown_state = state.clone();
+        let observed = shutdown_observed.clone();
+        let _guard = state.settings_write_lock.lock().await;
+        persist_feature_then_shutdown(
+            &state,
+            crate::features::FeatureId::Browser,
+            false,
+            move || async move {
+                assert!(!crate::features::FeatureId::Browser
+                    .get(&shutdown_state.settings.lock().features));
+                let persisted = shutdown_state
+                    .db
+                    .with(|conn| db::get_setting(conn, "feature_browser").map_err(err))
+                    .expect("read disabled feature flag")
+                    .expect("feature flag persisted before shutdown");
+                assert_eq!(persisted, "false");
+                observed.store(true, Ordering::SeqCst);
+            },
+        )
+        .await
+        .expect("feature disable succeeds");
+
+        assert!(shutdown_observed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn failed_feature_disable_does_not_run_shutdown_or_publish_disabled_flag() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let state = online_state();
+        state
+            .db
+            .with(|conn| {
+                db::set_setting(conn, "feature_browser", "true").map_err(err)?;
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_browser_feature_update
+                     BEFORE UPDATE ON settings
+                     WHEN NEW.k = 'feature_browser'
+                     BEGIN SELECT RAISE(ABORT, 'injected feature failure'); END;",
+                )
+                .map_err(err)?;
+                Ok(())
+            })
+            .expect("seed enabled feature and install failure trigger");
+
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let called = shutdown_called.clone();
+        let _guard = state.settings_write_lock.lock().await;
+        assert!(persist_feature_then_shutdown(
+            &state,
+            crate::features::FeatureId::Browser,
+            false,
+            move || async move { called.store(true, Ordering::SeqCst) },
+        )
+        .await
+        .is_err());
+
+        assert!(!shutdown_called.load(Ordering::SeqCst));
+        assert!(state.settings.lock().features.browser);
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "feature_browser").map_err(err))
+            .expect("read feature after failed write")
+            .expect("original feature flag remains persisted");
+        assert_eq!(persisted, "true");
     }
 
     #[tokio::test]

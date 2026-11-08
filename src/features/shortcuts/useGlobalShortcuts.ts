@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useShortcutsEnabled } from "./preferences";
 
 /**
  * 全局快捷键输入态隔离守卫（AGENTS.md §4.4）。
@@ -103,9 +104,11 @@ export function useGlobalShortcuts(
   handlersRef.current = handlers;
   const exemptRef = useRef<readonly string[]>(editableExempt ?? []);
   exemptRef.current = editableExempt ?? [];
+  // 用户级总开关：关闭后整个应用不再注册任何全局键位监听。
+  const [shortcutsEnabled] = useShortcutsEnabled();
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !shortcutsEnabled) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
       // 1) 输入法组合中：任何全局快捷键都不得生效。
@@ -129,5 +132,5 @@ export function useGlobalShortcuts(
     window.addEventListener("keydown", onKeyDown, capture);
     return () => window.removeEventListener("keydown", onKeyDown, capture);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, target, capture, ...(deps ?? [])]);
+  }, [enabled, shortcutsEnabled, target, capture, ...(deps ?? [])]);
 }

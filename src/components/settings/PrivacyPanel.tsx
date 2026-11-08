@@ -31,7 +31,6 @@ import { platformKind } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { recordBreadcrumb } from "@/features/resilience";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
-import { useFeatureEnabled } from "@/features/features";
 import { enterSafeMode } from "@/features/safeMode/api";
 import {
   privacyApi,
@@ -43,8 +42,7 @@ import {
   PRIVACY_DIALOG_EVENT,
   PRIVACY_POLICY_VERSION,
 } from "@/components/privacy/PrivacyDialog";
-import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
-import WebAccessPanel from "@/components/settings/WebAccessPanel";
+import DiagnosticPanel from "@/components/diagnostics/DiagnosticPanel";
 
 const TRACE_KEYS = new Set(["mr-browser-recents", "mr-online-last-test"]);
 
@@ -108,11 +106,11 @@ function AuditCard({
   const { t } = useI18n();
   const variant = statusVariant(status);
   return (
-    <div className="rounded-2xl border border-border bg-background/60 p-4">
+    <div className="rounded-xl border border-border bg-background/60 p-3.5">
       <div className="flex flex-wrap items-start gap-3">
         <span
           className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-xl border border-border shadow-hard-sm",
+            "grid size-8 shrink-0 place-items-center rounded-lg border border-border shadow-elevation-sm",
             variant === "success" && "bg-success/10 text-success",
             variant === "warning" && "bg-warning/10 text-warning",
             variant === "destructive" && "bg-destructive/10 text-destructive",
@@ -123,14 +121,14 @@ function AuditCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold">{title}</p>
+            <p className="text-sm font-medium">{title}</p>
             <Badge variant={variant}>{t(statusKey(status))}</Badge>
           </div>
-          <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">
+          <p className="mt-0.5 line-clamp-3 text-xs leading-5 text-muted-foreground">
             {description}
           </p>
           <details className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            <summary className="cursor-pointer select-none font-semibold text-foreground/80">
+            <summary className="cursor-pointer select-none font-medium text-foreground/80">
               {t("privacy.audit.details")}
             </summary>
             <div className="mt-1.5 space-y-0.5 rounded-lg border border-border/60 bg-muted/30 p-2 font-mono">
@@ -160,11 +158,11 @@ function CapsuleCard({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm">
+    <div className="rounded-xl border border-border bg-background/60 p-3.5 shadow-elevation-sm">
       <div className="flex flex-wrap items-start gap-3">
         <span
           className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-full border border-border shadow-hard-sm",
+            "grid size-8 shrink-0 place-items-center rounded-full border border-border shadow-elevation-sm",
             tone === "success" && "bg-success/10 text-success",
             tone === "warning" && "bg-warning/10 text-warning",
             tone === "default" && "bg-secondary text-secondary-foreground",
@@ -173,8 +171,8 @@ function CapsuleCard({
           <Icon className="size-4" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="break-words text-sm font-semibold">{title}</p>
-          <div className="mt-1.5 space-y-2 text-xs leading-relaxed text-muted-foreground">
+          <p className="break-words text-sm font-medium">{title}</p>
+          <div className="mt-1.5 space-y-2 text-xs leading-5 text-muted-foreground">
             {children}
           </div>
         </div>
@@ -197,13 +195,15 @@ function StepChain({ steps }: { steps: string[] }) {
           ) : null}
           <span
             className={cn(
-              "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] font-semibold shadow-hard-sm",
+              "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium shadow-elevation-sm",
               index === steps.length - 1
                 ? "border-border bg-primary text-primary-foreground"
                 : "border-border bg-card text-foreground",
             )}
           >
-            <span className="font-mono text-[10px] opacity-70">{index + 1}</span>
+            <span className="font-mono text-[10px] tabular-nums opacity-70">
+              {index + 1}
+            </span>
             <span className="break-words">{step}</span>
           </span>
         </li>
@@ -215,22 +215,22 @@ function StepChain({ steps }: { steps: string[] }) {
 /** 路径胶囊：等宽字体展示产品级固定路径（非用户私有路径）。 */
 function PathCapsule({ path }: { path: string }) {
   return (
-    <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] shadow-hard-sm">
+    <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] shadow-elevation-sm">
       <FolderCheck className="size-3 shrink-0 text-muted-foreground" />
-      <span className="break-words font-mono">{path}</span>
+      <span className="truncate font-mono">{path}</span>
     </span>
   );
 }
 
 /**
- * Settings → Privacy & security. The statement is static copy; every audit
- * indicator is returned by the Rust security command (build config, capability
- * file, current settings, live WebViews and cache sizes).
+ * Settings → 隐私与安全。
+ *
+ * 一级只保留「安全状态徽章 + 一次清除痕迹」；完整自检报告、Windows 交付
+ * 指引与诊断包导出都在二级 Sheet 里，挂载成本为零。
  */
 export default function PrivacyPanel() {
   const { t, locale, formatDateTime } = useI18n();
   const { active: safeModeActive, refresh: refreshSafeMode } = useSafeMode();
-  const webAccessEnabled = useFeatureEnabled("webAccess");
   const [enteringSafeMode, setEnteringSafeMode] = useState(false);
   const [audit, setAudit] = useState<SecurityAudit | null>(null);
   const [loading, setLoading] = useState(false);
@@ -338,6 +338,16 @@ export default function PrivacyPanel() {
   };
 
   const overallVariant = audit ? statusVariant(audit.overall) : "muted";
+  const passCount = audit
+    ? [audit.update, audit.isolation, audit.network, audit.storage].filter(
+        (item) => item.status === "pass",
+      ).length
+    : 0;
+  const warnCount = audit
+    ? [audit.update, audit.isolation, audit.network, audit.storage].filter(
+        (item) => item.status === "warn",
+      ).length
+    : 0;
 
   /** 手动进入安全模式：立即生效并刷新全局上下文（退出走 SafeModePill / 本卡片）。 */
   const onEnterSafeMode = async () => {
@@ -376,318 +386,337 @@ export default function PrivacyPanel() {
 
   return (
     <div className="space-y-4">
-      {webAccessEnabled ? (
-        <>
-          <WebAccessPanel />
-          <details className="rounded-2xl border border-border bg-card p-4">
-            <summary className="cursor-pointer text-sm font-semibold">
-              {t("settings.webAccess.startSecure")}
-            </summary>
-            <div className="mt-3">
-              <CaDistributionPanel />
-            </div>
-          </details>
-        </>
-      ) : null}
       <SettingsSection
         icon={ShieldCheck}
         title={t("privacy.statement.title")}
         description={t("privacy.statement.summary")}
         action={
-          <Badge variant="success" className="gap-1.5 px-3 py-1">
+          <Badge variant={overallVariant} className="gap-1.5 whitespace-nowrap px-2.5 py-1">
             <LockKeyhole className="size-3" />
-            {t("privacy.badge")}
-          </Badge>
-        }
-      >
-        <div className="grid gap-3 lg:grid-cols-2">
-          <div className="rounded-2xl border border-border bg-background/60 p-4">
-            <p className="flex items-center gap-2 text-sm font-semibold">
-              <Database className="size-4 text-primary" />
-              {t("privacy.storage.title")}
-            </p>
-            <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted-foreground">
-              <li>{t("privacy.storage.books")}</li>
-              <li>{t("privacy.storage.progress")}</li>
-              <li>{t("privacy.storage.cache")}</li>
-              <li>{t("privacy.storage.settings")}</li>
-            </ul>
-          </div>
-          <div className="rounded-2xl border border-border bg-background/60 p-4">
-            <p className="flex items-center gap-2 text-sm font-semibold">
-              <Wifi className="size-4 text-primary" />
-              {t("privacy.network.title")}
-            </p>
-            <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted-foreground">
-              <li>{t("privacy.network.online")}</li>
-              <li>{t("privacy.network.updates")}</li>
-              <li className="font-medium text-foreground">
-                {t("privacy.network.none")}
-              </li>
-            </ul>
-          </div>
-        </div>
-        <p className="rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
-          {t("diagnostics.privacyNote")}
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            type="button"
-            variant="pill"
-            size="pill-sm"
-            className="whitespace-nowrap"
-            onClick={() => window.dispatchEvent(new Event(PRIVACY_DIALOG_EVENT))}
-          >
-            {t("privacy.statement.showDialog")}
-          </Button>
-          <p className="font-mono text-[10px] text-muted-foreground">
-            {t("privacy.dialog.policyVersion", {
-              version: PRIVACY_POLICY_VERSION,
-            })}
-          </p>
-        </div>
-
-        {/* 安全自检：整卡唯一的「重新执行安全检查」按钮。 */}
-        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
-          <Badge variant={overallVariant}>
             {audit ? t(statusKey(audit.overall)) : t("privacy.status.unknown")}
           </Badge>
-          <span className="text-xs font-medium">
-            {audit
-              ? t(`privacy.audit.overall.${audit.overall}` as MessageKey)
-              : null}
-          </span>
-          {audit ? (
-            <span className="text-[11px] text-muted-foreground">
-              {t("privacy.audit.checkedAt", {
-                time: formatDateTime(audit.checkedAt, {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                }),
-              })}
-            </span>
-          ) : null}
-          <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-            <LockKeyhole className="size-3" />
-            {t("privacy.audit.noUpload")}
-          </span>
-          <Button
-            type="button"
-            variant="pill-primary"
-            size="pill-sm"
-            className="ml-auto whitespace-nowrap"
-            disabled={loading || clearing}
-            onClick={() => void runAudit()}
+        }
+        summary={
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <LockKeyhole className="size-3" />
+                {t("privacy.audit.noUpload")}
+              </span>
+              {audit ? (
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {t("privacy.audit.checkedAt", {
+                    time: formatDateTime(audit.checkedAt, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    }),
+                  })}
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="pill-ghost"
+                size="pill-sm"
+                className="ml-auto whitespace-nowrap"
+                disabled={loading || clearing}
+                onClick={() => void runAudit()}
+              >
+                {loading ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+                {loading ? t("privacy.audit.running") : t("privacy.audit.run")}
+              </Button>
+            </div>
+            {error ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs leading-5 text-destructive">
+                <AlertTriangle className="size-3.5 shrink-0" />
+                <span className="line-clamp-2 min-w-0 flex-1">
+                  {t("privacy.audit.error", { detail: error })}
+                </span>
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="pill-sm"
+                  onClick={() => void runAudit()}
+                >
+                  {t("privacy.audit.retry")}
+                </Button>
+              </div>
+            ) : null}
+            {loading && !audit ? (
+              <p className="text-xs text-muted-foreground">
+                {t("privacy.audit.running")}
+              </p>
+            ) : null}
+          </div>
+        }
+        rows={
+          <SettingRow
+            title={t("privacy.audit.clear")}
+            description={t("privacy.audit.clearBody")}
           >
-            {loading ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
-            {loading ? t("privacy.audit.running") : t("privacy.audit.run")}
-          </Button>
-        </div>
+            <Button
+              type="button"
+              variant="pill-danger"
+              size="pill-sm"
+              className="whitespace-nowrap"
+              disabled={clearing}
+              onClick={() => setConfirmClear(true)}
+            >
+              {clearing ? <Loader2 className="animate-spin" /> : <Trash2 />}
+              {clearing ? t("privacy.audit.clearing") : t("privacy.audit.clear")}
+            </Button>
+          </SettingRow>
+        }
+        disclosure={{
+          title: t("privacy.detail.reportTitle"),
+          description: t("privacy.statement.summary"),
+          triggerLabel: t("privacy.detail.open"),
+          triggerHint: t("privacy.detail.openHint", {
+            pass: passCount,
+            warn: warnCount,
+          }),
+          testId: "privacy-detail",
+        }}
+      >
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium">{t("privacy.detail.reportTitle")}</h3>
+          {audit ? (
+            <div className="space-y-3">
+              <AuditCard
+                icon={ShieldCheck}
+                title={t("privacy.audit.update.title")}
+                description={updateDescription}
+                status={audit.update.status}
+                evidence={
+                  <>
+                    <div>
+                      {t("privacy.audit.evidence.signature", {
+                        value: audit.update.signatureConfigured
+                          ? t("privacy.audit.enabled")
+                          : t("privacy.audit.disabled"),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.sha", {
+                        value: audit.update.sha256Enforced
+                          ? t("privacy.audit.enabled")
+                          : t("privacy.audit.disabled"),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.https", {
+                        value: !audit.update.manifestConfigured
+                          ? t("privacy.audit.disabled")
+                          : audit.update.manifestLoopback
+                            ? t("privacy.audit.loopback")
+                            : audit.update.manifestHttps
+                              ? t("privacy.audit.enabled")
+                              : t("privacy.audit.disabled"),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.keySource", {
+                        value: keySourceLabel(audit.update.keySource),
+                      })}
+                    </div>
+                  </>
+                }
+              />
 
-        {error ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs leading-relaxed text-destructive">
-            <AlertTriangle className="size-3.5 shrink-0" />
-            <span className="min-w-0 flex-1">
-              {t("privacy.audit.error", { detail: error })}
-            </span>
+              <AuditCard
+                icon={Globe2}
+                title={t("privacy.audit.isolation.title")}
+                description={
+                  audit.isolation.status === "pass"
+                    ? t("privacy.audit.isolation.pass")
+                    : audit.isolation.status === "fail"
+                      ? t("privacy.audit.isolation.fail")
+                      : t("privacy.audit.isolation.warn")
+                }
+                status={audit.isolation.status}
+                evidence={
+                  <>
+                    <div>
+                      {t("privacy.audit.evidence.capabilities", {
+                        value:
+                          audit.isolation.capabilityWindows.join(", ") || "—",
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.remote", {
+                        value: String(audit.isolation.remoteCapabilities),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.csp", {
+                        value: audit.isolation.cspConfigured
+                          ? t("privacy.audit.enabled")
+                          : t("privacy.audit.disabled"),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.webviews", {
+                        value: audit.isolation.browserWindowOpen ? "1" : "0",
+                      })}
+                    </div>
+                  </>
+                }
+              />
+
+              <AuditCard
+                icon={Wifi}
+                title={t("privacy.audit.network.title")}
+                description={
+                  audit.network.status === "fail"
+                    ? t("privacy.audit.network.invalid")
+                    : audit.network.status === "warn"
+                      ? t("privacy.audit.network.insecure")
+                      : audit.network.mode === "direct"
+                        ? t("privacy.audit.network.direct")
+                        : t("privacy.audit.network.proxy", {
+                            proxy: audit.network.proxyScheme ?? "—",
+                          })
+                }
+                status={audit.network.status}
+                evidence={
+                  <>
+                    <div>
+                      {t("privacy.audit.evidence.mode", {
+                        value:
+                          audit.network.mode === "direct"
+                            ? t("privacy.audit.direct")
+                            : t("privacy.audit.proxyMode"),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.scheme", {
+                        value: audit.network.proxyScheme ?? "—",
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.https", {
+                        value: audit.network.httpsPreferred
+                          ? t("privacy.audit.enabled")
+                          : t("privacy.audit.disabled"),
+                      })}
+                    </div>
+                  </>
+                }
+              />
+
+              <AuditCard
+                icon={Database}
+                title={t("privacy.audit.storage.title")}
+                description={
+                  audit.storage.status === "fail"
+                    ? t("privacy.audit.storage.fail")
+                    : t("privacy.audit.storage.summary", {
+                        memory: formatMb(audit.storage.memoryCacheBytes, locale),
+                        disk: formatMb(audit.storage.diskCacheBytes, locale),
+                      })
+                }
+                status={audit.storage.status}
+                evidence={
+                  <>
+                    <div>
+                      {t("privacy.audit.evidence.webviews", {
+                        value: String(audit.storage.liveWebviews),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.sessionHeaders", {
+                        value: audit.storage.sessionHeadersInMemory
+                          ? t("privacy.audit.enabled")
+                          : t("privacy.audit.disabled"),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.memoryBytes", {
+                        value: String(audit.storage.memoryCacheBytes),
+                      })}
+                    </div>
+                    <div>
+                      {t("privacy.audit.evidence.diskBytes", {
+                        value: String(audit.storage.diskCacheBytes),
+                      })}
+                    </div>
+                  </>
+                }
+              />
+            </div>
+          ) : null}
+        </section>
+
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium">{t("privacy.statement.title")}</h3>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="rounded-xl border border-border bg-background/60 p-3.5">
+              <p className="flex items-center gap-2 text-sm font-medium">
+                <Database className="size-4 text-primary" />
+                {t("privacy.storage.title")}
+              </p>
+              <ul className="mt-2 space-y-1.5 text-xs leading-5 text-muted-foreground">
+                <li>{t("privacy.storage.books")}</li>
+                <li>{t("privacy.storage.progress")}</li>
+                <li>{t("privacy.storage.cache")}</li>
+                <li>{t("privacy.storage.settings")}</li>
+              </ul>
+            </div>
+            <div className="rounded-xl border border-border bg-background/60 p-3.5">
+              <p className="flex items-center gap-2 text-sm font-medium">
+                <Wifi className="size-4 text-primary" />
+                {t("privacy.network.title")}
+              </p>
+              <ul className="mt-2 space-y-1.5 text-xs leading-5 text-muted-foreground">
+                <li>{t("privacy.network.online")}</li>
+                <li>{t("privacy.network.updates")}</li>
+                <li className="font-medium text-foreground">
+                  {t("privacy.network.none")}
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               type="button"
               variant="pill"
               size="pill-sm"
-              onClick={() => void runAudit()}
+              className="whitespace-nowrap"
+              onClick={() => window.dispatchEvent(new Event(PRIVACY_DIALOG_EVENT))}
             >
-              {t("privacy.audit.retry")}
+              {t("privacy.statement.showDialog")}
             </Button>
+            <p className="font-mono text-[10px] text-muted-foreground">
+              {t("privacy.dialog.policyVersion", {
+                version: PRIVACY_POLICY_VERSION,
+              })}
+            </p>
           </div>
-        ) : null}
-
-        {loading && !audit ? (
-          <p className="rounded-xl border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-            {t("privacy.audit.running")}
+          <p className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+            {t("diagnostics.privacyNote")}
           </p>
-        ) : null}
+        </section>
 
-        {audit ? (
-          <div className="space-y-3">
-            <AuditCard
-              icon={ShieldCheck}
-              title={t("privacy.audit.update.title")}
-              description={updateDescription}
-              status={audit.update.status}
-              evidence={
-                <>
-                  <div>
-                    {t("privacy.audit.evidence.signature", {
-                      value: audit.update.signatureConfigured
-                        ? t("privacy.audit.enabled")
-                        : t("privacy.audit.disabled"),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.sha", {
-                      value: audit.update.sha256Enforced
-                        ? t("privacy.audit.enabled")
-                        : t("privacy.audit.disabled"),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.https", {
-                      value: !audit.update.manifestConfigured
-                        ? t("privacy.audit.disabled")
-                        : audit.update.manifestLoopback
-                          ? t("privacy.audit.loopback")
-                          : audit.update.manifestHttps
-                            ? t("privacy.audit.enabled")
-                            : t("privacy.audit.disabled"),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.keySource", {
-                      value: keySourceLabel(audit.update.keySource),
-                    })}
-                  </div>
-                </>
-              }
-            />
+        <section className="space-y-3" data-testid="privacy-diagnostics">
+          <h3 className="text-sm font-medium">{t("privacy.detail.exportTitle")}</h3>
+          <DiagnosticPanel />
+        </section>
 
-            <AuditCard
-              icon={Globe2}
-              title={t("privacy.audit.isolation.title")}
-              description={
-                audit.isolation.status === "pass"
-                  ? t("privacy.audit.isolation.pass")
-                  : audit.isolation.status === "fail"
-                    ? t("privacy.audit.isolation.fail")
-                    : t("privacy.audit.isolation.warn")
-              }
-              status={audit.isolation.status}
-              evidence={
-                <>
-                  <div>
-                    {t("privacy.audit.evidence.capabilities", {
-                      value:
-                        audit.isolation.capabilityWindows.join(", ") || "—",
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.remote", {
-                      value: String(audit.isolation.remoteCapabilities),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.csp", {
-                      value: audit.isolation.cspConfigured
-                        ? t("privacy.audit.enabled")
-                        : t("privacy.audit.disabled"),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.webviews", {
-                      value: audit.isolation.browserWindowOpen ? "1" : "0",
-                    })}
-                  </div>
-                </>
-              }
-            />
-
-            <AuditCard
-              icon={Wifi}
-              title={t("privacy.audit.network.title")}
-              description={
-                audit.network.status === "fail"
-                  ? t("privacy.audit.network.invalid")
-                  : audit.network.status === "warn"
-                    ? t("privacy.audit.network.insecure")
-                    : audit.network.mode === "direct"
-                      ? t("privacy.audit.network.direct")
-                      : t("privacy.audit.network.proxy", {
-                          proxy: audit.network.proxyScheme ?? "—",
-                        })
-              }
-              status={audit.network.status}
-              evidence={
-                <>
-                  <div>
-                    {t("privacy.audit.evidence.mode", {
-                      value:
-                        audit.network.mode === "direct"
-                          ? t("privacy.audit.direct")
-                          : t("privacy.audit.proxyMode"),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.scheme", {
-                      value: audit.network.proxyScheme ?? "—",
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.https", {
-                      value: audit.network.httpsPreferred
-                        ? t("privacy.audit.enabled")
-                        : t("privacy.audit.disabled"),
-                    })}
-                  </div>
-                </>
-              }
-            />
-
-            <AuditCard
-              icon={Database}
-              title={t("privacy.audit.storage.title")}
-              description={
-                audit.storage.status === "fail"
-                  ? t("privacy.audit.storage.fail")
-                  : t("privacy.audit.storage.summary", {
-                      memory: formatMb(audit.storage.memoryCacheBytes, locale),
-                      disk: formatMb(audit.storage.diskCacheBytes, locale),
-                    })
-              }
-              status={audit.storage.status}
-              evidence={
-                <>
-                  <div>
-                    {t("privacy.audit.evidence.webviews", {
-                      value: String(audit.storage.liveWebviews),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.sessionHeaders", {
-                      value: audit.storage.sessionHeadersInMemory
-                        ? t("privacy.audit.enabled")
-                        : t("privacy.audit.disabled"),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.memoryBytes", {
-                      value: String(audit.storage.memoryCacheBytes),
-                    })}
-                  </div>
-                  <div>
-                    {t("privacy.audit.evidence.diskBytes", {
-                      value: String(audit.storage.diskCacheBytes),
-                    })}
-                  </div>
-                </>
-              }
-            />
-          </div>
-        ) : null}
-
-        {/* Windows 交付指引（SmartScreen 放行 / 杀软白名单目录）。 */}
-        <div className="space-y-3 border-t border-border/60 pt-4">
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium">
+            {t("privacy.security.windowsSmartScreenTitle")}
+          </h3>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="success" className="gap-1.5 px-3 py-1">
+            <Badge variant="success" className="gap-1.5 px-2.5 py-1">
               <ShieldCheck className="size-3" />
               {t("privacy.security.windowsBadgeIntegrity")}
             </Badge>
-            <Badge variant="secondary" className="gap-1.5 px-3 py-1">
+            <Badge variant="secondary" className="gap-1.5 px-2.5 py-1">
               <PackageCheck className="size-3" />
               {t("privacy.security.windowsBadgeTransaction")}
             </Badge>
           </div>
 
-        <div className="grid gap-3 lg:grid-cols-2">
           <CapsuleCard
             icon={ShieldAlert}
             tone="warning"
@@ -712,40 +741,21 @@ export default function PrivacyPanel() {
             <p className="break-words">{t("privacy.security.windowsTemp")}</p>
             <PathCapsule path={UPDATE_STAGING_DIR} />
           </CapsuleCard>
-        </div>
 
-        <CapsuleCard
-          icon={FolderCheck}
-          tone="success"
-          title={t("privacy.security.windowsAllowlistTitle")}
-        >
-          <p className="break-words">
-            {t("privacy.security.windowsAllowlist")}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <PathCapsule path={APP_DATA_DIR} />
-            <PathCapsule path={CACHE_DIR} />
-          </div>
-        </CapsuleCard>
-        </div>
-
-        {/* 清除在线痕迹：隐私卡内唯一入口。 */}
-        <div className="flex flex-wrap items-center gap-3 border-t border-border/60 pt-4">
-          <p className="min-w-0 flex-1 rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            {t("privacy.audit.clearBody")}
-          </p>
-          <Button
-            type="button"
-            variant="pill-danger"
-            size="pill-sm"
-            className="whitespace-nowrap"
-            disabled={clearing}
-            onClick={() => setConfirmClear(true)}
+          <CapsuleCard
+            icon={FolderCheck}
+            tone="success"
+            title={t("privacy.security.windowsAllowlistTitle")}
           >
-            {clearing ? <Loader2 className="animate-spin" /> : <Trash2 />}
-            {clearing ? t("privacy.audit.clearing") : t("privacy.audit.clear")}
-          </Button>
-        </div>
+            <p className="break-words">
+              {t("privacy.security.windowsAllowlist")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <PathCapsule path={APP_DATA_DIR} />
+              <PathCapsule path={CACHE_DIR} />
+            </div>
+          </CapsuleCard>
+        </section>
       </SettingsSection>
 
       {/* 卡片 2：卡死保护与安全模式（看门狗 / 暴躁点击为常开机制，不提供关闭开关）。 */}
@@ -754,55 +764,57 @@ export default function PrivacyPanel() {
         title={t("privacy.guard.title")}
         description={t("privacy.guard.description")}
       >
-        <SettingRow
-          title={t("privacy.guard.watchdog")}
-          description={t("privacy.guard.watchdogDesc")}
-        >
-          <Badge variant="success" className="whitespace-nowrap">
-            {t("privacy.guard.alwaysOn")}
-          </Badge>
-        </SettingRow>
-        <SettingRow
-          title={t("privacy.guard.rage")}
-          description={t("privacy.guard.rageDesc")}
-        >
-          <Badge variant="success" className="whitespace-nowrap">
-            {t("privacy.guard.alwaysOn")}
-          </Badge>
-        </SettingRow>
-        <SettingRow
-          title={t("privacy.guard.safeModeRow")}
-          description={t("privacy.guard.safeModeDesc")}
-          badge={
-            <Badge variant={safeModeActive ? "warning" : "muted"}>
-              {safeModeActive
-                ? t("privacy.guard.safeModeOn")
-                : t("privacy.guard.safeModeOff")}
+        <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
+          <SettingRow
+            title={t("privacy.guard.watchdog")}
+            description={t("privacy.guard.watchdogDesc")}
+          >
+            <Badge variant="success" className="whitespace-nowrap">
+              {t("privacy.guard.alwaysOn")}
             </Badge>
-          }
-        >
-          {safeModeActive ? (
-            <SafeModePill />
-          ) : (
-            <Button
-              type="button"
-              variant="pill"
-              size="pill-sm"
-              className="whitespace-nowrap"
-              disabled={enteringSafeMode}
-              onClick={() => void onEnterSafeMode()}
-            >
-              {enteringSafeMode ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <ShieldAlert />
-              )}
-              {enteringSafeMode
-                ? t("privacy.guard.entering")
-                : t("privacy.guard.enter")}
-            </Button>
-          )}
-        </SettingRow>
+          </SettingRow>
+          <SettingRow
+            title={t("privacy.guard.rage")}
+            description={t("privacy.guard.rageDesc")}
+          >
+            <Badge variant="success" className="whitespace-nowrap">
+              {t("privacy.guard.alwaysOn")}
+            </Badge>
+          </SettingRow>
+          <SettingRow
+            title={t("privacy.guard.safeModeRow")}
+            description={t("privacy.guard.safeModeDesc")}
+            badge={
+              <Badge variant={safeModeActive ? "warning" : "muted"}>
+                {safeModeActive
+                  ? t("privacy.guard.safeModeOn")
+                  : t("privacy.guard.safeModeOff")}
+              </Badge>
+            }
+          >
+            {safeModeActive ? (
+              <SafeModePill />
+            ) : (
+              <Button
+                type="button"
+                variant="pill"
+                size="pill-sm"
+                className="whitespace-nowrap"
+                disabled={enteringSafeMode}
+                onClick={() => void onEnterSafeMode()}
+              >
+                {enteringSafeMode ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <ShieldAlert />
+                )}
+                {enteringSafeMode
+                  ? t("privacy.guard.entering")
+                  : t("privacy.guard.enter")}
+              </Button>
+            )}
+          </SettingRow>
+        </div>
       </SettingsSection>
 
       {confirmClear ? (

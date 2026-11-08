@@ -74,5 +74,13 @@ fn reader_theme() -> Option<String> {
     };
     let light = declarations(":root {")?;
     let dark = declarations("[data-theme=\"dark\"] {")?;
-    Some(format!(":root{{color-scheme:light;{light}}}@media(prefers-color-scheme:dark){{:root{{color-scheme:dark;{dark}}}}}"))
+    // Three theme states, matching the desktop app's `data-theme` switch:
+    //   auto   → follow the OS (media query)
+    //   light  → force the light token block
+    //   dark   → force the dark token block
+    Some(format!(
+        ":root{{color-scheme:light;{light}}}\
+         :root[data-theme=\"dark\"]{{color-scheme:dark;{dark}}}\
+         @media(prefers-color-scheme:dark){{:root:not([data-theme=\"light\"]){{color-scheme:dark;{dark}}}}}"
+    ))
 }

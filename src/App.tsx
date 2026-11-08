@@ -22,6 +22,7 @@ import {
 import { useSafeMode } from "./features/safeMode/SafeModeContext";
 import OpenWithBridge from "./features/openWith/OpenWithBridge";
 import { DropImportProvider } from "./features/import/DropImportProvider";
+import { SkinProvider } from "./features/skin/SkinProvider";
 import { useI18n } from "./i18n";
 
 /** 阅读器是最重的页面：按需加载，避免进入书库首屏包。 */
@@ -63,8 +64,10 @@ export default function App() {
     <SafeModeBootGate>
       <WorkspaceProvider>
         <DropImportProvider>
-          <OpenWithBridge />
-          <AppRoutes />
+          <SkinProvider>
+            <OpenWithBridge />
+            <AppRoutes />
+          </SkinProvider>
         </DropImportProvider>
       </WorkspaceProvider>
     </SafeModeBootGate>

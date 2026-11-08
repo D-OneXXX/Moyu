@@ -9,6 +9,7 @@ import { privacyMessages } from "../messages/privacy";
 import { resilienceMessages } from "../messages/resilience";
 import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
+import { settingsDetailMessages } from "../messages/settingsDetail";
 import type { Messages } from "./zh-CN";
 
 export const zhTW = {
@@ -22,5 +23,6 @@ export const zhTW = {
   ...privacyMessages["zh-TW"],
   ...onlineMessages["zh-TW"],
   ...opdsMessages["zh-TW"],
+  ...settingsDetailMessages["zh-TW"],
   ...resilienceMessages["zh-TW"],
 } satisfies Messages;

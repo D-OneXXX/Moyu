@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Download,
   Filter,
@@ -18,6 +18,7 @@ import { localizeBackendError } from "@/features/errors/localize";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -27,7 +28,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { SettingsSection } from "@/components/settings/SettingsSection";
+import {
+  SettingRow,
+  SettingsSection,
+  SettingsStat,
+  SettingsStatRow,
+} from "@/components/settings/SettingsSection";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { toast, toastErr } from "@/components/Toast";
 
@@ -58,9 +64,25 @@ function sourceLabelKey(source: OnlineFilterRule["source"]) {
   }
 }
 
-/** 设置 → 在线源：提纯统计、规则库与导入/导出/重置。 */
-export default function OnlineFilterPanel() {
-  const { t } = useI18n();
+interface OnlineFilterPanelProps {
+  /** 提纯引擎总开关（与「功能开关」同一状态源）。 */
+  enabled: boolean;
+  onToggle: (value: boolean) => void;
+  toggleBusy?: boolean;
+}
+
+/**
+ * 设置 → 网络与在线源：提纯引擎。
+ *
+ * 一级只暴露「拦截计数 + 总开关 + 明细入口」；规则库、导入/导出/重置与
+ * 站点档案全部下沉到二级 Sheet，挂载前零请求、零 DOM。
+ */
+export default function OnlineFilterPanel({
+  enabled,
+  onToggle,
+  toggleBusy = false,
+}: OnlineFilterPanelProps) {
+  const { t, formatNumber } = useI18n();
   const [stats, setStats] = useState<OnlineFilterStats | null>(null);
   const [rules, setRules] = useState<OnlineFilterRule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -72,8 +94,11 @@ export default function OnlineFilterPanel() {
   const [importing, setImporting] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
+  /** 请求代际：快速刷新时丢弃过期响应。 */
+  const seqRef = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++seqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -81,17 +106,22 @@ export default function OnlineFilterPanel() {
         api.getOnlineFilterStatus(),
         api.listOnlineFilterRules(),
       ]);
+      if (seq !== seqRef.current) return;
       setStats(nextStats);
       setRules(nextRules);
     } catch (e) {
+      if (seq !== seqRef.current) return;
       setError(localizeBackendError(e));
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load();
+    return () => {
+      seqRef.current += 1;
+    };
   }, [load]);
 
   const onExport = useCallback(async () => {
@@ -149,9 +179,56 @@ export default function OnlineFilterPanel() {
   return (
     <SettingsSection
       icon={Filter}
-      title={t("settings.filter.title")}
-      description={t("settings.filter.description")}
-      action={
+      title={t("settings.filter.engineTitle")}
+      description={t("settings.filter.engineDescription")}
+      summary={
+        <SettingsStatRow>
+          <SettingsStat
+            label={t("settings.filter.blockedTotal")}
+            value={formatNumber(stats?.blockedTotal ?? 0)}
+          />
+          <SettingsStat
+            label={t("settings.filter.rules")}
+            value={formatNumber(stats?.rules ?? 0)}
+          />
+          <SettingsStat
+            label={t("settings.filter.profiles")}
+            value={formatNumber(stats?.siteProfiles ?? 0)}
+          />
+          <SettingsStat
+            label={t("settings.filter.restoredTotal")}
+            value={formatNumber(stats?.restoredTotal ?? 0)}
+          />
+        </SettingsStatRow>
+      }
+      rows={
+        <SettingRow
+          title={t("settings.filter.engineSwitch")}
+          description={t("settings.filter.engineSwitchHint")}
+          badge={
+            <Badge variant={enabled ? "success" : "muted"}>
+              {enabled ? t("common.enabled") : t("common.disabled")}
+            </Badge>
+          }
+        >
+          <Switch
+            checked={enabled}
+            disabled={toggleBusy}
+            aria-label={t("settings.filter.engineSwitch")}
+            onCheckedChange={onToggle}
+          />
+        </SettingRow>
+      }
+      disclosure={{
+        triggerLabel: t("settings.filter.open"),
+        triggerHint: t("settings.filter.openHint", {
+          rules: formatNumber(rules.length),
+          profiles: formatNumber(stats?.siteProfiles ?? 0),
+        }),
+        testId: "online-filter-detail",
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"
           variant="pill"
@@ -166,44 +243,6 @@ export default function OnlineFilterPanel() {
           )}
           {t("settings.filter.refresh")}
         </Button>
-      }
-    >
-      {error ? (
-        <div
-          role="alert"
-          className="rounded-xl border border-border bg-destructive/10 px-3 py-2 text-xs text-muted-foreground"
-        >
-          {t("settings.filter.loadFailed")}：{error}
-        </div>
-      ) : null}
-
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-        {[
-          ["profiles", stats?.siteProfiles ?? 0],
-          ["rules", stats?.rules ?? 0],
-          ["blockedTotal", stats?.blockedTotal ?? 0],
-          ["restoredTotal", stats?.restoredTotal ?? 0],
-        ].map(([key, value]) => (
-          <div
-            key={String(key)}
-            className="rounded-xl border border-border bg-background/60 px-3 py-2.5"
-          >
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              {t(`settings.filter.${key}` as "settings.filter.profiles")}
-            </p>
-            <p className="mono mt-1 text-lg font-bold tabular-nums">
-              {Number(value).toLocaleString()}
-            </p>
-          </div>
-        ))}
-      </div>
-      {stats?.lastUpdated ? (
-        <p className="mono text-[10px] text-muted-foreground">
-          {t("settings.filter.lastUpdated", { time: stats.lastUpdated })}
-        </p>
-      ) : null}
-
-      <div className="flex flex-wrap gap-2">
         <Button
           type="button"
           variant="pill"
@@ -234,14 +273,29 @@ export default function OnlineFilterPanel() {
         </Button>
       </div>
 
-      <div className="rounded-2xl border border-border bg-background/50">
+      {stats?.lastUpdated ? (
+        <p className="font-mono text-[10px] tabular-nums text-muted-foreground">
+          {t("settings.filter.lastUpdated", { time: stats.lastUpdated })}
+        </p>
+      ) : null}
+
+      {error ? (
+        <div
+          role="alert"
+          className="rounded-xl border border-border bg-destructive/10 px-3 py-2 text-xs text-muted-foreground"
+        >
+          {t("settings.filter.loadFailed")}：{error}
+        </div>
+      ) : null}
+
+      <div className="rounded-xl border border-border bg-background/50">
         <div className="flex items-center justify-between border-b border-border/70 px-3 py-2">
-          <span className="flex items-center gap-2 text-xs font-semibold">
+          <span className="flex items-center gap-2 text-xs font-medium">
             <ShieldCheck className="size-3.5" />
             {t("settings.filter.rulesTitle")}
           </span>
-          <Badge variant="secondary" className="mono">
-            {rules.length}
+          <Badge variant="secondary" className="font-mono tabular-nums">
+            {formatNumber(rules.length)}
           </Badge>
         </div>
         {loading ? (
@@ -254,7 +308,7 @@ export default function OnlineFilterPanel() {
             {t("settings.filter.empty")}
           </p>
         ) : (
-          <ScrollArea className="max-h-[min(42vh,360px)]">
+          <ScrollArea className="max-h-[min(52vh,460px)]">
             <ul className="divide-y divide-border/60 pr-2">
               {visibleRules.map((rule) => (
                 <li
@@ -279,21 +333,21 @@ export default function OnlineFilterPanel() {
                       {patternText(rule)}
                     </p>
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                      <span>{rule.host}</span>
-                      <span>
-                        {t(sourceLabelKey(rule.source))}
-                      </span>
+                      <span className="max-w-full truncate">{rule.host}</span>
+                      <span>{t(sourceLabelKey(rule.source))}</span>
                       <span>
                         {t(
                           `settings.filter.pattern.${rule.pattern.kind}` as "settings.filter.pattern.urlTemplate",
                         )}
                       </span>
                       {rule.hits > 0 ? (
-                        <span className="mono">{rule.hits}×</span>
+                        <span className="font-mono tabular-nums">
+                          {rule.hits}×
+                        </span>
                       ) : null}
                     </p>
                   </div>
-                  <span className="mono mt-0.5 shrink-0 text-[10px] text-muted-foreground">
+                  <span className="mt-0.5 shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
                     {rule.createdAt}
                   </span>
                 </li>
@@ -315,7 +369,7 @@ export default function OnlineFilterPanel() {
             readOnly
             value={exportText}
             rows={12}
-            className="font-mono text-[11px]"
+            className="select-text font-mono text-[11px]"
             aria-label={t("settings.filter.exportDialogTitle")}
           />
           <DialogFooter>
@@ -344,7 +398,7 @@ export default function OnlineFilterPanel() {
             onChange={(event) => setImportText(event.currentTarget.value)}
             rows={10}
             placeholder={t("settings.filter.importPlaceholder")}
-            className="font-mono text-[11px]"
+            className="select-text font-mono text-[11px]"
             aria-label={t("settings.filter.importTitle")}
           />
           <DialogFooter>

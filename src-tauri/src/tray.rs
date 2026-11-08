@@ -356,6 +356,18 @@ fn toggle_service<R: Runtime>(app: &AppHandle<R>) {
             runtime.stop(StopReason::Stopped).await;
             return;
         }
+        // The tray is a second entry point: the feature switch must gate it
+        // exactly like `web_access_start` does, otherwise a disabled feature
+        // could still bind a LAN listener.
+        let enabled = app
+            .try_state::<Arc<AppState>>()
+            .map(|state| crate::features::FeatureId::WebAccess.get(&state.settings.lock().features))
+            .unwrap_or(false);
+        if !enabled {
+            emit_error(&app, "feature-disabled");
+            show_main(&app);
+            return;
+        }
         let ip = runtime.addresses().ok().and_then(|addresses| {
             addresses
                 .first()

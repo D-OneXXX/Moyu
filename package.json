@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
     "test:rust": "cargo test --lib --manifest-path src-tauri/Cargo.toml",
+    "test:web": "node --experimental-strip-types --test tests/reader-progress.test.mjs",
     "format:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check"
   },
   "dependencies": {

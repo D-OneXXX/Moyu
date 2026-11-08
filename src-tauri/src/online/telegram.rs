@@ -751,9 +751,7 @@ fn message_document(block: &str) -> Option<TelegramDocument> {
     } else {
         raw
     };
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return None;
-    }
+    let url = normalize_url(&url).ok()?.to_string();
     let text = decode_entities(&strip_tags(caps.get(2).map(|m| m.as_str()).unwrap_or("")));
     let filename = text
         .split_whitespace()
@@ -978,6 +976,30 @@ mod tests {
         );
         assert!(normalize_target("https://example.com/x").is_err());
         assert!(normalize_target("https://t.me/bad name").is_err());
+    }
+
+    #[test]
+    fn document_urls_follow_online_url_policy() {
+        let link = |url: &str| {
+            format!(r#"<a class="tgme_widget_message_document_wrap" href="{url}">chapter.cbz</a>"#)
+        };
+        for url in [
+            "http://169.254.169.254/file.cbz",
+            "https://user:pass@example.com/file.cbz",
+            "file:///file.cbz",
+        ] {
+            assert!(message_document(&link(url)).is_none(), "accepted {url}");
+        }
+        assert_eq!(
+            message_document(&link("//example.com/file.cbz#part"))
+                .unwrap()
+                .url,
+            "https://example.com/file.cbz"
+        );
+        assert_eq!(
+            message_document(&link("/file.cbz")).unwrap().url,
+            "https://t.me/file.cbz"
+        );
     }
 
     #[test]

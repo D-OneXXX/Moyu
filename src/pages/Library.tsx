@@ -19,6 +19,7 @@ import { useDropImport } from "@/features/import/DropImportProvider";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useWorkspace } from "@/features/workspace/WorkspaceContext";
 import { recordBreadcrumb } from "@/features/resilience";
+import { useAppVisible, isAppVisible } from "@/features/performance/visibility";
 import {
   api,
   type BookInfo,
@@ -105,6 +106,8 @@ export default function LibraryPage() {
   const { t, locale, formatNumber } = useI18n();
   const { active: safeMode } = useSafeMode();
   const opdsEnabled = useFeatureEnabled("opds");
+  // 最小化/隐藏时跳过网格度量重算，恢复可见后重算一次。
+  const appVisible = useAppVisible();
   const [groupSeries, setGroupSeries] = useState(readGrouping);
   // 方案 C：默认「最近打开」（后端按 last_opened_at 排序）；可切「最近阅读」。
   const [sortMode, setSortMode] = useState<SortMode>("recentOpened");
@@ -320,6 +323,8 @@ export default function LibraryPage() {
     const grid = gridRef.current;
     if (!grid || typeof ResizeObserver === "undefined") return;
     const measure = () => {
+      // 主窗最小化/隐藏时不读 computedStyle、不重算行高（静默态零布局抖动）。
+      if (!isAppVisible()) return;
       const cols = Math.max(
         1,
         getComputedStyle(grid)
@@ -337,7 +342,7 @@ export default function LibraryPage() {
     observer.observe(grid);
     measure();
     return () => observer.disconnect();
-  }, [displayBooks.length, loading, loadError]);
+  }, [displayBooks.length, loading, loadError, appVisible]);
 
   // 滚动位置：AppShell 的 <main> 是真实滚动容器，向上查找最近的
   // overflow-y 容器；rAF 节流，避免每个 scroll 事件都同步 setState。

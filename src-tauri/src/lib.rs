@@ -503,6 +503,9 @@ fn init_app<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 系统准入先于一切：低于 Windows 10（NT 10.0 / Build 10240）直接原生
+    // 提示并非零退出，绝不在未验证的运行时上初始化 SQLite / WebView。
+    platform::enforce_windows_baseline();
     // WebKitGTK（Linux）渲染回退等启动期加固必须先于 Builder/WebView 创建。
     platform::early_env_hardening();
     let resilience_state = resilience::new_state();
@@ -579,12 +582,9 @@ pub fn run() {
             std::thread::spawn(move || {
                 st2.trim_disk_cache();
             });
-            // 空闲兜底：每 5 分钟复查一次，避免长时间阅读只写不淘汰。
-            let st3 = app.state::<Arc<AppState>>().inner().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(300));
-                st3.trim_disk_cache();
-            });
+            // 之后不再有常驻巡检定时器：写盘累计 256MB（`note_cache_write`）
+            // 与设置保存会按需触发淘汰，退出路径再做一次收尾。
+            // 空闲静默态不允许任何周期线程唤醒（CPU 归零）。
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

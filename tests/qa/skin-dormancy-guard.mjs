@@ -6,17 +6,18 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 /**
- * Skin Viewport Guard (Task 7 · framed viewport skinning).
+ * Skin dormancy guard (Task 7 · framed viewport reservation).
  *
- * 用无头 Chrome 打开真实的 Vite 开发服务器，启用「画框包裹」皮肤后断言：
- *  1. 内容视窗确实向内收缩（非零 `--mr-skin-viewport-inset`）；
- *  2. 顶栏按钮、搜索框、书库卡片 100% 落在视窗可视区域内；
- *  3. 这些元素在视窗内仍然 100% 可点击（命中测试落在元素自身或其后代）；
- *  4. 进入 `/reader/:id` 后自动恢复全屏无边距阅读视图（视窗层不挂载、
- *     内缩边距归零、阅读面铺满整个窗口）。
+ * 「画框包裹式」换肤在本版本是**预留态**：容器结构与 CSS 变量接口都已就位，
+ * 但默认 100% 不启用。本测试锁死这个契约：
  *
- * 断言全部在页面内用 `Runtime.evaluate` 完成，不做任何真实输入注入：
- * 只读几何与命中测试，不抢焦点、不移动光标。
+ *  1. 默认 `--mr-skin-viewport-inset: 0px`——视窗铺满窗口，不产生多余边距；
+ *  2. 即使 localStorage 里残留一个预留皮肤 id，启动也**不会**启用它
+ *     （测试故意写入 `mr-skin=framed`）；
+ *  3. 画布背景层与外框层没有背景图、不拦截命中测试，不遮挡任何内容；
+ *  4. 进入 `/reader/:id` 后视窗层不挂载，阅读面铺满整个窗口。
+ *
+ * 只读渲染 + 几何测量：不注入输入，不抢焦点，不移动光标。
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const chrome =
@@ -24,9 +25,12 @@ const chrome =
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const devPort = Number(process.env.MR_SKIN_QA_PORT || 1431);
 const appUrl = `http://127.0.0.1:${devPort}/`;
-const profile = await fs.mkdtemp(path.join(os.tmpdir(), "moyu-skin-guard-"));
+const profile = await fs.mkdtemp(path.join(os.tmpdir(), "moyu-skin-dormancy-"));
 
-/** 注入页面的 Tauri IPC 桩：让主界面在没有原生壳的情况下也能渲染完整书库。 */
+/**
+ * IPC 桩。关键点：这里**故意**写入 `mr-skin=framed`（一个预留态皮肤），
+ * 用来证明它不会被自动启用。
+ */
 const STUB = `
 (() => {
   try { localStorage.setItem("mr-skin", "framed"); } catch (e) {}
@@ -57,6 +61,7 @@ const STUB = `
     get_settings: () => ({
       theme: "system",
       cacheBudgetMb: 2048,
+      diskCacheMb: 2048,
       diskCacheBudgetMb: 2048,
       libraryDir: "",
       features,
@@ -229,34 +234,41 @@ class CdpPage {
   }
 }
 
-/** 视窗几何与命中测试（页面内执行，返回结构化结果）。 */
+/** 预留态探针：几何 + 命中测试 + 画布层材质。 */
 const PROBE = `(() => {
   const root = document.documentElement;
   const viewport = document.querySelector('[data-testid="content-viewport"]');
-  const inset = getComputedStyle(root)
-    .getPropertyValue("--mr-skin-viewport-inset")
-    .trim();
-  const windowRect = {
-    width: window.innerWidth,
-    height: window.innerHeight,
+  const canvas = document.querySelector('[data-testid="skin-canvas-frame"]');
+  const backdrop = document.querySelector('[data-testid="skin-canvas-backdrop"]');
+  const frame = document.querySelector('[data-testid="skin-canvas-frame-overlay"]');
+  const styleOf = (el) => (el ? getComputedStyle(el) : null);
+  const base = {
+    inset: getComputedStyle(root)
+      .getPropertyValue("--mr-skin-viewport-inset").trim(),
+    skin: root.dataset.mrSkin || "",
+    backdropImage: styleOf(backdrop)?.backgroundImage || "",
+    backdropPointerEvents: styleOf(backdrop)?.pointerEvents || "",
+    frameImage: styleOf(frame)?.backgroundImage || "",
+    framePointerEvents: styleOf(frame)?.pointerEvents || "",
+    canvasPosition: styleOf(canvas)?.position || "",
+    windowRect: { width: window.innerWidth, height: window.innerHeight },
   };
-  if (!viewport) {
-    return { present: false, inset, windowRect };
-  }
+  if (!viewport) return { present: false, ...base };
   const rect = viewport.getBoundingClientRect();
   const describe = (element) => {
     if (!element) return null;
     const box = element.getBoundingClientRect();
-    const centerX = box.left + box.width / 2;
-    const centerY = box.top + box.height / 2;
-    const hit = document.elementFromPoint(centerX, centerY);
+    const hit = document.elementFromPoint(
+      box.left + box.width / 2,
+      box.top + box.height / 2,
+    );
     const visible =
       box.width > 0 &&
       box.height > 0 &&
-      box.top >= rect.top - 0.5 &&
-      box.bottom <= rect.bottom + 0.5 &&
-      box.left >= rect.left - 0.5 &&
-      box.right <= rect.right + 0.5;
+      box.top >= -0.5 &&
+      box.bottom <= window.innerHeight + 0.5 &&
+      box.left >= -0.5 &&
+      box.right <= window.innerWidth + 0.5;
     const clickable = Boolean(
       hit && (element === hit || element.contains(hit) || hit.contains(element)),
     );
@@ -264,27 +276,12 @@ const PROBE = `(() => {
       visible,
       clickable,
       hitTag: hit ? hit.tagName : null,
-      box: {
-        top: box.top,
-        bottom: box.bottom,
-        left: box.left,
-        right: box.right,
-        width: box.width,
-        height: box.height,
-      },
+      hitTestId: hit ? hit.getAttribute("data-testid") : null,
     };
   };
-  const navButtons = Array.from(
-    document.querySelectorAll("header nav a, header nav button"),
-  );
-  const search = document.getElementById("library-search-input");
-  const cards = Array.from(
-    document.querySelectorAll('[data-testid="library-card"]'),
-  );
   return {
     present: true,
-    inset,
-    windowRect,
+    ...base,
     viewport: {
       top: rect.top,
       bottom: rect.bottom,
@@ -293,9 +290,14 @@ const PROBE = `(() => {
       width: rect.width,
       height: rect.height,
     },
-    navButtons: navButtons.map(describe),
-    search: describe(search),
-    cards: cards.map(describe),
+    viewportRadius: styleOf(viewport)?.borderTopLeftRadius || "",
+    navButtons: Array.from(
+      document.querySelectorAll("header nav a, header nav button"),
+    ).map(describe),
+    search: describe(document.getElementById("library-search-input")),
+    cards: Array.from(
+      document.querySelectorAll('[data-testid="library-card"]'),
+    ).map(describe),
   };
 })()`;
 
@@ -352,7 +354,6 @@ try {
   });
   await page.send("Page.navigate", { url: appUrl });
 
-  // 等主界面挂载：视窗层出现，并且书库卡片已经渲染。
   const deadline = Date.now() + 45_000;
   let probe = null;
   while (Date.now() < deadline) {
@@ -364,21 +365,8 @@ try {
     const diagnostics = await page.eval(`(() => ({
       url: location.href,
       rootHtml: (document.getElementById("root") || {}).innerHTML?.slice(0, 800) || "",
-      bodyText: (document.body.innerText || "").slice(0, 400),
     }))()`);
-    console.error("viewport diagnostics:", JSON.stringify(diagnostics, null, 2));
-    for (const event of page.events) {
-      if (
-        event.method === "Runtime.exceptionThrown" ||
-        event.method === "Log.entryAdded" ||
-        event.method === "Runtime.consoleAPICalled"
-      ) {
-        console.error(
-          `[page ${event.method}]`,
-          JSON.stringify(event.params).slice(0, 600),
-        );
-      }
-    }
+    console.error("dormancy diagnostics:", JSON.stringify(diagnostics, null, 2));
   }
   assert.ok(probe?.present, "the content viewport must be mounted");
   assert.ok(
@@ -386,27 +374,52 @@ try {
     "the library must render cards so the guard can measure them",
   );
 
-  /* ------------------------------------------------ 1. framed skin engaged */
-  assert.notEqual(
+  /* ------------------------------------- 1. 预留态默认透传（零内缩） */
+  assert.equal(
     probe.inset,
     "0px",
-    "the framed skin must inset the content viewport",
+    "the reserved skin must stay in pass-through mode (inset 0px)",
   );
-  assert.ok(
-    probe.viewport.left > 0 &&
-      probe.viewport.top > 0 &&
-      probe.viewport.right < probe.windowRect.width &&
-      probe.viewport.bottom < probe.windowRect.height,
-    `the viewport must shrink inside the canvas: ${JSON.stringify(probe.viewport)}`,
+  assert.equal(
+    probe.skin,
+    "default",
+    "a dormant skin id must never be activated on startup",
   );
 
-  /* --------------------------------- 2. controls stay inside the viewport */
+  /* ------------------------- 2. 视窗铺满窗口，不产生多余边距与圆角 */
+  assert.ok(
+    Math.abs(probe.viewport.top) < 1 &&
+      Math.abs(probe.viewport.left) < 1 &&
+      Math.abs(probe.viewport.width - probe.windowRect.width) < 1 &&
+      Math.abs(probe.viewport.height - probe.windowRect.height) < 1,
+    `the viewport must fill the window exactly: ${JSON.stringify(probe.viewport)}`,
+  );
+  assert.equal(
+    probe.viewportRadius,
+    "0px",
+    "the reserved skin must not round the viewport corners",
+  );
+
+  /* ---------------------- 3. 画布层无背景图、不拦截命中测试（零遮挡） */
+  assert.equal(
+    probe.backdropImage,
+    "none",
+    "the canvas backdrop must stay empty in the reserved state",
+  );
+  assert.equal(
+    probe.frameImage,
+    "none",
+    "the frame overlay must stay empty in the reserved state",
+  );
+  assert.equal(probe.backdropPointerEvents, "none");
+  assert.equal(probe.framePointerEvents, "none");
+
+  /* ------------------------------------- 4. 交互元素完全不受遮挡 */
   assert.ok(probe.navButtons.length > 0, "the top bar must expose buttons");
   for (const [index, button] of probe.navButtons.entries()) {
-    assert.ok(button, `top bar control #${index} must be measurable`);
     assert.ok(
       button.visible,
-      `top bar control #${index} must be fully inside the viewport: ${JSON.stringify(button)}`,
+      `top bar control #${index} must be visible: ${JSON.stringify(button)}`,
     );
     assert.ok(
       button.clickable,
@@ -414,47 +427,25 @@ try {
     );
   }
   assert.ok(probe.search, "the library search box must exist");
-  assert.ok(
-    probe.search.visible,
-    `the search box must be fully inside the viewport: ${JSON.stringify(probe.search)}`,
-  );
-  assert.ok(
-    probe.search.clickable,
-    `the search box must stay clickable: ${JSON.stringify(probe.search)}`,
-  );
+  assert.ok(probe.search.visible, "the search box must be visible");
+  assert.ok(probe.search.clickable, "the search box must stay clickable");
   for (const [index, card] of probe.cards.entries()) {
-    assert.ok(
-      card.visible,
-      `library card #${index} must be fully inside the viewport: ${JSON.stringify(card)}`,
-    );
-    assert.ok(
-      card.clickable,
-      `library card #${index} must stay clickable: ${JSON.stringify(card)}`,
-    );
+    assert.ok(card.visible, `library card #${index} must be visible`);
+    assert.ok(card.clickable, `library card #${index} must stay clickable`);
   }
 
-  /* ----------------------------------- 3. reader route is full-bleed */
-  await page.eval(
-    `location.hash = "#/reader/${"a".repeat(64)}"; true;`,
-  );
+  /* ----------------------------------- 5. 阅读路由仍是全屏无边距 */
+  await page.eval(`location.hash = "#/reader/${"a".repeat(64)}"; true;`);
   const readerDeadline = Date.now() + 30_000;
   let readerProbe = null;
   while (Date.now() < readerDeadline) {
     readerProbe = await page.eval(PROBE);
-    // 等路由切换与皮肤 effect 都落定：视窗层卸载 + 内缩边距归零。
-    if (readerProbe && !readerProbe.present && readerProbe.inset === "0px") {
-      break;
-    }
+    if (readerProbe && !readerProbe.present) break;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   assert.ok(
     readerProbe && !readerProbe.present,
-    "the reader route must not mount the framed content viewport",
-  );
-  assert.equal(
-    readerProbe.inset,
-    "0px",
-    "the reader route must reset the viewport inset to 0px",
+    "the reader route must not mount the reserved viewport",
   );
   const readerSurface = await page.eval(`(() => {
     const root = document.getElementById("root");
@@ -476,7 +467,7 @@ try {
   );
 
   console.log(
-    "VERIFIED skin viewport guard: framed skin insets the viewport, top bar / search / library cards stay visible and clickable, /reader/:id returns to a full-bleed reader.",
+    "VERIFIED skin dormancy guard: reserved frame stays at inset 0px with no backdrop/frame and no occlusion; dormant skin ids never auto-activate; /reader/:id stays full-bleed.",
   );
   console.log(
     `L2 resources: vite 127.0.0.1:${devPort}; owned headless Chrome PID ${chromeChild?.pid ?? "not-started"}; CDP ${cdpPort ?? "not-started"}.`,

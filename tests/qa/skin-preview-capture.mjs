@@ -6,13 +6,16 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 /**
- * Skin preview capture (Task 7 · framed viewport skinning).
+ * Skin preview capture (Task 7 · framed viewport reservation).
  *
- * 无头 Chrome 打开真实的 Vite 开发服务器，启用「整页背景 + 视窗外框环绕
- * 装饰」皮肤后截取主界面真机效果：
+ * 无头 Chrome 打开真实的 Vite 开发服务器，在**默认（预留态未启用）**皮肤下
+ * 截取主界面真机效果：
  *
- *   desktop-library-framed-skin-dark.png
- *   desktop-library-framed-skin-light.png
+ *   desktop-library-default-dark.png
+ *   desktop-library-default-light.png
+ *
+ * 这两张图就是「零视觉变化」的基准：画框容器已在 DOM 里，但内缩为 0px、
+ * 无背景图、无外框装饰，画面与极简默认风格完全一致。
  *
  * 只读渲染 + 截图：不注入任何输入，不抢焦点，不移动光标。
  */
@@ -29,7 +32,6 @@ const profile = await fs.mkdtemp(path.join(os.tmpdir(), "moyu-skin-shot-"));
 const STUB = `
 (() => {
   try {
-    localStorage.setItem("mr-skin", "framed");
     localStorage.setItem("mr-locale", "zh-CN");
   } catch (e) {}
   const book = (id, title, currentPage) => ({
@@ -309,12 +311,13 @@ try {
         if (!viewport || cards.length === 0) return false;
         const inset = getComputedStyle(document.documentElement)
           .getPropertyValue("--mr-skin-viewport-inset").trim();
-        return inset !== "0px" && document.documentElement.dataset.theme === "${theme}";
+        // 预留态未启用：内缩必须是 0px（透传），这正是基准截图的前提。
+        return inset === "0px" && document.documentElement.dataset.theme === "${theme}";
       })()`);
       if (ready) break;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    assert.ok(ready, `the framed skin must render in the ${theme} theme`);
+    assert.ok(ready, `the default (reserved) skin must render in the ${theme} theme`);
 
     const capture = await page.send("Page.captureScreenshot", {
       format: "png",
@@ -322,7 +325,7 @@ try {
     });
     const target_path = path.join(
       outputDir,
-      `desktop-library-framed-skin-${theme}.png`,
+      `desktop-library-default-${theme}.png`,
     );
     await fs.writeFile(target_path, Buffer.from(capture.data, "base64"));
     const stat = await fs.stat(target_path);
@@ -332,7 +335,7 @@ try {
   }
 
   console.log(
-    "VERIFIED skin preview capture: framed skin rendered in dark and light themes.",
+    "VERIFIED skin preview capture: default (reserved) skin rendered in dark and light themes with inset 0px.",
   );
 } finally {
   if (page?.socket) page.socket.close();

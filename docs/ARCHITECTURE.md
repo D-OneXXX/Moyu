@@ -140,24 +140,20 @@ browser WebView
   fails the build when it drifts.
 - The upgrade identity anchors (`productName`, `identifier`, `mainBinaryName`) are guarded by
   the same check: they decide how the installer recognizes an existing installation.
-- The brand mark in the top-left corner is the 0.19.1 artwork, drawn inline with fixed colors.
-  It is not a configurable surface and never follows the app-icon preference.
-- The app-icon preference only affects **system-level** icons: the desktop shortcut, the taskbar
-  icon, and the tray icon.
-  - `src-tauri/src/desktop_icon.rs` validates the source image (magic bytes, 2 MiB ceiling),
-    encodes a multi-size Windows icon (16 / 32 / 48 / 256) into
-    `<app_data_dir>/icons/active.ico`, and rewrites the shortcut icon location through the
-    Shell Link COM API (`IShellLinkW` / `IPersistFile`).
-  - The executable is never modified: patching PE resources would break the Minisign signature
-    the official updater verifies.
-  - After a rewrite the shell icon cache is refreshed with `SHChangeNotify`, and the running
-    window and tray icons are updated through the Tauri APIs.
-  - Platforms without the Shell Link API keep the window and tray behavior and report the
-    shortcut rewrite as unsupported.
-- The skin system is a **framed viewport** layout, not an overlay system:
+- **Two independent icon surfaces, deliberately not synchronized:**
+  - the brand mark inside the main UI (top-left of the shell) is the 0.19.1 artwork, drawn
+    inline with fixed colors and offered no replacement entry point;
+  - the desktop shortcut, taskbar, and system tray icons always come from the bundled build
+    resources (`src-tauri/icons/`), and the tray never reads a user-supplied image.
+  Changing one side must never affect the other, and neither side is user-customizable.
+- The skin system is a **reserved (dormant) framed-viewport layout**, not an overlay system:
   - `SkinCanvasFrame` paints the full-window canvas (theme background, artwork, outer frame);
   - `ContentViewport` holds the library, browser, and settings, inset by
     `--mr-skin-viewport-inset` (`top right bottom left`), with radius, glass surface, and shadow;
+  - the reserved state ships with `--mr-skin-viewport-inset: 0px`, no backdrop image, and no
+    frame overlay, so the current build looks exactly like the plain minimal UI;
+  - dormant skin definitions are never activated from the persisted preference; a future art
+    pack is injected explicitly in code (`addSkin` + `setSkin`) and only then applies;
   - there are no floating sprites above the content: artwork belongs to the canvas and is only
     visible outside the viewport, so it can never cover text or list items;
   - the immersive reader route drops the viewport entirely and renders full-bleed;

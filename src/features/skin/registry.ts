@@ -42,6 +42,8 @@ export const BUILTIN_SKINS: readonly SkinDefinition[] = [
     id: "framed",
     nameKey: "settings.skin.framedName",
     descriptionKey: "settings.skin.framedDescription",
+    // 预留态：默认不生效。启用入口是代码注入美术资源包（addSkin + setSkin）。
+    dormant: true,
     tokens: FRAMED_VIEWPORT_TOKENS,
     backdrop: { src: "/skins/framed-backdrop.svg" },
     frame: { src: "/skins/framed-frame.svg" },

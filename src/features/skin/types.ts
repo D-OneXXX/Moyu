@@ -27,6 +27,14 @@ export interface SkinDefinition {
   backdrop?: SkinAsset;
   /** 视窗外围的画框装饰画布。 */
   frame?: SkinAsset;
+  /**
+   * 预留态皮肤：默认**不生效**。
+   *
+   * 启动解析持久化偏好时会跳过预留态皮肤，因此当前版本永远是「零内缩、
+   * 无背景图」的极简外观。未来的美术资源包由代码显式注入（`addSkin` +
+   * `setSkin`）后才会启用——这条通道就是预留接口本身。
+   */
+  dormant?: boolean;
 }
 
 export interface SkinAssetPayload {

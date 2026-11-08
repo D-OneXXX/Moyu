@@ -85,10 +85,12 @@
   --mr-skin-viewport-radius: 0px;
   --mr-skin-viewport-border: 0px solid transparent;
   --mr-skin-viewport-shadow: none;
-  /* 视窗材质：底色 + 叠加通透度 + 毛玻璃模糊。 */
+  /* 视窗材质：底色 + 叠加通透度 + 毛玻璃模糊。
+     缺省为「透明叠加 + 不透明视窗底色」，因此预留态与未接入皮肤时的
+     视觉完全一致（零视觉变化）。 */
   --mr-skin-surface-bg: var(--sh-background);
-  --mr-skin-surface-tint: var(--sh-card);
-  --mr-skin-surface-opacity: 0;
+  --mr-skin-surface-tint: transparent;
+  --mr-skin-surface-opacity: 1;
   --mr-skin-surface-blur: 0px;
 
   /* Compatibility aliases for structural Reader CSS until it is fully ported. */

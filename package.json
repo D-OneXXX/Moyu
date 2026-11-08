@@ -14,7 +14,7 @@
     "test:rust": "cargo test --lib --manifest-path src-tauri/Cargo.toml",
     "test:web": "node --experimental-strip-types --test tests/reader-progress.test.mjs",
     "test:static": "node --experimental-strip-types --test tests/release-surface.test.mjs",
-    "test:skin": "node tests/qa/skin-viewport-guard.mjs",
+    "test:skin": "node tests/qa/skin-dormancy-guard.mjs",
     "format:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check"
   },
   "dependencies": {

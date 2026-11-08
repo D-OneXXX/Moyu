@@ -107,7 +107,10 @@ export function SkinProvider({ children }: { children: ReactNode }) {
     const persisted = readPersistedCustomSkin();
     if (persisted) registerSkin(customSkinDefinition(persisted));
     const stored = readStoredSkin();
-    return getSkin(stored) ?? DEFAULT_SKIN;
+    const resolved = getSkin(stored);
+    // 预留态皮肤不在启动时自动生效：当前版本恒为极简外观（零视觉变化）。
+    if (!resolved || resolved.dormant) return DEFAULT_SKIN;
+    return resolved;
   });
   const [version, setVersion] = useState(0);
 

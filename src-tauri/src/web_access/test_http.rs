@@ -19,8 +19,9 @@ use super::auth::PairingService;
 use super::data::WebDataAccess;
 use super::router::{
     PairingHttp, CLAIM_COOKIE, CLAIM_POLL_PREFIX, CLAIM_ROUTE, CONSUME_SUFFIX, HEALTH_PATH,
-    MAX_CLAIM_BODY_BYTES, SESSION_COOKIE,
+    MAX_CLAIM_BODY_BYTES,
 };
+use super::session_auth::SESSION_COOKIE;
 
 const DEFAULT_SOURCE_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
 const DEFAULT_POLL_WINDOW: Duration = Duration::from_millis(20);

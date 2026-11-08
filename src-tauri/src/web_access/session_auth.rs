@@ -109,6 +109,30 @@ pub(crate) fn authenticate_request<B>(
     Ok(AuthenticatedSession { view, token })
 }
 
+/// Render the `Set-Cookie` value for a freshly issued session token.
+///
+/// The pairing consume route binds this fixed 30-day header; keeping the
+/// builder here makes the cookie name, attributes and `Max-Age` single-owner
+/// instead of repeating the literal in every HTTP plane.
+pub(crate) fn session_cookie_header(token: &str) -> String {
+    session_cookie_text(token, SESSION_COOKIE_MAX_AGE_SECS)
+}
+
+/// Render the deletion `Set-Cookie` value (`Max-Age=0`) used on sign-out.
+///
+/// Same name, path and flags as the issued cookie; only `Max-Age` differs, so
+/// browsers drop exactly the cookie this module issued.
+pub(crate) fn clear_session_cookie_header() -> String {
+    session_cookie_text("", 0)
+}
+
+/// The one place that spells out the session cookie text.
+fn session_cookie_text(token: &str, max_age: u64) -> String {
+    format!(
+        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={max_age}"
+    )
+}
+
 /// Build the refresh `Set-Cookie` value for an already-validated token.
 ///
 /// `max_age` is clamped to the frozen 30-day sliding lifetime; zero/expired
@@ -119,9 +143,7 @@ pub(crate) fn session_cookie(token: &str, max_age: u64) -> Option<HeaderValue> {
         return None;
     }
     let max_age = max_age.min(SESSION_COOKIE_MAX_AGE_SECS);
-    let value = Zeroizing::new(format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={max_age}"
-    ));
+    let value = Zeroizing::new(session_cookie_text(token, max_age));
     HeaderValue::from_str(value.as_str()).ok()
 }
 
@@ -593,6 +615,25 @@ mod tests {
         assert!(!text.contains("Expires="));
         assert!(!text.contains("SameSite=None"));
         assert!(session_cookie("moyus_short", 1234).is_none());
+    }
+
+    #[test]
+    fn clear_cookie_uses_the_shared_name_and_expires_the_same_cookie() {
+        let cleared = clear_session_cookie_header();
+        assert_eq!(
+            cleared,
+            format!("{SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0")
+        );
+        assert!(cleared.starts_with(&format!("{SESSION_COOKIE}=")));
+        assert!(cleared.contains("Max-Age=0"));
+        // Sign-out must name the exact cookie the issue/refresh path sets.
+        let (_, issued) = service_with_session(FakeClock::shared());
+        let issued_text = session_cookie_header(issued.token.as_str());
+        assert_eq!(
+            issued_text.split_once('=').expect("name=value").0,
+            cleared.split_once('=').expect("name=value").0
+        );
+        assert!(issued_text.contains(&format!("Max-Age={SESSION_COOKIE_MAX_AGE_SECS}")));
     }
 
     #[test]

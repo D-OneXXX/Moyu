@@ -74,14 +74,14 @@ function heapSnapshot(): { usedMb: number; limitMb: number } | null {
 export default function CapabilityProbe() {
   const [ticks, setTicks] = useState<number[]>(() => readTicks());
   const visits = useMemo(() => {
-    const prev = Number(localStorage.getItem("mr-probe-visits") || "0");
-    const next = prev + 1;
     try {
+      const prev = Number(localStorage.getItem("mr-probe-visits") || "0");
+      const next = Number.isFinite(prev) ? prev + 1 : 1;
       localStorage.setItem("mr-probe-visits", String(next));
+      return next;
     } catch {
-      /* 隐私模式下 localStorage 可能不可写 */
+      return 1;
     }
-    return next;
   }, []);
 
   // 500ms 心跳：页面在后台时被浏览器节流，回到前台时就能算出实际间隔。

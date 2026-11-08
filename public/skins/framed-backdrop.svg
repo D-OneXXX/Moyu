@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="none" width="1600" height="1000">
+  <!-- Moyu framed-skin backdrop.
+       The whole window is one canvas: this artwork fills the area *around*
+       the inset content viewport, so the character and the book stack are
+       drawn against the canvas edges. They read as part of the frame and can
+       never cover the reading list, because the viewport paints over the
+       middle of this image. -->
+  <defs>
+    <linearGradient id="moyuFish" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8ad6ff"/>
+      <stop offset="1" stop-color="#38a8f8"/>
+    </linearGradient>
+    <linearGradient id="moyuSpine" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d9efff"/>
+    </linearGradient>
+    <linearGradient id="moyuPage" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e8f4ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 顶部氛围：细碎星光，落在画布顶边的一条窄带里。 -->
+  <g fill="#38a8f8" opacity="0.55">
+    <circle cx="180" cy="26" r="7"/>
+    <circle cx="430" cy="52" r="5" opacity="0.8"/>
+    <circle cx="760" cy="24" r="9" opacity="0.7"/>
+    <circle cx="1080" cy="46" r="5"/>
+    <circle cx="1420" cy="22" r="7" opacity="0.85"/>
+  </g>
+  <g stroke="#38a8f8" stroke-width="5" stroke-linecap="round" opacity="0.5">
+    <path d="M300 34h26M313 21v26"/>
+    <path d="M900 40h20M910 30v20"/>
+    <path d="M1260 30h18M1269 21v18"/>
+  </g>
+
+  <!-- 左侧竖带：书脊纹样，随主题的浅蓝描边。 -->
+  <g opacity="0.5">
+    <rect x="26" y="150" width="34" height="150" rx="12" fill="#38a8f8" opacity="0.35"/>
+    <rect x="26" y="330" width="34" height="110" rx="12" fill="#ffffff" opacity="0.6"/>
+    <rect x="26" y="470" width="34" height="170" rx="12" fill="#38a8f8" opacity="0.28"/>
+  </g>
+
+  <!-- 右侧竖带：书脊纹样。 -->
+  <g opacity="0.5">
+    <rect x="1540" y="210" width="34" height="160" rx="12" fill="#ffffff" opacity="0.55"/>
+    <rect x="1540" y="400" width="34" height="120" rx="12" fill="#38a8f8" opacity="0.32"/>
+    <rect x="1540" y="550" width="34" height="190" rx="12" fill="#ffffff" opacity="0.45"/>
+  </g>
+
+  <!-- 左下角：从画布底边探出的墨鱼角色。
+       眼睛与嘴正好落在画布外圈的一条窄带里，其余部分被内容视窗盖住，
+       看上去就像趴在视窗框上往外探头。 -->
+  <g transform="translate(60 745)">
+    <path d="M120 250c0 60-42 110-96 128 34 10 72 6 104-10-24 26-52 44-84 54 44 6 92-6 128-38 18 4 38 6 56 6 58 0 104-46 104-104 0-62-54-108-120-108-58 0-92 28-92 72z" fill="url(#moyuFish)" stroke="#09090b" stroke-width="12" stroke-linejoin="round"/>
+    <path d="M120 132c-46 0-84 30-84 68 0 26 16 48 40 60-10-30 2-56 26-72 16-10 34-14 52-14 22 0 40 8 54 22 6-40-30-64-88-64z" fill="url(#moyuFish)" stroke="#09090b" stroke-width="12" stroke-linejoin="round"/>
+    <ellipse cx="96" cy="196" rx="17" ry="22" fill="#09090b"/>
+    <ellipse cx="176" cy="196" rx="17" ry="22" fill="#09090b"/>
+    <circle cx="90" cy="188" r="6" fill="#ffffff"/>
+    <circle cx="170" cy="188" r="6" fill="#ffffff"/>
+    <path d="M116 240c14 12 32 12 46 0" fill="none" stroke="#09090b" stroke-width="12" stroke-linecap="round"/>
+    <path d="M62 168c12-22 32-34 54-38" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round" opacity="0.65"/>
+  </g>
+
+  <!-- 右下角：一摞漫画，斜靠在画布边缘。 -->
+  <g transform="translate(1200 884) scale(0.62)">
+    <rect x="0" y="150" width="330" height="70" rx="16" fill="#38a8f8" stroke="#09090b" stroke-width="11"/>
+    <rect x="14" y="86" width="300" height="66" rx="16" fill="url(#moyuSpine)" stroke="#09090b" stroke-width="11"/>
+    <rect x="30" y="24" width="272" height="64" rx="16" fill="#38a8f8" stroke="#09090b" stroke-width="11"/>
+    <rect x="46" y="-36" width="240" height="62" rx="16" fill="url(#moyuPage)" stroke="#09090b" stroke-width="11"/>
+    <g stroke="#09090b" stroke-width="9" stroke-linecap="round" opacity="0.55">
+      <path d="M92 118h120"/>
+      <path d="M92 56h92"/>
+    </g>
+  </g>
+
+  <!-- 底边：细密网点，落在画布最下方一条窄带。 -->
+  <g fill="#38a8f8" opacity="0.4">
+    <circle cx="420" cy="962" r="6"/>
+    <circle cx="520" cy="978" r="5"/>
+    <circle cx="620" cy="960" r="7"/>
+    <circle cx="720" cy="976" r="5"/>
+    <circle cx="820" cy="962" r="6"/>
+    <circle cx="920" cy="978" r="5"/>
+    <circle cx="1020" cy="960" r="7"/>
+  </g>
+</svg>

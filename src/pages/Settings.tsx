@@ -95,6 +95,12 @@ import DiagnosticPanel from "@/components/diagnostics/DiagnosticPanel";
 import AppBrandIcon from "@/components/shell/AppBrandIcon";
 import { useBrandIcon } from "@/features/brand/BrandIconProvider";
 import {
+  installAppIcon,
+  readAppIconState,
+  resetAppIcon,
+} from "@/features/brand/appIcon";
+import type { DesktopIconState } from "@/lib/tauri";
+import {
   BRAND_ICON_PRESETS,
   CustomBrandIconError,
   loadCustomBrandIcon,
@@ -120,6 +126,11 @@ import {
 } from "@/features/features";
 import { useShortcutsEnabled } from "@/features/shortcuts/preferences";
 import { pickSkinArtwork } from "@/features/skin/api";
+import {
+  customSkinDefinition,
+  customSkinId,
+  writePersistedCustomSkin,
+} from "@/features/skin/customSkin";
 import { useSkin } from "@/features/skin/SkinProvider";
 
 const DEFAULT_FORM: Settings = {
@@ -161,17 +172,18 @@ const THEME_OPTIONS: ReadonlyArray<{
 ];
 
 const BRAND_ICON_LABEL_KEYS: Record<BrandIconPreset, MessageKey> = {
-  book: "settings.brandIcon.presetBook",
-  fish: "settings.brandIcon.presetFish",
-  moon: "settings.brandIcon.presetMoon",
-  wave: "settings.brandIcon.presetWave",
+  moyu: "settings.desktopIcon.presetMoyu",
+  book: "settings.desktopIcon.presetBook",
+  fish: "settings.desktopIcon.presetFish",
+  moon: "settings.desktopIcon.presetMoon",
+  wave: "settings.desktopIcon.presetWave",
 };
 
 const BRAND_ICON_ERROR_KEYS: Record<CustomBrandIconErrorCode, MessageKey> = {
-  type: "settings.brandIcon.errorType",
-  size: "settings.brandIcon.errorSize",
-  dimension: "settings.brandIcon.errorDimension",
-  read: "settings.brandIcon.errorRead",
+  type: "settings.desktopIcon.errorType",
+  size: "settings.desktopIcon.errorSize",
+  dimension: "settings.desktopIcon.errorDimension",
+  read: "settings.desktopIcon.errorRead",
 };
 
 function normalizeTheme(value: string): ThemeMode {
@@ -334,14 +346,47 @@ export default function SettingsPage() {
     setDirty(true);
   }
 
-  const applyBrandIcon = useCallback(
-    (next: BrandIconSelection) => {
+  // 系统级图标（桌面快捷方式 / 任务栏 / 托盘）的安装状态，由后端记账。
+  const [desktopIconState, setDesktopIconState] = useState<DesktopIconState | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let alive = true;
+    void readAppIconState().then(
+      (state) => {
+        if (alive) setDesktopIconState(state);
+      },
+      () => {
+        if (alive) setDesktopIconState(null);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * 写入偏好，并把同一个图标装进系统级位置（快捷方式 / 任务栏 / 托盘）。
+   * 偏好与系统状态分离：即使系统不支持快捷方式改写，托盘与任务栏仍然生效。
+   */
+  const commitIconSelection = useCallback(
+    async (next: BrandIconSelection) => {
       if (!setBrandIcon(next)) {
-        toast(t("settings.brandIcon.errorSave"));
+        toast(t("settings.desktopIcon.errorSave"));
         return;
       }
       // 仅记录动作类型；绝不把自定义 data URL 写进操作轨迹。
       recordBreadcrumb("settingsChange");
+      try {
+        setDesktopIconState(await installAppIcon(next));
+      } catch (error) {
+        toast(
+          localizeStableErrorCode(
+            error instanceof Error ? error.message : "desktop-icon-com-failed",
+          ),
+        );
+      }
     },
     [setBrandIcon, t],
   );
@@ -352,7 +397,8 @@ export default function SettingsPage() {
     if (!file || brandIconBusy) return;
     setBrandIconBusy(true);
     try {
-      applyBrandIcon(await loadCustomBrandIcon(file));
+      const selection = await loadCustomBrandIcon(file);
+      await commitIconSelection(selection);
     } catch (error) {
       const code =
         error instanceof CustomBrandIconError ? error.code : "read";
@@ -362,12 +408,24 @@ export default function SettingsPage() {
     }
   };
 
-  const onResetBrandIcon = () => {
+  const onResetBrandIcon = async () => {
     if (!resetBrandIcon()) {
-      toast(t("settings.brandIcon.errorSave"));
+      toast(t("settings.desktopIcon.errorSave"));
       return;
     }
     recordBreadcrumb("settingsChange");
+    setBrandIconBusy(true);
+    try {
+      setDesktopIconState(await resetAppIcon());
+    } catch (error) {
+      toast(
+        localizeStableErrorCode(
+          error instanceof Error ? error.message : "desktop-icon-com-failed",
+        ),
+      );
+    } finally {
+      setBrandIconBusy(false);
+    }
   };
 
   const onImportSkin = async () => {
@@ -376,23 +434,20 @@ export default function SettingsPage() {
     try {
       const payload = await pickSkinArtwork();
       if (!payload) return;
-      const id = `custom-${Date.now()}`;
-      addSkin({
+      // 自定义素材是「整页画布背景」：内容视窗向内收缩，图片铺满整片窗口。
+      const id = customSkinId(payload.dataUrl);
+      const persisted = {
         id,
-        nameKey: "settings.skin.customName",
-        descriptionKey: "settings.skin.importHint",
-        tokens: {},
-        decorations: [
-          {
-            id: `${id}-corner`,
-            slot: "corner-companion-bottom-right",
-            asset: { src: payload.dataUrl, sizePx: 120, motion: "bob" },
-          },
-        ],
-      });
+        dataUrl: payload.dataUrl,
+        width: payload.width,
+        height: payload.height,
+      };
+      addSkin(customSkinDefinition(persisted));
       setSkin(id);
       recordBreadcrumb("settingsChange");
-      toast(t("settings.skin.importDone"));
+      // 持久化成功则重启后仍在；超出 localStorage 配额时只在本次会话生效。
+      const stored = writePersistedCustomSkin(persisted);
+      toast(t(stored ? "settings.skin.importDone" : "settings.skin.importSessionOnly"));
     } catch (error) {
       const code =
         typeof error === "string" && error.startsWith("skin-")
@@ -950,26 +1005,26 @@ export default function SettingsPage() {
 
             <SettingsSection
               icon={ImageIcon}
-              title={t("settings.brandIcon.title")}
-              description={t("settings.brandIcon.description")}
+              title={t("settings.desktopIcon.title")}
+              description={t("settings.desktopIcon.description")}
               summary={
                 <div className="flex items-center gap-3 rounded-xl border border-border bg-background/60 px-3 py-2.5">
-                  <AppBrandIcon className="size-8" />
+                  <AppBrandIcon className="size-8" selection={brandIcon} />
                   <div className="min-w-0">
                     <p className="truncate text-xs font-medium">
                       {brandIcon.kind === "custom"
-                        ? t("settings.brandIcon.customActive")
+                        ? t("settings.desktopIcon.customActive")
                         : t(BRAND_ICON_LABEL_KEYS[brandIcon.preset])}
                     </p>
                     <p className="truncate text-[11px] text-muted-foreground">
-                      {t("settings.brandIcon.current")}
+                      {t("settings.desktopIcon.current")}
                     </p>
                   </div>
                 </div>
               }
               disclosure={{
-                triggerLabel: t("settings.brandIcon.open"),
-                triggerHint: t("settings.brandIcon.openHint"),
+                triggerLabel: t("settings.desktopIcon.open"),
+                triggerHint: t("settings.desktopIcon.openHint"),
               }}
             >
               <input
@@ -977,13 +1032,13 @@ export default function SettingsPage() {
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
                 className="sr-only"
-                aria-label={t("settings.brandIcon.upload")}
+                aria-label={t("settings.desktopIcon.upload")}
                 onChange={onBrandIconFile}
               />
               <div
                 role="group"
-                aria-label={t("settings.brandIcon.groupLabel")}
-                className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+                aria-label={t("settings.desktopIcon.groupLabel")}
+                className="grid grid-cols-2 gap-2 sm:grid-cols-5"
               >
                 {BRAND_ICON_PRESETS.map((preset) => {
                   const active =
@@ -996,7 +1051,9 @@ export default function SettingsPage() {
                       variant={active ? "pill-primary" : "pill"}
                       size="pill"
                       className="h-auto w-full min-w-0 items-center justify-start gap-2 rounded-xl px-3 py-2.5 text-left"
-                      onClick={() => applyBrandIcon({ kind: "preset", preset })}
+                      onClick={() =>
+                        void commitIconSelection({ kind: "preset", preset })
+                      }
                       disabled={brandIconBusy || saving}
                     >
                       <AppBrandIcon
@@ -1024,31 +1081,59 @@ export default function SettingsPage() {
                   <Upload className="size-4" />
                   {t(
                     brandIcon.kind === "custom"
-                      ? "settings.brandIcon.replace"
-                      : "settings.brandIcon.upload",
+                      ? "settings.desktopIcon.replace"
+                      : "settings.desktopIcon.upload",
                   )}
                 </Button>
                 <Button
                   type="button"
                   variant="pill"
                   size="pill-sm"
-                  onClick={onResetBrandIcon}
+                  onClick={() => void onResetBrandIcon()}
                   disabled={
                     brandIconBusy ||
                     saving ||
                     (brandIcon.kind === "preset" &&
-                      brandIcon.preset === "book")
+                      brandIcon.preset === "moyu")
                   }
                 >
                   <RotateCcw className="size-4" />
-                  {t("settings.brandIcon.reset")}
+                  {t("settings.desktopIcon.reset")}
                 </Button>
                 {brandIconBusy ? (
                   <Loader2 className="size-4 animate-spin text-muted-foreground" />
                 ) : null}
               </div>
+              {/* 快捷方式状态：只显示文件名，不把完整本机路径写进界面。 */}
+              {desktopIconState ? (
+                <div className="space-y-1.5">
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {!desktopIconState.supported
+                      ? t("settings.desktopIcon.unsupported")
+                      : desktopIconState.shortcuts.length === 0
+                        ? t("settings.desktopIcon.noShortcut")
+                        : t("settings.desktopIcon.shortcutCount", {
+                            count: desktopIconState.shortcuts.filter(
+                              (shortcut) => shortcut.updated,
+                            ).length,
+                          })}
+                  </p>
+                  {desktopIconState.shortcuts.length > 0 ? (
+                    <ul className="space-y-1">
+                      {desktopIconState.shortcuts.map((shortcut) => (
+                        <li
+                          key={shortcut.path}
+                          className="truncate text-[11px] text-muted-foreground"
+                        >
+                          {shortcut.path.split(/[\\/]/).pop()}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
               <p className="text-xs leading-5 text-muted-foreground">
-                {t("settings.brandIcon.hint")}
+                {t("settings.desktopIcon.hint")}
               </p>
             </SettingsSection>
 
@@ -1095,10 +1180,11 @@ export default function SettingsPage() {
               summary={
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="secondary">{t(skin.nameKey)}</Badge>
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {t("settings.skin.decorationCount", {
-                      count: skin.decorations?.length ?? 0,
-                    })}
+                  <span className="text-xs text-muted-foreground">
+                    {skin.tokens?.["--mr-skin-viewport-inset"] &&
+                    skin.tokens["--mr-skin-viewport-inset"] !== "0px"
+                      ? t("settings.skin.modeFramed")
+                      : t("settings.skin.modeFullscreen")}
                   </span>
                 </div>
               }

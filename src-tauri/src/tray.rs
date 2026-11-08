@@ -20,7 +20,7 @@ use base64::Engine as _;
 use crate::state::AppState;
 use crate::web_access::{StopReason, WebAccessRuntime, WebAccessStatusView};
 
-const TRAY_ID: &str = "moyu-tray";
+pub(crate) const TRAY_ID: &str = "moyu-tray";
 const MENU_STATUS: &str = "moyu-tray-status";
 const MENU_TOGGLE: &str = "moyu-tray-toggle";
 const MENU_SHOW: &str = "moyu-tray-show";

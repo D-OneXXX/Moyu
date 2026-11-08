@@ -212,13 +212,57 @@ function jsonRule(
 }
 
 /**
- * 品牌图标偏好：与 `features/brand/brandIcon.ts` 的 schema 保持一致。
+ * 自定义整页背景：与 `features/skin/customSkin.ts` 的 schema 保持一致。
+ * 清洗器保持零导入，两处规则需同步维护。
+ */
+const CUSTOM_SKIN_ID = /^custom-[a-f0-9]{12}$/;
+const CUSTOM_SKIN_DATA_URL =
+  /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+const MAX_CUSTOM_SKIN_DATA_URL_CHARS = 1_800_000;
+
+function canonicalCustomSkin(parsed: unknown): unknown | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  if (
+    typeof record.id !== "string" ||
+    !CUSTOM_SKIN_ID.test(record.id) ||
+    typeof record.dataUrl !== "string" ||
+    record.dataUrl.length > MAX_CUSTOM_SKIN_DATA_URL_CHARS ||
+    !CUSTOM_SKIN_DATA_URL.test(record.dataUrl) ||
+    typeof record.width !== "number" ||
+    typeof record.height !== "number"
+  ) {
+    return null;
+  }
+  return {
+    id: record.id,
+    dataUrl: record.dataUrl,
+    width: record.width,
+    height: record.height,
+  };
+}
+
+/** 界面皮肤 id：内置 id 或运行时注册的 `custom-*`。 */
+function skinRule(): Rule {
+  const known = /^(default|framed|custom-[A-Za-z0-9_-]{1,64})$/;
+  return (value) => {
+    if (known.test(value)) return { action: "keep" };
+    return {
+      action: "remove",
+      kind: "invalid-enum",
+      reason: "界面皮肤 id 非法",
+    };
+  };
+}
+
+/**
+ * 应用图标偏好：与 `features/brand/brandIcon.ts` 的 schema 保持一致。
  * 清洗器必须保持零导入，才能被 static QA 直接转译执行；两处规则需同步维护。
  */
-const BRAND_ICON_PRESETS = new Set(["book", "fish", "moon", "wave"]);
+const BRAND_ICON_PRESETS = new Set(["moyu", "book", "fish", "moon", "wave"]);
 const BRAND_ICON_DATA_URL =
   /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
-const MAX_BRAND_ICON_DATA_URL_CHARS = 280 * 1024;
+const MAX_BRAND_ICON_DATA_URL_CHARS = 2_800_000;
 
 function canonicalBrandIcon(parsed: unknown): unknown | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -288,6 +332,10 @@ function canonicalProbeTicks(parsed: unknown): unknown | null {
 const KEY_RULES: Record<string, Rule> = {
   // 主题：只允许 system|light|dark，旧版 "dark-blue" 之类一律删除，ThemeProvider 回落到 system。
   "mr-theme": enumRule(["system", "light", "dark"], "主题"),
+  // 界面皮肤：内置 id 或运行时导入的自定义 id（与 features/skin/registry.ts 对齐）。
+  "mr-skin": skinRule(),
+  // 用户导入的整页背景：{ id, dataUrl, width, height }。
+  "mr-skin-custom": jsonRule("自定义皮肤背景", canonicalCustomSkin),
   // 界面语言：与 i18n/config.ts 的 LOCALES 完全一致。
   "mr-locale": enumRule(["zh-CN", "zh-TW", "en", "es", "ja", "ko"], "界面语言"),
   "mr-skin": textRule(128, "界面皮肤"),

@@ -132,6 +132,38 @@ browser WebView
   fallbacks, storage sanitization, and other long-lived invariants. The public snapshot ships the
   runtime invariants without the internal QA harness.
 
+## Brand, icons, and skins
+
+- The brand display name is a single constant (`src/features/brand/brand.ts`). The native window
+  title, the document title, and the six dictionaries all read it, and the
+  `static:release-surface` guard (`scripts/release-surface.mjs`, also run by the Vite config)
+  fails the build when it drifts.
+- The upgrade identity anchors (`productName`, `identifier`, `mainBinaryName`) are guarded by
+  the same check: they decide how the installer recognizes an existing installation.
+- The brand mark in the top-left corner is the 0.19.1 artwork, drawn inline with fixed colors.
+  It is not a configurable surface and never follows the app-icon preference.
+- The app-icon preference only affects **system-level** icons: the desktop shortcut, the taskbar
+  icon, and the tray icon.
+  - `src-tauri/src/desktop_icon.rs` validates the source image (magic bytes, 2 MiB ceiling),
+    encodes a multi-size Windows icon (16 / 32 / 48 / 256) into
+    `<app_data_dir>/icons/active.ico`, and rewrites the shortcut icon location through the
+    Shell Link COM API (`IShellLinkW` / `IPersistFile`).
+  - The executable is never modified: patching PE resources would break the Minisign signature
+    the official updater verifies.
+  - After a rewrite the shell icon cache is refreshed with `SHChangeNotify`, and the running
+    window and tray icons are updated through the Tauri APIs.
+  - Platforms without the Shell Link API keep the window and tray behavior and report the
+    shortcut rewrite as unsupported.
+- The skin system is a **framed viewport** layout, not an overlay system:
+  - `SkinCanvasFrame` paints the full-window canvas (theme background, artwork, outer frame);
+  - `ContentViewport` holds the library, browser, and settings, inset by
+    `--mr-skin-viewport-inset` (`top right bottom left`), with radius, glass surface, and shadow;
+  - there are no floating sprites above the content: artwork belongs to the canvas and is only
+    visible outside the viewport, so it can never cover text or list items;
+  - the immersive reader route drops the viewport entirely and renders full-bleed;
+  - skin assets are either bundled files under `public/skins/` or `data:` URLs produced by the
+    Rust validator, so the production CSP (`img-src 'self' data:`) is never widened.
+
 ## Repository map
 
 | Path | Purpose |

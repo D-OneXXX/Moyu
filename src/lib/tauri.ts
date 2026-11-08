@@ -349,6 +349,34 @@ export interface HandoffStatus {
   script: string;
 }
 
+/**
+ * Task 7：桌面 / 任务栏 / 托盘图标状态（与后端 DesktopIconState 一致）。
+ *
+ * 图标通过 Shell Link 写进 `.lnk`，EXE 本身的签名与资源从不被改动。
+ */
+export interface DesktopIconShortcut {
+  path: string;
+  updated: boolean;
+  /** 稳定错误码；空串表示该快捷方式已成功改写。 */
+  error: string;
+}
+
+export interface DesktopIconState {
+  /** 非 Windows 平台为 false：没有 Shell Link API，快捷方式不可改写。 */
+  supported: boolean;
+  /** 当前预设 id；自定义图片时为 null。 */
+  preset: string | null;
+  custom: boolean;
+  /** 生成的 `.ico` 绝对路径；未安装时为空串。 */
+  icoPath: string;
+  shortcuts: DesktopIconShortcut[];
+}
+
+/** 安装输入：预设由前端栅格化成 PNG，自定义图片同样走 data URL 通道。 */
+export type DesktopIconInput =
+  | { kind: "preset"; preset: string; dataUrl: string }
+  | { kind: "custom"; dataUrl: string };
+
 // ---------- 功能开关镜像：同步读取 + 变更事件 ----------
 // 设置的权威副本在 SQLite；这里维护 localStorage 镜像，让无法等待
 // 异步 getSettings 的组件（阅读器/导航）能同步读取开关状态。
@@ -482,6 +510,12 @@ export const api = {
   /** Push the Task 7 brand icon to the tray (64×64 PNG data URL; null resets). */
   setTrayIcon: (dataUrl: string | null) =>
     invoke<void>("tray_set_icon", { dataUrl }),
+  // Task 7：桌面快捷方式 / 任务栏 / 托盘图标。Shell Link 改写 `.lnk`，
+  // EXE 的签名与资源不被触碰。
+  getDesktopIconState: () => invoke<DesktopIconState>("desktop_icon_state"),
+  installDesktopIcon: (input: DesktopIconInput) =>
+    invoke<DesktopIconState>("desktop_icon_install", { input }),
+  resetDesktopIcon: () => invoke<DesktopIconState>("desktop_icon_reset"),
   setFeatureEnabled: (feature: FeatureId, enabled: boolean) =>
     invoke<Settings>("set_feature_enabled", { feature, enabled }).then(
       (settings) => {

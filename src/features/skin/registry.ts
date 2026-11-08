@@ -1,37 +1,35 @@
 import type { SkinDefinition } from "./types";
 
 /**
- * Demo companion artwork is an inline SVG data URL: it ships with the
- * bundle, needs no network, and is explicitly allowed by
- * `img-src 'self' data:`. SVG inside `<img>` cannot execute scripts.
+ * 画框视窗的材质 token。
+ *
+ * 内置「画框包裹」皮肤与用户导入的自定义背景共用同一套视窗材质：
+ * 视窗向内收缩、外围留出画布，背景图铺满整片窗口。
  */
-const INK_MASCOT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
-  <defs>
-    <linearGradient id="inkBody" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7fd0ff"/>
-      <stop offset="1" stop-color="#38a8f8"/>
-    </linearGradient>
-  </defs>
-  <g>
-    <path d="M60 14c22 0 38 16 38 38v20c0 10-8 18-18 18H40c-10 0-18-8-18-18V52c0-22 16-38 38-38z" fill="url(#inkBody)" stroke="#09090b" stroke-width="4"/>
-    <path d="M35 88c-4 10-10 16-16 18 8 2 16 0 22-4M52 90c-2 10-6 16-10 20 8 0 14-4 18-10M68 90c2 10 6 16 10 20-8 0-14-4-18-10M85 88c4 10 10 16 16 18-8 2-16 0-22-4" fill="none" stroke="#09090b" stroke-width="4" stroke-linecap="round"/>
-    <ellipse cx="46" cy="52" rx="7" ry="9" fill="#09090b"/>
-    <ellipse cx="74" cy="52" rx="7" ry="9" fill="#09090b"/>
-    <circle cx="43" cy="48" r="2.5" fill="#ffffff"/>
-    <circle cx="71" cy="48" r="2.5" fill="#ffffff"/>
-    <path d="M52 70c5 4 11 4 16 0" fill="none" stroke="#09090b" stroke-width="4" stroke-linecap="round"/>
-    <path d="M32 34c4-8 10-12 16-14" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
-  </g>
-</svg>`;
-
-const INK_MASCOT_URL = `data:image/svg+xml;base64,${btoa(
-  INK_MASCOT_SVG.replace(/\s{2,}/g, " ").trim(),
-)}`;
+export const FRAMED_VIEWPORT_TOKENS: Record<string, string> = {
+  // 视窗内缩：上下 72px、左右 96px，留出画框走位（角色与插画的画布带）。
+  "--mr-skin-viewport-inset": "72px 96px 72px 96px",
+  "--mr-skin-viewport-radius": "22px",
+  "--mr-skin-viewport-border": "2px solid var(--sh-border)",
+  "--mr-skin-viewport-shadow": "0 24px 52px -30px rgb(2 6 23 / 0.62)",
+  // 毛玻璃视窗：底色透明 + 叠加层控制通透度。
+  "--mr-skin-surface-bg": "transparent",
+  "--mr-skin-surface-tint": "var(--sh-card)",
+  "--mr-skin-surface-opacity": "0.72",
+  "--mr-skin-surface-blur": "14px",
+  // 画布底色跟随主题，外围画框因此在深浅两种主题下都成立。
+  "--mr-skin-canvas-bg":
+    "radial-gradient(circle at 16% 8%, rgb(56 168 248 / 0.24), transparent 52%), radial-gradient(circle at 88% 92%, rgb(56 168 248 / 0.18), transparent 55%), var(--sh-background)",
+};
 
 /**
- * Built-in skins. A skin is data only: token overrides plus decorations.
- * No component has to know a skin exists, which keeps the default UI and any
- * future art pack on exactly the same code path.
+ * 内置皮肤。
+ *
+ * 「极简」是默认档：视窗内缩为 0px，全屏铺满，不额外绘制任何东西。
+ * 「画框包裹」把整片窗口变成一张主题画布：背景铺满全窗，内容视窗向内
+ * 收缩留出外围画框，角色与插画就画在这圈画框上，与视窗严丝合缝。
+ *
+ * 皮肤是纯数据：token 覆盖 + 素材引用。没有任何组件需要知道皮肤存在。
  */
 export const BUILTIN_SKINS: readonly SkinDefinition[] = [
   {
@@ -39,34 +37,14 @@ export const BUILTIN_SKINS: readonly SkinDefinition[] = [
     nameKey: "settings.skin.defaultName",
     descriptionKey: "settings.skin.defaultDescription",
     tokens: {},
-    decorations: [],
   },
   {
-    id: "ink-companion",
-    nameKey: "settings.skin.companionName",
-    descriptionKey: "settings.skin.companionDescription",
-    tokens: {
-      "--mr-radius-card": "1.5rem",
-      "--mr-radius-sheet": "1.75rem",
-      "--mr-border-width": "1.5px",
-      "--mr-shadow-elevation": "0 6px 0 0 var(--mi-hard-shadow)",
-      "--mr-shadow-elevation-sm": "0 3px 0 0 var(--mi-hard-shadow)",
-      "--mr-decoration-opacity": "0.96",
-      "--mr-surface-backdrop":
-        "radial-gradient(circle at 82% 0%, rgb(56 168 248 / 0.16), transparent 55%)",
-    },
-    decorations: [
-      {
-        id: "companion-perch",
-        slot: "window-perch-top",
-        asset: { src: INK_MASCOT_URL, sizePx: 52, motion: "bob" },
-      },
-      {
-        id: "companion-corner",
-        slot: "corner-companion-bottom-right",
-        asset: { src: INK_MASCOT_URL, sizePx: 112, motion: "bob" },
-      },
-    ],
+    id: "framed",
+    nameKey: "settings.skin.framedName",
+    descriptionKey: "settings.skin.framedDescription",
+    tokens: FRAMED_VIEWPORT_TOKENS,
+    backdrop: { src: "/skins/framed-backdrop.svg" },
+    frame: { src: "/skins/framed-frame.svg" },
   },
 ];
 

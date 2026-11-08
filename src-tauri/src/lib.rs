@@ -8,6 +8,7 @@ pub mod cache;
 mod cache_health;
 mod commands;
 pub mod db;
+mod desktop_icon;
 pub mod diagnostics;
 pub mod disk_cache;
 mod features;
@@ -695,6 +696,8 @@ pub fn run() {
             if let Err(error) = tray::install(app.handle()) {
                 logging::log_error("tray", &format!("系统托盘初始化失败：{error}"));
             }
+            // Task 7：恢复上次安装的桌面/托盘图标（只刷新运行时，不碰快捷方式）。
+            desktop_icon::restore_runtime_icon(app.handle());
             // 4) 文件关联/命令行直开：首次启动在后台导入，完成后 ping 前端。
             open_with::handle_launch(
                 app.handle(),
@@ -804,6 +807,10 @@ pub fn run() {
             update::restart_app,
             // Task 7：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变。
             skin::skin_import_asset,
+            // Task 7：桌面快捷方式 / 任务栏 / 托盘图标（Shell Link，不改 EXE 签名）。
+            desktop_icon::desktop_icon_state,
+            desktop_icon::desktop_icon_install,
+            desktop_icon::desktop_icon_reset,
             security::security_audit,
             security::clear_online_traces,
             // G1：仅根 CA 初始化/导出/短时分发；不含 D1b 配对或数据路由。

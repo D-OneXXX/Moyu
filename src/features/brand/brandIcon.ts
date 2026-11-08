@@ -1,16 +1,23 @@
 /**
- * 品牌图标偏好：预设图标 + 用户自选图片。
+ * 应用图标偏好：预设图标 + 用户自选图片。
  *
  * 这是纯前端 UI 偏好，只写 localStorage，不进入 SQLite / 日志 / 备份：
  * - 自定义图标以 data URL 形式驻留本机，不读取路径、不上传；
  * - 存储值必须通过 `isBrandIconSelection` 的结构、MIME 与长度校验；
  * - 启动时由 `storageSanitizer` 再清洗一次，脏值回落到默认预设。
+ *
+ * 作用域：桌面快捷方式、任务栏与托盘的系统级图标。
+ * 主界面左上角的品牌标识恒为 0.19.1 原版图形，不受本偏好影响。
  */
 
 export const BRAND_ICON_STORAGE_KEY = "mr-brand-icon";
 export const BRAND_ICON_EVENT = "mr-brand-icon-change";
 
-export const BRAND_ICON_PRESETS = ["book", "fish", "moon", "wave"] as const;
+/**
+ * `moyu` 是 0.19.1 发布版的原版徽章（固定配色，不随主题漂移），
+ * 另外三款是主题化的原创字形。
+ */
+export const BRAND_ICON_PRESETS = ["moyu", "book", "fish", "moon", "wave"] as const;
 
 export type BrandIconPreset = (typeof BRAND_ICON_PRESETS)[number];
 
@@ -24,17 +31,18 @@ export type CustomBrandIconErrorCode =
   | "dimension"
   | "read";
 
+/** 0.19.1 原版徽章：左上角品牌标识与系统图标预设的默认项。 */
 export const DEFAULT_BRAND_ICON: BrandIconSelection = {
   kind: "preset",
-  preset: "book",
+  preset: "moyu",
 };
 
-/** 单张自定义图标的原始文件上限（200 KiB）。 */
-export const MAX_CUSTOM_ICON_FILE_BYTES = 200 * 1024;
+/** 单张自定义图标的原始文件上限（2 MiB，与后端校验同口径）。 */
+export const MAX_CUSTOM_ICON_FILE_BYTES = 2 * 1024 * 1024;
 /** 自定义图标的单边像素上限；超出直接拒绝，避免把大图塞进 localStorage。 */
 export const MAX_CUSTOM_ICON_DIMENSION = 1024;
 /** data URL 字符上限，与 storageSanitizer 的规则保持一致。 */
-export const MAX_CUSTOM_ICON_DATA_URL_CHARS = 280 * 1024;
+export const MAX_CUSTOM_ICON_DATA_URL_CHARS = 2_800_000;
 
 const ALLOWED_ICON_TYPES = new Set([
   "image/png",

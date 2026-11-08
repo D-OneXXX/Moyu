@@ -66,6 +66,10 @@ import ProgressScrubber, {
 import TabSwitcher from "../components/Reader/TabSwitcher";
 import { useWorkspace } from "../features/workspace/WorkspaceContext";
 import { useSafeMode } from "../features/safeMode/SafeModeContext";
+import {
+  isFeatureEnabled,
+  useFeatureEnabled,
+} from "../features/features";
 import { useGlobalShortcuts } from "../features/shortcuts/useGlobalShortcuts";
 import { localizeBackendError, localizeStableErrorCode } from "../features/errors/localize";
 import {
@@ -253,6 +257,8 @@ export default function Reader() {
   const ws = useWorkspace();
   const { t } = useI18n();
   const { active: safeMode } = useSafeMode();
+  const webtoonEnabled = useFeatureEnabled("webtoon");
+  const pdfEnabled = useFeatureEnabled("pdf");
   // 本次挂载的会话快照（页签切回时恢复页码/版式/方向/条漫位置）；只在首次渲染取一次。
   const initialSnapRef = useRef(ws.getSnapshot(bookId));
   const [tabsMenuOpen, setTabsMenuOpen] = useState(false);
@@ -349,7 +355,8 @@ export default function Reader() {
   const rawMode: PageMode = bookMode ?? prefs.mode;
   /** PDF 文档只有单页版式：双页 / 条漫一律不可用。 */
   const isPdfBook = book?.format === "pdf";
-  const webtoonAllowed = book?.webtoonReady !== false && !isPdfBook;
+  const webtoonAllowed =
+    webtoonEnabled && book?.webtoonReady !== false && !isPdfBook;
   const doubleAllowed = !isPdfBook;
   /** 有效页数：PDF 以 pdf.js 解析出的真实页数为准（入库时页数留 0）。 */
   const n = isPdfBook ? pdfPageCount : (book?.pageCount ?? 0);
@@ -358,7 +365,9 @@ export default function Reader() {
     : safeMode
       ? "single"
       : !webtoonAllowed && rawMode === "webtoon"
-        ? prefs.mode
+        ? prefs.mode === "webtoon"
+          ? "single"
+          : prefs.mode
         : rawMode;
   const trackRef = useRef({
     book: null as BookInfo | null,
@@ -577,6 +586,11 @@ export default function Reader() {
           // PDF（PDF-2）：页数由 pdf.js 解析，入库时留 0 —— 必须先打开文档
           // 才知道真实页数，页码恢复也按真实页数钳制。
           if (b.format === "pdf") {
+            if (!isFeatureEnabled("pdf")) {
+              setPdfState("idle");
+              setBookState("ready");
+              return;
+            }
             setPdfState("loading");
             void openPdfDocument(b.id).then(
               async (handle) => {
@@ -1201,13 +1215,13 @@ export default function Reader() {
       return;
     }
     const cur = trackRef.current.mode;
-    const canWebtoon = book?.webtoonReady !== false;
+    const canWebtoon = webtoonEnabled && book?.webtoonReady !== false;
     const cycle: PageMode[] = canWebtoon
       ? ["single", "double", "webtoon"]
       : ["single", "double"];
     const idx = cycle.indexOf(cur);
     setMode(cycle[(idx + 1) % cycle.length]);
-  }, [setMode, book, safeMode, t]);
+  }, [setMode, book, safeMode, t, webtoonEnabled]);
 
   /* ---------- PDF 适配模式（整页 / 整宽，按书记忆） ---------- */
   const applyPdfFit = useCallback(
@@ -1844,6 +1858,32 @@ export default function Reader() {
     setJumpPage("");
     jumpTo(requested - 1);
   };
+
+  if (isPdfBook && !pdfEnabled) {
+    return (
+      <div className="grid h-screen place-items-center bg-background p-6 text-foreground">
+        <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-hard">
+          <h1 className="text-base font-extrabold">
+            {t("feature.disabled.title")}
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {t("feature.disabled.description", {
+              feature: t("settings.features.pdf.title"),
+            })}
+          </p>
+          <Button
+            type="button"
+            variant="pill-primary"
+            size="pill"
+            className="mt-4 whitespace-nowrap"
+            onClick={() => nav("/settings?tab=general")}
+          >
+            {t("feature.disabled.openSettings")}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`reader-root${uiVisible ? "" : " chrome-hidden"}`}>
@@ -2618,7 +2658,7 @@ export default function Reader() {
       )}
 
       {/* 条漫自动建议：检测到长条画面且本书未记忆过选择 */}
-      {book?.webtoonReady !== false && !safeMode && wtSuggest && mode !== "webtoon" && (
+      {webtoonEnabled && book?.webtoonReady !== false && !safeMode && wtSuggest && mode !== "webtoon" && (
         <div
           data-reader-hud
           className="fade-in absolute bottom-24 left-1/2 z-30 flex w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 flex-wrap items-center gap-2 rounded-full border border-border/80 bg-card/95 py-2 pl-4 pr-2 text-card-foreground shadow-hard-sm backdrop-blur-md"

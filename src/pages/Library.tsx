@@ -37,6 +37,10 @@ import ErrorState from "@/components/ErrorState";
 import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
+import {
+  isFeatureEnabled,
+  useFeatureEnabled,
+} from "@/features/features";
 import LibraryFilters, {
   type SortMode,
   type SourceFilter,
@@ -100,6 +104,7 @@ export default function LibraryPage() {
   const ws = useWorkspace();
   const { t, locale, formatNumber } = useI18n();
   const { active: safeMode } = useSafeMode();
+  const opdsEnabled = useFeatureEnabled("opds");
   const [groupSeries, setGroupSeries] = useState(readGrouping);
   // 方案 C：默认「最近打开」（后端按 last_opened_at 排序）；可切「最近阅读」。
   const [sortMode, setSortMode] = useState<SortMode>("recentOpened");
@@ -570,7 +575,9 @@ export default function LibraryPage() {
         filters: [
           {
             name: translate("import.filesFilter"),
-            extensions: ["zip", "cbz", "pdf"],
+            extensions: ["zip", "cbz", "pdf"].filter(
+              (ext) => ext !== "pdf" || isFeatureEnabled("pdf"),
+            ),
           },
         ],
       });
@@ -777,7 +784,7 @@ export default function LibraryPage() {
               <Plus />
               {t("library.addBooks")}
             </Button>
-            {!safeMode ? (
+            {!safeMode && opdsEnabled ? (
               <Button
                 variant="pill"
                 size="pill"
@@ -1053,7 +1060,7 @@ export default function LibraryPage() {
       />
 
       <OpdsBrowserDialog
-        open={opdsOpen}
+        open={opdsEnabled && opdsOpen}
         onOpenChange={setOpdsOpen}
         onOpenBook={(book) => openReader(book.id)}
         onGoSettings={() => nav("/settings?tab=network")}

@@ -54,6 +54,48 @@ pub(crate) fn effective_online_headers(saved: &str, session: Option<&str>) -> St
         .to_string()
 }
 
+/// 目标 URL 的 origin（scheme + host + port）；非 http(s) 或非法 URL 返回 None。
+fn online_origin(target: &str) -> Option<String> {
+    let url = url::Url::parse(target).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
+}
+
+/// 会话请求头只在首次使用的 origin 上生效。
+///
+/// 这是凭据重放防线：全局会话槽如果不绑定 origin，用户在站点 A 填入的
+/// Cookie/Authorization 会在解析站点 B 时随 B 的 scope 一起发出。首次请求
+/// 绑定后，其它 origin 一律不发送会话头（也不会回落到持久化头）。
+pub(crate) fn effective_online_headers_for(state: &AppState, saved: &str, target: &str) -> String {
+    let session = state.session_online_headers.lock().clone();
+    let Some(session) = session
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return effective_online_headers(saved, None);
+    };
+    let Some(origin) = online_origin(target) else {
+        return String::new();
+    };
+    let mut bound = state.session_online_headers_origin.lock();
+    match bound.as_deref() {
+        None => {
+            *bound = Some(origin);
+            session
+        }
+        Some(existing) if existing == origin => session,
+        _ => String::new(),
+    }
+}
+
+/// 清空内存会话请求头并解除 origin 绑定。
+pub(crate) fn clear_session_online_headers(state: &AppState) {
+    *state.session_online_headers.lock() = None;
+    *state.session_online_headers_origin.lock() = None;
+}
+
 // ---------- 辅助会话注册表（受控 WebView 验证交接） ----------
 
 /// 辅助会话 origin 的字节上限。
@@ -331,7 +373,10 @@ pub struct AppState {
     /// and the following in-memory/cache update.
     pub(crate) settings_write_lock: tokio::sync::Mutex<()>,
     /// 进程内会话临时请求头；优先于 Settings.online_headers，绝不持久化/记日志。
+    /// 首次用于某个 origin 后绑定到该 origin，避免切换到其它站点时重放凭据。
     pub session_online_headers: Mutex<Option<String>>,
+    /// 会话请求头绑定的 origin（scheme + host + port）；未使用时为 None。
+    pub session_online_headers_origin: Mutex<Option<String>>,
     /// 辅助会话注册表（origin → UA / 用户自备请求头）；只在内存，绝不写库、绝不记日志。
     pub assisted_sessions: Arc<AssistedSessionRegistry>,
     pub db: DbSlot,
@@ -386,6 +431,7 @@ impl AppState {
             settings: Mutex::new(Settings::default()),
             settings_write_lock: tokio::sync::Mutex::new(()),
             session_online_headers: Mutex::new(None),
+            session_online_headers_origin: Mutex::new(None),
             assisted_sessions: Arc::new(AssistedSessionRegistry::new()),
             db: DbSlot::new(),
             cache: ImageCache::new(),
@@ -578,11 +624,14 @@ impl AppState {
         let handle = if source_type == "local" {
             Arc::new(SourceHandle::open(std::path::Path::new(&path))?)
         } else if source_type == "generic_manga" {
+            let s = self.settings.lock().clone();
+            // 关闭在线直读后，已导入的在线书也不得再发起新网络请求。
+            // L1/L2 已缓存页面由取页命令在打开源之前返回，不影响离线阅读。
+            crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+                .map_err(crate::source::BackendError::Msg)?;
             let stored: crate::online::StoredMeta = serde_json::from_str(&meta_json)
                 .map_err(|e| crate::source::BackendError::Msg(format!("在线书元数据损坏：{e}")))?;
-            let s = self.settings.lock().clone();
-            let session_headers = self.session_online_headers.lock().clone();
-            let headers = effective_online_headers(&s.online_headers, session_headers.as_deref());
+            let headers = effective_online_headers_for(self, &s.online_headers, &path);
             // 带辅助会话上下文：命中已注册 origin 时复用该会话的 UA（内存态，不落库）。
             let transport = crate::online::http::UreqTransport::new_with_assisted(
                 &s.online_proxy,
@@ -801,9 +850,9 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        effective_online_headers, normalize_assisted_origin, safe_cache_root, AppState,
-        AssistedSession, AssistedSessionRegistry, MAX_ASSISTED_ORIGIN_BYTES,
-        MAX_ASSISTED_USER_AGENT_BYTES,
+        clear_session_online_headers, effective_online_headers, effective_online_headers_for,
+        normalize_assisted_origin, safe_cache_root, AppState, AssistedSession,
+        AssistedSessionRegistry, MAX_ASSISTED_ORIGIN_BYTES, MAX_ASSISTED_USER_AGENT_BYTES,
     };
     use crate::source::{BackendError, SourceHandle};
 
@@ -972,6 +1021,7 @@ mod tests {
     #[test]
     fn source_handle_for_book_opens_online_book_and_reuses_pool() {
         let state = test_state();
+        state.settings.lock().features.online = true;
         let canonical = "http://example.test/gallery/1".to_string();
         let meta = crate::online::StoredMeta {
             schema: 1,
@@ -1069,6 +1119,66 @@ mod tests {
             effective_online_headers("Cookie: saved", Some("   ")),
             "Cookie: saved"
         );
+    }
+
+    #[test]
+    fn session_headers_bind_to_first_origin_and_never_leak_to_another_site() {
+        let state = test_state();
+        *state.session_online_headers.lock() = Some("Cookie: sid=abc".into());
+
+        assert_eq!(
+            effective_online_headers_for(&state, "Cookie: saved", "https://a.example/gallery/1"),
+            "Cookie: sid=abc"
+        );
+        // 同 origin 的后续页面继续复用。
+        assert_eq!(
+            effective_online_headers_for(&state, "Cookie: saved", "https://a.example/other"),
+            "Cookie: sid=abc"
+        );
+        // 跨 origin 不发送会话头，也不回落到持久化头。
+        assert_eq!(
+            effective_online_headers_for(&state, "Cookie: saved", "https://b.example/gallery/1"),
+            ""
+        );
+
+        // 重新填写会解绑，下一次请求重新绑定到新站点。
+        *state.session_online_headers.lock() = Some("Cookie: sid=abc".into());
+        *state.session_online_headers_origin.lock() = None;
+        assert_eq!(
+            effective_online_headers_for(&state, "Cookie: saved", "https://b.example/x"),
+            "Cookie: sid=abc"
+        );
+
+        // 清除后回到持久化头。
+        clear_session_online_headers(&state);
+        assert_eq!(
+            effective_online_headers_for(&state, "Cookie: saved", "https://b.example/x"),
+            "Cookie: saved"
+        );
+    }
+
+    #[test]
+    fn source_handle_for_book_rejects_online_book_when_feature_disabled() {
+        let state = test_state();
+        state.settings.lock().features.online = false;
+        state
+            .db
+            .with(|conn| {
+                crate::db::upsert_online_book(
+                    conn,
+                    "online-disabled",
+                    "http://example.test/gallery/1",
+                    "关闭测试",
+                    1,
+                    "generic_manga",
+                    r#"{"schema":1,"manifestHash":"h","fetchedAt":"2026-10-19 00:00:00","pages":[{"url":"http://example.test/1.png"}]}"#,
+                )
+                .map_err(|e| e.to_string())
+            })
+            .expect("写入在线书");
+
+        let err = err_text(state.source_handle_for_book("online-disabled"));
+        assert!(err.contains("feature-disabled"), "{err}");
     }
 
     fn handoff_runtime(cancel: Arc<AtomicBool>) -> super::HandoffRuntime {

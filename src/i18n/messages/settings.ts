@@ -126,7 +126,7 @@ const zhCN = {
   "settings.online.sessionAbsent": "当前没有会话请求头。",
   "settings.online.clearSession": "清空内存凭据",
   "settings.online.storageModeNote":
-    "存储模式切换后需点击底部「保存设置」生效。",
+    "会话请求头只驻留内存，且只对首次请求的站点生效；切换站点后需重新填写。",
   "settings.online.testTitle": "连通性测试",
   "settings.online.testDescription":
     "解析目标清单或图集，只做探测，不写入书库。",
@@ -539,7 +539,7 @@ const zhTW: SettingsMessages = {
   "settings.online.sessionAbsent": "目前沒有工作階段請求標頭。",
   "settings.online.clearSession": "清空記憶體憑證",
   "settings.online.storageModeNote":
-    "儲存模式切換後需點擊底部「儲存設定」生效。",
+    "工作階段請求標頭僅駐留記憶體，且只對首次請求的站點生效；切換站點後需重新填寫。",
   "settings.online.testTitle": "連線測試",
   "settings.online.testDescription":
     "解析目標清單或圖集，只做探測，不寫入書庫。",
@@ -951,7 +951,7 @@ const en: SettingsMessages = {
   "settings.online.sessionAbsent": "No session headers right now.",
   "settings.online.clearSession": "Clear memory credentials",
   "settings.online.storageModeNote":
-    "After changing storage mode, click “Save settings” at the bottom to apply.",
+    "Session headers stay in memory only and apply only to the first site you use them with. Re-enter them after switching sites.",
   "settings.online.testTitle": "Connectivity test",
   "settings.online.testDescription":
     "Parses the target manifest or gallery as a probe only; nothing is written to the library.",
@@ -1378,7 +1378,7 @@ const es: SettingsMessages = {
   "settings.online.sessionAbsent": "No hay cabeceras de sesión.",
   "settings.online.clearSession": "Borrar credenciales en memoria",
   "settings.online.storageModeNote":
-    "Tras cambiar el modo, pulsa «Guardar ajustes» abajo para aplicarlo.",
+    "Las cabeceras de sesión solo permanecen en memoria y se aplican únicamente al primer sitio con el que se usan. Vuelve a introducirlas al cambiar de sitio.",
   "settings.online.testTitle": "Prueba de conectividad",
   "settings.online.testDescription":
     "Analiza el manifiesto o la galería solo como prueba; no escribe en la biblioteca.",
@@ -1818,7 +1818,7 @@ const ja: SettingsMessages = {
   "settings.online.sessionAbsent": "現在セッションヘッダーはありません。",
   "settings.online.clearSession": "メモリ上の認証情報を消去",
   "settings.online.storageModeNote":
-    "保存モードを切り替えたら、下部の「設定を保存」で反映してください。",
+    "セッションヘッダーはメモリのみに保持され、最初に使用したサイトにのみ適用されます。サイトを切り替えたら再入力してください。",
   "settings.online.testTitle": "接続テスト",
   "settings.online.testDescription":
     "対象のマニフェストやギャラリーを解析するだけで、ライブラリには書き込みません。",
@@ -2256,7 +2256,7 @@ const ko: SettingsMessages = {
   "settings.online.sessionAbsent": "현재 세션 헤더가 없습니다.",
   "settings.online.clearSession": "메모리 자격 증명 지우기",
   "settings.online.storageModeNote":
-    "저장 모드를 바꾼 뒤 하단의 「설정 저장」을 눌러야 적용됩니다.",
+    "세션 헤더는 메모리에만 보관되며 처음 사용한 사이트에만 적용됩니다. 사이트를 바꾸면 다시 입력하세요.",
   "settings.online.testTitle": "연결 테스트",
   "settings.online.testDescription":
     "대상 매니페스트나 갤러리를 분석만 하며 서재에 기록하지 않습니다.",

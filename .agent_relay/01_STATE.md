@@ -26,9 +26,12 @@
 ## 2. 当前精确断点（Active Breakpoint）
 
 - 当前文件：工作区干净；本轮 8 个提交已 rebase 到 `origin/main`（`9df9e3e`）之上。
-- rebase 冲突处理：`tray.rs` 采「图标恒为构建资源」；`resilience.rs` 采上游的
+- rebase / merge 冲突处理：`tray.rs` 采「图标恒为构建资源」；`resilience.rs` 采上游的
   async 实现与 `web-access-safe-mode` / `safe-mode-unavailable` 稳定码，
-  只额外抽出可注入路径的同步内核以便单测；`localize.ts` 采上游错误码表。
+  只额外抽出可注入路径的同步内核以便单测；`localize.ts` 采上游错误码表；
+  设置页整体采上游 #320 版本（在线开关已由上游恢复，本 PR 只补共享常量与测试钩子）。
+- 上游并行落地情况：#291 已登记 `mr-skin` 清洗规则、#320 已恢复在线直读开关并重写
+  设置页——本 PR 与之重叠的部分已收敛为最小补丁，重复实现一律删除。
 - 最后完成：Task 3 / Task 7 / Task 5B 的实现、验证与文档（ADR-036）。
 - **Next Immediate Action**：在真实网络下复核 t.me / telegra.ph 与普通漫画站点的直读可达性
   （本机未做外网访问验证）。

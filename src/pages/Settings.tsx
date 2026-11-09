@@ -3,7 +3,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -13,7 +12,6 @@ import {
   Gauge,
   Globe2,
   HardDrive,
-  Image as ImageIcon,
   Info,
   KeyRound,
   Keyboard,
@@ -22,16 +20,10 @@ import {
   Moon,
   Palette,
   PanelTop,
-  RefreshCw,
-  RotateCcw,
-  Save,
   ScanLine,
   ShieldCheck,
-  SlidersHorizontal,
-  Sparkles,
   Sun,
   Trash2,
-  Upload,
   Wifi,
   type LucideIcon,
 } from "lucide-react";
@@ -79,6 +71,7 @@ import {
 } from "@/components/ui/tabs";
 import {
   SettingRow,
+  SettingsRowList,
   SettingsSection,
   SettingsStat,
   SettingsStatRow,
@@ -91,27 +84,11 @@ import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
 import WebAccessSummaryCard from "@/components/settings/WebAccessSummaryCard";
 import WebAccessPanel from "@/components/settings/WebAccessPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
-import DiagnosticPanel from "@/components/diagnostics/DiagnosticPanel";
-import AppBrandIcon from "@/components/shell/AppBrandIcon";
-import { useBrandIcon } from "@/features/brand/BrandIconProvider";
-import {
-  BRAND_ICON_PRESETS,
-  CustomBrandIconError,
-  loadCustomBrandIcon,
-  type BrandIconPreset,
-  type BrandIconSelection,
-  type CustomBrandIconErrorCode,
-} from "@/features/brand/brandIcon";
-import { useSafeMode } from "@/features/safeMode/SafeModeContext";
-import { recordBreadcrumb } from "@/features/resilience";
 import ErrorState from "@/components/ErrorState";
 import { APP_VERSION, BUILD_COMMIT } from "@/lib/version";
 import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
-import {
-  localizeBackendError,
-  localizeStableErrorCode,
-} from "@/features/errors/localize";
+import { localizeBackendError } from "@/features/errors/localize";
 import {
   DEFAULT_FEATURE_FLAGS,
   FEATURE_REGISTRY,
@@ -119,8 +96,8 @@ import {
   type FeatureId,
 } from "@/features/features";
 import { useShortcutsEnabled } from "@/features/shortcuts/preferences";
-import { pickSkinArtwork } from "@/features/skin/api";
-import { useSkin } from "@/features/skin/SkinProvider";
+import { useSafeMode } from "@/features/safeMode/SafeModeContext";
+import { recordBreadcrumb } from "@/features/resilience";
 
 const DEFAULT_FORM: Settings = {
   theme: "system",
@@ -159,20 +136,6 @@ const THEME_OPTIONS: ReadonlyArray<{
     icon: Moon,
   },
 ];
-
-const BRAND_ICON_LABEL_KEYS: Record<BrandIconPreset, MessageKey> = {
-  book: "settings.brandIcon.presetBook",
-  fish: "settings.brandIcon.presetFish",
-  moon: "settings.brandIcon.presetMoon",
-  wave: "settings.brandIcon.presetWave",
-};
-
-const BRAND_ICON_ERROR_KEYS: Record<CustomBrandIconErrorCode, MessageKey> = {
-  type: "settings.brandIcon.errorType",
-  size: "settings.brandIcon.errorSize",
-  dimension: "settings.brandIcon.errorDimension",
-  read: "settings.brandIcon.errorRead",
-};
 
 function normalizeTheme(value: string): ThemeMode {
   return value === "light" || value === "dark" || value === "system"
@@ -255,26 +218,45 @@ function cachePercent(used: number, limit: number): number {
   return Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
 }
 
-function MemoryTile({ label, value }: { label: string; value: string }) {
+/** 自动保存微状态：短暂浮现的绿色小勾 / 已自动保存微字。 */
+function AutoSaveHint({
+  state,
+}: {
+  state: "idle" | "saving" | "saved" | "error";
+}) {
+  const { t } = useI18n();
+  if (state === "idle") return null;
   return (
-    <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
-      <p className="truncate text-[11px] font-medium text-muted-foreground">
-        {label}
-      </p>
-      <p className="mt-0.5 truncate font-mono text-xs font-semibold tabular-nums">
-        {value}
-      </p>
-    </div>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 text-[11px] font-medium tabular-nums",
+        state === "saved" && "text-success",
+        state === "error" && "text-destructive",
+        state === "saving" && "text-muted-foreground",
+      )}
+      aria-live="polite"
+    >
+      {state === "saving" ? (
+        <Loader2 className="size-3 animate-spin" />
+      ) : state === "saved" ? (
+        <Check className="size-3" />
+      ) : null}
+      {state === "saving"
+        ? t("settings.autoSaving")
+        : state === "saved"
+          ? t("settings.autoSaved")
+          : t("settings.autoSaveFailed")}
+    </span>
   );
 }
 
 /**
  * 设置页：常规与外观 / 网络与在线源 / 存储与数据 / 隐私与安全 / 关于与维护。
  *
- * 信息架构（Task 2/8）：一级面板只保留状态摘要、高频即时开关与轻量入口行；
- * 复杂低频模块全部下沉到 `SettingsSection.disclosure` 的二级 Sheet，关闭时
- * 不挂载、不请求。保存时以「已加载设置 + 当前表单」整对象写回，保留当前
- * 页面未展示、但后端仍需要的字段。
+ * 交互铁律：
+ *  - 二级设置一律用居中模态弹窗（Dialog），废弃侧滑 Sheet；
+ *  - 「调整即保存」：开关/选择点击即落盘，滑杆松手 200ms 落盘，文本输入
+ *    400ms 防抖 / 失焦落盘；不再有底部「保存」栏。
  */
 export default function SettingsPage() {
   const { mode, setMode } = useTheme();
@@ -288,8 +270,6 @@ export default function SettingsPage() {
   const [mem, setMem] = useState<MemoryStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
   const [featureBusy, setFeatureBusy] = useState<FeatureId | null>(null);
   const [scanning, setScanning] = useState(false);
   const [detectingProxy, setDetectingProxy] = useState(false);
@@ -303,21 +283,100 @@ export default function SettingsPage() {
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [dashLoading, setDashLoading] = useState(true);
   const [dashError, setDashError] = useState<string | null>(null);
-  const {
-    selection: brandIcon,
-    setSelection: setBrandIcon,
-    reset: resetBrandIcon,
-  } = useBrandIcon();
-  const [brandIconBusy, setBrandIconBusy] = useState(false);
-  const [skinBusy, setSkinBusy] = useState(false);
-  const brandIconInputRef = useRef<HTMLInputElement | null>(null);
-  const { skin, skins, setSkin, addSkin } = useSkin();
   const [shortcutsEnabled, setShortcutsEnabled] = useShortcutsEnabled();
+
+  /** 自动保存反馈状态。 */
+  const [saveState, setSaveState] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
 
   // 最近一次成功读/写数据库的完整设置；保存时作为底稿保留隐藏字段。
   const loadedRef = useRef<Settings | null>(null);
   const loadSeqRef = useRef(0);
   const dashSeqRef = useRef(0);
+  /** 表单同步镜像：persist 同步读取最新值，避免 setState 与读取的时序竞争。 */
+  const formRef = useRef<Settings>(DEFAULT_FORM);
+  const sessionHeadersRef = useRef(false);
+  const saveFlashRef = useRef<number | null>(null);
+  const debounceTimersRef = useRef<Partial<Record<keyof Settings, number>>>({});
+
+  useEffect(() => {
+    formRef.current = form;
+  }, [form]);
+  useEffect(() => {
+    sessionHeadersRef.current = sessionHeaders;
+  }, [sessionHeaders]);
+
+  /** 更新表单并同步镜像；persist 依赖它读取到最新值。 */
+  const applyForm = useCallback((updater: (prev: Settings) => Settings) => {
+    setForm((prev) => {
+      const next = updater(prev);
+      formRef.current = next;
+      return next;
+    });
+  }, []);
+
+  /** 静默落盘：以「已加载设置 + 当前表单」整对象写回，保留隐藏字段。 */
+  const persist = useCallback(async () => {
+    if (!loadedRef.current) return;
+    const base: Settings = { ...loadedRef.current };
+    const current = formRef.current;
+    const next: Settings = { ...base, ...current };
+    setSaveState("saving");
+    try {
+      let saved: Settings;
+      if (sessionHeadersRef.current) {
+        // 会话模式：请求头只写入进程内存，数据库里保留空串。
+        await api.setSessionOnlineHeaders(current.onlineHeaders);
+        setSessionActive(current.onlineHeaders.trim().length > 0);
+        const persisted: Settings = { ...next, onlineHeaders: "" };
+        saved = await api.setSettings(persisted);
+        loadedRef.current = saved;
+        applyForm((prev) => ({ ...prev, features: saved.features }));
+      } else {
+        await api.clearSessionOnlineHeaders();
+        setSessionActive(false);
+        saved = await api.setSettings(next);
+        loadedRef.current = saved;
+        applyForm((prev) => ({ ...prev, features: saved.features }));
+      }
+      setSaveState("saved");
+      recordBreadcrumb("settingsChange");
+      window.dispatchEvent(new Event("mr-settings-updated"));
+      void api
+        .getMemoryStats()
+        .then(setMem)
+        .catch(() => {});
+    } catch (e) {
+      setSaveState("error");
+      toastErr("set_settings", e);
+    } finally {
+      if (saveFlashRef.current) window.clearTimeout(saveFlashRef.current);
+      saveFlashRef.current = window.setTimeout(() => setSaveState("idle"), 1600);
+    }
+  }, [applyForm]);
+
+  /** 即时落盘：开关 / 选择器点击瞬间。 */
+  const setField = useCallback(
+    <K extends keyof Settings>(key: K, value: Settings[K]) => {
+      applyForm((prev) => ({ ...prev, [key]: value }));
+      void persist();
+    },
+    [applyForm, persist],
+  );
+
+  /** 防抖落盘：文本输入 / 滑杆。 */
+  const setFieldDebounced = useCallback(
+    <K extends keyof Settings>(key: K, value: Settings[K], delay = 400) => {
+      applyForm((prev) => ({ ...prev, [key]: value }));
+      const existing = debounceTimersRef.current[key];
+      if (existing) window.clearTimeout(existing);
+      debounceTimersRef.current[key] = window.setTimeout(() => {
+        void persist();
+      }, delay);
+    },
+    [applyForm, persist],
+  );
 
   const concurrencyItems = Array.from({ length: 8 }, (_, index) => {
     const value = String(index + 1);
@@ -329,81 +388,6 @@ export default function SettingsPage() {
     };
   });
 
-  function set<K extends keyof Settings>(key: K, value: Settings[K]) {
-    setForm((prev) => ({ ...prev, [key]: value }));
-    setDirty(true);
-  }
-
-  const applyBrandIcon = useCallback(
-    (next: BrandIconSelection) => {
-      if (!setBrandIcon(next)) {
-        toast(t("settings.brandIcon.errorSave"));
-        return;
-      }
-      // 仅记录动作类型；绝不把自定义 data URL 写进操作轨迹。
-      recordBreadcrumb("settingsChange");
-    },
-    [setBrandIcon, t],
-  );
-
-  const onBrandIconFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || brandIconBusy) return;
-    setBrandIconBusy(true);
-    try {
-      applyBrandIcon(await loadCustomBrandIcon(file));
-    } catch (error) {
-      const code =
-        error instanceof CustomBrandIconError ? error.code : "read";
-      toast(t(BRAND_ICON_ERROR_KEYS[code]));
-    } finally {
-      setBrandIconBusy(false);
-    }
-  };
-
-  const onResetBrandIcon = () => {
-    if (!resetBrandIcon()) {
-      toast(t("settings.brandIcon.errorSave"));
-      return;
-    }
-    recordBreadcrumb("settingsChange");
-  };
-
-  const onImportSkin = async () => {
-    if (skinBusy) return;
-    setSkinBusy(true);
-    try {
-      const payload = await pickSkinArtwork();
-      if (!payload) return;
-      const id = `custom-${Date.now()}`;
-      addSkin({
-        id,
-        nameKey: "settings.skin.customName",
-        descriptionKey: "settings.skin.importHint",
-        tokens: {},
-        decorations: [
-          {
-            id: `${id}-corner`,
-            slot: "corner-companion-bottom-right",
-            asset: { src: payload.dataUrl, sizePx: 120, motion: "bob" },
-          },
-        ],
-      });
-      setSkin(id);
-      recordBreadcrumb("settingsChange");
-      toast(t("settings.skin.importDone"));
-    } catch (error) {
-      const code =
-        typeof error === "string" && error.startsWith("skin-")
-          ? error
-          : "skin-read-failed";
-      toast(localizeStableErrorCode(code));
-    } finally {
-      setSkinBusy(false);
-    }
-  };
-
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current;
     setLoading(true);
@@ -414,8 +398,6 @@ export default function SettingsPage() {
         api.getSessionOnlineHeaders().catch(() => null),
       ]);
       if (seq !== loadSeqRef.current) return;
-      // Cache metrics are supplementary: never let a slow sysinfo query keep
-      // the whole settings page in its loading state.
       void api.getMemoryStats().then(
         (memory) => {
           if (seq === loadSeqRef.current) setMem(memory);
@@ -424,8 +406,7 @@ export default function SettingsPage() {
           if (seq === loadSeqRef.current) setMem(null);
         },
       );
-      // localStorage 中的模式优先：首次启动没有偏好时跟随系统，
-      // 不让历史数据库里的 dark 默认值覆盖「跟随系统」。
+      // localStorage 中的模式优先：首次启动没有偏好时跟随系统。
       let storedMode: string | null = null;
       try {
         storedMode = localStorage.getItem("mr-theme");
@@ -435,17 +416,18 @@ export default function SettingsPage() {
       const theme = normalizeTheme(storedMode ?? "system");
       const sessionValue =
         typeof session === "string" && session.trim().length > 0 ? session : "";
-      loadedRef.current = { ...settings, theme };
-      setForm({
+      const nextForm: Settings = {
         ...DEFAULT_FORM,
         ...settings,
         features: { ...DEFAULT_FEATURE_FLAGS, ...(settings.features ?? {}) },
         theme,
         ...(sessionValue ? { onlineHeaders: sessionValue } : {}),
-      });
+      };
+      loadedRef.current = { ...settings, theme };
+      formRef.current = nextForm;
+      setForm(nextForm);
       setSessionActive(sessionValue.length > 0);
       setSessionHeaders(sessionValue.length > 0);
-      setDirty(false);
     } catch (e) {
       if (seq !== loadSeqRef.current) return;
       setLoadError(
@@ -471,8 +453,7 @@ export default function SettingsPage() {
     if (requested) setTab(requested);
   }, [searchParams]);
 
-  // Each settings tab is a separate page-length surface; always start at the
-  // top instead of inheriting the previous tab's scroll offset.
+  // 每个分区独立成页；切换时回到顶部，避免继承上一分区的滚动偏移。
   useEffect(() => {
     document
       .querySelector("[data-shell-scroll]")
@@ -481,13 +462,13 @@ export default function SettingsPage() {
 
   // 顶栏也可切换主题；保证表单里的 theme 始终与 ThemeProvider 当前模式一致。
   useEffect(() => {
-    setForm((prev) =>
+    applyForm((prev) =>
       prev.theme === mode ? prev : { ...prev, theme: mode },
     );
     if (loadedRef.current && loadedRef.current.theme !== mode) {
       loadedRef.current = { ...loadedRef.current, theme: mode };
     }
-  }, [mode]);
+  }, [mode, applyForm]);
 
   const loadDashboard = useCallback(async () => {
     const seq = ++dashSeqRef.current;
@@ -520,8 +501,6 @@ export default function SettingsPage() {
     api
       .getSessionOnlineHeaders()
       .then((session) => {
-        // Runtime state only: never overwrite the user's storage-mode choice
-        // just because a window regained focus.
         const active =
           typeof session === "string" && session.trim().length > 0;
         setSessionActive(active);
@@ -554,22 +533,21 @@ export default function SettingsPage() {
     // setMode 立即改 <html data-theme> 并写入 localStorage 与数据库。
     setMode(next);
     recordBreadcrumb("themeChange");
-    setForm((prev) => ({ ...prev, theme: next }));
+    applyForm((prev) => ({ ...prev, theme: next }));
     if (loadedRef.current) {
       loadedRef.current = { ...loadedRef.current, theme: next };
     }
   };
 
-  // 功能开关立即持久化；只写单个功能键，不会把表单里尚未保存的
-  // 代理、请求头、目录等一起写库。
+  // 功能开关立即持久化；只写单个功能键，不会把表单里尚未保存的字段一起写库。
   const toggleFeature = async (
     feature: FeatureDefinition,
     value: boolean,
   ) => {
-    if (featureBusy !== null || saving || loading) return;
-    const previous = form.features;
+    if (featureBusy !== null) return;
+    const previous = formRef.current.features;
     setFeatureBusy(feature.id);
-    setForm((prev) => ({
+    applyForm((prev) => ({
       ...prev,
       features: { ...prev.features, [feature.settingKey]: value },
     }));
@@ -578,7 +556,7 @@ export default function SettingsPage() {
       if (loadedRef.current) {
         loadedRef.current = { ...loadedRef.current, features: next.features };
       }
-      setForm((prev) => ({ ...prev, features: next.features }));
+      applyForm((prev) => ({ ...prev, features: next.features }));
       recordBreadcrumb("settingsChange");
       toast(
         t(
@@ -587,7 +565,7 @@ export default function SettingsPage() {
         ),
       );
     } catch (e) {
-      setForm((prev) => ({ ...prev, features: previous }));
+      applyForm((prev) => ({ ...prev, features: previous }));
       toastErr("set_feature_enabled", e);
     } finally {
       setFeatureBusy(null);
@@ -602,7 +580,7 @@ export default function SettingsPage() {
         title: t("settings.library.pickTitle"),
         defaultPath: form.libraryDir.trim() || undefined,
       });
-      if (typeof picked === "string") set("libraryDir", picked);
+      if (typeof picked === "string") setField("libraryDir", picked);
     } catch (e) {
       toastErr("open_dialog", e);
     }
@@ -639,8 +617,8 @@ export default function SettingsPage() {
     try {
       const proxy = (await api.detectSystemProxy())?.trim() ?? "";
       if (proxy) {
-        set("onlineProxy", proxy);
         setProxySource("system");
+        setField("onlineProxy", proxy);
         toast(t("settings.toast.proxyFilled"));
       } else {
         toast(t("settings.toast.proxyNotFound"));
@@ -655,9 +633,9 @@ export default function SettingsPage() {
   const onClearSessionHeaders = async () => {
     try {
       await api.clearSessionOnlineHeaders();
-      setForm((prev) => ({ ...prev, onlineHeaders: "" }));
       setSessionActive(false);
-      setDirty(true);
+      applyForm((prev) => ({ ...prev, onlineHeaders: "" }));
+      await persist();
       toast(t("settings.toast.sessionCleared"));
     } catch (e) {
       toastErr("clear_session_online_headers", e);
@@ -682,43 +660,11 @@ export default function SettingsPage() {
     }
   };
 
-  const onSave = async () => {
-    // 设置尚未载入（或载入失败）时表单仍是默认值，禁止写库。
-    if (loading || loadError || saving || featureBusy !== null) return;
-    const base: Settings = {
-      ...(loadedRef.current ?? DEFAULT_FORM),
-      ...form,
-    };
-    setSaving(true);
-    try {
-      if (sessionHeaders) {
-        // 会话模式：请求头只写入进程内存，数据库里保留空串。
-        await api.setSessionOnlineHeaders(form.onlineHeaders);
-        setSessionActive(form.onlineHeaders.trim().length > 0);
-        const persisted: Settings = { ...base, onlineHeaders: "" };
-        const saved = await api.setSettings(persisted);
-        loadedRef.current = saved;
-        setForm((prev) => ({ ...prev, features: saved.features }));
-      } else {
-        await api.clearSessionOnlineHeaders();
-        setSessionActive(false);
-        const saved = await api.setSettings(base);
-        loadedRef.current = saved;
-        setForm((prev) => ({ ...prev, features: saved.features }));
-      }
-      setDirty(false);
-      recordBreadcrumb("settingsChange");
-      window.dispatchEvent(new Event("mr-settings-updated"));
-      toast(t("settings.toast.saved"));
-      void api
-        .getMemoryStats()
-        .then(setMem)
-        .catch(() => {});
-    } catch (e) {
-      toastErr("set_settings", e);
-    } finally {
-      setSaving(false);
-    }
+  /** 请求头存储模式：切换后立即重新落盘。 */
+  const onSessionModeChange = (memoryOnly: boolean) => {
+    sessionHeadersRef.current = memoryOnly;
+    setSessionHeaders(memoryOnly);
+    void persist();
   };
 
   /** 切换一级分区时同步 ?tab=，保证深链与后退行为一致。 */
@@ -736,7 +682,6 @@ export default function SettingsPage() {
     );
   };
 
-  const ready = !loading && !loadError;
   /** 直连 = 未填代理；填了则按来源显示跟随系统 / 手动。 */
   const proxyMode: "system" | "manual" | "direct" = form.onlineProxy.trim()
     ? proxySource
@@ -748,22 +693,6 @@ export default function SettingsPage() {
     ? Math.min(10240, Math.max(500, form.diskCacheBudgetMb))
     : 2048;
   const last7Pages = dash ? sumLast7Days(dash.heatmap) : 0;
-  const statusText = loading
-    ? t("settings.status.loading")
-    : loadError
-      ? t("settings.status.loadFailed")
-      : saving
-        ? t("settings.status.saving")
-        : dirty
-          ? t("settings.status.dirty")
-          : t("settings.status.saved");
-  const statusDot = loading || loadError
-    ? "bg-muted-foreground"
-    : saving
-      ? "animate-pulse bg-primary"
-      : dirty
-        ? "bg-warning"
-        : "bg-success";
 
   const activeTheme =
     THEME_OPTIONS.find((option) => option.value === mode) ?? THEME_OPTIONS[0];
@@ -772,7 +701,7 @@ export default function SettingsPage() {
     "h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm";
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-5 pb-24 pt-4 sm:px-8">
+    <div className="mx-auto w-full max-w-4xl px-5 pb-24 pt-4 sm:px-8">
       <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
@@ -859,7 +788,7 @@ export default function SettingsPage() {
               <div
                 role="group"
                 aria-label={t("settings.theme.groupLabel")}
-                className="flex w-full max-w-md rounded-full border border-border bg-background/60 p-1"
+                className="flex w-full max-w-md rounded-full border border-border/60 bg-card/50 p-1"
               >
                 {THEME_OPTIONS.map((option) => {
                   const Icon = option.icon;
@@ -873,7 +802,6 @@ export default function SettingsPage() {
                       size="pill-sm"
                       className="min-w-0 flex-1"
                       onClick={() => onThemeChange(option.value)}
-                      disabled={saving}
                     >
                       <Icon className="size-4 shrink-0" />
                       <span className="truncate">{t(option.labelKey)}</span>
@@ -881,11 +809,16 @@ export default function SettingsPage() {
                   );
                 })}
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="px-1 text-xs text-muted-foreground">
                 {t(activeTheme.hintKey)}
               </p>
+            </SettingsSection>
 
-              <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
+            <SettingsSection
+              icon={Globe2}
+              title={t("settings.language.title")}
+              description={t("settings.language.description")}
+              rows={
                 <SettingRow
                   title={t("settings.language.label")}
                   description={t("settings.language.description")}
@@ -916,8 +849,8 @@ export default function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </SettingRow>
-              </div>
-            </SettingsSection>
+              }
+            />
 
             <SettingsSection
               icon={PanelTop}
@@ -927,283 +860,34 @@ export default function SettingsPage() {
                 <SettingRow
                   title={t("settings.tray.closeToTray")}
                   description={t("settings.tray.closeToTrayHint")}
-                  badge={
-                    <Badge variant={form.closeToTray ? "success" : "muted"}>
-                      {form.closeToTray
-                        ? t("common.enabled")
-                        : t("common.disabled")}
-                    </Badge>
-                  }
                 >
                   <Switch
                     checked={form.closeToTray}
-                    disabled={saving || loading}
+                    disabled={loading}
                     aria-label={t("settings.tray.closeToTray")}
-                    onCheckedChange={(checked) => {
-                      setForm((prev) => ({ ...prev, closeToTray: checked }));
-                      setDirty(true);
-                    }}
+                    onCheckedChange={(checked) =>
+                      setField("closeToTray", checked)
+                    }
                   />
                 </SettingRow>
               }
             />
 
             <SettingsSection
-              icon={ImageIcon}
-              title={t("settings.brandIcon.title")}
-              description={t("settings.brandIcon.description")}
-              summary={
-                <div className="flex items-center gap-3 rounded-xl border border-border bg-background/60 px-3 py-2.5">
-                  <AppBrandIcon className="size-8" />
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-medium">
-                      {brandIcon.kind === "custom"
-                        ? t("settings.brandIcon.customActive")
-                        : t(BRAND_ICON_LABEL_KEYS[brandIcon.preset])}
-                    </p>
-                    <p className="truncate text-[11px] text-muted-foreground">
-                      {t("settings.brandIcon.current")}
-                    </p>
-                  </div>
-                </div>
-              }
-              disclosure={{
-                triggerLabel: t("settings.brandIcon.open"),
-                triggerHint: t("settings.brandIcon.openHint"),
-              }}
-            >
-              <input
-                ref={brandIconInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="sr-only"
-                aria-label={t("settings.brandIcon.upload")}
-                onChange={onBrandIconFile}
-              />
-              <div
-                role="group"
-                aria-label={t("settings.brandIcon.groupLabel")}
-                className="grid grid-cols-2 gap-2 sm:grid-cols-4"
-              >
-                {BRAND_ICON_PRESETS.map((preset) => {
-                  const active =
-                    brandIcon.kind === "preset" && brandIcon.preset === preset;
-                  return (
-                    <Button
-                      key={preset}
-                      type="button"
-                      aria-pressed={active}
-                      variant={active ? "pill-primary" : "pill"}
-                      size="pill"
-                      className="h-auto w-full min-w-0 items-center justify-start gap-2 rounded-xl px-3 py-2.5 text-left"
-                      onClick={() => applyBrandIcon({ kind: "preset", preset })}
-                      disabled={brandIconBusy || saving}
-                    >
-                      <AppBrandIcon
-                        selection={{ kind: "preset", preset }}
-                        className="size-7 shrink-0"
-                      />
-                      <span className="min-w-0 truncate text-xs font-medium">
-                        {t(BRAND_ICON_LABEL_KEYS[preset])}
-                      </span>
-                      {active ? (
-                        <Check className="ml-auto size-3.5 shrink-0" />
-                      ) : null}
-                    </Button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="pill-sm"
-                  onClick={() => brandIconInputRef.current?.click()}
-                  disabled={brandIconBusy || saving}
-                >
-                  <Upload className="size-4" />
-                  {t(
-                    brandIcon.kind === "custom"
-                      ? "settings.brandIcon.replace"
-                      : "settings.brandIcon.upload",
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="pill-sm"
-                  onClick={onResetBrandIcon}
-                  disabled={
-                    brandIconBusy ||
-                    saving ||
-                    (brandIcon.kind === "preset" &&
-                      brandIcon.preset === "book")
-                  }
-                >
-                  <RotateCcw className="size-4" />
-                  {t("settings.brandIcon.reset")}
-                </Button>
-                {brandIconBusy ? (
-                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                ) : null}
-              </div>
-              <p className="text-xs leading-5 text-muted-foreground">
-                {t("settings.brandIcon.hint")}
-              </p>
-            </SettingsSection>
-
-            <SettingsSection
-              icon={SlidersHorizontal}
-              title={t("settings.features.title")}
-              description={t("settings.features.description")}
-              rows={
-                <>
-                  {FEATURE_REGISTRY.map((feature) => {
-                    const enabled = form.features[feature.settingKey];
-                    return (
-                      <SettingRow
-                        key={feature.id}
-                        title={t(feature.titleKey)}
-                        description={t(feature.descriptionKey)}
-                        badge={
-                          <Badge variant={enabled ? "success" : "muted"}>
-                            {enabled
-                              ? t("common.enabled")
-                              : t("common.disabled")}
-                          </Badge>
-                        }
-                      >
-                        <Switch
-                          checked={enabled}
-                          disabled={featureBusy !== null || saving || loading}
-                          aria-label={t(feature.titleKey)}
-                          onCheckedChange={(checked) =>
-                            void toggleFeature(feature, checked)
-                          }
-                        />
-                      </SettingRow>
-                    );
-                  })}
-                </>
-              }
-            />
-
-            <SettingsSection
-              icon={Sparkles}
-              title={t("settings.skin.title")}
-              description={t("settings.skin.description")}
-              summary={
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary">{t(skin.nameKey)}</Badge>
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {t("settings.skin.decorationCount", {
-                      count: skin.decorations?.length ?? 0,
-                    })}
-                  </span>
-                </div>
-              }
-              disclosure={{
-                triggerLabel: t("settings.skin.open"),
-                triggerHint: t("settings.skin.openHint"),
-                testId: "skin-open",
-              }}
-            >
-              <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
-                {skins.map((item) => {
-                  const active = item.id === skin.id;
-                  return (
-                    <div
-                      key={item.id}
-                      className="flex min-h-12 items-center gap-3 px-3.5 py-2.5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">
-                          {t(item.nameKey)}
-                        </p>
-                        {item.descriptionKey ? (
-                          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
-                            {t(item.descriptionKey)}
-                          </p>
-                        ) : null}
-                      </div>
-                      <Button
-                        type="button"
-                        variant={active ? "pill-primary" : "pill"}
-                        size="pill-sm"
-                        className="shrink-0"
-                        aria-pressed={active}
-                        disabled={active}
-                        onClick={() => setSkin(item.id)}
-                      >
-                        {active ? (
-                          <Check className="size-3.5" />
-                        ) : (
-                          <Sparkles className="size-3.5" />
-                        )}
-                        {active
-                          ? t("settings.skin.active")
-                          : t("settings.skin.apply")}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="pill-sm"
-                  disabled={skinBusy}
-                  onClick={() => void onImportSkin()}
-                >
-                  {skinBusy ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Upload className="size-3.5" />
-                  )}
-                  {t("settings.skin.import")}
-                </Button>
-                <span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
-                  {t("settings.skin.importHint")}
-                </span>
-              </div>
-            </SettingsSection>
-
-            <SettingsSection
               icon={Keyboard}
               title={t("settings.shortcuts.title")}
               description={t("settings.shortcuts.description")}
-              summary={
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge
-                    variant={shortcutsEnabled ? "success" : "muted"}
-                    className="whitespace-nowrap"
-                  >
-                    {shortcutsEnabled
-                      ? t("settings.shortcuts.enabled")
-                      : t("settings.shortcuts.disabled")}
-                  </Badge>
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {t("settings.shortcuts.count", {
-                      count: GLOBAL_SHORTCUTS.length,
-                    })}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="pill-ghost"
-                    size="pill-sm"
-                    className="ml-auto whitespace-nowrap"
-                    onClick={() => {
-                      setShortcutsEnabled(true);
-                      toast(t("settings.shortcuts.resetDone"));
-                    }}
-                  >
-                    <RotateCcw className="size-3.5" />
-                    {t("settings.shortcuts.reset")}
-                  </Button>
-                </div>
-              }
-              rows={
+              disclosure={{
+                title: t("settings.shortcuts.title"),
+                triggerLabel: t("settings.shortcuts.open"),
+                triggerHint: shortcutsEnabled
+                  ? t("settings.shortcuts.enabled")
+                  : t("settings.shortcuts.disabled"),
+                width: "lg",
+                testId: "shortcuts-open",
+              }}
+            >
+              <SettingsRowList>
                 <SettingRow
                   title={t("settings.shortcuts.toggle")}
                   description={t("settings.shortcuts.toggleHint")}
@@ -1214,19 +898,13 @@ export default function SettingsPage() {
                     onCheckedChange={setShortcutsEnabled}
                   />
                 </SettingRow>
-              }
-              disclosure={{
-                triggerLabel: t("settings.shortcuts.open"),
-                triggerHint: t("settings.shortcuts.openHint"),
-                description: t("settings.shortcuts.sheetDescription"),
-                testId: "shortcuts-open",
-              }}
-            >
+              </SettingsRowList>
+
               <div className="grid gap-2 sm:grid-cols-2">
                 {GLOBAL_SHORTCUTS.map((row) => (
                   <div
                     key={row.keys}
-                    className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2.5"
+                    className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5"
                   >
                     <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
                       {t(row.actionKey)}
@@ -1240,7 +918,7 @@ export default function SettingsPage() {
                   </div>
                 ))}
               </div>
-              <div className="flex min-w-0 items-center gap-2 rounded-xl border border-border bg-background/60 px-3 py-2.5">
+              <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5">
                 <Command className="size-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 truncate text-xs font-medium">
                   {t("settings.shortcuts.command")}
@@ -1270,77 +948,128 @@ export default function SettingsPage() {
               </Card>
             ) : (
               <>
+                {onlineFeature ? (
+                  <SettingsSection
+                    icon={Wifi}
+                    title={t("settings.online.urlTitle")}
+                    description={t("settings.online.urlDescription")}
+                    rows={
+                      <SettingRow
+                        title={t("settings.online.enableTitle")}
+                        description={t("settings.online.enableDescription")}
+                        badge={
+                          <Badge
+                            variant={
+                              form.features.online ? "success" : "muted"
+                            }
+                          >
+                            {form.features.online
+                              ? t("common.enabled")
+                              : t("common.disabled")}
+                          </Badge>
+                        }
+                      >
+                        <Switch
+                          checked={form.features.online}
+                          disabled={featureBusy !== null}
+                          aria-label={t("settings.online.enableTitle")}
+                          onCheckedChange={(checked) =>
+                            void toggleFeature(onlineFeature, checked)
+                          }
+                        />
+                      </SettingRow>
+                    }
+                  />
+                ) : null}
+
                 <SettingsSection
-                  icon={Globe2}
+                  icon={KeyRound}
                   title={t("settings.online.networkTitle")}
                   description={t("settings.online.networkDescription")}
+                  disclosure={{
+                    title: t("settings.online.networkTitle"),
+                    triggerLabel: t("settings.online.headersLabel"),
+                    triggerHint: t(`settings.online.proxyMode.${proxyMode}`),
+                    testId: "online-headers-open",
+                  }}
                 >
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      type="button"
+                      variant={
+                        proxyMode === "system" ? "pill-primary" : "pill"
+                      }
+                      size="pill-sm"
+                      aria-pressed={proxyMode === "system"}
+                      onClick={() => void onDetectProxy()}
+                      disabled={detectingProxy}
+                    >
+                      {detectingProxy ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Globe2 />
+                      )}
+                      {t("settings.online.proxyMode.system")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={
+                        proxyMode === "manual" ? "pill-primary" : "pill"
+                      }
+                      size="pill-sm"
+                      aria-pressed={proxyMode === "manual"}
+                      onClick={() => setProxySource("manual")}
+                    >
+                      {t("settings.online.proxyMode.manual")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={
+                        proxyMode === "direct" ? "pill-primary" : "pill"
+                      }
+                      size="pill-sm"
+                      aria-pressed={proxyMode === "direct"}
+                      onClick={() => {
+                        setProxySource("manual");
+                        setField("onlineProxy", "");
+                      }}
+                    >
+                      {t("settings.online.proxyMode.direct")}
+                    </Button>
+                  </div>
+
                   <div className="space-y-2">
-                    <div className="flex flex-wrap gap-1.5">
-                      <Button
-                        type="button"
-                        variant={
-                          proxyMode === "system" ? "pill-primary" : "pill"
-                        }
-                        size="pill-sm"
-                        aria-pressed={proxyMode === "system"}
-                        onClick={() => void onDetectProxy()}
-                        disabled={detectingProxy || saving}
-                      >
-                        {detectingProxy ? (
-                          <Loader2 className="animate-spin" />
-                        ) : (
-                          <Globe2 />
-                        )}
-                        {t("settings.online.proxyMode.system")}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant={
-                          proxyMode === "manual" ? "pill-primary" : "pill"
-                        }
-                        size="pill-sm"
-                        aria-pressed={proxyMode === "manual"}
-                        onClick={() => setProxySource("manual")}
-                        disabled={saving}
-                      >
-                        {t("settings.online.proxyMode.manual")}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant={
-                          proxyMode === "direct" ? "pill-primary" : "pill"
-                        }
-                        size="pill-sm"
-                        aria-pressed={proxyMode === "direct"}
-                        onClick={() => {
-                          setProxySource("manual");
-                          set("onlineProxy", "");
-                        }}
-                        disabled={saving}
-                      >
-                        {t("settings.online.proxyMode.direct")}
-                      </Button>
-                    </div>
+                    <Label htmlFor="online-proxy">
+                      {t("settings.online.proxyLabel")}
+                    </Label>
                     <Input
                       id="online-proxy"
                       aria-label={t("settings.online.proxyLabel")}
                       value={form.onlineProxy}
                       onChange={(event) => {
                         setProxySource("manual");
-                        set("onlineProxy", event.currentTarget.value);
+                        setFieldDebounced(
+                          "onlineProxy",
+                          event.currentTarget.value,
+                        );
+                      }}
+                      onBlur={() => {
+                        if (proxySource === "manual") void persist();
                       }}
                       placeholder={t("settings.online.proxyPlaceholder")}
                       className="min-w-0 font-mono text-xs"
                       spellCheck={false}
-                      disabled={saving || proxyMode === "direct"}
+                      disabled={proxyMode === "direct"}
                     />
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      {t("settings.online.proxyHint")}
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="min-w-0 text-xs leading-5 text-muted-foreground">
+                        {t("settings.online.proxyHint")}
+                      </p>
+                      <AutoSaveHint state={saveState} />
+                    </div>
                   </div>
 
-                  <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
+                  <SettingsRowList>
                     <SettingRow
                       title={t("settings.online.concurrencyLabel")}
                       description={t("settings.online.concurrencyHint")}
@@ -1348,11 +1077,10 @@ export default function SettingsPage() {
                       <Select
                         items={concurrencyItems}
                         value={String(form.onlineConcurrency)}
-                        disabled={saving}
                         onValueChange={(value) => {
                           const next = Number(value);
                           if (Number.isFinite(next)) {
-                            set(
+                            setField(
                               "onlineConcurrency",
                               Math.min(8, Math.max(1, next)),
                             );
@@ -1378,38 +1106,8 @@ export default function SettingsPage() {
                         </SelectContent>
                       </Select>
                     </SettingRow>
-                  </div>
-                </SettingsSection>
+                  </SettingsRowList>
 
-                <SettingsSection
-                  icon={KeyRound}
-                  title={t("settings.online.headersLabel")}
-                  description={t("settings.online.headersHint")}
-                  summary={
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge
-                        variant={sessionActive ? "success" : "muted"}
-                        className="whitespace-nowrap"
-                      >
-                        {sessionActive
-                          ? t("settings.online.sessionPresent")
-                          : t("settings.online.sessionAbsent")}
-                      </Badge>
-                      <Badge variant="secondary" className="whitespace-nowrap">
-                        {sessionHeaders
-                          ? t("settings.online.memoryOnly")
-                          : t("settings.online.persistLocal")}
-                      </Badge>
-                    </div>
-                  }
-                  disclosure={{
-                    triggerLabel: t("settings.online.headersLabel"),
-                    triggerHint: sessionHeaders
-                      ? t("settings.online.memoryOnly")
-                      : t("settings.online.persistLocal"),
-                    testId: "online-headers-open",
-                  }}
-                >
                   <div className="space-y-2">
                     <Label htmlFor="online-headers">
                       {t("settings.online.headersLabel")}
@@ -1418,27 +1116,33 @@ export default function SettingsPage() {
                       id="online-headers"
                       value={form.onlineHeaders}
                       onChange={(event) =>
-                        set("onlineHeaders", event.currentTarget.value)
+                        setFieldDebounced(
+                          "onlineHeaders",
+                          event.currentTarget.value,
+                        )
                       }
+                      onBlur={() => void persist()}
                       rows={5}
                       placeholder={t("settings.online.headersPlaceholder")}
                       className="select-text min-h-32 font-mono text-xs"
                       spellCheck={false}
                       autoComplete="off"
-                      disabled={saving}
                     />
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      {t("settings.online.headersHint")}
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="min-w-0 text-xs leading-5 text-muted-foreground">
+                        {t("settings.online.headersHint")}
+                      </p>
+                      <AutoSaveHint state={saveState} />
+                    </div>
                   </div>
 
-                  <div className="space-y-2 rounded-xl border border-border bg-background/60 p-3">
+                  <div className="rounded-lg border border-border/60 bg-card/40 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="text-sm font-medium">
                           {t("settings.online.storageMode")}
                         </p>
-                        <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
                           {t("settings.online.storageModeDescription")}
                         </p>
                       </div>
@@ -1452,11 +1156,7 @@ export default function SettingsPage() {
                           variant={sessionHeaders ? "pill-primary" : "pill"}
                           size="pill-sm"
                           aria-pressed={sessionHeaders}
-                          disabled={saving}
-                          onClick={() => {
-                            setSessionHeaders(true);
-                            setDirty(true);
-                          }}
+                          onClick={() => onSessionModeChange(true)}
                         >
                           {t("settings.online.memoryOnly")}
                         </Button>
@@ -1465,24 +1165,20 @@ export default function SettingsPage() {
                           variant={!sessionHeaders ? "pill-primary" : "pill"}
                           size="pill-sm"
                           aria-pressed={!sessionHeaders}
-                          disabled={saving}
-                          onClick={() => {
-                            setSessionHeaders(false);
-                            setDirty(true);
-                          }}
+                          onClick={() => onSessionModeChange(false)}
                         >
                           {t("settings.online.persistLocal")}
                         </Button>
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
                       <Button
                         type="button"
                         variant="pill"
                         size="pill-sm"
                         className="whitespace-nowrap"
                         onClick={() => void onClearSessionHeaders()}
-                        disabled={!sessionActive || saving}
+                        disabled={!sessionActive}
                       >
                         <Trash2 />
                         {t("settings.online.clearSession")}
@@ -1493,21 +1189,10 @@ export default function SettingsPage() {
                           : t("settings.online.sessionAbsent")}
                       </span>
                     </div>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      {t("settings.online.storageModeNote")}
-                    </p>
                   </div>
                 </SettingsSection>
 
-                {onlineFeature ? (
-                  <OnlineFilterPanel
-                    enabled={form.features.online}
-                    toggleBusy={featureBusy !== null || saving}
-                    onToggle={(value) =>
-                      void toggleFeature(onlineFeature, value)
-                    }
-                  />
-                ) : null}
+                {onlineFeature ? <OnlineFilterPanel /> : null}
 
                 {form.features.webAccess ? (
                   <WebAccessSummaryCard>
@@ -1516,19 +1201,6 @@ export default function SettingsPage() {
                     {form.features.opds ? <OpdsPanel /> : null}
                   </WebAccessSummaryCard>
                 ) : null}
-
-                <SettingsSection
-                  icon={Wifi}
-                  title={t("settings.online.urlTitle")}
-                  description={t("settings.online.urlDescription")}
-                >
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    {t("settings.features.managedInGeneral")}
-                  </p>
-                  <p className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
-                    {t("settings.online.browserHint")}
-                  </p>
-                </SettingsSection>
               </>
             )}
           </TabsContent>
@@ -1540,17 +1212,24 @@ export default function SettingsPage() {
               title={t("settings.stats.title")}
               description={t("settings.stats.description")}
               action={
-                dashError ? (
-                  <Button
-                    type="button"
-                    variant="pill-ghost"
-                    size="pill-sm"
-                    onClick={() => void loadDashboard()}
-                  >
-                    <RefreshCw />
-                    {t("common.retry")}
-                  </Button>
-                ) : undefined
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="pill-sm"
+                  className="whitespace-nowrap"
+                  onClick={() => void onScanLibrary()}
+                  disabled={scanning || !form.libraryDir.trim()}
+                  data-testid="rescan-library"
+                >
+                  {scanning ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <ScanLine />
+                  )}
+                  {scanning
+                    ? t("settings.library.scanning")
+                    : t("settings.library.scanNow")}
+                </Button>
               }
               summary={
                 dashError ? (
@@ -1587,6 +1266,7 @@ export default function SettingsPage() {
                 )
               }
               disclosure={{
+                title: t("settings.library.dirLabel"),
                 triggerLabel: t("settings.library.dirLabel"),
                 triggerHint:
                   form.libraryDir.trim() ||
@@ -1603,12 +1283,12 @@ export default function SettingsPage() {
                     id="library-dir"
                     value={form.libraryDir}
                     onChange={(event) =>
-                      set("libraryDir", event.currentTarget.value)
+                      setFieldDebounced("libraryDir", event.currentTarget.value)
                     }
+                    onBlur={() => void persist()}
                     placeholder={t("settings.library.dirPlaceholder")}
                     className="min-w-0 font-mono text-xs sm:flex-1"
                     spellCheck={false}
-                    disabled={saving}
                   />
                   <div className="flex shrink-0 gap-2">
                     <Button
@@ -1617,7 +1297,7 @@ export default function SettingsPage() {
                       size="pill"
                       className="whitespace-nowrap"
                       onClick={() => void onPickDir()}
-                      disabled={scanning || saving}
+                      disabled={scanning}
                     >
                       <FolderOpen />
                       {t("settings.library.pick")}
@@ -1628,105 +1308,44 @@ export default function SettingsPage() {
                       size="pill-icon"
                       aria-label={t("settings.library.clearDir")}
                       title={t("settings.library.clearDir")}
-                      onClick={() => set("libraryDir", "")}
-                      disabled={!form.libraryDir || saving}
+                      onClick={() => setField("libraryDir", "")}
+                      disabled={!form.libraryDir}
                     >
                       <Trash2 />
                     </Button>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="pill-primary"
-                    size="pill"
-                    className="whitespace-nowrap"
-                    onClick={() => void onScanLibrary()}
-                    disabled={scanning || saving || !form.libraryDir.trim()}
-                  >
-                    {scanning ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      <ScanLine />
-                    )}
-                    {scanning
-                      ? t("settings.library.scanning")
-                      : t("settings.library.scanNow")}
-                  </Button>
+                <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
                     {t("settings.library.scanHint")}
                   </span>
+                  <AutoSaveHint state={saveState} />
                 </div>
               </div>
-              <p className="text-xs leading-5 text-muted-foreground">
-                {t("settings.stats.note")}
-              </p>
             </SettingsSection>
 
             <SettingsSection
               icon={HardDrive}
               title={t("settings.cache.manageTitle")}
               description={t("settings.cache.manageDescription")}
-              action={
-                <Button
-                  type="button"
-                  variant="pill-ghost"
-                  size="pill-sm"
-                  onClick={() => void refreshMemory()}
-                >
-                  <RefreshCw />
-                  {t("common.refresh")}
-                </Button>
-              }
-              summary={
-                <div className="space-y-2" data-testid="disk-cache-usage">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-medium text-muted-foreground">
-                      {t("settings.cache.diskUsage")}
-                    </span>
-                    <span className="font-mono font-semibold tabular-nums">
-                      {mem
-                        ? `${formatMb(mem.diskCacheBytes, locale)} / ${formatMb(
-                            mem.diskCacheLimitBytes,
-                            locale,
-                          )} · ${formatNumber(diskCachePct)}%`
-                        : t("settings.cache.diskEmpty")}
-                    </span>
-                  </div>
-                  <Progress value={diskCachePct} />
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs tabular-nums text-muted-foreground">
-                      {t("settings.cache.budgetBadge", {
-                        size: formatNumber(diskBudgetMb),
-                      })}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="pill"
-                      size="pill-sm"
-                      className="whitespace-nowrap"
-                      data-testid="clear-temp-cache"
-                      onClick={() => void onClearTemp()}
-                      disabled={clearingTemp || saving}
-                    >
-                      {clearingTemp ? (
-                        <Loader2 className="animate-spin" />
-                      ) : (
-                        <Trash2 />
-                      )}
-                      {clearingTemp
-                        ? t("settings.cache.clearingTemp")
-                        : t("settings.cache.clearTemp")}
-                    </Button>
-                  </div>
-                </div>
-              }
-              disclosure={{
-                triggerLabel: t("settings.cache.detailOpen"),
-                triggerHint: t("settings.cache.detailOpenHint"),
-                testId: "cache-detail-open",
-              }}
             >
+              <div className="space-y-2 rounded-lg border border-border/60 bg-card/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {t("settings.cache.diskUsage")}
+                  </span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {mem
+                      ? `${formatMb(mem.diskCacheBytes, locale)} / ${formatMb(
+                          mem.diskCacheLimitBytes,
+                          locale,
+                        )} · ${formatNumber(diskCachePct)}%`
+                      : t("settings.cache.diskEmpty")}
+                  </span>
+                </div>
+                <Progress value={diskCachePct} />
+              </div>
+
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <Label htmlFor="disk-cache-budget">
@@ -1745,39 +1364,41 @@ export default function SettingsPage() {
                   min={500}
                   max={10240}
                   step={256}
-                  disabled={saving}
-                  onValueChange={(value) =>
-                    set(
-                      "diskCacheBudgetMb",
-                      typeof value === "number" ? value : (value[0] ?? 2048),
-                    )
-                  }
+                  onValueChange={(value) => {
+                    const next =
+                      typeof value === "number" ? value : (value[0] ?? 2048);
+                    setFieldDebounced("diskCacheBudgetMb", next, 200);
+                  }}
                   getAriaLabel={() => t("settings.cache.diskAria")}
                 />
                 <div className="flex justify-between text-[11px] tabular-nums text-muted-foreground">
                   <span>{formatNumber(500)} MB</span>
                   <span>{formatNumber(10240)} MB</span>
                 </div>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  {t("settings.cache.diskHint")}
-                </p>
-              </div>
-
-              {mem ? (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <MemoryTile
-                    label={t("settings.cache.diskRender")}
-                    value={formatMb(mem.renderCacheBytes, locale)}
-                  />
-                  <MemoryTile
-                    label={t("settings.cache.diskOnline")}
-                    value={formatMb(mem.onlineCacheBytes, locale)}
-                  />
+                <div className="flex items-center justify-between gap-2">
+                  <p className="min-w-0 text-xs leading-5 text-muted-foreground">
+                    {t("settings.cache.clearTempHint")}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="pill"
+                    size="pill-sm"
+                    className="shrink-0 whitespace-nowrap"
+                    data-testid="clear-temp-cache"
+                    onClick={() => void onClearTemp()}
+                    disabled={clearingTemp}
+                  >
+                    {clearingTemp ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Trash2 />
+                    )}
+                    {clearingTemp
+                      ? t("settings.cache.clearingTemp")
+                      : t("settings.cache.clearTemp")}
+                  </Button>
                 </div>
-              ) : null}
-              <p className="text-xs leading-5 text-muted-foreground">
-                {t("settings.cache.clearTempHint")}
-              </p>
+              </div>
             </SettingsSection>
 
             {form.features.backup ? (
@@ -1798,7 +1419,7 @@ export default function SettingsPage() {
               description={t("settings.about.description")}
               summary={
                 <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                  <div className="min-w-0 rounded-lg border border-border/60 bg-card/50 px-3 py-2">
                     <dt className="text-[11px] font-medium text-muted-foreground">
                       {t("settings.about.version")}
                     </dt>
@@ -1806,7 +1427,7 @@ export default function SettingsPage() {
                       v{APP_VERSION}
                     </dd>
                   </div>
-                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                  <div className="min-w-0 rounded-lg border border-border/60 bg-card/50 px-3 py-2">
                     <dt className="text-[11px] font-medium text-muted-foreground">
                       {t("settings.about.commit")}
                     </dt>
@@ -1817,7 +1438,7 @@ export default function SettingsPage() {
                       {BUILD_COMMIT}
                     </dd>
                   </div>
-                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                  <div className="min-w-0 rounded-lg border border-border/60 bg-card/50 px-3 py-2">
                     <dt className="text-[11px] font-medium text-muted-foreground">
                       {t("settings.about.storage")}
                     </dt>
@@ -1825,7 +1446,7 @@ export default function SettingsPage() {
                       {t("settings.about.storageValue")}
                     </dd>
                   </div>
-                  <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+                  <div className="min-w-0 rounded-lg border border-border/60 bg-card/50 px-3 py-2">
                     <dt className="text-[11px] font-medium text-muted-foreground">
                       {t("settings.about.dataFlow")}
                     </dt>
@@ -1836,95 +1457,35 @@ export default function SettingsPage() {
                   <AboutBuildOriginCell />
                 </dl>
               }
-              rows={
-                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
-                  <Badge
-                    variant="secondary"
-                    className="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium"
-                  >
-                    {t("settings.about.nonCommercial")}
-                  </Badge>
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {t("settings.about.buildOriginLabel")}
-                  </span>
-                  <AboutBuildOriginValue />
-                </div>
-              }
             >
-              <p className="text-xs leading-5 text-muted-foreground">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                <Badge
+                  variant="secondary"
+                  className="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium"
+                >
+                  {t("settings.about.nonCommercial")}
+                </Badge>
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t("settings.about.buildOriginLabel")}
+                </span>
+                <AboutBuildOriginValue />
+              </div>
+              <p className="px-1 text-xs leading-5 text-muted-foreground">
                 {t("settings.about.note")}
               </p>
             </SettingsSection>
 
             {form.features.updates ? <UpdatesPanel /> : null}
-
-            {form.features.diagnostics ? (
-              <SettingsSection
-                icon={ShieldCheck}
-                title={t("support.title")}
-                description={t("support.description")}
-                summary={
-                  <Badge variant="success" className="gap-1.5">
-                    <ShieldCheck className="size-3.5" aria-hidden />
-                    {t("support.localOnly")}
-                  </Badge>
-                }
-                disclosure={{
-                  triggerLabel: t("privacy.detail.exportTitle"),
-                  triggerHint: t("support.description"),
-                  testId: "diagnostics-open",
-                }}
-              >
-                <DiagnosticPanel />
-              </SettingsSection>
-            ) : null}
           </TabsContent>
         </Tabs>
       )}
-
-      {tab === "general" || tab === "network" || tab === "storage" ? (
-        <div className="sticky bottom-4 z-30 mt-5">
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-2.5 shadow-hard">
-            <div className="flex min-w-0 flex-1 items-center gap-2 text-xs font-medium text-muted-foreground">
-              <span
-                className={cn("size-2 shrink-0 rounded-full", statusDot)}
-                aria-hidden
-              />
-              <span className="truncate">{statusText}</span>
-            </div>
-            <div className="ml-auto flex shrink-0 items-center gap-3">
-              {dirty && !saving ? (
-                <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">
-                  {t("settings.status.saveHint")}
-                </span>
-              ) : null}
-              <Button
-                type="button"
-                variant="pill-primary"
-                size="pill"
-                className="min-w-32 whitespace-nowrap"
-                onClick={() => void onSave()}
-                disabled={!ready || saving || featureBusy !== null}
-              >
-                {saving ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <Save />
-                )}
-                {saving ? t("common.saving") : t("settings.saveButton")}
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
 
 /**
  * 构建来源指纹：官方 CI 注入 `MR_BUILD_ORIGIN=official` → Official
- * Release；否则按社区构建展示。拉取失败回落 community（宁可误标社区，
- * 不把第三方产物冒充官方）。模块级缓存避免多处重复 invoke。
+ * Release；否则按社区构建展示。拉取失败回落 community。
  */
 let buildOriginCache: Promise<string> | null = null;
 function fetchBuildOrigin(): Promise<string> {
@@ -1954,7 +1515,7 @@ function AboutBuildOriginCell() {
   const { t } = useI18n();
   const origin = useBuildOrigin();
   return (
-    <div className="min-w-0 rounded-lg border border-border bg-background/60 px-3 py-2">
+    <div className="min-w-0 rounded-lg border border-border/60 bg-card/50 px-3 py-2">
       <dt className="text-[11px] font-medium text-muted-foreground">
         {t("settings.about.buildOrigin")}
       </dt>

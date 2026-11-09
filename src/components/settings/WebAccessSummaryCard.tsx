@@ -55,7 +55,8 @@ function phaseVariant(
  * Keeps exactly what a user needs at a glance — state, a quick toggle, the
  * access URL with its QR, and the paired-device count. Everything else
  * (bind address, pairing window, pending claims, device list, CA lifecycle,
- * OPDS credentials) lives in the secondary sheet rendered as `children`.
+ * OPDS credentials) lives in the secondary centered dialog rendered as
+ * `children`.
  */
 export default function WebAccessSummaryCard({
   children,

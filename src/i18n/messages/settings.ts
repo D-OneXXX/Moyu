@@ -241,7 +241,7 @@ const zhCN = {
 
   "settings.toast.scanDone": "扫描完成，书库共 {count} 本",
   "settings.toast.scanErrors": "有 {count} 个条目无法读取，已跳过",
-  "settings.toast.proxyFilled": "已填入系统代理，保存后生效",
+  "settings.toast.proxyFilled": "已填入系统代理并保存",
   "settings.toast.proxyNotFound": "未检测到开启的系统代理",
   "settings.toast.sessionCleared": "已清空内存凭据",
   "settings.toast.urlRequired": "请填写清单或图集 URL",
@@ -425,6 +425,11 @@ const zhCN = {
     "撤销「{name}」会立即断开它的访问，之后必须重新完成配对。",
   "settings.webAccess.securityNote":
     "设备名由手机自行上报，可能被修改；本项目没有 SAS 或密码学绑定，桌面端的人工批准是唯一授权。请不要因为设备出现在列表里就认为它已通过验证。",
+
+  "settings.autoSaved": "已自动保存",
+  "settings.autoSaving": "正在保存…",
+  "settings.autoSaveFailed": "保存失败",
+  "settings.filter.blockedShort": "已拦截 {count} 项",
 } as const;
 
 type SettingsMessages = { [K in keyof typeof zhCN]: string };
@@ -671,7 +676,7 @@ const zhTW: SettingsMessages = {
 
   "settings.toast.scanDone": "掃描完成，書庫共 {count} 本",
   "settings.toast.scanErrors": "有 {count} 個項目無法讀取，已跳過",
-  "settings.toast.proxyFilled": "已填入系統代理，儲存後生效",
+  "settings.toast.proxyFilled": "已填入系統代理並儲存",
   "settings.toast.proxyNotFound": "未偵測到開啟的系統代理",
   "settings.toast.sessionCleared": "已清空記憶體憑證",
   "settings.toast.urlRequired": "請填寫清單或圖集 URL",
@@ -855,6 +860,11 @@ const zhTW: SettingsMessages = {
     "撤銷「{name}」會立即中斷它的存取，之後必須重新完成配對。",
   "settings.webAccess.securityNote":
     "裝置名稱由手機自行回報，可能被修改；本專案沒有 SAS 或密碼學綁定，桌面端的人工批准是唯一授權。請不要因為裝置出現在清單裡就認為它已通過驗證。",
+
+  "settings.autoSaved": "已自動儲存",
+  "settings.autoSaving": "正在儲存…",
+  "settings.autoSaveFailed": "儲存失敗",
+  "settings.filter.blockedShort": "已攔截 {count} 項",
 };
 
 const en: SettingsMessages = {
@@ -1103,7 +1113,7 @@ const en: SettingsMessages = {
 
   "settings.toast.scanDone": "Scan complete. {count} books in the library.",
   "settings.toast.scanErrors": "{count} entries could not be read and were skipped",
-  "settings.toast.proxyFilled": "System proxy filled in; save to apply",
+  "settings.toast.proxyFilled": "System proxy detected and saved",
   "settings.toast.proxyNotFound": "No enabled system proxy detected",
   "settings.toast.sessionCleared": "Memory credentials cleared",
   "settings.toast.urlRequired": "Enter a manifest or gallery URL",
@@ -1300,6 +1310,11 @@ const en: SettingsMessages = {
     "Revoking “{name}” disconnects it immediately; it must pair again to reconnect.",
   "settings.webAccess.securityNote":
     "Device names are self-reported by the phone and can change. This project has no SAS or cryptographic binding; manual approval on this desktop is the only authorization. Do not treat a device as verified just because it appears in this list.",
+
+  "settings.autoSaved": "Auto-saved",
+  "settings.autoSaving": "Saving…",
+  "settings.autoSaveFailed": "Save failed",
+  "settings.filter.blockedShort": "{count} blocked",
 };
 
 const es: SettingsMessages = {
@@ -1554,7 +1569,7 @@ const es: SettingsMessages = {
   "settings.toast.scanErrors":
     "No se pudieron leer {count} entradas; se omitieron",
   "settings.toast.proxyFilled":
-    "Proxy del sistema rellenado; guarda para aplicar",
+    "Proxy del sistema detectado y guardado",
   "settings.toast.proxyNotFound":
     "No se detectó ningún proxy del sistema activado",
   "settings.toast.sessionCleared": "Credenciales en memoria borradas",
@@ -1760,6 +1775,11 @@ const es: SettingsMessages = {
     "Al revocar «{name}» se corta su acceso de inmediato y tendrá que vincularse de nuevo.",
   "settings.webAccess.securityNote":
     "El nombre del dispositivo lo declara el teléfono y puede cambiarse; este proyecto no tiene SAS ni vínculo criptográfico, y la aprobación manual en el escritorio es la única autorización. No consideres un dispositivo verificado solo porque aparezca en la lista.",
+
+  "settings.autoSaved": "Guardado automáticamente",
+  "settings.autoSaving": "Guardando…",
+  "settings.autoSaveFailed": "Error al guardar",
+  "settings.filter.blockedShort": "{count} bloqueados",
 };
 
 const ja: SettingsMessages = {
@@ -2014,7 +2034,7 @@ const ja: SettingsMessages = {
   "settings.toast.scanErrors":
     "{count} 件を読み込めずスキップしました",
   "settings.toast.proxyFilled":
-    "システムプロキシを入力しました。保存で反映されます",
+    "システムプロキシを検出して保存しました",
   "settings.toast.proxyNotFound": "有効なシステムプロキシが見つかりません",
   "settings.toast.sessionCleared": "メモリ上の認証情報を消去しました",
   "settings.toast.urlRequired":
@@ -2217,6 +2237,11 @@ const ja: SettingsMessages = {
     "「{name}」を取り消すと、ただちにアクセスが切断され、再度ペアリングが必要になります。",
   "settings.webAccess.securityNote":
     "端末名はスマートフォンの自己申告であり、変更される可能性があります。本プロジェクトには SAS や暗号学的な紐付けはなく、デスクトップ側での手動承認だけが認可です。一覧に表示されているだけで検証済みとみなさないでください。",
+
+  "settings.autoSaved": "自動保存しました",
+  "settings.autoSaving": "保存中…",
+  "settings.autoSaveFailed": "保存に失敗",
+  "settings.filter.blockedShort": "{count} 件をブロック",
 };
 
 const ko: SettingsMessages = {
@@ -2468,7 +2493,7 @@ const ko: SettingsMessages = {
   "settings.toast.scanDone": "스캔 완료. 서재에 {count}권이 있습니다.",
   "settings.toast.scanErrors": "항목 {count}개를 읽지 못해 건너뛰었습니다",
   "settings.toast.proxyFilled":
-    "시스템 프록시를 채웠습니다. 저장 후 적용됩니다",
+    "시스템 프록시를 감지하여 저장했습니다",
   "settings.toast.proxyNotFound": "활성화된 시스템 프록시를 찾지 못했습니다",
   "settings.toast.sessionCleared": "메모리 자격 증명을 지웠습니다",
   "settings.toast.urlRequired": "매니페스트 또는 갤러리 URL을 입력하세요",
@@ -2666,6 +2691,11 @@ const ko: SettingsMessages = {
     "'{name}' 기기를 취소하면 즉시 연결이 끊기고 다시 페어링해야 합니다.",
   "settings.webAccess.securityNote":
     "기기 이름은 휴대폰이 스스로 신고한 값이라 바뀔 수 있습니다. 이 프로젝트에는 SAS나 암호학적 바인딩이 없으며 데스크톱에서의 수동 승인만이 유일한 인가입니다. 목록에 보인다는 이유만으로 검증된 기기로 간주하지 마세요.",
+
+  "settings.autoSaved": "자동 저장됨",
+  "settings.autoSaving": "저장 중…",
+  "settings.autoSaveFailed": "저장 실패",
+  "settings.filter.blockedShort": "{count}개 차단됨",
 };
 
 export const settingsMessages = {

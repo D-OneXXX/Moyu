@@ -18,7 +18,6 @@ import { localizeBackendError } from "@/features/errors/localize";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -28,12 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  SettingRow,
-  SettingsSection,
-  SettingsStat,
-  SettingsStatRow,
-} from "@/components/settings/SettingsSection";
+import { SettingsSection } from "@/components/settings/SettingsSection";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { toast, toastErr } from "@/components/Toast";
 
@@ -64,24 +58,13 @@ function sourceLabelKey(source: OnlineFilterRule["source"]) {
   }
 }
 
-interface OnlineFilterPanelProps {
-  /** 提纯引擎总开关（与「功能开关」同一状态源）。 */
-  enabled: boolean;
-  onToggle: (value: boolean) => void;
-  toggleBusy?: boolean;
-}
-
 /**
  * 设置 → 网络与在线源：提纯引擎。
  *
- * 一级只暴露「拦截计数 + 总开关 + 明细入口」；规则库、导入/导出/重置与
- * 站点档案全部下沉到二级 Sheet，挂载前零请求、零 DOM。
+ * 一级只保留「已拦截 N 项」入口；规则库、导入/导出/重置与站点档案全部下沉
+ * 到居中弹窗，挂载前零请求、零 DOM。
  */
-export default function OnlineFilterPanel({
-  enabled,
-  onToggle,
-  toggleBusy = false,
-}: OnlineFilterPanelProps) {
+export default function OnlineFilterPanel() {
   const { t, formatNumber } = useI18n();
   const [stats, setStats] = useState<OnlineFilterStats | null>(null);
   const [rules, setRules] = useState<OnlineFilterRule[]>([]);
@@ -181,50 +164,13 @@ export default function OnlineFilterPanel({
       icon={Filter}
       title={t("settings.filter.engineTitle")}
       description={t("settings.filter.engineDescription")}
-      summary={
-        <SettingsStatRow>
-          <SettingsStat
-            label={t("settings.filter.blockedTotal")}
-            value={formatNumber(stats?.blockedTotal ?? 0)}
-          />
-          <SettingsStat
-            label={t("settings.filter.rules")}
-            value={formatNumber(stats?.rules ?? 0)}
-          />
-          <SettingsStat
-            label={t("settings.filter.profiles")}
-            value={formatNumber(stats?.siteProfiles ?? 0)}
-          />
-          <SettingsStat
-            label={t("settings.filter.restoredTotal")}
-            value={formatNumber(stats?.restoredTotal ?? 0)}
-          />
-        </SettingsStatRow>
-      }
-      rows={
-        <SettingRow
-          title={t("settings.filter.engineSwitch")}
-          description={t("settings.filter.engineSwitchHint")}
-          badge={
-            <Badge variant={enabled ? "success" : "muted"}>
-              {enabled ? t("common.enabled") : t("common.disabled")}
-            </Badge>
-          }
-        >
-          <Switch
-            checked={enabled}
-            disabled={toggleBusy}
-            aria-label={t("settings.filter.engineSwitch")}
-            onCheckedChange={onToggle}
-          />
-        </SettingRow>
-      }
       disclosure={{
+        title: t("settings.filter.open"),
         triggerLabel: t("settings.filter.open"),
-        triggerHint: t("settings.filter.openHint", {
-          rules: formatNumber(rules.length),
-          profiles: formatNumber(stats?.siteProfiles ?? 0),
+        triggerHint: t("settings.filter.blockedShort", {
+          count: formatNumber(stats?.blockedTotal ?? 0),
         }),
+        width: "lg",
         testId: "online-filter-detail",
       }}
     >
@@ -282,14 +228,14 @@ export default function OnlineFilterPanel({
       {error ? (
         <div
           role="alert"
-          className="rounded-xl border border-border bg-destructive/10 px-3 py-2 text-xs text-muted-foreground"
+          className="rounded-lg border border-border/60 bg-destructive/10 px-3 py-2 text-xs text-muted-foreground"
         >
           {t("settings.filter.loadFailed")}：{error}
         </div>
       ) : null}
 
-      <div className="rounded-xl border border-border bg-background/50">
-        <div className="flex items-center justify-between border-b border-border/70 px-3 py-2">
+      <div className="rounded-lg border border-border/60 bg-card/40">
+        <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
           <span className="flex items-center gap-2 text-xs font-medium">
             <ShieldCheck className="size-3.5" />
             {t("settings.filter.rulesTitle")}

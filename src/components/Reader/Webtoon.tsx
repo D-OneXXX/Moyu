@@ -425,7 +425,10 @@ const WebtoonView = memo(function WebtoonView({
   failedRef.current = failed;
 
   const pumpQueue = useCallback(() => {
-    if (pumpTimer.current) return;
+    // 真正的滚动空闲防抖：每次窗口替换都重排计时器。否则极速滚动期间
+    // 第一个 120ms 计时器会在滚动中途给过期窗口发请求，占满后端串行
+    // tile_lock，最终视口反而排在它们之后。
+    if (pumpTimer.current) window.clearTimeout(pumpTimer.current);
     pumpTimer.current = window.setTimeout(() => {
       pumpTimer.current = 0;
       const run = () => {

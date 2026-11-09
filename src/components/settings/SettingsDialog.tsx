@@ -47,12 +47,12 @@ export function SettingsDialog({
       <DialogContent
         showCloseButton={false}
         className={cn(
-          "gap-0 p-0 sm:max-w-[520px]",
+          "max-h-[calc(100vh-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[520px]",
           width === "lg" && "sm:max-w-[640px]",
           className,
         )}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
           <div className="min-w-0">
             <DialogTitle className="text-sm font-semibold leading-5 tracking-tight text-foreground">
               {title}

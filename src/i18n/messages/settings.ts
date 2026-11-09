@@ -160,11 +160,11 @@ const zhCN = {
   "settings.cache.budgetHint": "保存后立即套用到页面与缩略图的内存缓存。",
   "settings.cache.diskTitle": "磁盘缓存",
   "settings.cache.diskDescription":
-    "渲染结果与在线原图共用同一份磁盘缓存，超出上限时会自动清理较旧的文件。",
+    "渲染成品按上限自动清理；在线原图会离线保留，直到删除书籍或手动清空缓存。",
   "settings.cache.diskLabel": "磁盘缓存上限",
   "settings.cache.diskAria": "磁盘缓存上限（MB）",
   "settings.cache.diskHint":
-    "保存后立即套用；降低上限后，超出部分会在后续访问时清理。",
+    "保存后立即套用；上限只约束渲染成品，在线原图会保留到删除书籍或手动清空。",
   "settings.cache.diskUsage": "磁盘占用",
   "settings.cache.diskRender": "渲染缓存",
   "settings.cache.diskOnline": "在线原图",
@@ -197,7 +197,7 @@ const zhCN = {
     "清除内存页缓存、渲染成品与在线原图；封面会按需重建，书库和阅读进度不受影响。",
   "settings.cache.manageTitle": "缓存管理与 LRU 配额",
   "settings.cache.manageDescription":
-    "渲染缓存与在线图片缓存共用同一份 LRU 软上限（500 MB – 10 GB）；一键清空临时缓存。",
+    "渲染缓存按 LRU 软上限（500 MB – 10 GB）清理；在线原图不自动淘汰，删除书籍或一键清空时移除。",
   "settings.online.proxyMode.system": "跟随系统代理",
   "settings.online.proxyMode.manual": "手动代理",
   "settings.online.proxyMode.direct": "直连",
@@ -575,11 +575,11 @@ const zhTW: SettingsMessages = {
   "settings.cache.budgetHint": "儲存後立即套用到頁面與縮圖的記憶體快取。",
   "settings.cache.diskTitle": "磁碟快取",
   "settings.cache.diskDescription":
-    "渲染結果與線上原圖共用同一份磁碟快取，超過上限時會自動清理較舊的檔案。",
+    "渲染成品會依上限自動清理；線上原圖會離線保留，直到刪除書籍或手動清空快取。",
   "settings.cache.diskLabel": "磁碟快取上限",
   "settings.cache.diskAria": "磁碟快取上限（MB）",
   "settings.cache.diskHint":
-    "儲存後立即套用；調低上限後，超出部分會在後續存取時清理。",
+    "儲存後立即套用；上限只約束渲染成品，線上原圖會保留到刪除書籍或手動清空。",
   "settings.cache.diskUsage": "磁碟占用",
   "settings.cache.diskRender": "渲染快取",
   "settings.cache.diskOnline": "線上原圖",
@@ -612,7 +612,7 @@ const zhTW: SettingsMessages = {
     "清除記憶體頁面快取、渲染成品與線上原圖；封面會按需重建，書庫與閱讀進度不受影響。",
   "settings.cache.manageTitle": "快取管理與 LRU 配額",
   "settings.cache.manageDescription":
-    "渲染快取與線上圖片快取共用同一份 LRU 軟上限（500 MB – 10 GB）；一鍵清空臨時快取。",
+    "渲染快取依 LRU 軟上限（500 MB – 10 GB）清理；線上原圖不會自動淘汰，刪除書籍或一鍵清空時移除。",
   "settings.online.proxyMode.system": "跟隨系統代理",
   "settings.online.proxyMode.manual": "手動代理",
   "settings.online.proxyMode.direct": "直連",
@@ -990,11 +990,11 @@ const en: SettingsMessages = {
     "Applied to the in-memory page and thumbnail caches immediately after saving.",
   "settings.cache.diskTitle": "Disk cache",
   "settings.cache.diskDescription":
-    "Rendered pages and online originals share one disk cache; older files are evicted automatically when the limit is exceeded.",
+    "Rendered pages are cleaned up to the limit; online originals stay offline until you delete the book or clear the cache.",
   "settings.cache.diskLabel": "Disk cache limit",
   "settings.cache.diskAria": "Disk cache limit (MB)",
   "settings.cache.diskHint":
-    "Applied immediately after saving; lowering the limit cleans up excess files on later access.",
+    "Applied immediately after saving; the limit only covers rendered pages, while online originals stay until you delete the book or clear the cache.",
   "settings.cache.diskUsage": "Disk usage",
   "settings.cache.diskRender": "Render cache",
   "settings.cache.diskOnline": "Online originals",
@@ -1027,7 +1027,7 @@ const en: SettingsMessages = {
     "Clears in-memory pages, rendered files and online originals; covers rebuild as needed, while the library and reading progress are unaffected.",
   "settings.cache.manageTitle": "Cache & LRU quota",
   "settings.cache.manageDescription":
-    "Render and online image caches share one soft LRU limit (500 MB – 10 GB); one click clears temporary caches.",
+    "Render cache follows the soft LRU limit (500 MB – 10 GB); online originals are never evicted automatically and are removed when you delete a book or clear caches.",
   "settings.online.proxyMode.system": "Follow system proxy",
   "settings.online.proxyMode.manual": "Manual proxy",
   "settings.online.proxyMode.direct": "Direct",
@@ -1420,11 +1420,11 @@ const es: SettingsMessages = {
     "Se aplica a la caché de páginas y miniaturas en memoria al guardar.",
   "settings.cache.diskTitle": "Caché en disco",
   "settings.cache.diskDescription":
-    "Las páginas renderizadas y los originales en línea comparten una caché en disco; los archivos antiguos se eliminan al superar el límite.",
+    "Las páginas renderizadas se limpian según el límite; los originales en línea se conservan sin conexión hasta que borres el libro o vacíes la caché.",
   "settings.cache.diskLabel": "Límite de caché en disco",
   "settings.cache.diskAria": "Límite de caché en disco (MB)",
   "settings.cache.diskHint":
-    "Se aplica al guardar; al bajar el límite, el exceso se limpia en accesos posteriores.",
+    "Se aplica al guardar; el límite solo afecta a las páginas renderizadas, mientras que los originales en línea se conservan hasta borrar el libro o vaciar la caché.",
   "settings.cache.diskUsage": "Uso en disco",
   "settings.cache.diskRender": "Caché de renderizado",
   "settings.cache.diskOnline": "Originales en línea",
@@ -1458,7 +1458,7 @@ const es: SettingsMessages = {
     "Borra las páginas en memoria, los archivos renderizados y los originales en línea; las portadas se reconstruyen cuando haga falta y la biblioteca y el progreso no se ven afectados.",
   "settings.cache.manageTitle": "Caché y cuota LRU",
   "settings.cache.manageDescription":
-    "La caché de renderizado y las imágenes en línea comparten un límite LRU blando (500 MB – 10 GB); un clic borra la caché temporal.",
+    "La caché de renderizado respeta el límite LRU blando (500 MB – 10 GB); las imágenes en línea no se eliminan automáticamente y solo se borran al eliminar un libro o vaciar la caché.",
   "settings.online.proxyMode.system": "Proxy del sistema",
   "settings.online.proxyMode.manual": "Proxy manual",
   "settings.online.proxyMode.direct": "Directo",
@@ -1862,11 +1862,11 @@ const ja: SettingsMessages = {
     "保存後、ページとサムネイルのメモリキャッシュにすぐ適用されます。",
   "settings.cache.diskTitle": "ディスクキャッシュ",
   "settings.cache.diskDescription":
-    "レンダリング画像とオンライン原画は同じディスクキャッシュを共有し、上限を超えると古いファイルから自動削除されます。",
+    "レンダリング画像は上限に従って自動整理されます。オンライン原画は書籍を削除するかキャッシュを手動で消すまでオフライン保持されます。",
   "settings.cache.diskLabel": "ディスクキャッシュ上限",
   "settings.cache.diskAria": "ディスクキャッシュ上限（MB）",
   "settings.cache.diskHint":
-    "保存後すぐに適用されます。上限を下げた場合、超過分は以降のアクセス時に整理されます。",
+    "保存後すぐに適用されます。上限はレンダリング画像のみ対象で、オンライン原画は書籍削除またはキャッシュ消去まで保持されます。",
   "settings.cache.diskUsage": "ディスク使用量",
   "settings.cache.diskRender": "レンダリングキャッシュ",
   "settings.cache.diskOnline": "オンライン原画",
@@ -1900,7 +1900,7 @@ const ja: SettingsMessages = {
     "メモリ上のページ、レンダリング済みファイル、オンライン原画を削除します。表紙は必要に応じて再生成され、ライブラリと読書進捗には影響しません。",
   "settings.cache.manageTitle": "キャッシュと LRU 上限",
   "settings.cache.manageDescription":
-    "レンダーキャッシュとオンライン画像キャッシュは同じ LRU 上限（500 MB ～ 10 GB）を共有。ワンクリックで一時キャッシュを削除できます。",
+    "レンダーキャッシュは LRU 上限（500 MB ～ 10 GB）に従って整理されます。オンライン原画は自動削除されず、書籍の削除またはキャッシュの一括消去でのみ削除されます。",
   "settings.online.proxyMode.system": "システムプロキシに従う",
   "settings.online.proxyMode.manual": "手動プロキシ",
   "settings.online.proxyMode.direct": "直接接続",
@@ -2302,11 +2302,11 @@ const ko: SettingsMessages = {
     "저장하면 페이지와 썸네일 메모리 캐시에 즉시 적용됩니다.",
   "settings.cache.diskTitle": "디스크 캐시",
   "settings.cache.diskDescription":
-    "렌더링 이미지와 온라인 원본이 하나의 디스크 캐시를 공유하며, 한도를 넘으면 오래된 파일부터 자동으로 정리됩니다.",
+    "렌더링 이미지는 한도에 따라 자동 정리됩니다. 온라인 원본은 책을 삭제하거나 캐시를 직접 비울 때까지 오프라인으로 보관됩니다.",
   "settings.cache.diskLabel": "디스크 캐시 상한",
   "settings.cache.diskAria": "디스크 캐시 상한(MB)",
   "settings.cache.diskHint":
-    "저장 후 즉시 적용됩니다. 상한을 낮추면 초과분은 이후 접근 시 정리됩니다.",
+    "저장 후 즉시 적용됩니다. 상한은 렌더링 이미지에만 적용되며 온라인 원본은 책 삭제 또는 캐시 비우기까지 보관됩니다.",
   "settings.cache.diskUsage": "디스크 사용량",
   "settings.cache.diskRender": "렌더링 캐시",
   "settings.cache.diskOnline": "온라인 원본",
@@ -2339,7 +2339,7 @@ const ko: SettingsMessages = {
     "메모리 페이지, 렌더링된 파일, 온라인 원본을 지웁니다. 표지는 필요할 때 다시 생성되며 서재와 읽기 진행률에는 영향을 주지 않습니다.",
   "settings.cache.manageTitle": "캐시 및 LRU 할당량",
   "settings.cache.manageDescription":
-    "렌더 캐시와 온라인 이미지 캐시는 하나의 LRU 상한(500 MB – 10 GB)을 공유합니다. 원클릭으로 임시 캐시를 비웁니다.",
+    "렌더 캐시는 LRU 상한(500 MB – 10 GB)에 따라 정리됩니다. 온라인 원본은 자동으로 삭제되지 않으며 책 삭제 또는 캐시 일괄 비우기로만 제거됩니다.",
   "settings.online.proxyMode.system": "시스템 프록시 따르기",
   "settings.online.proxyMode.manual": "수동 프록시",
   "settings.online.proxyMode.direct": "직접 연결",

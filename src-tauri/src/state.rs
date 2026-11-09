@@ -726,11 +726,16 @@ impl AppState {
         (render.saturating_add(online), render, online)
     }
 
-    /// 两个缓存根共用一个预算，按文件 mtime 最旧优先淘汰。
+    /// 只对渲染成品做 LRU；在线原图是用户可离线保留的内容，删除书籍或
+    /// 手动清空缓存前不自动淘汰。
     pub fn trim_disk_cache(&self) -> u64 {
+        self.trim_disk_cache_to(self.disk_cache_limit_bytes())
+    }
+
+    /// 以指定预算淘汰渲染成品；测试可传 0 验证在线原图不会被一并删除。
+    pub(crate) fn trim_disk_cache_to(&self, budget: u64) -> u64 {
         self.cache_pressure.store(0, Ordering::Relaxed);
-        let budget = self.disk_cache_limit_bytes();
-        disk_cache::trim_total(&[self.render.root(), self.online_cache.root()], budget)
+        disk_cache::trim_total(&[self.render.root()], budget)
     }
 
     /// 累计写盘超过阈值时后台触发统一淘汰；由取页/切片路径在落盘后调用。
@@ -862,6 +867,32 @@ mod tests {
         crate::db::init_schema(&conn).expect("初始化表结构");
         state.db.set(conn);
         state
+    }
+
+    #[test]
+    fn trimming_render_cache_never_deletes_online_originals() {
+        let root = temp_dir("keep-online");
+        let render_root = root.join("render");
+        let online_root = root.join("online");
+        std::fs::create_dir_all(render_root.join("book")).unwrap();
+        std::fs::create_dir_all(online_root.join("book")).unwrap();
+        let render_file = render_root.join("book/a.jpg");
+        let online_file = online_root.join("book/a.jpg");
+        std::fs::write(&render_file, b"render").unwrap();
+        std::fs::write(&online_file, b"online").unwrap();
+
+        let mut state = test_state();
+        state.render = crate::render_cache::RenderCache::new(render_root.clone());
+        state.online_cache = Arc::new(crate::disk_cache::OnlinePageCache::new(online_root.clone()));
+
+        let removed = state.trim_disk_cache_to(0);
+        assert!(removed > 0, "超预算时应淘汰渲染成品");
+        assert!(!render_file.exists(), "渲染成品应被淘汰");
+        assert!(
+            online_file.exists(),
+            "在线原图必须保留到用户删除书籍或手动清空"
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     fn err_text(result: Result<Arc<SourceHandle>, BackendError>) -> String {

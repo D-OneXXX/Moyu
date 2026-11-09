@@ -686,8 +686,9 @@ export default function SettingsPage() {
   const proxyMode: "system" | "manual" | "direct" = form.onlineProxy.trim()
     ? proxySource
     : "direct";
+  // 预算只约束渲染成品；在线原图离线保留，不参与该百分比。
   const diskCachePct = mem
-    ? cachePercent(mem.diskCacheBytes, mem.diskCacheLimitBytes)
+    ? cachePercent(mem.renderCacheBytes, mem.diskCacheLimitBytes)
     : 0;
   const diskBudgetMb = Number.isFinite(form.diskCacheBudgetMb)
     ? Math.min(10240, Math.max(500, form.diskCacheBudgetMb))
@@ -1346,7 +1347,7 @@ export default function SettingsPage() {
                   </span>
                   <span className="font-mono font-semibold tabular-nums">
                     {mem
-                      ? `${formatMb(mem.diskCacheBytes, locale)} / ${formatMb(
+                      ? `${formatMb(mem.renderCacheBytes, locale)} / ${formatMb(
                           mem.diskCacheLimitBytes,
                           locale,
                         )} · ${formatNumber(diskCachePct)}%`
@@ -1354,6 +1355,18 @@ export default function SettingsPage() {
                   </span>
                 </div>
                 <Progress value={diskCachePct} />
+                {mem ? (
+                  <div className="flex flex-wrap justify-between gap-2 text-[11px] tabular-nums text-muted-foreground">
+                    <span>
+                      {t("settings.cache.diskRender")}：
+                      {formatMb(mem.renderCacheBytes, locale)}
+                    </span>
+                    <span>
+                      {t("settings.cache.diskOnline")}：
+                      {formatMb(mem.onlineCacheBytes, locale)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-2">

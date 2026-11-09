@@ -465,13 +465,13 @@ export default function WebAccessPanel() {
             ) : null}
 
             {status.transport !== "https" ? (
-              <div role="status" className="rounded-2xl border border-warning/40 bg-warning/10 p-3 text-xs leading-relaxed text-warning">
+              <div role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs leading-relaxed text-warning">
                 {t("settings.webAccess.httpWarning")}
               </div>
             ) : null}
 
             {/* Service status + bind controls */}
-            <div className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold">
                   {t("settings.webAccess.statusTitle")}
@@ -685,7 +685,7 @@ export default function WebAccessPanel() {
             </div>
 
             {/* Pairing window */}
-            <div className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="flex items-center gap-2 text-sm font-semibold">
                   <QrCode className="size-4 text-primary" />
@@ -786,7 +786,7 @@ export default function WebAccessPanel() {
             {/* Pending claims: one explicit approval at a time, never bulk. */}
             {phase === "enabled" ? (
               <div
-                className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm"
+                className="rounded-lg border border-border/60 bg-card/40 p-3"
                 aria-live="polite"
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -825,7 +825,7 @@ export default function WebAccessPanel() {
             ) : null}
 
             {/* Paired devices */}
-            <div className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold">
                   {t("settings.webAccess.devicesTitle")}

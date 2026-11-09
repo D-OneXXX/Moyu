@@ -696,7 +696,7 @@ export default function SettingsPage() {
 
   const onlineFeature = ONLINE_FEATURE;
   const tabTriggerClass =
-    "h-9 min-w-0 whitespace-nowrap rounded-full px-1.5 text-xs font-medium tracking-tight text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-2.5 xl:text-sm";
+    "h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold tracking-normal text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm";
 
   return (
     <div className="mx-auto w-full max-w-6xl px-5 pb-24 pt-4 sm:px-8">
@@ -736,7 +736,7 @@ export default function SettingsPage() {
           {/* 单行 5 列：900px 最小窗口 + 六语长文案下不折行、不溢出。 */}
           <TabsList
             aria-label={t("settings.tabs.label")}
-            className="grid h-auto w-full grid-cols-5 gap-0.5 overflow-hidden rounded-full border border-border bg-card p-1.5 shadow-elevation-sm group-data-horizontal/tabs:h-auto"
+            className="grid h-auto w-full grid-cols-5 items-stretch justify-normal gap-0.5 overflow-visible rounded-full border border-border bg-card p-1.5 shadow-elevation-sm group-data-horizontal/tabs:h-auto"
           >
             <TabsTrigger
               value="general"

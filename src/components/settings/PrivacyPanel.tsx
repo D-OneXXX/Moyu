@@ -17,12 +17,12 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   SettingRow,
   SettingsSection,
 } from "@/components/settings/SettingsSection";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import SafeModePill from "@/components/shell/SafeModePill";
 import { toast } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
 import { useI18n, type MessageKey } from "@/i18n";
@@ -106,7 +106,7 @@ function AuditCard({
   const { t } = useI18n();
   const variant = statusVariant(status);
   return (
-    <div className="rounded-xl border border-border bg-background/60 p-3.5">
+    <div className="rounded-lg border border-border/60 bg-card/40 p-3.5">
       <div className="flex flex-wrap items-start gap-3">
         <span
           className={cn(
@@ -142,10 +142,7 @@ function AuditCard({
   );
 }
 
-/**
- * 胶囊风格说明卡：圆角胶囊图标 + 硬阴影卡片，沿用 --sh-* 语义 token。
- * 仅承载静态指引文案，不触发任何网络请求或后端命令。
- */
+/** 胶囊风格说明卡：圆角胶囊图标 + 硬阴影卡片。 */
 function CapsuleCard({
   icon: Icon,
   title,
@@ -158,7 +155,7 @@ function CapsuleCard({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-background/60 p-3.5 shadow-elevation-sm">
+    <div className="rounded-lg border border-border/60 bg-card/40 p-3.5 shadow-elevation-sm">
       <div className="flex flex-wrap items-start gap-3">
         <span
           className={cn(
@@ -212,7 +209,7 @@ function StepChain({ steps }: { steps: string[] }) {
   );
 }
 
-/** 路径胶囊：等宽字体展示产品级固定路径（非用户私有路径）。 */
+/** 路径胶囊：等宽字体展示产品级固定路径。 */
 function PathCapsule({ path }: { path: string }) {
   return (
     <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] shadow-elevation-sm">
@@ -225,12 +222,16 @@ function PathCapsule({ path }: { path: string }) {
 /**
  * Settings → 隐私与安全。
  *
- * 一级只保留「安全状态徽章 + 一次清除痕迹」；完整自检报告、Windows 交付
- * 指引与诊断包导出都在二级 Sheet 里，挂载成本为零。
+ * 一级只保留「卡死保护与安全模式（Switch）+ 一键清除痕迹 + 安全自检入口」；
+ * 完整自检报告、数据说明、Windows 交付指引与诊断包导出都在居中弹窗里。
  */
 export default function PrivacyPanel() {
   const { t, locale, formatDateTime } = useI18n();
-  const { active: safeModeActive, refresh: refreshSafeMode } = useSafeMode();
+  const {
+    active: safeModeActive,
+    refresh: refreshSafeMode,
+    leaveSafeMode,
+  } = useSafeMode();
   const [enteringSafeMode, setEnteringSafeMode] = useState(false);
   const [audit, setAudit] = useState<SecurityAudit | null>(null);
   const [loading, setLoading] = useState(false);
@@ -239,7 +240,7 @@ export default function PrivacyPanel() {
   const [clearing, setClearing] = useState(false);
   const seqRef = useRef(0);
 
-  /** 公钥来源标记：Rust 侧返回 config / build / none，统一走 i18n，不直出英文。 */
+  /** 公钥来源标记：Rust 侧返回 config / build / none，统一走 i18n。 */
   const keySourceLabel = (source: string): string => {
     if (source === "config") return t("privacy.audit.keySource.config");
     if (source === "build") return t("privacy.audit.keySource.build");
@@ -338,18 +339,8 @@ export default function PrivacyPanel() {
   };
 
   const overallVariant = audit ? statusVariant(audit.overall) : "muted";
-  const passCount = audit
-    ? [audit.update, audit.isolation, audit.network, audit.storage].filter(
-        (item) => item.status === "pass",
-      ).length
-    : 0;
-  const warnCount = audit
-    ? [audit.update, audit.isolation, audit.network, audit.storage].filter(
-        (item) => item.status === "warn",
-      ).length
-    : 0;
 
-  /** 手动进入安全模式：立即生效并刷新全局上下文（退出走 SafeModePill / 本卡片）。 */
+  /** 手动进入安全模式：立即生效并刷新全局上下文（退出走 leaveSafeMode）。 */
   const onEnterSafeMode = async () => {
     if (enteringSafeMode) return;
     setEnteringSafeMode(true);
@@ -372,6 +363,14 @@ export default function PrivacyPanel() {
     }
   };
 
+  const onToggleSafeMode = (checked: boolean) => {
+    if (checked) {
+      void onEnterSafeMode();
+    } else {
+      void leaveSafeMode();
+    }
+  };
+
   const updateDescription = !audit
     ? t("privacy.audit.overall.unknown")
     : !audit.update.manifestConfigured
@@ -385,13 +384,16 @@ export default function PrivacyPanel() {
             : t("privacy.audit.update.pass");
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <SettingsSection
         icon={ShieldCheck}
         title={t("privacy.statement.title")}
         description={t("privacy.statement.summary")}
         action={
-          <Badge variant={overallVariant} className="gap-1.5 whitespace-nowrap px-2.5 py-1">
+          <Badge
+            variant={overallVariant}
+            className="gap-1.5 whitespace-nowrap px-2.5 py-1"
+          >
             <LockKeyhole className="size-3" />
             {audit ? t(statusKey(audit.overall)) : t("privacy.status.unknown")}
           </Badge>
@@ -422,7 +424,11 @@ export default function PrivacyPanel() {
                 disabled={loading || clearing}
                 onClick={() => void runAudit()}
               >
-                {loading ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+                {loading ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <ShieldCheck />
+                )}
                 {loading ? t("privacy.audit.running") : t("privacy.audit.run")}
               </Button>
             </div>
@@ -442,44 +448,66 @@ export default function PrivacyPanel() {
                 </Button>
               </div>
             ) : null}
-            {loading && !audit ? (
-              <p className="text-xs text-muted-foreground">
-                {t("privacy.audit.running")}
-              </p>
-            ) : null}
           </div>
         }
         rows={
-          <SettingRow
-            title={t("privacy.audit.clear")}
-            description={t("privacy.audit.clearBody")}
-          >
-            <Button
-              type="button"
-              variant="pill-danger"
-              size="pill-sm"
-              className="whitespace-nowrap"
-              disabled={clearing}
-              onClick={() => setConfirmClear(true)}
+          <>
+            <SettingRow
+              title={t("privacy.guard.title")}
+              description={t("privacy.guard.safeModeDesc")}
+              badge={
+                <Badge variant={safeModeActive ? "warning" : "muted"}>
+                  {safeModeActive
+                    ? t("privacy.guard.safeModeOn")
+                    : t("privacy.guard.safeModeOff")}
+                </Badge>
+              }
             >
-              {clearing ? <Loader2 className="animate-spin" /> : <Trash2 />}
-              {clearing ? t("privacy.audit.clearing") : t("privacy.audit.clear")}
-            </Button>
-          </SettingRow>
+              <Switch
+                checked={safeModeActive}
+                disabled={enteringSafeMode}
+                aria-label={t("privacy.guard.title")}
+                onCheckedChange={onToggleSafeMode}
+              />
+            </SettingRow>
+            <SettingRow
+              title={t("privacy.audit.clear")}
+              description={t("privacy.audit.clearBody")}
+            >
+              <Button
+                type="button"
+                variant="pill-danger"
+                size="pill-sm"
+                className="whitespace-nowrap"
+                disabled={clearing}
+                onClick={() => setConfirmClear(true)}
+              >
+                {clearing ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Trash2 />
+                )}
+                {clearing
+                  ? t("privacy.audit.clearing")
+                  : t("privacy.audit.clear")}
+              </Button>
+            </SettingRow>
+          </>
         }
         disclosure={{
           title: t("privacy.detail.reportTitle"),
           description: t("privacy.statement.summary"),
           triggerLabel: t("privacy.detail.open"),
-          triggerHint: t("privacy.detail.openHint", {
-            pass: passCount,
-            warn: warnCount,
-          }),
+          triggerHint: audit
+            ? t(statusKey(audit.overall))
+            : t("privacy.status.unknown"),
           testId: "privacy-detail",
         }}
       >
         <section className="space-y-3">
-          <h3 className="text-sm font-medium">{t("privacy.detail.reportTitle")}</h3>
+          <h3 className="text-sm font-medium">
+            {t("privacy.detail.reportTitle")}
+          </h3>
           {audit ? (
             <div className="space-y-3">
               <AuditCard
@@ -650,7 +678,7 @@ export default function PrivacyPanel() {
         <section className="space-y-3">
           <h3 className="text-sm font-medium">{t("privacy.statement.title")}</h3>
           <div className="grid gap-3 lg:grid-cols-2">
-            <div className="rounded-xl border border-border bg-background/60 p-3.5">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3.5">
               <p className="flex items-center gap-2 text-sm font-medium">
                 <Database className="size-4 text-primary" />
                 {t("privacy.storage.title")}
@@ -662,7 +690,7 @@ export default function PrivacyPanel() {
                 <li>{t("privacy.storage.settings")}</li>
               </ul>
             </div>
-            <div className="rounded-xl border border-border bg-background/60 p-3.5">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3.5">
               <p className="flex items-center gap-2 text-sm font-medium">
                 <Wifi className="size-4 text-primary" />
                 {t("privacy.network.title")}
@@ -698,7 +726,9 @@ export default function PrivacyPanel() {
         </section>
 
         <section className="space-y-3" data-testid="privacy-diagnostics">
-          <h3 className="text-sm font-medium">{t("privacy.detail.exportTitle")}</h3>
+          <h3 className="text-sm font-medium">
+            {t("privacy.detail.exportTitle")}
+          </h3>
           <DiagnosticPanel />
         </section>
 
@@ -756,65 +786,6 @@ export default function PrivacyPanel() {
             </div>
           </CapsuleCard>
         </section>
-      </SettingsSection>
-
-      {/* 卡片 2：卡死保护与安全模式（看门狗 / 暴躁点击为常开机制，不提供关闭开关）。 */}
-      <SettingsSection
-        icon={ShieldAlert}
-        title={t("privacy.guard.title")}
-        description={t("privacy.guard.description")}
-      >
-        <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60">
-          <SettingRow
-            title={t("privacy.guard.watchdog")}
-            description={t("privacy.guard.watchdogDesc")}
-          >
-            <Badge variant="success" className="whitespace-nowrap">
-              {t("privacy.guard.alwaysOn")}
-            </Badge>
-          </SettingRow>
-          <SettingRow
-            title={t("privacy.guard.rage")}
-            description={t("privacy.guard.rageDesc")}
-          >
-            <Badge variant="success" className="whitespace-nowrap">
-              {t("privacy.guard.alwaysOn")}
-            </Badge>
-          </SettingRow>
-          <SettingRow
-            title={t("privacy.guard.safeModeRow")}
-            description={t("privacy.guard.safeModeDesc")}
-            badge={
-              <Badge variant={safeModeActive ? "warning" : "muted"}>
-                {safeModeActive
-                  ? t("privacy.guard.safeModeOn")
-                  : t("privacy.guard.safeModeOff")}
-              </Badge>
-            }
-          >
-            {safeModeActive ? (
-              <SafeModePill />
-            ) : (
-              <Button
-                type="button"
-                variant="pill"
-                size="pill-sm"
-                className="whitespace-nowrap"
-                disabled={enteringSafeMode}
-                onClick={() => void onEnterSafeMode()}
-              >
-                {enteringSafeMode ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <ShieldAlert />
-                )}
-                {enteringSafeMode
-                  ? t("privacy.guard.entering")
-                  : t("privacy.guard.enter")}
-              </Button>
-            )}
-          </SettingRow>
-        </div>
       </SettingsSection>
 
       {confirmClear ? (

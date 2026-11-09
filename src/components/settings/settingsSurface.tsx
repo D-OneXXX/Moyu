@@ -2,10 +2,10 @@ import { createContext, useContext, type ReactNode } from "react";
 
 /**
  * Where a settings section is being rendered. On a page every section is a
- * card; inside a detail sheet it is flat content, so a sheet never nests a
- * card inside a card.
+ * grouped list; inside a centered dialog it is flat content, so a dialog never
+ * nests a bordered group inside a bordered group.
  */
-export type SettingsSurface = "page" | "sheet";
+export type SettingsSurface = "page" | "dialog";
 
 const SettingsSurfaceContext = createContext<SettingsSurface>("page");
 

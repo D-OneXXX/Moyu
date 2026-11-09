@@ -280,7 +280,7 @@ export default function CaDistributionPanel() {
             </Button>
           </div>
         ) : !ca?.initialized ? (
-          <div className="space-y-3 rounded-2xl border border-border bg-background/60 p-4">
+          <div className="space-y-3 rounded-lg border border-border/60 bg-card/40 p-3">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="warning">
                 {t("settings.ca.badgeNotInitialized")}
@@ -334,7 +334,7 @@ export default function CaDistributionPanel() {
               ) : null}
             </div>
 
-            <div className="rounded-2xl border border-border bg-background/60 p-4">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold">
                   {t("settings.ca.fingerprint")}
@@ -396,7 +396,7 @@ export default function CaDistributionPanel() {
               </Button>
             </div>
 
-            <div className="rounded-2xl border border-border bg-background/60 p-4">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div
                 className="flex flex-wrap items-center gap-2"
                 aria-live="polite"

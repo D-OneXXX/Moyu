@@ -242,19 +242,6 @@ function canonicalCustomSkin(parsed: unknown): unknown | null {
   };
 }
 
-/** 界面皮肤 id：内置 id 或运行时注册的 `custom-*`。 */
-function skinRule(): Rule {
-  const known = /^(default|framed|custom-[A-Za-z0-9_-]{1,64})$/;
-  return (value) => {
-    if (known.test(value)) return { action: "keep" };
-    return {
-      action: "remove",
-      kind: "invalid-enum",
-      reason: "界面皮肤 id 非法",
-    };
-  };
-}
-
 /** 在线连通性记录：与 lib/onlineLastTest.ts 的 readOnlineLastTest 保持一致。 */
 function canonicalOnlineLastTest(parsed: unknown): unknown | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -304,8 +291,6 @@ function canonicalProbeTicks(parsed: unknown): unknown | null {
 const KEY_RULES: Record<string, Rule> = {
   // 主题：只允许 system|light|dark，旧版 "dark-blue" 之类一律删除，ThemeProvider 回落到 system。
   "mr-theme": enumRule(["system", "light", "dark"], "主题"),
-  // 界面皮肤：内置 id 或运行时导入的自定义 id（与 features/skin/registry.ts 对齐）。
-  "mr-skin": skinRule(),
   // 用户导入的整页背景：{ id, dataUrl, width, height }。
   "mr-skin-custom": jsonRule("自定义皮肤背景", canonicalCustomSkin),
   // 界面语言：与 i18n/config.ts 的 LOCALES 完全一致。

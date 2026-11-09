@@ -255,9 +255,6 @@ fn ensure_online_allowed_at(path: &Path) -> Result<(), String> {
         }
     }
 }
-        }
-    }
-}
 
 fn boot_guard_path() -> Result<PathBuf, String> {
     Ok(crate::data_dir()?.join(BOOT_GUARD_FILE))

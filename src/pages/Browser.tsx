@@ -1120,7 +1120,7 @@ export default function BrowserPage() {
                                 : t("browser.notImported")}
                             </Badge>
                           </div>
-                          <p className="mono mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-muted-foreground">
+                          <p className="mono mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] tabular-nums text-muted-foreground">
                             <span>{formatSize(item.size)}</span>
                             <span aria-hidden>·</span>
                             <span>{item.modified}</span>

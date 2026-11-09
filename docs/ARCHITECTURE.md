@@ -121,9 +121,6 @@ browser WebView
 - Backups contain a sanitized database snapshot and an explicit allowlist of preferences.
   They exclude image caches, online headers, proxies, cookies, filter events, and internal
   version markers.
-- Startup recovery verifies a staging database before replacing the live database. The prior
-  database and its WAL/SHM sidecars are quarantined as one recovery group; the three newest
-  groups are retained. Recovery is considered healthy only after restored settings normalize.
 - The application does not start a Python sidecar or background service.
 
 ## Updates
@@ -143,9 +140,8 @@ browser WebView
   CSP is relaxed only for the Vite dev server.
 - Online URL and redirect handling rejects loopback, private, link-local, and metadata
   addresses in release builds.
-- The full engineering toolchain keeps static QA for the capability surface, CSP profile, route
-  fallbacks, storage sanitization, and other long-lived invariants. The public snapshot ships the
-  runtime invariants without the internal QA harness.
+- The repository’s static QA suite guards the capability surface, CSP profile, route fallbacks,
+  storage sanitization, and other long-lived invariants.
 
 ## Brand, icons, and skins
 
@@ -182,7 +178,8 @@ browser WebView
 | `src/` | React UI, reader, settings, i18n, diagnostics, and resilience |
 | `src-tauri/src/` | Rust commands, database, import/render pipeline, online fetch, security, updates |
 | `src-tauri/capabilities/` | Tauri permission boundaries per window |
-| `docs/` | Public architecture overview, licenses, and build assets |
+| `tests/qa/` | Static, behavioral, visual, privacy, cache, online, and chaos checks |
+| `docs/` | Public architecture overview and build assets |
+| `scripts/` | Version, build, and release helpers |
 
-The full QA, release, and internal engineering tooling is not part of the public snapshot.
 Verification commands are listed under **Development** in the README.

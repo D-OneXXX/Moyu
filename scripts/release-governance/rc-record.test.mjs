@@ -1,0 +1,557 @@
+/**
+ * 发布治理单元测试：RC 记录、安装验证回执与发布前闸门。
+ * 全部离线执行（不联网、不触碰 GitHub、不接触密钥）。
+ */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import {
+  buildRcRecord,
+  CHANNELS,
+  collectCandidateArtifacts,
+  GOVERNANCE_FILES,
+  parseTag,
+  renderRcSummary,
+  selectPrimaryArtifact,
+  selectSignatureArtifact,
+  sha256Bytes,
+  sha256File,
+  validateInstallAttestation,
+  validateRcRecord,
+  verifyPublishPreconditions,
+} from "./rc-record.mjs";
+import { runVerification } from "./verify-draft.mjs";
+
+const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+const INSTALLER = Buffer.from("installer-bytes");
+const INSTALLER_SHA = sha256Bytes(INSTALLER);
+const PREVIOUS_SHA = "b".repeat(64);
+const BOOK_ID = "1".repeat(64);
+const SNAPSHOT_SHA = "c".repeat(64);
+
+function makeRecord(overrides = {}) {
+  return buildRcRecord({
+    tag: "v0.17.2",
+    commit: COMMIT,
+    qa: { runId: "42", buildCommit: COMMIT },
+    artifacts: [{ name: "app-setup.exe", sha256: INSTALLER_SHA, size: INSTALLER.length }],
+    ...overrides,
+  });
+}
+
+function makeAttestation(overrides = {}) {
+  return {
+    kind: "manga-reader.install-verification",
+    version: "0.17.2",
+    commit: COMMIT,
+    platform: "windows-x86_64",
+    // 与安装脚本产出的结构一致（唯一契约）。
+    artifactName: "app-setup.exe",
+    artifactSha256: INSTALLER_SHA,
+    expectedArtifactSha256: INSTALLER_SHA,
+    previousVersion: "0.17.1",
+    previousArtifactName: "app-setup-0.17.1.exe",
+    previousArtifactSha256: PREVIOUS_SHA,
+    verdict: "PASS",
+    checks: {
+      freshInstall: "pass",
+      upgrade: "pass",
+      dataIntegrity: "pass",
+      recovery: "pass",
+      pdfReading: "pass",
+      progressRestart: "pass",
+      backupRestore: "pass",
+      databaseRollback: "pass",
+    },
+    library: {
+      quickCheck: "ok",
+      schemaVersionBefore: 1,
+      schemaVersionAfter: 1,
+      bookCount: 1,
+      readingLogRows: 2,
+      readingLogPages: 3,
+      books: [
+        {
+          id: BOOK_ID,
+          title: "Release Smoke Book",
+          pageCount: 3,
+          currentPage: 2,
+          scrollPct: 0.5,
+          removed: 0,
+          sourceType: "local",
+        },
+      ],
+      ipc: {
+        ok: true,
+        source: "list_books",
+        bookId: BOOK_ID,
+        title: "Release Smoke Book",
+        currentPage: 2,
+        scrollPct: 0.5,
+        bookCount: 1,
+        checkedAt: new Date().toISOString(),
+      },
+      snapshotSha256: SNAPSHOT_SHA,
+      verifiedAt: new Date().toISOString(),
+    },
+    machine: {
+      os: "Windows Server 2022",
+      cleanEnvironment: true,
+      image: "GitHub Actions windows-2022 20261021.1.0",
+      host: "RUNNER-01",
+      provenance: {
+        kind: "github-actions",
+        repository: "D-OneXXX/Moyu",
+        runId: "1234567890",
+        runUrl: "https://github.com/D-OneXXX/Moyu/actions/runs/1234567890",
+        runnerName: "RUNNER-01",
+        imageOs: "win22",
+        imageVersion: "20261021.1.0",
+        workflow:
+          "D-OneXXX/Moyu/.github/workflows/release-install-verify.yml@refs/heads/main",
+        actor: "D-OneXXX",
+        runAttempt: "1",
+        startedAt: new Date().toISOString(),
+      },
+    },
+    verifiedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+test("parseTag：常规与 Linux 高危通道互不串台", () => {
+  assert.equal(parseTag("v0.17.2")?.channel, "windows");
+  assert.equal(parseTag("v0.17.2")?.platform, "windows-x86_64");
+  assert.equal(parseTag("v0.17.2-linux-sec1")?.channel, "linux-critical");
+  const linuxRecord = makeRecord({
+    tag: "v0.17.2-linux-sec1",
+    artifacts: [
+      { name: "MangaReader-0.17.2-1.x86_64.rpm", sha256: "1".repeat(64), size: 3 },
+      { name: "MangaReader_0.17.2_amd64.AppImage", sha256: "2".repeat(64), size: 2 },
+      { name: "MangaReader_0.17.2_amd64.AppImage.sig", sha256: "3".repeat(64), size: 1 },
+      { name: "MangaReader_0.17.2_amd64.deb", sha256: "4".repeat(64), size: 4 },
+    ],
+  });
+  // 安装验证实际安装的是 deb；不能因为 rpm 字母序更前就把回执绑到 rpm。
+  assert.equal(selectPrimaryArtifact(linuxRecord)?.name, "MangaReader_0.17.2_amd64.deb");
+  assert.equal(
+    selectSignatureArtifact(linuxRecord)?.name,
+    "MangaReader_0.17.2_amd64.AppImage",
+  );
+  assert.equal(selectPrimaryArtifact(makeRecord())?.name, "app-setup.exe");
+  assert.equal(parseTag("v0.17.2-linux-sec1")?.platform, "linux-x86_64");
+  assert.equal(parseTag("v0.17.2-linux-sec1")?.version, "0.17.2");
+  assert.equal(parseTag("v0.17.2-rc1"), null);
+  assert.equal(parseTag("0.17.2"), null);
+});
+
+test("buildRcRecord：拒绝非法标签 / 非法 Commit / 空制品", () => {
+  assert.throws(() => buildRcRecord({ tag: "v0.17.2-rc1", commit: COMMIT, artifacts: [] }), /命名约定/);
+  assert.throws(() => buildRcRecord({ tag: "v0.17.2", commit: "short", artifacts: [] }), /commit/);
+  assert.throws(() => buildRcRecord({ tag: "v0.17.2", commit: COMMIT, artifacts: [] }), /至少包含一个制品/);
+});
+
+test("validateRcRecord：QA 证据 Commit 必须与候选 Commit 一致", () => {
+  const record = makeRecord();
+  assert.deepEqual(validateRcRecord(record), []);
+  const mismatched = makeRecord({
+    qa: { runId: "42", buildCommit: "f".repeat(40) },
+  });
+  assert.ok(
+    validateRcRecord(mismatched).some((p) => p.includes("QA 证据 Commit 与候选 Commit 不一致")),
+  );
+});
+
+test("validateInstallAttestation：必须 PASS 且八项检查齐全", () => {
+  assert.deepEqual(validateInstallAttestation(makeAttestation(), null), []);
+  const notPass = validateInstallAttestation(makeAttestation({ verdict: "FAIL" }), null);
+  assert.ok(notPass.some((p) => p.includes("不是 PASS")));
+  const missing = validateInstallAttestation(
+    makeAttestation({ checks: { freshInstall: "pass" } }),
+    null,
+  );
+  assert.ok(missing.some((p) => p.includes("upgrade")));
+  for (const key of ["pdfReading", "progressRestart", "backupRestore", "databaseRollback"]) {
+    const checks = { ...makeAttestation().checks };
+    delete checks[key];
+    assert.ok(
+      validateInstallAttestation(makeAttestation({ checks }), null).some((p) =>
+        p.includes(key),
+      ),
+      `缺少 ${key} 必须被拒绝`,
+    );
+  }
+});
+
+test("validateInstallAttestation：回执结构必须与安装脚本一致（artifactSha256）", () => {
+  // 旧结构（installer.sha256）不再被接受：发布工作流对真实回执必须能通过绑定校验。
+  const legacy = makeAttestation();
+  delete legacy.artifactSha256;
+  legacy.installer = { name: "app-setup.exe", sha256: INSTALLER_SHA };
+  const problems = validateInstallAttestation(legacy, null);
+  assert.ok(
+    problems.some((p) => p.includes("artifactSha256")),
+    "缺少 artifactSha256 必须被拒绝",
+  );
+});
+
+test("validateInstallAttestation：制品摘要与候选不一致 → 拒绝", () => {
+  const problems = validateInstallAttestation(makeAttestation(), {
+    version: "0.17.2",
+    commit: COMMIT,
+    platform: "windows-x86_64",
+    channel: "windows",
+    installerSha256: "f".repeat(64),
+  });
+  assert.ok(problems.some((p) => p.includes("疑似审批后替换制品")));
+});
+
+test("validateInstallAttestation：未声明干净环境 → 拒绝", () => {
+  const dirty = validateInstallAttestation(
+    makeAttestation({
+      machine: { os: "Windows 11", image: "shared-workstation", cleanEnvironment: false },
+    }),
+    null,
+  );
+  assert.ok(dirty.some((p) => p.includes("干净环境")));
+  const noImage = validateInstallAttestation(
+    makeAttestation({
+      machine: { os: "Windows Server 2022", cleanEnvironment: true, image: "" },
+    }),
+    null,
+  );
+  assert.ok(noImage.some((p) => p.includes("镜像")));
+});
+
+test("verifyPublishPreconditions：制品被替换 → 拒绝", () => {
+  const record = makeRecord();
+  const ok = verifyPublishPreconditions({
+    record,
+    actualDigests: new Map([["app-setup.exe", INSTALLER_SHA]]),
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(ok.ok, true, ok.problems.join(" | "));
+
+  const tampered = verifyPublishPreconditions({
+    record,
+    actualDigests: new Map([["app-setup.exe", sha256Bytes(Buffer.from("other"))]]),
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(tampered.ok, false);
+  assert.ok(tampered.problems.some((p) => p.includes("疑似审批后替换")));
+});
+
+test("verifyPublishPreconditions：跨通道 / 缺回执 → 拒绝", () => {
+  const linuxRecord = buildRcRecord({
+    tag: "v0.17.2-linux-sec1",
+    commit: COMMIT,
+    qa: { runId: "42", buildCommit: COMMIT },
+    artifacts: [{ name: "app.AppImage", sha256: INSTALLER_SHA }],
+  });
+  const cross = verifyPublishPreconditions({
+    record: linuxRecord,
+    actualDigests: new Map([["app.AppImage", INSTALLER_SHA]]),
+    attestation: makeAttestation({ platform: "linux-x86_64" }),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(cross.ok, false);
+  assert.ok(cross.problems.some((p) => p.includes("通道不匹配")));
+
+  const missing = verifyPublishPreconditions({
+    record: makeRecord(),
+    actualDigests: new Map([["app-setup.exe", INSTALLER_SHA]]),
+    attestation: null,
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(missing.ok, false);
+  assert.ok(missing.problems.some((p) => p.includes("安装验证回执缺失")));
+});
+
+test("verifyPublishPreconditions：额外出现记录之外的制品 → 拒绝", () => {
+  const verdict = verifyPublishPreconditions({
+    record: makeRecord(),
+    actualDigests: new Map([
+      ["app-setup.exe", INSTALLER_SHA],
+      ["surprise.exe", INSTALLER_SHA],
+    ]),
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(verdict.ok, false);
+  assert.ok(verdict.problems.some((p) => p.includes("记录之外的制品")));
+});
+
+test("verifyPublishPreconditions：发布后仅允许显式指定的对端通道清单，其他额外制品仍拒绝", () => {
+  const peer = "latest-linux-critical.json";
+  const base = {
+    record: makeRecord(),
+    actualDigests: new Map([
+      ["app-setup.exe", INSTALLER_SHA],
+      [peer, sha256Bytes(Buffer.from("linux-peer"))],
+    ]),
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  };
+  assert.equal(verifyPublishPreconditions(base).ok, false);
+  assert.equal(verifyPublishPreconditions({ ...base, allowedExtra: [peer] }).ok, true);
+
+  const withSurprise = verifyPublishPreconditions({
+    ...base,
+    actualDigests: new Map([...base.actualDigests, ["surprise.exe", INSTALLER_SHA]]),
+    allowedExtra: [peer],
+  });
+  assert.equal(withSurprise.ok, false);
+  assert.ok(withSurprise.problems.some((p) => p.includes("记录之外的制品")));
+});
+
+test("verifyPublishPreconditions：Linux 安装回执绑定 deb（不是字母序靠前的 rpm）", () => {
+  const debName = "MangaReader_0.17.2_amd64.deb";
+  const appName = "MangaReader_0.17.2_amd64.AppImage";
+  const debSha = sha256Bytes(Buffer.from("deb-bytes"));
+  const appSha = sha256Bytes(Buffer.from("app-bytes"));
+  const rpmSha = sha256Bytes(Buffer.from("rpm-bytes"));
+  const record = buildRcRecord({
+    tag: "v0.17.2-linux-sec1",
+    commit: COMMIT,
+    qa: { runId: "42", buildCommit: COMMIT },
+    artifacts: [
+      { name: "MangaReader-0.17.2-1.x86_64.rpm", sha256: rpmSha },
+      { name: appName, sha256: appSha },
+      { name: `${appName}.sig`, sha256: sha256Bytes(Buffer.from("sig")) },
+      { name: debName, sha256: debSha },
+    ],
+  });
+  const digests = new Map([
+    ["MangaReader-0.17.2-1.x86_64.rpm", rpmSha],
+    [appName, appSha],
+    [`${appName}.sig`, sha256Bytes(Buffer.from("sig"))],
+    [debName, debSha],
+  ]);
+  const attestation = makeAttestation({
+    platform: "linux-x86_64",
+    artifactName: debName,
+    artifactSha256: debSha,
+    expectedArtifactSha256: debSha,
+  });
+  const verdict = verifyPublishPreconditions({
+    record,
+    actualDigests: digests,
+    attestation,
+    channel: "linux-critical",
+    commit: COMMIT,
+  });
+  assert.equal(verdict.ok, true, verdict.problems.join(" | "));
+
+  const replaced = verifyPublishPreconditions({
+    record,
+    actualDigests: new Map(digests).set(debName, "f".repeat(64)),
+    attestation,
+    channel: "linux-critical",
+    commit: COMMIT,
+  });
+  assert.equal(replaced.ok, false);
+  assert.ok(replaced.problems.some((p) => p.includes("摘要不一致")));
+});
+
+test("renderRcSummary：审批依据必须包含版本 / Commit / 摘要", () => {
+  const summary = renderRcSummary(makeRecord());
+  assert.ok(summary.includes("0.17.2"));
+  assert.ok(summary.includes(COMMIT));
+  assert.ok(summary.includes(INSTALLER_SHA));
+});
+
+test("runVerification：本地目录校验（通过 / 摘要不符）", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-verify-"));
+  fs.writeFileSync(path.join(dir, "app-setup.exe"), INSTALLER);
+  const record = makeRecord();
+  const ok = runVerification({
+    record,
+    assetsDir: dir,
+    attestation: makeAttestation(),
+    tag: "v0.17.2",
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(ok.ok, true, ok.problems.join(" | "));
+
+  fs.writeFileSync(path.join(dir, "app-setup.exe"), Buffer.from("tampered"));
+  const bad = runVerification({
+    record,
+    assetsDir: dir,
+    attestation: makeAttestation(),
+    tag: "v0.17.2",
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.problems.some((p) => p.includes("疑似审批后替换")));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("通道定义互不重叠（平台键各自独立）", () => {
+  assert.notEqual(CHANNELS.windows.platform, CHANNELS["linux-critical"].platform);
+});
+
+test("parseTag：隔离演练标签被识别为 rehearsal 且不可发布", () => {
+  const parsed = parseTag("v0.0.0-rehearsal");
+  assert.equal(parsed?.rehearsal, true);
+  assert.equal(parsed?.version, "0.0.0");
+  assert.equal(parsed?.channel, "windows");
+
+  const record = buildRcRecord({
+    tag: "v0.0.0-rehearsal",
+    commit: COMMIT,
+    qa: { runId: "42", buildCommit: COMMIT },
+    artifacts: [{ name: "rehearsal-app-setup.exe", sha256: INSTALLER_SHA }],
+  });
+  assert.equal(record.rehearsal, true);
+  assert.deepEqual(validateRcRecord(record), []);
+
+  const verdict = verifyPublishPreconditions({
+    record,
+    actualDigests: new Map([["rehearsal-app-setup.exe", INSTALLER_SHA]]),
+    attestation: makeAttestation({ version: "0.0.0" }),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(verdict.ok, false);
+  assert.ok(verdict.problems.some((p) => p.includes("演练候选")));
+});
+
+test("治理文件（记录/摘要/安装回执）不参与制品摘要比对", () => {
+  const record = makeRecord();
+  const verdict = verifyPublishPreconditions({
+    record,
+    actualDigests: new Map([
+      ["app-setup.exe", INSTALLER_SHA],
+      ["rc-record.json", "c".repeat(64)],
+      ["rc-summary.md", "d".repeat(64)],
+      ["install-verification.json", "e".repeat(64)],
+      ["signature-verification.json", "f".repeat(64)],
+    ]),
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(verdict.ok, true, verdict.problems.join(" | "));
+});
+
+test("collectCandidateArtifacts：重跑候选时治理文件不污染制品清单", () => {
+  const write = (dir, name, bytes) => fs.writeFileSync(path.join(dir, name), bytes);
+  const cleanDir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-rc-clean-"));
+  const rerunDir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-rc-rerun-"));
+  const payloads = {
+    "app-setup.exe": INSTALLER,
+    "app-setup.exe.sig": Buffer.from("sig-bytes"),
+    "latest.json": Buffer.from('{"version":"0.17.2"}'),
+  };
+  for (const dir of [cleanDir, rerunDir]) {
+    for (const [name, bytes] of Object.entries(payloads)) write(dir, name, bytes);
+  }
+  // 重跑：Draft 里已经有候选阶段回填的治理文件。
+  for (const name of GOVERNANCE_FILES) write(rerunDir, name, Buffer.from(`${name}-bytes`));
+
+  const first = collectCandidateArtifacts(cleanDir);
+  const rerun = collectCandidateArtifacts(rerunDir);
+  assert.deepEqual(rerun, first, "有无治理文件必须得到完全相同的制品清单");
+  assert.deepEqual(
+    rerun.map((item) => item.name),
+    ["app-setup.exe", "app-setup.exe.sig", "latest.json"],
+  );
+
+  const recordInput = {
+    tag: "v0.17.2",
+    commit: COMMIT,
+    qa: { runId: "42", buildCommit: COMMIT },
+  };
+  const firstRecord = buildRcRecord({ ...recordInput, artifacts: first });
+  const rerunRecord = buildRcRecord({ ...recordInput, artifacts: rerun });
+  assert.deepEqual(
+    rerunRecord.artifacts,
+    firstRecord.artifacts,
+    "有无治理文件必须生成完全相同的 RC 制品清单",
+  );
+  const digests = new Map(
+    fs.readdirSync(rerunDir).map((name) => [name, sha256File(path.join(rerunDir, name))]),
+  );
+  const verdict = verifyPublishPreconditions({
+    record: rerunRecord,
+    actualDigests: digests,
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(verdict.ok, true, verdict.problems.join(" | "));
+  fs.rmSync(cleanDir, { recursive: true, force: true });
+  fs.rmSync(rerunDir, { recursive: true, force: true });
+});
+
+test("verifyPublishPreconditions：治理文件之外的多余文件仍被拒绝", () => {
+  const verdict = verifyPublishPreconditions({
+    record: makeRecord(),
+    actualDigests: new Map([
+      ["app-setup.exe", INSTALLER_SHA],
+      ["rc-record.json", "c".repeat(64)],
+      ["rc-summary.md", "d".repeat(64)],
+      ["install-verification.json", "e".repeat(64)],
+      ["signature-verification.json", "f".repeat(64)],
+      ["surprise.exe", INSTALLER_SHA],
+    ]),
+    attestation: makeAttestation(),
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(verdict.ok, false);
+  assert.ok(verdict.problems.some((p) => p.includes("记录之外的制品")));
+});
+
+test("runVerification：Draft 中的治理文件按治理文件处理，不参与摘要比对", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-verify-governance-"));
+  fs.writeFileSync(path.join(dir, "app-setup.exe"), INSTALLER);
+  for (const name of GOVERNANCE_FILES) {
+    fs.writeFileSync(path.join(dir, name), Buffer.from(`${name}-bytes`));
+  }
+  const verdict = runVerification({
+    record: makeRecord(),
+    assetsDir: dir,
+    attestation: makeAttestation(),
+    tag: "v0.17.2",
+    channel: "windows",
+    commit: COMMIT,
+  });
+  assert.equal(verdict.ok, true, verdict.problems.join(" | "));
+  fs.writeFileSync(path.join(dir, "latest-linux-critical.json"), Buffer.from("peer"));
+  const allowed = runVerification({
+    record: makeRecord(),
+    assetsDir: dir,
+    attestation: makeAttestation(),
+    tag: "v0.17.2",
+    channel: "windows",
+    commit: COMMIT,
+    allowedExtra: ["latest-linux-critical.json"],
+  });
+  assert.equal(allowed.ok, true, allowed.problems.join(" | "));
+  fs.writeFileSync(path.join(dir, "surprise.exe"), Buffer.from("extra"));
+  const rejected = runVerification({
+    record: makeRecord(),
+    assetsDir: dir,
+    attestation: makeAttestation(),
+    tag: "v0.17.2",
+    channel: "windows",
+    commit: COMMIT,
+    allowedExtra: ["latest-linux-critical.json"],
+  });
+  assert.equal(rejected.ok, false);
+  assert.ok(rejected.problems.some((p) => p.includes("记录之外的制品")));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

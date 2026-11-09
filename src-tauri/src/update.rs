@@ -542,7 +542,9 @@ impl Drop for PartialFileGuard {
             return;
         }
         if let Some(path) = self.path.take() {
-            let _ = tauri::async_runtime::spawn_blocking(move || remove_file_quiet(&path));
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                remove_file_quiet(&path)
+            }));
         }
     }
 }

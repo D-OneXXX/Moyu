@@ -135,6 +135,8 @@ const zhCN = {
   "error.backupIntegrity": "备份完整性校验失败，当前书库未被修改",
   "error.backupTooLarge": "备份文件超过 1 GiB 上限",
   "error.backupRestoreFailed": "恢复备份失败，当前书库未被修改",
+  "error.backupRequiresConfirmation":
+    "备份中有书源文件当前不可达；恢复会移除这些书的进度与阅读历史，请确认后重试。",
   "error.onlineUrlInvalid": "链接无效：仅支持不含账号密码的 http/https 地址",
   "error.onlineBlockedAddress": "该链接指向本机、私网或链路本地地址，已拒绝",
   "error.onlineTooManyPages": "页面数量超过上限，请拆分后重试",
@@ -341,6 +343,8 @@ const zhTW: CommonMessages = {
   "error.backupIntegrity": "備份完整性校驗失敗，目前書庫未被修改",
   "error.backupTooLarge": "備份檔案超過 1 GiB 上限",
   "error.backupRestoreFailed": "還原備份失敗，目前書庫未被修改",
+  "error.backupRequiresConfirmation":
+    "備份中有書籍來源檔目前無法存取；還原會移除這些書的進度與閱讀紀錄，請確認後再試。",
   "error.onlineUrlInvalid": "連結無效：僅支援不含帳號密碼的 http/https 位址",
   "error.onlineBlockedAddress": "此連結指向本機、私網或連結本地位址，已拒絕",
   "error.onlineTooManyPages": "頁面數量超過上限，請拆分後再試",
@@ -549,6 +553,8 @@ const en: CommonMessages = {
   "error.backupIntegrity": "Backup integrity check failed. Your current library was not modified.",
   "error.backupTooLarge": "The backup exceeds the 1 GiB limit.",
   "error.backupRestoreFailed": "Restoring the backup failed. Your current library was not modified.",
+  "error.backupRequiresConfirmation":
+    "Some book sources in this backup are currently unreachable. Restoring will remove their progress and reading history; confirm and try again.",
   "error.onlineUrlInvalid": "Invalid link: only http/https addresses without credentials are supported.",
   "error.onlineBlockedAddress": "This link points to a local, private, or link-local address and was rejected.",
   "error.onlineTooManyPages": "Too many pages. Split the source and try again.",
@@ -770,6 +776,8 @@ const es: CommonMessages = {
   "error.backupIntegrity": "Falló la verificación de integridad. Tu biblioteca actual no se modificó.",
   "error.backupTooLarge": "La copia supera el límite de 1 GiB.",
   "error.backupRestoreFailed": "No se pudo restaurar la copia. Tu biblioteca actual no se modificó.",
+  "error.backupRequiresConfirmation":
+    "Algunas fuentes de libros de esta copia no están accesibles. Restaurar eliminará su progreso e historial de lectura; confírmalo e inténtalo de nuevo.",
   "error.onlineUrlInvalid": "Enlace no válido: solo se admiten direcciones http/https sin credenciales.",
   "error.onlineBlockedAddress": "Este enlace apunta a una dirección local, privada o link-local y fue rechazado.",
   "error.onlineTooManyPages": "Hay demasiadas páginas. Divide el origen e inténtalo de nuevo.",
@@ -1009,6 +1017,8 @@ const ja: CommonMessages = {
   "error.backupIntegrity": "バックアップの整合性チェックに失敗しました。現在の書庫は変更されていません。",
   "error.backupTooLarge": "バックアップが 1 GiB の上限を超えています。",
   "error.backupRestoreFailed": "バックアップの復元に失敗しました。現在の書庫は変更されていません。",
+  "error.backupRequiresConfirmation":
+    "このバックアップには現在アクセスできない書籍ソースがあります。復元するとその進捗と閲覧履歴が削除されます。確認してから再試行してください。",
   "error.onlineUrlInvalid": "リンクが無効です。認証情報を含まない http/https アドレスのみ対応しています。",
   "error.onlineBlockedAddress": "このリンクはローカル・プライベート・リンクローカルアドレスを指すため拒否されました。",
   "error.onlineTooManyPages": "ページ数が上限を超えています。分割してから再試行してください。",
@@ -1242,6 +1252,8 @@ const ko: CommonMessages = {
   "error.backupIntegrity": "백업 무결성 검사에 실패했습니다. 현재 서재는 변경되지 않았습니다.",
   "error.backupTooLarge": "백업 파일이 1 GiB 한도를 초과했습니다.",
   "error.backupRestoreFailed": "백업 복원에 실패했습니다. 현재 서재는 변경되지 않았습니다.",
+  "error.backupRequiresConfirmation":
+    "이 백업에는 현재 접근할 수 없는 책 원본이 있습니다. 복원하면 해당 책의 진행 상황과 읽기 기록이 삭제됩니다. 확인 후 다시 시도하세요.",
   "error.onlineUrlInvalid": "잘못된 링크입니다. 계정 정보가 없는 http/https 주소만 지원합니다.",
   "error.onlineBlockedAddress": "이 링크는 로컬, 사설 또는 링크 로컬 주소를 가리켜 거부되었습니다.",
   "error.onlineTooManyPages": "페이지 수가 한도를 초과했습니다. 나눈 뒤 다시 시도하세요.",

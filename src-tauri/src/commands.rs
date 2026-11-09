@@ -1485,6 +1485,7 @@ pub(crate) fn prefetch_is_current(captured: u64, current: u64) -> bool {
 /// 服务端邻页预取：主请求落地后，后台把邻页灌进 L1/L2，
 /// 翻页不依赖前端 idle 回调时机（P0 手感：命中翻页零等待）。
 /// 本地读盘廉价，预取 ±1/±2；在线走网络，只预取 +1/+2（不向前回读）。
+#[allow(clippy::too_many_arguments)] // 参数都是预取上下文的独立事实，拆结构只会增加调用点噪音。
 fn prefetch_neighbors(
     state: &State<'_, Arc<AppState>>,
     book_id: &str,
@@ -4226,10 +4227,14 @@ mod tests {
     #[tokio::test]
     async fn settings_writes_are_serialized_and_failures_keep_memory_unchanged() {
         let state = online_state();
-        let mut first = Settings::default();
-        first.cache_budget_mb = 96;
-        let mut second = Settings::default();
-        second.cache_budget_mb = 192;
+        let first = Settings {
+            cache_budget_mb: 96,
+            ..Default::default()
+        };
+        let second = Settings {
+            cache_budget_mb: 192,
+            ..Default::default()
+        };
 
         let first_task = {
             let state = state.clone();
@@ -4264,8 +4269,10 @@ mod tests {
         let settings_before_failure = current;
         let cache_budget_before_failure = state.cache.stats().1;
         state.db.clear();
-        let mut failed = Settings::default();
-        failed.cache_budget_mb = 384;
+        let failed = Settings {
+            cache_budget_mb: 384,
+            ..Default::default()
+        };
         assert!(update_settings(state.clone(), failed).await.is_err());
         assert_eq!(
             state.settings.lock().cache_budget_mb,
@@ -4282,9 +4289,11 @@ mod tests {
     #[tokio::test]
     async fn multi_key_settings_failure_rolls_back_database_and_keeps_memory_unchanged() {
         let state = online_state();
-        let mut previous = Settings::default();
-        previous.theme = "dark".into();
-        previous.cache_budget_mb = 64;
+        let previous = Settings {
+            theme: "dark".into(),
+            cache_budget_mb: 64,
+            ..Default::default()
+        };
         *state.settings.lock() = previous.clone();
         state
             .db

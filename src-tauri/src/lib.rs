@@ -462,7 +462,7 @@ fn migrate_legacy_into(data: &Path, isolated: bool) {
 }
 
 fn init_app(state: &Arc<AppState>, dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let db_path = dir.join("library.db");
     state.set_db_path(db_path.clone());
     let conn = match db::open(&db_path) {
@@ -623,35 +623,24 @@ pub fn run() {
                 tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
                     install_app_paths(tauri_data, app_cache, legacy)
                 }))
-                .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("启动路径后台任务失败：{error}"),
-                    )
-                })?;
+                .map_err(|error| std::io::Error::other(format!("启动路径后台任务失败：{error}")))?;
             // 1.1) 清理上次更新遗留的临时包 / AppImage 旧备份（>24h）。
-            let _ = tauri::async_runtime::spawn_blocking(update::cleanup_stale_artifacts);
+            drop(tauri::async_runtime::spawn_blocking(
+                update::cleanup_stale_artifacts,
+            ));
             // 2) 旧 Local AppData 数据一次性接续（仅补缺失文件；隔离模式跳过）。
             let migration_data = data_dir.clone();
             tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
                 migrate_legacy_into(&migration_data, isolated)
             }))
-            .map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("旧数据后台迁移任务失败：{error}"),
-                )
-            })?;
+            .map_err(|error| std::io::Error::other(format!("旧数据后台迁移任务失败：{error}")))?;
             // 3) AppState 的渲染/在线缓存根依赖已安装的 cache_dir，必须最后创建。
             let app_state =
                 tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(|| {
                     Arc::new(AppState::new())
                 }))
                 .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("缓存状态初始化后台任务失败：{error}"),
-                    )
+                    std::io::Error::other(format!("缓存状态初始化后台任务失败：{error}"))
                 })?;
             app.manage(app_state);
             // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
@@ -682,10 +671,7 @@ pub fn run() {
                     init_app(&init_state, &init_dir)
                 }))
                 .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("数据库初始化后台任务失败：{error}"),
-                    )
+                    std::io::Error::other(format!("数据库初始化后台任务失败：{error}"))
                 })?;
             if init_result.is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。
@@ -718,7 +704,9 @@ pub fn run() {
             }
             // 启动时后台 trim 统一磁盘缓存（render + online，共用软上限）。
             let st2 = app.state::<Arc<AppState>>().inner().clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || st2.trim_disk_cache());
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                st2.trim_disk_cache()
+            }));
             // 之后不再有常驻巡检定时器：写盘累计 256MB（`note_cache_write`）
             // 与设置保存会按需触发淘汰，退出路径再做一次收尾。
             // 空闲静默态不允许任何周期线程唤醒（CPU 归零）。

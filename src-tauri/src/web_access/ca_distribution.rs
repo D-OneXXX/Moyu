@@ -215,10 +215,7 @@ impl CaDistributionRuntime {
             tokio::task::spawn_blocking(move || CaManager::new(ca_root).root_certificate())
                 .await
                 .map_err(|_| {
-                    CaDistributionError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "CA certificate worker failed",
-                    ))
+                    CaDistributionError::Io(std::io::Error::other("CA certificate worker failed"))
                 })??;
         let listener = TcpListener::bind(SocketAddr::from((bind_ip, self.port))).await?;
         let local_addr = listener.local_addr()?;

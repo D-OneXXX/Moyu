@@ -332,7 +332,7 @@ export default function OpdsPanel() {
         {probe?.ok ? (
           <span
             role="status"
-            className="min-w-0 break-words text-xs font-medium text-success"
+            className="min-w-0 break-words text-xs font-medium tabular-nums text-success"
           >
             {t("opds.settings.testOk", {
               title: probe.title || t("opds.dialog.untitled"),

@@ -512,21 +512,24 @@ export default function WebAccessPanel() {
                   <dt className="text-muted-foreground">
                     {t("settings.webAccess.port")}
                   </dt>
-                  <dd className="mt-0.5 font-mono">
+                  <dd className="mt-0.5 font-mono tabular-nums">
                     {status.port === null ? "—" : String(status.port)}
                   </dd>
                 </div>
               </dl>
 
               <div className="mt-2 flex flex-wrap gap-2">
-                <Badge variant="secondary" className="whitespace-nowrap">
+                <Badge
+                  variant="secondary"
+                  className="whitespace-nowrap tabular-nums"
+                >
                   {t("settings.webAccess.deviceCount", {
                     count: status.deviceCount,
                   })}
                 </Badge>
                 <Badge
                   variant={pendingCount > 0 ? "warning" : "muted"}
-                  className="whitespace-nowrap"
+                  className="whitespace-nowrap tabular-nums"
                 >
                   {t("settings.webAccess.pendingCount", {
                     count: pendingCount,

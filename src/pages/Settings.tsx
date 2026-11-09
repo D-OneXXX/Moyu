@@ -698,7 +698,7 @@ export default function SettingsPage() {
     THEME_OPTIONS.find((option) => option.value === mode) ?? THEME_OPTIONS[0];
   const onlineFeature = ONLINE_FEATURE;
   const tabTriggerClass =
-    "h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm";
+    "h-9 min-w-0 whitespace-nowrap rounded-full px-1.5 text-xs font-medium tracking-tight text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-2.5 xl:text-sm";
 
   return (
     <div className="mx-auto w-full max-w-4xl px-5 pb-24 pt-4 sm:px-8">
@@ -1330,7 +1330,10 @@ export default function SettingsPage() {
               title={t("settings.cache.manageTitle")}
               description={t("settings.cache.manageDescription")}
             >
-              <div className="space-y-2 rounded-lg border border-border/60 bg-card/40 p-3">
+              <div
+                className="space-y-2 rounded-lg border border-border/60 bg-card/40 p-3"
+                data-testid="disk-cache-usage"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-medium text-muted-foreground">
                     {t("settings.cache.diskUsage")}

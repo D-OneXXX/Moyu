@@ -296,6 +296,7 @@ const KEY_RULES: Record<string, Rule> = {
   // 界面语言：与 i18n/config.ts 的 LOCALES 完全一致。
   "mr-locale": enumRule(["zh-CN", "zh-TW", "en", "es", "ja", "ko"], "界面语言"),
   "mr-skin": textRule(128, "界面皮肤"),
+  // 全局快捷键总开关（features/shortcuts/preferences.ts）。
   "mr-shortcuts-enabled": flagRule("全局快捷键开关"),
   // 实验性开关镜像（lib/tauri.ts）：只认 "1"。
   "mr-exp-wt": flagRule("实验性条漫开关"),

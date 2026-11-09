@@ -666,10 +666,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 
@@ -2474,9 +2472,6 @@ name = "jpeg-decoder"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
-dependencies = [
- "rayon",
-]
 
 [[package]]
 name = "js-sys"
@@ -2664,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "manga-reader-tauri"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4794,7 +4789,6 @@ dependencies = [
  "libc",
  "memchr",
  "ntapi",
- "rayon",
  "windows 0.57.0",
 ]
 
@@ -5362,7 +5356,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot 0.12.5",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

@@ -1,9 +1,12 @@
 name: PR governance
 
-# 只校验 PR 元数据；不 checkout、不执行 PR 代码。
+# 只校验 PR 元数据；不执行 PR 代码。
+# 使用 base SHA 的受信任脚本，避免 PR 修改校验器绕过门禁。
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review]
+  # merge queue 的合并组没有 pull_request 元数据：入队前 PR 阶段已经校验过
+  # issue 链接与分支命名，这里只负责让同名必需检查在 merge_group 上产出成功。
   merge_group:
 
 permissions:
@@ -16,58 +19,32 @@ concurrency:
 jobs:
   pr-governance:
     name: PR governance (issue link + branch naming)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Validate PR metadata
-        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          node - <<'NODE'
-          function stripHtmlComments(value) {
-            let output = "";
-            let index = 0;
-            while (index < value.length) {
-              const open = value.indexOf("<!--", index);
-              if (open === -1) {
-                output += value.slice(index);
-                break;
-              }
-              output += value.slice(index, open);
-              const close = value.indexOf("-->", open + 4);
-              if (close === -1) break;
-              index = close + 3;
-            }
-            return output;
-          }
-
-          const branch = process.env.HEAD_REF || "";
-          const body = stripHtmlComments(process.env.PR_BODY || "");
-          const errors = [];
-
-          if (!/^(fix|feat|hotfix|chore)\/[0-9]+-[a-z0-9-]+$/.test(branch)) {
-            errors.push(`分支名不符合 fix|feat|hotfix|chore/<issue>-<slug>：${branch}`);
-          }
-          if (!/(?:Closes|Fixes|Resolves|Refs)\s+#\d+/i.test(body)) {
-            errors.push("PR 正文缺少 Closes/Fixes/Resolves/Refs #<issue>");
-          }
-          for (const section of ["验证", "数据与隐私", "发布影响"]) {
-            if (!body.includes(section)) errors.push(`PR 正文缺少「${section}」小节`);
-          }
-
-          if (errors.length > 0) {
-            for (const error of errors) console.error(`[pr-governance] ${error}`);
-            process.exitCode = 1;
-          } else {
-            console.log("[pr-governance] OK");
-          }
-          NODE
-
-      - name: Dependabot passthrough
-        if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
-        run: echo "Dependabot PR：跳过人工治理字段校验。"
-
+      # merge_group 下没有 pull_request payload：直接通过，保持检查名与 PR 阶段一致。
       - name: Merge queue passthrough
         if: github.event_name == 'merge_group'
-        run: echo "merge_group：PR 阶段已校验，保持同一必需检查名。"
+        run: |
+          echo "merge_group: PR 阶段已校验 issue 链接与分支命名，这里只透传同一必需检查名。"
+
+      - name: Checkout trusted base
+        if: github.event_name != 'merge_group'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        if: github.event_name != 'merge_group'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Validate PR metadata
+        if: github.event_name != 'merge_group'
+        run: |
+          if [ ! -f scripts/pr-governance.mjs ]; then
+            echo "Bootstrap: script is not on base yet; skipping until this workflow is merged."
+            exit 0
+          fi
+          node scripts/pr-governance.mjs

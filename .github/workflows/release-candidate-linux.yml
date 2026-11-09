@@ -1,0 +1,391 @@
+name: Release candidate (Linux critical)
+
+# Phase 4 发布体系 · Linux 高危补丁通道（与 Windows 通道完全独立）。
+# 不再有 Tag 触发；产物只落成 **Draft**，公开与否由人工审批后的 publish 工作流决定。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "候选标签（vX.Y.Z-linux-secN）。已有标签必须指向候选提交"
+        required: true
+        type: string
+      source_commit:
+        description: "候选的完整 40 位 main 提交 SHA，必须与 QA 证据一致"
+        required: true
+        type: string
+      qa_run_id:
+        description: "qa-full 的 run id（必须成功，且 headSha 等于候选标签的 Commit）"
+        required: true
+        type: string
+      install_attestation_b64:
+        description: "Linux 干净环境的安装验证回执（base64 编码的 JSON）"
+        required: false
+        type: string
+      release_notes:
+        description: "必填：双语 Release Notes，英文完整版在前、简体中文在后、3–5 条更新。清单 notes 在候选阶段固化，事后改 Draft 正文不会同步"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-linux-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Build signed Linux candidate → Draft
+    runs-on: ubuntu-22.04
+    # 需要人工审批的 Environment（尚未创建时本 job 会直接失败——这是安全的失败方向）。
+    environment: release-linux
+    permissions:
+      contents: write # 仅用于创建 Draft 与上传候选制品
+    steps:
+      - name: Checkout trusted main tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Validate requested candidate commit
+        id: candidate_ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ inputs.tag }}
+          CANDIDATE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          mkdir -p "$RUNNER_TEMP/candidate-gate"
+          cp scripts/release-governance/{candidate-evidence,candidate-identity,release-guard}.mjs "$RUNNER_TEMP/candidate-gate/"
+          node "$RUNNER_TEMP/candidate-gate/candidate-evidence.mjs"
+          echo "commit=$CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout verified candidate commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.candidate_ref.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enable Node.js dependency cache
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install WebKitGTK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libfuse2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Resolve candidate identity
+        id: identity
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          EXPECTED_COMMIT: ${{ steps.candidate_ref.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-linux-sec[0-9]+$'; then
+            echo "Linux 高危通道标签必须形如 vX.Y.Z-linux-secN：$TAG" >&2
+            exit 1
+          fi
+          VERSION="$(node -p "require('./package.json').version")"
+          BASE="$(printf '%s' "$TAG" | sed -E 's/-linux-sec.*//')"
+          if [ "v${VERSION}" != "$BASE" ]; then
+            echo "标签 $TAG 的基础版本与 package.json v${VERSION} 不一致" >&2
+            exit 1
+          fi
+          COMMIT="$(git rev-parse HEAD)"
+          if [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "候选检出提交与验证的提交不一致" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "候选 Commit $COMMIT 不在 main 上，拒绝作为发布候选" >&2
+            exit 1
+          fi
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      # ---------- 已公开的 Release 不得被候选流程改写 ----------
+      # 与 Windows 候选一致：目标 tag 已对应公开 Release 时立即失败关闭，
+      # 且必须发生在构建与任何 gh release 写入之前——否则复用同一份资产会
+      # 静默改写已发布的清单与证据（v0.17.2 曾出现发布 31 小时后资产被重传）。
+      - name: Refuse to touch a published release
+        id: release_guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # gh 对「不存在 / 401 / 403 限流 / 5xx / DNS 失败」都返回 exit 1，必须看诊断输出分类；
+          # 旧写法 `if ! gh release view` 会把瞬时故障当成"不存在"，继续构建并改写已发布资产。
+          # 临时文件放在 Node 也可见的原生临时目录（Git Bash 的 /tmp 原生 Node 读不到）。
+          WORKDIR="${RUNNER_TEMP:-$(node -p 'require("os").tmpdir()')}"
+          mkdir -p "$WORKDIR"
+          OUT_FILE="$WORKDIR/mr-release-guard-out-$$.txt"
+          ERR_FILE="$WORKDIR/mr-release-guard-err-$$.txt"
+          : >"$OUT_FILE"
+          : >"$ERR_FILE"
+          trap 'status=$?; rm -f "$OUT_FILE" "$ERR_FILE" 2>/dev/null || true; exit $status' EXIT
+          set +e
+          gh release view "$TAG" --json isDraft --jq .isDraft >"$OUT_FILE" 2>"$ERR_FILE"
+          STATUS=$?
+          set -e
+          # 只有正向 404 才放行；401/403/限流/5xx/网络/空输出/未知文本一律失败关闭。
+          STATE="$(node scripts/release-governance/release-guard.mjs \
+            --status "$STATUS" --stdout-file "$OUT_FILE" --stderr-file "$ERR_FILE" --tag "$TAG")"
+          case "$STATE" in
+            draft) echo "Draft 已存在，复用：$TAG" ;;
+            missing) echo "确认 Release 不存在，候选流程将创建 Draft：$TAG" ;;
+            *) echo "release-guard 返回未知状态：$STATE；拒绝继续" >&2; exit 1 ;;
+          esac
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      # 备注校验前移到构建之前：Linux 通道没有演练模式，留空必须立刻失败，
+      # 而不是先编译数十分钟再报错。清单 notes 也在候选阶段固化，事后补正文无效。
+      - name: Validate and resolve bilingual release notes
+        id: notes
+        shell: bash
+        env:
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: node scripts/release-governance/release-notes.mjs
+
+      - name: Verify QA evidence run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+        run: |
+          set -euo pipefail
+          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${QA_RUN_ID}")"
+          CONCLUSION="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).conclusion')"
+          HEAD_SHA="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).head_sha')"
+          WORKFLOW_PATH="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).path')"
+          EVENT="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).event')"
+          if [ "$WORKFLOW_PATH" != ".github/workflows/qa-full.yml" ] || [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "QA run ${QA_RUN_ID} 不是手动触发的正式完整 QA 工作流" >&2
+            exit 1
+          fi
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "QA run ${QA_RUN_ID} 结论为 ${CONCLUSION}，不是成功" >&2
+            exit 1
+          fi
+          if [ "$HEAD_SHA" != "${{ steps.identity.outputs.commit }}" ]; then
+            echo "QA run ${QA_RUN_ID} 的 headSha=${HEAD_SHA} 与候选 Commit=${{ steps.identity.outputs.commit }} 不一致" >&2
+            exit 1
+          fi
+          echo "QA 证据绑定成功：run=${QA_RUN_ID} headSha=${HEAD_SHA}"
+
+      - name: Local gates
+        run: |
+          npm run version:check
+          npm run test:version
+          npm run test:governance
+          npm run test:fixtures
+          npm run test:release
+          npm run format:check
+          npx tsc --noEmit
+          npm run build
+          cargo test --lib --manifest-path src-tauri/Cargo.toml
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Build signed Linux bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MR_BUILD_ORIGIN: official
+        run: npm run tauri -- build --config src-tauri/tauri.linux.conf.json --bundles deb,rpm,appimage
+
+      - name: Verify Linux updater endpoint is baked into the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="src-tauri/target/release/manga-reader-tauri"
+          if [ ! -f "$BIN" ]; then
+            echo "找不到 $BIN，overlay 构建没有产出 release 二进制" >&2
+            exit 1
+          fi
+          if ! grep -a -q "latest-linux-critical.json" "$BIN"; then
+            echo "release 二进制里没有 latest-linux-critical.json：平台 overlay 未生效" >&2
+            exit 1
+          fi
+
+      - name: Generate and collect candidate artifacts
+        id: artifacts
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          node scripts/make-linux-critical-manifest.mjs
+          mkdir -p candidate
+          cp src-tauri/target/release/bundle/deb/*.deb candidate/
+          cp src-tauri/target/release/bundle/rpm/*.rpm candidate/
+          cp src-tauri/target/release/bundle/appimage/*.AppImage candidate/
+          cp src-tauri/target/release/bundle/appimage/*.AppImage.sig candidate/
+          cp src-tauri/target/release/bundle/appimage/latest-linux-critical.json candidate/
+          ls -l candidate/
+
+      - name: Verify updater manifest (pre-Draft)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-updater-manifest.mjs candidate/latest-linux-critical.json \
+            --expect-version "${{ steps.identity.outputs.version }}" \
+            --require-platform linux-x86_64
+
+      # 非空输入先按强制结构校验（英文完整版在前、简体中文在后、3–5 条更新、
+      # 不含内部工程细节），不合格直接失败，不让不合规文案进 Draft。
+      # ---------- 写入前复检 ----------
+      # 守卫在构建之前，而构建可能持续数十分钟；若期间该 Release 被他人公开，
+      # 仍按旧状态执行 `gh release edit --notes` 会改写已公开 Release 的正文。
+      # 真正写入前再判定一次：published / unknown 一律失败关闭。
+      - name: Re-check release state before Draft write
+        id: release_recheck
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          WORKDIR="${RUNNER_TEMP:-$(node -p 'require("os").tmpdir()')}"
+          mkdir -p "$WORKDIR"
+          OUT_FILE="$WORKDIR/mr-release-recheck-out-$$.txt"
+          ERR_FILE="$WORKDIR/mr-release-recheck-err-$$.txt"
+          : >"$OUT_FILE"
+          : >"$ERR_FILE"
+          trap 'status=$?; rm -f "$OUT_FILE" "$ERR_FILE" 2>/dev/null || true; exit $status' EXIT
+          set +e
+          gh release view "$TAG" --json isDraft --jq .isDraft >"$OUT_FILE" 2>"$ERR_FILE"
+          STATUS=$?
+          set -e
+          STATE="$(node scripts/release-governance/release-guard.mjs \
+            --status "$STATUS" --stdout-file "$OUT_FILE" --stderr-file "$ERR_FILE" --tag "$TAG")"
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Re-check candidate identity before Draft write
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.identity.outputs.tag }}
+          CANDIDATE_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          node "$RUNNER_TEMP/candidate-gate/candidate-evidence.mjs"
+
+      - name: Create or reuse Draft release
+        id: draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+          RELEASE_BODY: ${{ steps.notes.outputs.body }}
+          # 复检刚写出的状态：构建前的判定可能已经过期。
+          RELEASE_STATE: ${{ steps.release_recheck.outputs.state }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_STATE" = "draft" ]; then
+            echo "Draft 已存在，复用：$TAG"
+            # 只更新 Draft 正文（仍为 Draft）；发布前审批人看到的是正式说明。
+            gh release edit "$TAG" --notes "$RELEASE_BODY"
+          else
+            gh release create "$TAG" --target "$COMMIT" --draft \
+              --title "Moyu $TAG (Draft · Linux critical · 待审批)" \
+              --notes "$RELEASE_BODY"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload candidate artifacts to Draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" candidate/* --clobber
+
+      - name: Build and upload RC record
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+        run: |
+          set -euo pipefail
+          rm -rf downloaded && mkdir -p downloaded
+          gh release download "$TAG" --dir downloaded --clobber
+          node -e '
+            const fs = require("fs");
+            const { buildRcRecord, collectCandidateArtifacts, renderRcSummary } = require("./scripts/release-governance/rc-record.mjs");
+            // 治理文件不进入制品清单：候选重跑时不会被既有回执污染摘要。
+            const artifacts = collectCandidateArtifacts("downloaded");
+            const record = buildRcRecord({
+              tag: process.env.TAG,
+              commit: process.env.COMMIT,
+              qa: { workflow: "qa-full", runId: process.env.QA_RUN_ID, buildCommit: process.env.COMMIT },
+              artifacts,
+            });
+            fs.writeFileSync("rc-record.json", JSON.stringify(record, null, 2) + "\n");
+            fs.writeFileSync("rc-summary.md", renderRcSummary(record) + "\n");
+          '
+          gh release upload "$TAG" rc-record.json rc-summary.md --clobber
+
+      - name: Upload install verification attestation (optional at candidate stage)
+        if: ${{ inputs.install_attestation_b64 != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          ATTESTATION_B64: ${{ inputs.install_attestation_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ATTESTATION_B64" | base64 -d > install-verification.json
+          node -e 'JSON.parse(require("fs").readFileSync("install-verification.json","utf8"))'
+          gh release upload "$TAG" install-verification.json --clobber
+          rm -f install-verification.json
+
+      - name: Summarize candidate
+        shell: bash
+        env:
+          TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+        run: |
+          {
+            echo "### Release Candidate (Linux critical)"
+            echo ""
+            echo "- Tag: \`${TAG}\`"
+            echo "- Commit: \`${COMMIT}\`"
+            echo "- QA run: \`${QA_RUN_ID}\`"
+            echo "- 状态：**Draft（未公开）**，等待人工审批后由 publish 工作流发布"
+          } >> "$GITHUB_STEP_SUMMARY"

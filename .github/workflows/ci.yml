@@ -1,24 +1,47 @@
 name: CI
 
+# 单个工作流承载两条平台门禁（原 ci-linux-check.yml / ci-windows-check.yml）。
+#
+# 分支保护的必需检查按 job 的 `name` 逐字匹配，所以：
+# - `name: ${{ matrix.name }}` 不能改成带矩阵后缀的写法，否则两个必需上下文
+#   会变成 `... (linux)` 之类的新名字，保护规则永远停在 Expected；
+# - matrix 一条 leg 只产出一个 check，两个必需检查名必须逐字保留：
+#     cargo check + frontend build (ubuntu-22.04)
+#     tsc + cargo test + static QA (windows-latest)
+#
+# Windows 宿主上 `cargo check` 会跳过所有 `#[cfg(target_os = "linux")]` 块，
+# Linux 专属代码的真实编译验证只能在这里完成。
 on:
   pull_request:
-  push:
     branches: [main]
+  # merge queue 会在合并组上重跑必需检查；缺这个触发时入队会一直等检查。
+  merge_group:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# 同一 PR 的旧 run 在新提交后没有继续跑的价值：取消它们，避免
+# 6 次 push 叠出 6 份检查。merge queue 与手动 run 不取消，保留完整证据。
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-    name: build + rust check (windows-latest)
-    runs-on: windows-latest
-    timeout-minutes: 45
-    env:
-      CARGO_TERM_COLOR: always
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 两条 leg 互不依赖：一条失败不应掩盖另一条的结论。
+      fail-fast: false
+      matrix:
+        include:
+          - name: cargo check + frontend build (ubuntu-22.04)
+            os: ubuntu-22.04
+            platform: linux
+          - name: tsc + cargo test + static QA (windows-latest)
+            os: windows-latest
+            platform: windows
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -31,27 +54,167 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Setup Rust
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          components: rustfmt
 
-      - name: Cache Rust
+      - name: Cache Rust build
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: "./src-tauri -> target"
 
+      # 2026-11-06 实测：137 个包 / 55.6MB 的 WebKitGTK 依赖会在 azure 镜像上
+      # 以 45KB/s 下载，单次卡 580 秒，Linux check 从 6 分钟变成 26–32 分钟。
+      # 镜像回退已把 apt 步降到约 1 分钟；这里额外缓存 .deb，减少重复下载。
+      #
+      # 不要直接缓存 /var/cache/apt/archives：post-step 以 runner 用户打包，
+      # lock 是 root-only、partial 是 _apt:root 0700，会因 Permission denied
+      # 导致 "Failed to save"（main run 42160455251）。缓存 runner 可读写的
+      # 暂存目录，再与 apt 目录互相复制。
+      - name: Cache apt packages
+        if: matrix.platform == 'linux'
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/apt-debs
+          # 版本变化时 apt 仍会下载缺失的 .deb；旧包只会占用缓存空间。
+          key: apt-jammy-webkit2gtk-v2
+
+      - name: Restore cached debs into apt cache
+        if: matrix.platform == 'linux'
+        run: |
+          CACHE_DIR="$RUNNER_TEMP/apt-debs"
+          sudo mkdir -p /var/cache/apt/archives/partial
+          if compgen -G "$CACHE_DIR/*.deb" >/dev/null; then
+            sudo cp -n "$CACHE_DIR"/*.deb /var/cache/apt/archives/
+          fi
+          # apt 下载需要 root 拥有目录、_apt 拥有 partial。
+          sudo chown -R root:root /var/cache/apt/archives
+          sudo chown -R _apt:root /var/cache/apt/archives/partial
+          sudo chmod 700 /var/cache/apt/archives/partial
+
+      - name: Install WebKitGTK build dependencies
+        if: matrix.platform == 'linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+        run: |
+          # GitHub-hosted ubuntu-22.04 的 azure 镜像偶发卡住；回退到官方 archive。
+          # 当前镜像把仓库配置放在 /etc/apt/apt-mirrors.txt（日志里的
+          # "Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist"），只改 sources.list
+          # 不会生效；两个文件都检查。
+          for mirror_file in /etc/apt/sources.list /etc/apt/apt-mirrors.txt; do
+            if [ -f "$mirror_file" ] && grep -q 'azure.archive.ubuntu.com' "$mirror_file"; then
+              sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "$mirror_file"
+            fi
+          done
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xvfb
+
+      # post-step 只打包 runner 可读写的 $RUNNER_TEMP/apt-debs；apt 下载的
+      # .deb 在这里复制过去，缓存保存才不会碰到 lock/partial。
+      - name: Stage apt debs for cache
+        if: always() && matrix.platform == 'linux'
+        run: |
+          CACHE_DIR="$RUNNER_TEMP/apt-debs"
+          mkdir -p "$CACHE_DIR"
+          sudo cp -n /var/cache/apt/archives/*.deb "$CACHE_DIR"/ 2>/dev/null || true
+          sudo chown -R "$USER" "$CACHE_DIR"
+
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Typecheck and build frontend
-        run: npm run build
+      - name: Version gate
+        run: |
+          npm run version:check
+          npm run test:version
 
-      - name: Rust formatting
+      - name: Governance script tests
+        run: npm run test:governance
+
+      - name: QA fixture unit tests
+        run: npm run test:fixtures
+
+      - name: Demo asset and interaction tests
+        run: npm run test:demo
+
+      - name: Release contract tests
+        run: npm run test:release
+
+      # 格式门禁：Rust 代码必须符合 rustfmt（只读检查，不改写工作区）。
+      - name: Rust formatting (rustfmt)
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
-      - name: Rust check
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        run: npm run build
+
+      # Linux 额外的真实编译验证：Windows 宿主会跳过 linux cfg 块。
+      - name: cargo check (compiles linux cfg blocks)
+        if: matrix.platform == 'linux'
         run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 
-      - name: Rust unit tests
+      - name: Clippy (deny warnings)
+        if: matrix.platform == 'linux'
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Backend unit tests
         run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+      # 集成测试本身不需要窗口，但 WebKitGTK 初始化仍要有 X server；
+      # xvfb 保证在无桌面的 runner 上与开发机行为一致。
+      - name: Backend integration tests (e2e + memory budget)
+        if: matrix.platform == 'linux'
+        run: |
+          xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml \
+            --test e2e_stage1 --test memory_budget
+
+      - name: Backend integration tests (e2e + memory budget)
+        if: matrix.platform == 'windows'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test e2e_stage1 --test memory_budget
+
+      - name: Release governance rehearsal (no secrets)
+        run: node scripts/release-governance/rehearse.mjs
+
+      - name: Static and version guards
+        if: matrix.platform == 'windows'
+        run: node tests/qa/run-qa.mjs --suite=static
+
+      - name: RustSec audit
+        if: matrix.platform == 'linux'
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-audit
+
+      # 直接 zip 已升级 9.1.1；Tauri updater 2.14.0 仍带 zip 4.6.1，
+      # 其 extract 仅用于 .zip 更新包，当前 NSIS 通道不触发，且 updater 在
+      # 解压前先完成 minisign 验签。RUSTSEC-2026-0429 属于同一间接依赖路径。
+      # 例外必须在内部技术文档（维护者本地维护）记录，不得无理由新增。
+      - name: Cargo audit (blocking with documented updater zip exceptions)
+        if: matrix.platform == 'linux'
+        run: |
+          cargo audit --file src-tauri/Cargo.lock \
+            --ignore RUSTSEC-2026-0367 \
+            --ignore RUSTSEC-2026-0368 \
+            --ignore RUSTSEC-2026-0369 \
+            --ignore RUSTSEC-2026-0429
+
+      # 生产依赖漏洞阻断；例外需书面记录。
+      - name: NPM audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high

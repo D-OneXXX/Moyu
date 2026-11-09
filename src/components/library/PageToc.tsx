@@ -106,7 +106,7 @@ export default function PageToc({
       >
         <ListTree className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1">{t("toc.title")}</span>
-        <span className="font-mono text-[11px] font-normal text-muted-foreground">
+        <span className="font-mono text-[11px] font-normal tabular-nums text-muted-foreground">
           {t("toc.pageCount", { count: pageCount })}
         </span>
         {open ? (

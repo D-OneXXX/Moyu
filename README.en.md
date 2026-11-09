@@ -28,10 +28,13 @@ Requirements: Node.js 22+, stable Rust, Tauri 2 platform dependencies, and WebVi
 npm install
 npm run tauri dev
 npm run build
-npm run check
+npm run test:demo
+npx tsc --noEmit
+cargo test --lib --manifest-path src-tauri/Cargo.toml
+node tests/qa/run-qa.mjs --suite=static
 ```
 
-`tauri dev` opens a desktop window. The build checks version consistency across `package.json`, the Tauri configuration, Cargo, and the lockfiles. This public snapshot contains product source and build configuration only; the full QA, release, and internal engineering tooling is not included. See [architecture](docs/ARCHITECTURE.md). Report bugs in [Issues](https://github.com/D-OneXXX/Moyu/issues) and vulnerabilities privately via [Security Advisories](https://github.com/D-OneXXX/Moyu/security/advisories/new). Remove personal paths, titles, cookies, tokens, and full URLs from shared logs.
+`tauri dev` opens a desktop window. See [architecture](docs/ARCHITECTURE.md). Report bugs in [Issues](https://github.com/D-OneXXX/Moyu/issues) and vulnerabilities privately via [Security Advisories](https://github.com/D-OneXXX/Moyu/security/advisories/new). Remove personal paths, titles, cookies, tokens, and full URLs from shared logs.
 
 ## License
 

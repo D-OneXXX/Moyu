@@ -42,10 +42,10 @@ Windows 默认数据目录为 `%APPDATA%\com.local.manga-reader`，缓存为 `%L
 npm install
 npm run tauri dev
 npm run build
-npm run check
+npm run test:demo
 ```
 
-`tauri dev` 会启动桌面窗口。`npm run build` 内置版本一致性检查，会校验 `package.json`、Tauri 配置、Cargo 与 lockfile。公开快照只包含核心产品源码与构建配置；完整 QA、发布和内部工程脚本不随公开仓提供。更多说明见 [英文开发说明](README.en.md#development)。
+`tauri dev` 会启动桌面窗口。更多验证命令见 [英文开发说明](README.en.md#development)。
 
 ## 许可证
 

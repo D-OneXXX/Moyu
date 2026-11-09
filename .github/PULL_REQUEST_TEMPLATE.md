@@ -11,8 +11,8 @@ Closes #
 
 ## 验证
 
-<!-- 执行级别按 L0–L3 分级；公开快照运行 build/typecheck/Rust 检查，完整 QA 在维护者的完整工程环境执行。 -->
-<!-- 常用命令：npx tsc --noEmit / npm run build / npm run check / cargo test --lib --manifest-path src-tauri/Cargo.toml -->
+<!-- 执行级别按 AGENTS.md §1.5；L2 · QA gate 会按改动路径自动选套件，此处只做人工核对。 -->
+<!-- 常用命令：npm run test:governance / npm run version:check / npm run test:version / npx tsc --noEmit / npm run build / cargo test --lib / node tests/qa/run-qa.mjs -->
 
 执行级别：
 
@@ -42,7 +42,7 @@ Closes #
 ## 发布影响
 
 - [ ] 不需要版本 bump
-- [ ] 需要版本 bump，`package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`、`package-lock.json` 已同步（构建内置检查）
+- [ ] 需要版本 bump，已用 `npm run version:sync -- X.Y.Z` 同步
 - [ ] 影响 Updater / 签名 / 安装器 / 公开更新通道（需单独发布审批）
 - [ ] 涉及公开发布时，Release Notes 已按 `.github/RELEASE_NOTES_TEMPLATE.md` 写成双语
 
@@ -54,6 +54,6 @@ Closes #
 
 - [ ] PR 只包含关联 Issue 的范围，未混入无关改动
 - [ ] 未删除测试、未降低断言、未静默跳过失败检查
-- [ ] 涉及 UI 时六语字典、双主题与本地验证已同步
+- [ ] 涉及 UI 时六语字典、双主题与相关 QA 已同步
 - [ ] 涉及后端命令/数据结构时 `lib.rs` 与内部命令契约文档已同步
 - [ ] 未推送 `v*` 发布标签（正式发布只走 candidate → Draft → 人工审批 → publish）

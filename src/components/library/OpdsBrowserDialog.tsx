@@ -329,7 +329,10 @@ export default function OpdsBrowserDialog({
             ) : null}
           </div>
           {feed ? (
-            <Badge variant="outline" className="shrink-0 whitespace-nowrap">
+            <Badge
+              variant="outline"
+              className="shrink-0 whitespace-nowrap tabular-nums"
+            >
               {formatNumber(feed.entries.length)}
             </Badge>
           ) : null}

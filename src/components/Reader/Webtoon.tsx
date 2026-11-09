@@ -83,6 +83,8 @@ const DECODE_TIMEOUT_MS = 8000;
 /** 后台预切：本地近前 3 页最优先，向前最多扫 10 页；在线源收紧。 */
 const PREFETCH_NEAR = 3;
 const PREFETCH_SWEEP = 10;
+/** 预切等滚动窗口稳定后再开始，避免每个中间窗口都占用后端串行物化。 */
+const PREFETCH_IDLE_MS = 300;
 /** 尺寸兜底：宽高缺失时使用上一张有效页比例，否则 1:2.5。 */
 const FALLBACK_RATIO = 2.5;
 const MIN_WIDTH_PCT = 50;
@@ -425,7 +427,10 @@ const WebtoonView = memo(function WebtoonView({
   failedRef.current = failed;
 
   const pumpQueue = useCallback(() => {
-    if (pumpTimer.current) return;
+    // 真正的滚动空闲防抖：每次窗口替换都重排计时器。否则极速滚动期间
+    // 第一个 120ms 计时器会在滚动中途给过期窗口发请求，占满后端串行
+    // tile_lock，最终视口反而排在它们之后。
+    if (pumpTimer.current) window.clearTimeout(pumpTimer.current);
     pumpTimer.current = window.setTimeout(() => {
       pumpTimer.current = 0;
       const run = () => {
@@ -743,6 +748,9 @@ const WebtoonView = memo(function WebtoonView({
     const near = book.sourceType === "local" ? PREFETCH_NEAR : 1;
     const sweep = book.sourceType === "local" ? PREFETCH_SWEEP : 2;
     const run = async () => {
+      // 滚动会反复重启本 effect：先等窗口稳定，避免每个中间窗口都预取一页。
+      await sleep(PREFETCH_IDLE_MS);
+      if (!alive || gen !== prefetchGen.current) return;
       while (alive && gen === prefetchGen.current) {
         const P = lastProgress.current.page;
         let target = -1;

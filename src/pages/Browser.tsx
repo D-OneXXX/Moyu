@@ -851,6 +851,9 @@ export default function BrowserPage() {
                   })
                 : t("pair.inactiveHint")}
             </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {t("online.pairIntro")}
+            </p>
           </div>
           <Button
             type="button"

@@ -268,9 +268,47 @@ pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     disks
         .iter()
-        .filter(|disk| canonical.starts_with(disk.mount_point()))
+        .filter(|disk| path_has_mount_prefix(&canonical, disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().as_os_str().len())
         .map(|disk| disk.available_space())
+}
+
+/// Windows 的 canonicalize 返回 `\\?\C:\...`（verbatim）而 sysinfo 的挂载点是
+/// `C:\`；先去掉 verbatim / UNC 前缀，再按路径组件做 ASCII 大小写不敏感比较。
+fn path_has_mount_prefix(path: &std::path::Path, mount: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::borrow::Cow;
+        fn simplify(path: &std::path::Path) -> Cow<'_, std::path::Path> {
+            let text = path.as_os_str().to_string_lossy();
+            if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+                return Cow::Owned(std::path::PathBuf::from(format!(r"\\{rest}")));
+            }
+            if let Some(rest) = text.strip_prefix(r"\\?\") {
+                return Cow::Owned(std::path::PathBuf::from(rest));
+            }
+            Cow::Borrowed(path)
+        }
+        let path = simplify(path);
+        let mount = simplify(mount);
+        let mut path_components = path.components();
+        for mount_component in mount.components() {
+            let Some(component) = path_components.next() else {
+                return false;
+            };
+            if !component
+                .as_os_str()
+                .eq_ignore_ascii_case(mount_component.as_os_str())
+            {
+                return false;
+            }
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(mount)
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +327,44 @@ mod tests {
         assert!(!decide_dmabuf_disable(false, false, false, true, false));
         assert!(!decide_dmabuf_disable(false, false, false, false, true));
         assert!(!decide_dmabuf_disable(false, false, false, false, false));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn free_bytes_finds_volume_for_verbatim_canonical_path() {
+        // canonicalize 返回 `\\?\C:\...`，sysinfo 挂载点是 `C:\`；
+        // 修复前二者的 Path 组件不相等，Windows 上的空间预检恒为 None。
+        let dir = std::env::temp_dir();
+        let canonical = dir.canonicalize().expect("临时目录应可 canonicalize");
+        let bytes = free_bytes(&dir);
+        assert!(
+            bytes.is_some(),
+            "free_bytes({}) 返回 None（canonical：{}）",
+            dir.display(),
+            canonical.display()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn mount_prefix_ignores_verbatim_and_drive_case() {
+        use std::path::Path;
+        assert!(path_has_mount_prefix(
+            Path::new(r"\\?\C:\Temp"),
+            Path::new(r"C:\")
+        ));
+        assert!(path_has_mount_prefix(
+            Path::new(r"\\?\c:\Temp"),
+            Path::new(r"C:\")
+        ));
+        assert!(path_has_mount_prefix(
+            Path::new(r"\\?\UNC\server\share\dir"),
+            Path::new(r"\\server\share")
+        ));
+        assert!(!path_has_mount_prefix(
+            Path::new(r"\\?\C:\Temp"),
+            Path::new(r"C:\Windows")
+        ));
     }
 
     #[test]

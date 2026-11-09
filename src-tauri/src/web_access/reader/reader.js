@@ -2148,5 +2148,6 @@ window.addEventListener("resize", () => {
 
 const fragment = location.hash.slice(1);
 history.replaceState(null, "", location.pathname + location.search);
+if (typeof window.__moyuBooted === "function") window.__moyuBooted();
 if (/^pair_[0-9a-f]{32}$/.test(fragment)) void pair(fragment);
 else void start();

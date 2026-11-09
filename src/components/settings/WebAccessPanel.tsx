@@ -679,6 +679,7 @@ export default function WebAccessPanel() {
               {!canStop ? (
                 <details className="mt-3 text-xs text-muted-foreground">
                   <summary className="cursor-pointer">{t("settings.webAccess.startSecure")}</summary>
+                  <p className="mt-2">{t("settings.webAccess.httpsRequiresCa")}</p>
                   {!status.caInitialized ? <p className="mt-2">{t("settings.webAccess.caRequired")}</p> : null}
                   <Button type="button" variant="pill" size="pill-sm" className="mt-2 whitespace-nowrap"
                     disabled={busy !== null || loading || safeModeActive || !selectedIp || !status.caInitialized}
@@ -709,6 +710,9 @@ export default function WebAccessPanel() {
               </div>
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                 {t(isPlain ? "settings.webAccess.plainPairHint" : "settings.webAccess.pairingDescription")}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {t("settings.webAccess.networkHint")}
               </p>
 
               {phase !== "enabled" ? (
@@ -748,6 +752,11 @@ export default function WebAccessPanel() {
                         <p className="text-xs leading-relaxed text-muted-foreground">
                           {t(isPlain ? "settings.webAccess.plainPairHint" : "settings.webAccess.qrHint")}
                         </p>
+                        {!isPlain ? (
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            {t("settings.webAccess.httpsRequiresCa")}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   )}

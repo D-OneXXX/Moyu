@@ -33,6 +33,10 @@ pub(crate) fn handle<B>(request: &Request<B>) -> Option<Response<Full<Bytes>>> {
             "text/javascript; charset=utf-8",
             Bytes::from_static(include_bytes!("../../../src/i18n/messages/webReader.ts")),
         ),
+        "/reader-boot.js" => (
+            "text/javascript; charset=utf-8",
+            Bytes::from_static(include_bytes!("reader/reader-boot.js")),
+        ),
         "/reader.js" => (
             "text/javascript; charset=utf-8",
             Bytes::from_static(include_bytes!("reader/reader.js")),

@@ -108,8 +108,10 @@ impl OnlinePageCache {
             crate::cache_health::record_failure();
             return false;
         }
-        // Windows 的 rename 不覆盖已有文件：先清掉旧副本，失败也不阻断写入。
-        let _ = fs::remove_file(&final_path);
+        // Rust 的 fs::rename 在 Windows 使用 MoveFileExW(REPLACE_EXISTING)，
+        // 普通文件目标会被原子替换；只有目标是目录、只读文件或被不带
+        // FILE_SHARE_DELETE 的句柄占用时才会失败。失败时保留旧缓存即可，
+        // 不再先删旧副本制造无谓的 miss 窗口。
         if fs::rename(&tmp, &final_path).is_err() {
             let _ = fs::remove_file(&tmp);
             crate::cache_health::record_failure();
@@ -297,10 +299,14 @@ mod tests {
     }
 
     fn tiny_png() -> Vec<u8> {
+        tiny_png_rgba([255, 0, 0, 255])
+    }
+
+    fn tiny_png_rgba(rgba: [u8; 4]) -> Vec<u8> {
         use image::ImageEncoder as _;
         let mut buf = Vec::new();
         image::codecs::png::PngEncoder::new(&mut buf)
-            .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .write_image(&rgba, 1, 1, image::ExtendedColorType::Rgba8)
             .unwrap();
         buf
     }
@@ -361,6 +367,28 @@ mod tests {
         );
         let joined = format!("{:?}", cache.root());
         assert!(!joined.contains("secret"), "缓存路径不得包含原始 URL");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn put_replaces_existing_entry_without_leaving_temp_files() {
+        let root = temp_root("overwrite");
+        let cache = OnlinePageCache::new(root.join("online"));
+        let url = "http://x/1.png";
+        let referer = "http://x/ch";
+        assert!(cache.put("book", url, referer, "png", &tiny_png()));
+        let replacement = tiny_png_rgba([0, 128, 255, 255]);
+        assert!(cache.put("book", url, referer, "png", &replacement));
+        let hit = cache
+            .get("book", url, referer)
+            .expect("overwritten cache hit");
+        assert_eq!(hit.bytes, replacement, "同键写入必须替换旧字节");
+        let leftovers = std::fs::read_dir(cache.book_dir("book"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".tmp-"))
+            .count();
+        assert_eq!(leftovers, 0, "成功写入后不得残留临时文件");
         std::fs::remove_dir_all(root).ok();
     }
 

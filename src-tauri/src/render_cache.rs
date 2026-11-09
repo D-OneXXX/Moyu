@@ -1,8 +1,8 @@
 //! 磁盘渲染缓存（L2）：成品 JPEG 按 (book_id, index, 请求尺寸) 落盘。
 //!
 //! 命中路径 = 一次 SSD 读（~1ms）+ base64，跳过 开卷/解压/解码/缩放/编码 全管线，
-//! 这是「毫秒级翻页」的主力。容量与在线原图缓存共用同一软上限，
-//! 由 `AppState::trim_disk_cache` 按 mtime 统一 LRU；删除书籍时整目录级联清理。
+//! 这是「毫秒级翻页」的主力。渲染成品由 `AppState::trim_disk_cache` 按 mtime
+//! 在软上限内 LRU；在线原图不参与自动淘汰，删除书籍时整目录级联清理。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

@@ -31,6 +31,22 @@ export interface FeatureDefinition {
   descriptionKey: MessageKey;
 }
 
+/**
+ * 「在线 URL 直读」开关。
+ *
+ * 它同时出现在「常规 → 功能开关」列表与「网络与在线源 → 在线 URL 直读」卡片里，
+ * 两处共用**同一条持久化路径**（`set_feature_enabled`），因此不存在
+ * “面板在另一个分区、用户找不到入口”的死胡同。
+ */
+export const ONLINE_FEATURE: FeatureDefinition = {
+  id: "online",
+  settingKey: "online",
+  mirrorKey: "mr-feature-online",
+  defaultEnabled: false,
+  titleKey: "settings.online.enableTitle",
+  descriptionKey: "settings.online.enableDescription",
+};
+
 export const FEATURE_REGISTRY: readonly FeatureDefinition[] = [
   {
     id: "webtoon",
@@ -40,14 +56,7 @@ export const FEATURE_REGISTRY: readonly FeatureDefinition[] = [
     titleKey: "settings.experimental.webtoonTitle",
     descriptionKey: "settings.experimental.webtoonDescription",
   },
-  {
-    id: "online",
-    settingKey: "online",
-    mirrorKey: "mr-feature-online",
-    defaultEnabled: false,
-    titleKey: "settings.online.enableTitle",
-    descriptionKey: "settings.online.enableDescription",
-  },
+  ONLINE_FEATURE,
   {
     id: "browser",
     settingKey: "browser",

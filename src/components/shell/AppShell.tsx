@@ -55,22 +55,19 @@ import {
   LIBRARY_REFRESH_EVENT,
 } from "@/lib/events";
 import TopBar from "./TopBar";
-import ThemeDecorationLayer from "./ThemeDecorationLayer";
+import SkinCanvasFrame from "./SkinCanvasFrame";
+import ContentViewport from "./ContentViewport";
 import PrivacyDialog from "@/components/privacy/PrivacyDialog";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useGlobalShortcuts } from "@/features/shortcuts/useGlobalShortcuts";
 import { useScrollRestoration } from "@/features/scroll/useScrollRestoration";
 import { WEB_ACCESS_TRAY_ERROR_EVENT } from "@/features/web-access/types";
-import { useBrandIcon } from "@/features/brand/BrandIconProvider";
-import { renderTrayIconPng } from "@/features/brand/trayIcon";
-import { useTheme } from "@/features/theme/ThemeProvider";
+import { BRAND_DISPLAY_NAME } from "@/features/brand/brand";
 
 export default function AppShell() {
   const nav = useNavigate();
   const loc = useLocation();
   const { locale } = useI18n();
-  const { selection: brandIcon } = useBrandIcon();
-  const { mode: themeMode } = useTheme();
   const ws = useWorkspace();
   const { active: safeMode } = useSafeMode();
   const [lastRead, setLastRead] = useState<BookInfo | null>(null);
@@ -86,7 +83,9 @@ export default function AppShell() {
 
   // 原生窗口标题统一为品牌名；文档标题仍由 i18n 的 app.title 维护。
   useEffect(() => {
-    void getCurrentWindow().setTitle("Moyu").catch(() => {});
+    void getCurrentWindow()
+      .setTitle(BRAND_DISPLAY_NAME)
+      .catch(() => {});
   }, []);
 
   // Page transitions must start at the top: the shell owns the scroll container,
@@ -99,19 +98,6 @@ export default function AppShell() {
   useEffect(() => {
     void api.setTrayLocale(locale).catch(() => {});
   }, [locale]);
-
-  // Task 7 stores the brand icon in localStorage, so the main window rasterizes
-  // it (theme-aware preset SVG or custom image) and pushes a 64×64 PNG.
-  useEffect(() => {
-    let cancelled = false;
-    void renderTrayIconPng(brandIcon).then((png) => {
-      if (cancelled) return;
-      void api.setTrayIcon(png).catch(() => {});
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [brandIcon, themeMode]);
 
   // Tray start/stop can fail while the settings panel is unmounted; surface
   // the backend's stable code as a localized global toast.
@@ -299,52 +285,45 @@ export default function AppShell() {
   useGlobalShortcuts(shellShortcuts, { editableExempt: ["w", "W"] });
 
   return (
-    <div className="relative flex h-screen w-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
-      {/* 皮肤壁纸层：默认 `none`（零绘制），注入一条 CSS 变量即可换底纹。 */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 z-0"
-        style={{
-          backgroundImage: "var(--mr-surface-backdrop)",
-          backgroundSize: "var(--mr-surface-backdrop-size)",
-          opacity: "var(--mr-surface-backdrop-opacity)",
-        }}
-      />
-      <TopBar
-        lastRead={lastRead}
-        onlineProxy={onlineProxy}
-        onlineOn={onlineOn}
-        browserEnabled={features.browser}
-        settingsReady={settingsReady}
-        settingsError={settingsError}
-        libraryBadge={libraryBadge}
-        onClearLibraryBadge={() => setLibraryBadge(0)}
-      />
-      <main
-        ref={mainRef}
-        data-shell-scroll
-        className="relative w-full min-w-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
-      >
-        <div key={loc.pathname} className="view-fade min-h-full">
-          <Suspense fallback={<ShellRouteFallback />}>
-            <Routes location={loc}>
-              <Route path="/" element={<Library />} />
-              <Route
-                path="/browser"
-                element={
-                  features.browser ? <Browser /> : <Navigate to="/" replace />
-                }
-              />
-              <Route path="/settings" element={<SettingsPage />} />
-              {/* 通配兜底：已下线/未知路由静默 replace 回书库首页，
-                  避免历史栈残留废弃 URL 导致返回即白屏（AGENTS.md §2.1）。 */}
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
-        </div>
-      </main>
-      {/* 装饰层永远是内容层的兄弟节点：不参与布局、不拦截命中测试。 */}
-      <ThemeDecorationLayer />
+    <div className="relative h-screen w-full min-h-0 overflow-hidden bg-background text-foreground">
+      {/* 皮肤双层骨架：整片窗口是画布，内容区是内嵌视窗。 */}
+      <SkinCanvasFrame>
+        <ContentViewport>
+          <TopBar
+            lastRead={lastRead}
+            onlineProxy={onlineProxy}
+            onlineOn={onlineOn}
+            browserEnabled={features.browser}
+            settingsReady={settingsReady}
+            settingsError={settingsError}
+            libraryBadge={libraryBadge}
+            onClearLibraryBadge={() => setLibraryBadge(0)}
+          />
+          <main
+            ref={mainRef}
+            data-shell-scroll
+            className="relative w-full min-w-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+          >
+            <div key={loc.pathname} className="view-fade min-h-full">
+              <Suspense fallback={<ShellRouteFallback />}>
+                <Routes location={loc}>
+                  <Route path="/" element={<Library />} />
+                  <Route
+                    path="/browser"
+                    element={
+                      features.browser ? <Browser /> : <Navigate to="/" replace />
+                    }
+                  />
+                  <Route path="/settings" element={<SettingsPage />} />
+                  {/* 通配兜底：已下线/未知路由静默 replace 回书库首页，
+                      避免历史栈残留废弃 URL 导致返回即白屏（AGENTS.md §2.1）。 */}
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </Suspense>
+            </div>
+          </main>
+        </ContentViewport>
+      </SkinCanvasFrame>
       <Toaster />
       <PrivacyDialog />
     </div>

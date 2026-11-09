@@ -4,7 +4,6 @@ import { HashRouter } from "react-router-dom";
 import App from "./App";
 import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./features/theme/ThemeProvider";
-import { BrandIconProvider } from "./features/brand/BrandIconProvider";
 import { UpdateProvider } from "./features/update/UpdateProvider";
 import DbRecoveryGate from "./features/recovery/DbRecoveryGate";
 import { SafeModeProvider } from "./features/safeMode/SafeModeContext";
@@ -46,19 +45,17 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <I18nProvider>
       <ThemeProvider>
-        <BrandIconProvider>
-          <DbRecoveryGate>
-            <UpdateProvider>
-              <HashRouter>
-                <SafeModeProvider>
-                  <AppErrorBoundary>
-                    <App />
-                  </AppErrorBoundary>
-                </SafeModeProvider>
-              </HashRouter>
-            </UpdateProvider>
-          </DbRecoveryGate>
-        </BrandIconProvider>
+        <DbRecoveryGate>
+          <UpdateProvider>
+            <HashRouter>
+              <SafeModeProvider>
+                <AppErrorBoundary>
+                  <App />
+                </AppErrorBoundary>
+              </SafeModeProvider>
+            </HashRouter>
+          </UpdateProvider>
+        </DbRecoveryGate>
       </ThemeProvider>
     </I18nProvider>
   </React.StrictMode>,

@@ -91,9 +91,9 @@ import { toast, toastErr } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
 import {
   DEFAULT_FEATURE_FLAGS,
-  FEATURE_REGISTRY,
   type FeatureDefinition,
   type FeatureId,
+  ONLINE_FEATURE,
 } from "@/features/features";
 import { useShortcutsEnabled } from "@/features/shortcuts/preferences";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
@@ -696,7 +696,7 @@ export default function SettingsPage() {
 
   const activeTheme =
     THEME_OPTIONS.find((option) => option.value === mode) ?? THEME_OPTIONS[0];
-  const onlineFeature = FEATURE_REGISTRY.find((item) => item.id === "online");
+  const onlineFeature = ONLINE_FEATURE;
   const tabTriggerClass =
     "h-9 min-w-0 whitespace-nowrap rounded-full px-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-3.5 xl:text-sm";
 
@@ -972,6 +972,7 @@ export default function SettingsPage() {
                         <Switch
                           checked={form.features.online}
                           disabled={featureBusy !== null}
+                          data-testid="online-direct-switch"
                           aria-label={t("settings.online.enableTitle")}
                           onCheckedChange={(checked) =>
                             void toggleFeature(onlineFeature, checked)

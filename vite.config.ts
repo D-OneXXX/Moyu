@@ -10,6 +10,8 @@ import { cpSync, existsSync, readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+// @ts-expect-error JS module without type declarations
+import { assertReleaseSurface } from "./scripts/release-surface.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -174,6 +176,8 @@ function buildCommit(): string {
 }
 
 assertVersionConsistency();
+// static:release-surface：升级身份锚点与品牌展示名一旦漂移，dev/build 直接失败。
+await assertReleaseSurface();
 const appVersion = projectVersion();
 const gitCommit = buildCommit();
 

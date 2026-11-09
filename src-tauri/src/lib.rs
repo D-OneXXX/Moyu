@@ -1,4 +1,4 @@
-//! MangaReader 后端：书库、阅读、在线直读、更新、隐私与韧性。
+//! Moyu 后端：书库、阅读、在线直读、更新、隐私与韧性。
 //! 前端契约见 `src/lib/tauri.ts`。
 
 mod backup;
@@ -828,7 +828,6 @@ pub fn run() {
             web_access::commands::web_access_devices_list,
             web_access::commands::web_access_device_revoke,
             tray::tray_set_locale,
-            tray::tray_set_icon,
             diagnostics::diagnostics_record_frontend_error,
             diagnostics::diagnostics_record_breadcrumb,
             diagnostics::diagnostics_update_context,

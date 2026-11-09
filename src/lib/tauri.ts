@@ -479,9 +479,6 @@ export const api = {
   /** Persist + apply the native tray menu language (6 dictionaries). */
   setTrayLocale: (locale: string) =>
     invoke<void>("tray_set_locale", { locale }),
-  /** Push the Task 7 brand icon to the tray (64×64 PNG data URL; null resets). */
-  setTrayIcon: (dataUrl: string | null) =>
-    invoke<void>("tray_set_icon", { dataUrl }),
   setFeatureEnabled: (feature: FeatureId, enabled: boolean) =>
     invoke<Settings>("set_feature_enabled", { feature, enabled }).then(
       (settings) => {

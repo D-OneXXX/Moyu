@@ -197,6 +197,8 @@
 | P-028 | 自动抓取、后台批量爬虫、验证码破解 | 合规与封禁风险 |
 | P-029 | 在公开仓文档中引用 `AGENTS.md`、内部 QA 套件或发布工作流 | 公开快照文件缺失，文档自洽性破坏 |
 | P-030 | 把完整历史或内部工程文件推到公开仓 | 暴露内部治理、破坏公开快照边界 |
+| P-031 | 在 `storageSanitizer` 的 `KEY_RULES` 里没登记的 localStorage 键 | 启动即被当未知键删除，用户选择「保存了但重启就没」；皮肤偏好曾长期命中此坑 |
+| P-032 | 直接改写 EXE 的 PE 资源来换图标 | 破坏 Minisign 签名与官方 Updater，升级链断裂 |
 
 ---
 
@@ -283,3 +285,63 @@
 - PR #231：首轮必需检查全部通过（Analyze / CodeQL / PR governance / build + rust check）；mergeStateStatus CLEAN；本次 01 更新后重跑。
 - 提交格式采用“Conventional 主题 + `[RELAY]` 正文”。
 - 本轮仅新增控制面文档，不改业务代码。
+
+### 2026-11-08 · Task 3 / Task 7（品牌冻结 + 系统级图标 + 画框包裹式换肤）
+
+#### ADR-033 · 系统级图标走 Shell Link，绝不改写 EXE 资源
+- 日期：2026-11-08
+- 状态：**SUPERSEDED（被 ADR-035 取代，代码未合入）**
+- 背景：当时用户要换的是桌面快捷方式、任务栏与托盘的系统级图标。最直觉的做法是改写 EXE 的 PE 图标资源，但发布产物带 Minisign 签名，官方 Updater 会校验它——改资源等于让升级链断掉。
+- 当时的决策：新增 `src-tauri/src/desktop_icon.rs`，后端校验图片魔数与 2 MiB 上限，用 `image` 的 ICO 编码器生成多尺寸 `active.ico`，再用 Windows Shell Link COM（`IShellLinkW` + `IPersistFile`）改写 `.lnk` 图标位置。
+- 后续修订：用户进一步明确「桌面/任务栏/托盘图标 100% 维持随包构建资源，且**不要开发任何图标自定义/切换功能**」。因此本 ADR 的实现整体撤回：Shell Link 后端、`.ico` 编码、图标偏好链路与设置页入口全部删除，`windows` 的 COM/Shell feature 与 `image` 的 `ico` feature 一并回退。**保留本 ADR 的核心结论**：任何情况下都不改写 EXE 资源。
+- 保留价值：它记录了「为什么不能动 EXE 图标资源」这条硬约束，以及 Shell Link 方案在需要时如何重建。
+
+#### ADR-034 · 画框包裹式换肤：整窗画布 + 内嵌视窗，禁用漂浮挂件
+- 日期：2026-11-08
+- 状态：ACCEPTED
+- 背景：旧的「角色挂件」装饰层把美术摆在内容之上，天然存在遮挡列表与文字的风险；用户要求改成「整片窗口是一张主题画布，功能区是内嵌视窗」。
+- 决策：删除 `ThemeDecorationLayer` 与全部 `mr-decoration-*` 槽位，改为 `SkinCanvasFrame`（100vw × 100vh 画布：背景层 + 外框层，均 `pointer-events: none`）与 `ContentViewport`（`--mr-skin-viewport-inset` 控制内缩、圆角、毛玻璃叠加层与画框投影）两层骨架。美术只画在画布上，视窗压在其上，因此角色与插画只能出现在视窗外围，永远压不到内容。沉浸式阅读路由不挂载视窗，天然全屏无边距。
+- 放弃方案：继续用绝对定位挂件槽位；用 `clip-path` / `mask` 在视窗上方开洞（合成层差异大，且失败时可能盖住内容）；把背景图直接铺在内容容器上（失去画框层次）。
+- 后果：皮肤 token 统一收敛到 `--mr-skin-*`；素材只有两条合法通道（`public/skins/` 随包静态文件、后端校验后的 `data:` URL），生产 CSP `img-src 'self' data:` 不变；`Skin Viewport Guard` 用无头 Chrome 断言顶栏、搜索框、书库卡片在非零内缩下仍完全可见可点击，且阅读路由恢复全屏。
+
+#### ADR-035 · 左上角品牌标识冻结在 0.19.1 原版；系统图标恒为随包构建资源（不提供任何图标自定义）
+- 日期：2026-11-08
+- 状态：ACCEPTED
+- 背景：品牌图标偏好原先同时驱动左上角 UI 标识与托盘。用户明确要求左上角保持 0.19.1 发布版的原版图形（纯内联 SVG、固定配色、不可替换），可替换能力只留给系统级图标。
+- 决策：`AppBrandIcon` 改为纯展示组件（不再读取偏好上下文），`BrandLogo` 固定渲染 `moyu` 预设——即 v0.19.1 的原始路径与配色逐字照搬。**图标偏好链路整体删除**：`features/brand/{brandIcon,BrandIconProvider,appIcon,trayIcon}`、`tray_set_icon` 命令、设置页的图标卡片与 `settings.desktopIcon.*` 六语词条全部移除；桌面快捷方式、任务栏与托盘恒用 `src-tauri/icons/` 的随包构建资源（托盘固定 `default_window_icon`）。品牌展示名收敛为单一常量 `BRAND_DISPLAY_NAME`，新增 `static:release-surface` 守卫（`scripts/release-surface.mjs`，Vite 配置加载时也执行一次）同时守住升级身份锚点与六语品牌名。
+- 放弃方案：保留左上角的动态替换；保留任何一级的图标自定义入口；只靠文案约定而不做守卫；把守卫只放在 CI 而不放在构建入口。
+- 后果：图标定制能力整体不存在，两端图标各自独立、互不同步；`Cargo.toml` 的 `windows` feature 集合与 `image` feature 集合回到基线状态，Cargo.lock 无新增第三方包。
+
+### ADR-036 · 在线直读开关回到卡片上；地址选择改为「筛出可用地址」
+- 日期：2026-11-09
+- 状态：ACCEPTED
+- 背景：用户报告 v0.18.0 可用、v0.19.x 不可用的「在线 URL 直读」回归。排查结论有三条：
+  (1) 开关不是被「配额去重」藏起来的，而是「重建公开源码快照」那次提交**主动**把
+  「在线 URL 直读」卡片上的 Switch 拿掉，只留一句「由『功能开关』统一控制」的死提示，
+  而功能开关面板在**常规**分区——用户去网络页找不到入口；
+  (2) Rust 侧的门控没有 stale 问题：`set_feature_enabled` 在同一次写入里同步了
+  内存快照，`resolve_online_url` 读的就是这份快照；
+  (3) 真正的「打不开」在网络层：Issue #179 的地址校验采用「任一解析地址被拦就整体
+  拒绝」，域名同时给出公网 IPv4 与 ULA/link-local IPv6 时整站不可达。
+- 决策：
+  - 设置页「网络与在线源 → 在线 URL 直读」卡片右上角**恢复可直接点击的 Switch**，
+    走与功能开关面板完全相同的 `set_feature_enabled` 持久化路径；删掉死提示文案
+    （**该部分已由上游 #320 独立完成**，本 PR 只把在线功能定义收敛到共享常量
+    `ONLINE_FEATURE`，避免设置页与「立即开启」出口各持一份 id）；
+  - 关闭态在 `/browser` 顶部地址栏提交时，提示条与 toast 都给「立即开启」按钮，
+    点击即开启功能并立刻放行重试；后端错误统一识别 `feature-disabled`；
+  - 地址校验改为**筛出可直连地址**：保留通过白名单的地址、公网 IPv4 优先，
+    一个可用地址都没有才 fail-closed；连接仍只发生在这些已校验地址上，
+    私网地址永远不会被连到（SSRF 防护不变）。TLS server name 仍是原域名，
+    证书校验不受钉 IP 影响；
+  - 安全模式阻断补稳定码 `safe-mode-blocked`，并补「文件缺失/未激活必须放行」的
+    Rust 单测，锁死误判。
+- 放弃方案：把功能开关面板搬进网络分区（与常规分区重复）；放宽 SSRF 白名单；
+  为 SOCKS 目标改用 IPv6 表达式（适配器不支持，仍只支持 IPv4）。
+- 后果：`experimental_online` 的写入必须走 `set_feature_enabled`——`set_settings`
+  刻意不写功能键（防止表单未保存的改动被一起写库），这一点被写进 ADR 供后来者参照。
+
+#### 附带修复
+- 本分支开始时 `storageSanitizer` 尚未登记 `mr-skin`，皮肤偏好每次启动都被当未知键删除（命中 P-031）。上游 **#291（`fix(preferences)`）已独立修复**该问题并登记 `mr-skin` 规则；rebase 后本 PR 只保留「用户导入的整页背景」`mr-skin-custom` 一条新规则，重复规则已删除。
+- 皮肤默认状态改为**预留态（dormant）**：内置 `framed` 皮肤不会被持久化偏好自动启用，当前版本恒为极简外观；设置页不再暴露未完成的皮肤切换 UI，Schema 与 Hook 保留在代码层。
+- `src-tauri/src/skin.rs` 未改动；自定义整页背景仍走「后端校验 → data: URL」通道。

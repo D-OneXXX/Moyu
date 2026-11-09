@@ -212,31 +212,34 @@ function jsonRule(
 }
 
 /**
- * 品牌图标偏好：与 `features/brand/brandIcon.ts` 的 schema 保持一致。
- * 清洗器必须保持零导入，才能被 static QA 直接转译执行；两处规则需同步维护。
+ * 自定义整页背景：与 `features/skin/customSkin.ts` 的 schema 保持一致。
+ * 清洗器保持零导入，两处规则需同步维护。
  */
-const BRAND_ICON_PRESETS = new Set(["book", "fish", "moon", "wave"]);
-const BRAND_ICON_DATA_URL =
-  /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
-const MAX_BRAND_ICON_DATA_URL_CHARS = 280 * 1024;
+const CUSTOM_SKIN_ID = /^custom-[a-f0-9]{12}$/;
+const CUSTOM_SKIN_DATA_URL =
+  /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+const MAX_CUSTOM_SKIN_DATA_URL_CHARS = 1_800_000;
 
-function canonicalBrandIcon(parsed: unknown): unknown | null {
+function canonicalCustomSkin(parsed: unknown): unknown | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const record = parsed as Record<string, unknown>;
-  if (record.kind === "preset") {
-    return typeof record.preset === "string" &&
-      BRAND_ICON_PRESETS.has(record.preset)
-      ? parsed
-      : null;
+  if (
+    typeof record.id !== "string" ||
+    !CUSTOM_SKIN_ID.test(record.id) ||
+    typeof record.dataUrl !== "string" ||
+    record.dataUrl.length > MAX_CUSTOM_SKIN_DATA_URL_CHARS ||
+    !CUSTOM_SKIN_DATA_URL.test(record.dataUrl) ||
+    typeof record.width !== "number" ||
+    typeof record.height !== "number"
+  ) {
+    return null;
   }
-  if (record.kind === "custom") {
-    return typeof record.dataUrl === "string" &&
-      record.dataUrl.length <= MAX_BRAND_ICON_DATA_URL_CHARS &&
-      BRAND_ICON_DATA_URL.test(record.dataUrl)
-      ? parsed
-      : null;
-  }
-  return null;
+  return {
+    id: record.id,
+    dataUrl: record.dataUrl,
+    width: record.width,
+    height: record.height,
+  };
 }
 
 /** 在线连通性记录：与 lib/onlineLastTest.ts 的 readOnlineLastTest 保持一致。 */
@@ -288,6 +291,8 @@ function canonicalProbeTicks(parsed: unknown): unknown | null {
 const KEY_RULES: Record<string, Rule> = {
   // 主题：只允许 system|light|dark，旧版 "dark-blue" 之类一律删除，ThemeProvider 回落到 system。
   "mr-theme": enumRule(["system", "light", "dark"], "主题"),
+  // 用户导入的整页背景：{ id, dataUrl, width, height }。
+  "mr-skin-custom": jsonRule("自定义皮肤背景", canonicalCustomSkin),
   // 界面语言：与 i18n/config.ts 的 LOCALES 完全一致。
   "mr-locale": enumRule(["zh-CN", "zh-TW", "en", "es", "ja", "ko"], "界面语言"),
   "mr-skin": textRule(128, "界面皮肤"),
@@ -319,7 +324,6 @@ const KEY_RULES: Record<string, Rule> = {
   // 隐私弹窗确认标记：内容任意，但长度有上限（正常形如 "2026-10:0"）。
   "mr-privacy-ack": textRule(128, "隐私确认标记"),
   // 品牌图标偏好：预设 id 或受控 data URL；结构非法回落到默认预设。
-  "mr-brand-icon": jsonRule("品牌图标", canonicalBrandIcon),
   // JSON 键：解析失败即删，结构合法则规范化。
   "mr-online-last-test": jsonRule("在线连通性记录", canonicalOnlineLastTest),
   "mr-browser-recents": jsonRule("浏览器最近访问", canonicalRecents),

@@ -333,14 +333,14 @@ fn no_proxy_matches(host: &str, port: Option<u16>, rules: &[String]) -> bool {
 /// 直连 agent 的连接层解析器。
 ///
 /// 返回的地址**就是 ureq 真正要连接的地址**（它不会再解析一次），且每个地址都过
-/// `validate_connection_addresses` 黑名单。因此「先解析校验、连接时再解析」的
+/// 可直连地址白名单。因此「先解析校验、连接时再解析」的
 /// DNS 重绑定窗口在直连路径上不存在：攻击者域名第二次解析到私网也不会被连上。
 fn direct_resolver(
     allow_loopback: bool,
 ) -> impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static {
     move |netloc: &str| {
         let addresses: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-        validate_connection_addresses(addresses, allow_loopback)
+        acceptable_addresses(addresses, allow_loopback)
     }
 }
 
@@ -361,21 +361,32 @@ fn build_agent(proxy: Option<&str>, allow_loopback: bool) -> Result<ureq::Agent,
     Ok(builder.build())
 }
 
-fn validate_connection_addresses(
+/// 只保留**允许直连**的地址，并让公网 IPv4 排在前面。
+///
+/// 这里刻意不再采用「任一地址被拦就整体拒绝」：一个域名同时给出公网 IPv4
+/// 与 ULA / link-local IPv6 时，整体拒绝会让本来可访问的站点彻底打不开
+/// （v0.18.0 → v0.19.x 的在线直读回归）。
+///
+/// SSRF 防护没有削弱：返回的地址就是 ureq 真正会连接的地址，被拦掉的私网
+/// 地址永远不会被连到；只有当**一个**可用地址都不存在时才 fail-closed。
+fn acceptable_addresses(
     addresses: Vec<SocketAddr>,
     allow_loopback: bool,
 ) -> std::io::Result<Vec<SocketAddr>> {
-    if addresses.is_empty()
-        || addresses
-            .iter()
-            .any(|addr| is_blocked_ip(addr.ip(), allow_loopback))
-    {
+    let mut acceptable: Vec<SocketAddr> = addresses
+        .into_iter()
+        .filter(|addr| !is_blocked_ip(addr.ip(), allow_loopback))
+        .collect();
+    if acceptable.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "blocked resolved address",
+            "no acceptable resolved address",
         ));
     }
-    Ok(addresses)
+    // 公网 IPv4 优先：SOCKS 适配器无法表达带方括号的 IPv6 目标，
+    // 且漫画站点的 IPv4 可达性通常更稳。
+    acceptable.sort_by_key(|addr| !addr.is_ipv4());
+    Ok(acceptable)
 }
 
 impl UreqTransport {
@@ -465,16 +476,15 @@ impl UreqTransport {
         let port = target.port_or_known_default().unwrap_or(443);
         let addrs = (self.resolver)(host, port)
             .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
-        let mut saw = false;
-        for addr in addrs {
-            saw = true;
-            if is_blocked_ip(addr.ip(), self.allow_loopback) {
-                return Err(OnlineError::Network(
-                    "目标域名解析到本机/私网/链路本地地址，已拒绝（online-blocked-address）".into(),
-                ));
-            }
-        }
-        if !saw {
+        // 只要解析结果里存在**可直连**的公网地址就放行：域名同时给出
+        // 公网 IPv4 与 ULA / link-local IPv6 时不能一刀切拒绝（v0.19.x 回归）。
+        // 连接只会发生在这些已校验的地址上，私网地址不会被连到。
+        let acceptable = acceptable_addresses(addrs, self.allow_loopback).map_err(|_| {
+            OnlineError::Network(
+                "目标域名只解析到本机/私网/链路本地地址，已拒绝（online-blocked-address）".into(),
+            )
+        })?;
+        if acceptable.is_empty() {
             return Err(OnlineError::Network(
                 "域名没有可用地址（online-fetch-failed）".into(),
             ));
@@ -515,10 +525,9 @@ impl UreqTransport {
             let port = target.port_or_known_default().unwrap_or(443);
             let addresses = (self.resolver)(host, port)
                 .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
-            let addresses =
-                validate_connection_addresses(addresses, self.allow_loopback).map_err(|_| {
-                    OnlineError::Network("目标地址不允许访问（online-blocked-address）".into())
-                })?;
+            let addresses = acceptable_addresses(addresses, self.allow_loopback).map_err(|_| {
+                OnlineError::Network("目标地址不允许访问（online-blocked-address）".into())
+            })?;
             // ureq's SOCKS adapter treats bracketed IPv6 URL hosts as DNS
             // names. Never let the proxy resolve them again; prefer IPv4 and
             // fail closed for IPv6-only targets until the adapter supports it.
@@ -763,10 +772,41 @@ mod tests {
     fn connection_resolver_rejects_rebound_and_mixed_private_addresses() {
         let public = "8.8.8.8:443".parse().unwrap();
         let private = "192.168.1.1:443".parse().unwrap();
-        assert!(super::validate_connection_addresses(vec![public], false).is_ok());
-        assert!(super::validate_connection_addresses(vec![private], false).is_err());
-        assert!(super::validate_connection_addresses(vec![public, private], false).is_err());
-        assert!(super::validate_connection_addresses(vec![], false).is_err());
+        assert!(super::acceptable_addresses(vec![public], false).is_ok());
+        assert!(super::acceptable_addresses(vec![private], false).is_err());
+        // 混合解析结果：只要有公网地址就放行，并只把公网地址交给连接层。
+        let mixed = super::acceptable_addresses(vec![public, private], false).expect("mixed");
+        assert_eq!(mixed, vec![public]);
+        assert!(super::acceptable_addresses(vec![], false).is_err());
+    }
+
+    /// 回归：域名同时给出公网 IPv4 与 ULA / link-local IPv6 时，
+    /// 必须优先用公网 IPv4 正常连接，绝不能因为那条 IPv6 记录就整体拒绝。
+    #[test]
+    fn mixed_a_and_aaaa_keeps_the_public_ipv4() {
+        let public_v4: SocketAddr = "203.0.113.10:443".parse().unwrap();
+        let ula: SocketAddr = "[fd00::1]:443".parse().unwrap();
+        let link_local: SocketAddr = "[fe80::1]:443".parse().unwrap();
+        for extra in [ula, link_local] {
+            let accepted =
+                super::acceptable_addresses(vec![extra, public_v4], false).expect("public v4 wins");
+            assert_eq!(
+                accepted,
+                vec![public_v4],
+                "only the public IPv4 may reach the connection layer",
+            );
+        }
+    }
+
+    /// 公网 IPv4 与公网 IPv6 并存时，IPv4 排在前面：SOCKS 适配器无法表达
+    /// 带方括号的 IPv6 目标，且 IPv4 可达性在漫画站点上更稳。
+    #[test]
+    fn public_ipv4_is_preferred_over_public_ipv6() {
+        let public_v4: SocketAddr = "203.0.113.10:443".parse().unwrap();
+        let public_v6: SocketAddr = "[2001:db8::1]:443".parse().unwrap();
+        let accepted =
+            super::acceptable_addresses(vec![public_v6, public_v4], false).expect("both usable");
+        assert_eq!(accepted, vec![public_v4, public_v6]);
     }
     use super::*;
     use std::io::{Read, Write};

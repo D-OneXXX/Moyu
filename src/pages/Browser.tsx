@@ -53,6 +53,10 @@ import {
   useOnlineHandoffState,
 } from "@/features/online/handoffState";
 import { writeOnlineLastTest } from "@/lib/onlineLastTest";
+import {
+  enableOnlineDirect,
+  isFeatureDisabledError,
+} from "@/features/online/direct";
 
 const RECENTS_KEY = "mr-browser-recents";
 const RECENTS_LIMIT = 20;
@@ -275,8 +279,15 @@ export default function BrowserPage() {
     if (busy !== null) return;
     const target = resolveTarget();
     if (!target) return;
-    if (!onlineOn) {
+    // 读实时镜像而不是渲染期快照：用户刚「立即开启」后重试必须立刻放行。
+    if (!isOnlineEnabled()) {
       setNotice({ key: "browser.directDisabled", fallback: true });
+      toast(translate("browser.directDisabled"), {
+        label: translate("common.enableNow"),
+        onAction: () => {
+          void enableOnlineDirect();
+        },
+      });
       return;
     }
     if (isTelegramChannelRoot(target)) {
@@ -295,7 +306,16 @@ export default function BrowserPage() {
       } catch (e) {
         writeOnlineLastTest({ ok: false, url: target });
         setTelegramError(localizeBackendError(e));
-        toastErr("resolve_telegram_channel", e);
+        if (isFeatureDisabledError(e)) {
+          toast(translate("error.featureDisabled"), {
+            label: translate("common.enableNow"),
+            onAction: () => {
+              void enableOnlineDirect();
+            },
+          });
+        } else {
+          toastErr("resolve_telegram_channel", e);
+        }
       } finally {
         setBusy(null);
       }
@@ -323,7 +343,16 @@ export default function BrowserPage() {
             }
           : { key: "browser.resolveFailed", fallback: true },
       );
-      toastErr("resolve_online_url", e);
+      if (isFeatureDisabledError(e)) {
+        toast(translate("error.featureDisabled"), {
+          label: translate("common.enableNow"),
+          onAction: () => {
+            void enableOnlineDirect();
+          },
+        });
+      } else {
+        toastErr("resolve_online_url", e);
+      }
     } finally {
       setBusy(null);
     }
@@ -759,7 +788,7 @@ export default function BrowserPage() {
               className="mt-0.5 size-4 shrink-0 text-destructive"
               aria-hidden
             />
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="break-words text-sm font-semibold text-destructive">
                 {t(notice.key, notice.vars)}
               </p>
@@ -768,6 +797,24 @@ export default function BrowserPage() {
                   {t("browser.fallbackHint")}
                 </p>
               )}
+              {/* 功能门挡住时给一条可点的出路，而不是死提示。 */}
+              {!isOnlineEnabled() ? (
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="pill-sm"
+                  data-testid="browser-enable-online"
+                  className="mt-2"
+                  onClick={() => {
+                    void (async () => {
+                      const ok = await enableOnlineDirect();
+                      if (ok) setNotice(null);
+                    })();
+                  }}
+                >
+                  {t("common.enableNow")}
+                </Button>
+              ) : null}
             </div>
           </div>
         )}

@@ -103,10 +103,10 @@ fn show_unsupported_windows_notice() {
     const MB_OK: u32 = 0x0000_0000;
     let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
     let text = wide(
-        "MangaReader 需要 Windows 10（NT 10.0, Build 10240）或更高版本。\n\
-         MangaReader requires Windows 10 (Build 10240) or later.",
+        "Moyu 需要 Windows 10（NT 10.0, Build 10240）或更高版本。\n\
+         Moyu requires Windows 10 (Build 10240) or later.",
     );
-    let caption = wide("MangaReader");
+    let caption = wide("Moyu");
     // SAFETY: 两个字符串都以 NUL 结尾并在调用期间存活；无父窗口（桌面提示）。
     unsafe {
         MessageBoxW(

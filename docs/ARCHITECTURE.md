@@ -90,6 +90,21 @@ browser WebView
   sources or background crawlers.
 - Fetches go through the Rust backend so request headers, redirects, SSRF checks, filtering,
   and caching are consistent.
+- **Online direct reading is an optional feature** (`experimental_online`). It is toggled with a
+  switch that lives on the “online URL direct reading” card in the network settings; the same
+  switch also appears in the feature list. Both write the flag through the same command, so
+  the setting takes effect immediately and is never stale. When the feature is off, the browser
+  page offers an “enable now” action next to the error instead of a dead end.
+- The backend gate reads the in-memory feature snapshot, which is updated in the same write
+  that persists the flag. A safe-mode session blocks online access with the stable code
+  `safe-mode-blocked`.
+- **Address selection**: a hostname may resolve to several addresses. Only addresses that pass
+  the blocked-range list (loopback, private, link-local, CGNAT, cloud metadata) are kept, and a
+  public IPv4 is preferred over IPv6. A host that publishes both a public IPv4 and a private
+  IPv6 therefore still connects, instead of being rejected as a whole. The connection uses
+  exactly the validated addresses, so a blocked address is never contacted.
+- The TLS server name stays the original hostname even when the socket is pinned to a
+  validated IP, so certificate verification is unaffected.
 - Session request headers are scoped by origin and can be kept in memory only. They are never
   written to SQLite, logs, diagnostics, or backups.
 - The embedded browser is for user-driven navigation and download handoff. It has no IPC
@@ -131,6 +146,34 @@ browser WebView
 - The full engineering toolchain keeps static QA for the capability surface, CSP profile, route
   fallbacks, storage sanitization, and other long-lived invariants. The public snapshot ships the
   runtime invariants without the internal QA harness.
+
+## Brand, icons, and skins
+
+- The brand display name is a single constant (`src/features/brand/brand.ts`). The native window
+  title, the document title, and the six dictionaries all read it, and the
+  `static:release-surface` guard (`scripts/release-surface.mjs`, also run by the Vite config)
+  fails the build when it drifts.
+- The upgrade identity anchors (`productName`, `identifier`, `mainBinaryName`) are guarded by
+  the same check: they decide how the installer recognizes an existing installation.
+- **Two independent icon surfaces, deliberately not synchronized:**
+  - the brand mark inside the main UI (top-left of the shell) is the 0.19.1 artwork, drawn
+    inline with fixed colors and offered no replacement entry point;
+  - the desktop shortcut, taskbar, and system tray icons always come from the bundled build
+    resources (`src-tauri/icons/`), and the tray never reads a user-supplied image.
+  Changing one side must never affect the other, and neither side is user-customizable.
+- The skin system is a **reserved (dormant) framed-viewport layout**, not an overlay system:
+  - `SkinCanvasFrame` paints the full-window canvas (theme background, artwork, outer frame);
+  - `ContentViewport` holds the library, browser, and settings, inset by
+    `--mr-skin-viewport-inset` (`top right bottom left`), with radius, glass surface, and shadow;
+  - the reserved state ships with `--mr-skin-viewport-inset: 0px`, no backdrop image, and no
+    frame overlay, so the current build looks exactly like the plain minimal UI;
+  - dormant skin definitions are never activated from the persisted preference; a future art
+    pack is injected explicitly in code (`addSkin` + `setSkin`) and only then applies;
+  - there are no floating sprites above the content: artwork belongs to the canvas and is only
+    visible outside the viewport, so it can never cover text or list items;
+  - the immersive reader route drops the viewport entirely and renders full-bleed;
+  - skin assets are either bundled files under `public/skins/` or `data:` URLs produced by the
+    Rust validator, so the production CSP (`img-src 'self' data:`) is never widened.
 
 ## Repository map
 

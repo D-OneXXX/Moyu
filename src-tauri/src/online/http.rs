@@ -28,6 +28,22 @@ pub trait HttpTransport: Send + Sync {
         referer: Option<&str>,
         header_scope: Option<&str>,
     ) -> Result<HttpResponse, OnlineError>;
+
+    /// 只读取 `start` 之后的 `max_bytes` 字节（图片头部尺寸探测）。
+    ///
+    /// 默认实现退化为普通 GET，便于测试桩与自定义传输保持兼容；
+    /// 生产 [`UreqTransport`] 会发送 `Range` 头并允许服务端截断响应。
+    fn get_range(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        referer: Option<&str>,
+        header_scope: Option<&str>,
+        start: u64,
+    ) -> Result<HttpResponse, OnlineError> {
+        let _ = start;
+        self.get(url, max_bytes, referer, header_scope)
+    }
 }
 
 /// 手动请求头：JSON 对象或单行 Cookie。
@@ -505,6 +521,8 @@ impl UreqTransport {
         scope: Option<&url::Url>,
         max_bytes: usize,
         referer: Option<&str>,
+        range: Option<(u64, u64)>,
+        allow_truncate: bool,
     ) -> Result<RawResponse, OnlineError> {
         let within_scope = scope.is_some_and(|s| same_origin(target, s));
         let use_proxy = self.proxy.as_deref().filter(|_| {
@@ -623,9 +641,14 @@ impl UreqTransport {
                 &target[url::Position::BeforeHost..url::Position::AfterPort],
             );
         }
+        if let Some((start, end)) = range {
+            req = req.set("Range", &format!("bytes={start}-{end}"));
+        }
         match req.call() {
-            Ok(resp) => read_response(resp, target, max_bytes),
-            Err(ureq::Error::Status(_, resp)) => read_response(resp, target, max_bytes),
+            Ok(resp) => read_response(resp, target, max_bytes, allow_truncate),
+            Err(ureq::Error::Status(_, resp)) => {
+                read_response(resp, target, max_bytes, allow_truncate)
+            }
             // Transport 的 Display/Debug 可能包含完整请求 URL/query，日志会经
             // `BackendError` 落到 `app.log`。只保留错误类别，避免泄漏查询串。
             Err(ureq::Error::Transport(t)) => {
@@ -642,11 +665,13 @@ impl UreqTransport {
         max_bytes: usize,
         referer: Option<&str>,
         scope: Option<&url::Url>,
+        range: Option<(u64, u64)>,
+        allow_truncate: bool,
     ) -> Result<RawResponse, OnlineError> {
         let mut current = url.clone();
         for hop in 0..=MAX_REDIRECTS {
             self.validate_target(&current)?;
-            let raw = self.execute(&current, scope, max_bytes, referer)?;
+            let raw = self.execute(&current, scope, max_bytes, referer, range, allow_truncate)?;
             if !is_redirect(raw.status) {
                 return Ok(raw);
             }
@@ -701,6 +726,7 @@ fn read_response(
     resp: ureq::Response,
     url: &url::Url,
     max_bytes: usize,
+    allow_truncate: bool,
 ) -> Result<RawResponse, OnlineError> {
     let status = resp.status();
     let final_url = url.to_string();
@@ -710,11 +736,16 @@ fn read_response(
         .header("retry-after")
         .and_then(|v| v.trim().parse::<u64>().ok());
     let mut body = Vec::new();
+    let read_cap = if allow_truncate {
+        max_bytes as u64
+    } else {
+        max_bytes.saturating_add(1) as u64
+    };
     resp.into_reader()
-        .take(max_bytes.saturating_add(1) as u64)
+        .take(read_cap)
         .read_to_end(&mut body)
         .map_err(|e| OnlineError::Network(e.to_string()))?;
-    if body.len() > max_bytes {
+    if !allow_truncate && body.len() > max_bytes {
         return Err(OnlineError::TooLarge(max_bytes));
     }
     Ok(RawResponse {
@@ -743,7 +774,49 @@ impl HttpTransport for UreqTransport {
         self.validate_target(&url)?;
         let scope = parse_header_scope(header_scope);
         for attempt in 0..=2u32 {
-            match self.get_once(&url, max_bytes, referer, scope.as_ref())? {
+            match self.get_once(&url, max_bytes, referer, scope.as_ref(), None, false)? {
+                raw if should_retry(raw.status) && attempt < 2 => {
+                    let wait_ms = raw
+                        .retry_after_s
+                        .map(|s| s.saturating_mul(1000))
+                        .unwrap_or(if attempt == 0 { 500 } else { 1500 })
+                        .min(5000);
+                    std::thread::sleep(Duration::from_millis(wait_ms));
+                }
+                raw => {
+                    return Ok(HttpResponse {
+                        status: raw.status,
+                        final_url: raw.final_url,
+                        content_type: raw.content_type,
+                        body: raw.body,
+                    });
+                }
+            }
+        }
+        unreachable!("retry loop always returns")
+    }
+
+    fn get_range(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        referer: Option<&str>,
+        header_scope: Option<&str>,
+        start: u64,
+    ) -> Result<HttpResponse, OnlineError> {
+        let url = ensure_http_url(url)?;
+        self.validate_target(&url)?;
+        let scope = parse_header_scope(header_scope);
+        let end = start.saturating_add(max_bytes as u64).saturating_sub(1);
+        for attempt in 0..=2u32 {
+            match self.get_once(
+                &url,
+                max_bytes,
+                referer,
+                scope.as_ref(),
+                Some((start, end)),
+                true,
+            )? {
                 raw if should_retry(raw.status) && attempt < 2 => {
                     let wait_ms = raw
                         .retry_after_s
@@ -895,7 +968,9 @@ mod tests {
             Ok(vec![SocketAddr::new(ip.parse().unwrap(), port)])
         });
         let target = url::Url::parse("http://rebind.example/page").unwrap();
-        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert!(transport
+            .get_once(&target, 1024, None, None, None, false)
+            .is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(
             listener.accept().unwrap_err().kind(),
@@ -917,7 +992,9 @@ mod tests {
             )])
         });
         let target = url::Url::parse("http://ipv6-only.example/page").unwrap();
-        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert!(transport
+            .get_once(&target, 1024, None, None, None, false)
+            .is_err());
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
@@ -1005,7 +1082,9 @@ mod tests {
         transport.allow_loopback = true;
         transport.no_proxy.clear();
         let target = url::Url::parse("http://localhost:9876/book?x=1").unwrap();
-        let response = transport.execute(&target, None, 1024, None).unwrap();
+        let response = transport
+            .execute(&target, None, 1024, None, None, false)
+            .unwrap();
         assert_eq!(response.body, b"ok");
         let request = server.join().unwrap().to_ascii_lowercase();
         assert!(
@@ -1017,6 +1096,42 @@ mod tests {
             request.contains("\r\nhost: localhost:9876\r\n"),
             "{request}"
         );
+    }
+
+    #[test]
+    fn range_execute_sends_exact_byte_range_and_accepts_truncation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut byte = [0u8; 1];
+            while !bytes.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 8192);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 2\r\nContent-Range: bytes 5-6/10\r\nConnection: close\r\n\r\nok",
+                )
+                .unwrap();
+            String::from_utf8(bytes).unwrap().to_ascii_lowercase()
+        });
+        let mut transport = UreqTransport::new("", "").unwrap();
+        transport.allow_loopback = true;
+        transport.no_proxy.clear();
+        let target = url::Url::parse(&format!("http://{address}/image.jpg")).unwrap();
+        let response = transport
+            .execute(&target, None, 2, None, Some((5, 6)), true)
+            .unwrap();
+        assert_eq!(response.status, 206);
+        assert_eq!(response.body, b"ok");
+        let request = server.join().unwrap();
+        assert!(request.contains("\r\nrange: bytes=5-6\r\n"), "{request}");
     }
 
     #[test]
@@ -1062,7 +1177,10 @@ mod tests {
         transport.no_proxy.clear();
         let target = url::Url::parse("http://localhost:9876/book").unwrap();
         assert_eq!(
-            transport.execute(&target, None, 1024, None).unwrap().body,
+            transport
+                .execute(&target, None, 1024, None, None, false)
+                .unwrap()
+                .body,
             b"ok"
         );
         assert!(server

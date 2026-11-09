@@ -1887,11 +1887,11 @@ export function checkStorageWhitelist(root, report) {
 
   // 非存储用途的 mr-* 标识（事件名 / 状态名 / 广播名），不属于 localStorage 键。
   const nonStorage = new Set([
-    "mr-brand-icon-change",
-    // 装饰层 CSS 类名，不是 localStorage 键。
-    "mr-decoration",
-    "mr-decoration-layer",
-    "mr-decoration-slot",
+    // 皮肤画框/内容视窗的 CSS 类名，不是 localStorage 键。
+    "mr-skin-viewport",
+    "mr-skin-canvas",
+    "mr-skin-backdrop",
+    "mr-skin-frame",
     "mr-focus-library-search",
     "mr-online-handoff-state",
     "mr-online-last-test-updated",
@@ -3316,7 +3316,11 @@ export function checkAntiMockGuards(root, report) {
         errors.push(`lib.rs 未注册 D1b 命令：${command}`);
       }
     }
-    if (!libSource.includes("StopReason::Exit")) {
+    // 退出路径通过 stop_for_exit 封装 StopReason::Exit；两者任一都视为已接线。
+    if (
+      !libSource.includes("StopReason::Exit") &&
+      !libSource.includes("stop_for_exit(")
+    ) {
       errors.push("退出路径未停止 Web Access");
     }
     if (

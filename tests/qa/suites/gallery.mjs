@@ -150,24 +150,24 @@ export async function runGallerySuite(ctx, report) {
     });
     captures.push(await capture(ctx.page, dir, `desktop-settings-overview-${theme}.png`));
     const opened = await ctx.page.eval(`(() => {
-      const node = document.querySelector('[data-testid="skin-open"]');
+      const node = document.querySelector('[data-testid="shortcuts-open"]');
       if (!node) return false;
       node.click();
       return true;
     })()`);
     if (opened) {
       await ctx.page
-        .waitFor(`!!document.querySelector('[data-slot="sheet-content"]')`, {
+        .waitFor(`!!document.querySelector('[role="dialog"]')`, {
           timeout: 5000,
-          label: "settings drawer",
+          label: "settings dialog",
         })
         .catch(() => {});
-      captures.push(await capture(ctx.page, dir, `desktop-settings-drawer-open-${theme}.png`));
+      captures.push(await capture(ctx.page, dir, `desktop-settings-dialog-open-${theme}.png`));
       await ctx.page.key("Escape").catch(() => {});
       await ctx.page
-        .waitFor(`!document.querySelector('[data-slot="sheet-content"]')`, {
+        .waitFor(`!document.querySelector('[role="dialog"]')`, {
           timeout: 3000,
-          label: "settings drawer closed",
+          label: "settings dialog closed",
         })
         .catch(() => {});
     }
@@ -186,19 +186,7 @@ export async function runGallerySuite(ctx, report) {
     captures.push(await capture(ctx.page, dir, `desktop-settings-i18n-${locale}.png`));
   }
 
-  // Mascot / decoration skin last: set the preference and reload so
-  // SkinProvider picks it up exactly as a real restart would. Keeping this
-  // after the settings captures avoids carrying the skin into the overview.
   await ctx.setLocale("zh-CN");
-  await page.eval(`localStorage.setItem("mr-skin", "ink-companion"); true`);
-  await ctx.resetWorkspace();
-  await applyViewport(ctx.page);
-  for (const theme of ["light", "dark"]) {
-    await ctx.setTheme(theme);
-    await applyViewport(ctx.page);
-    await waitForLibrary(ctx);
-    captures.push(await capture(ctx.page, dir, `desktop-library-mascot-${theme}.png`));
-  }
   await page.eval(`localStorage.removeItem("mr-skin"); true`).catch(() => {});
 
   const manifest = {

@@ -1090,8 +1090,8 @@ const SETTINGS_TABS_PROBE = `(() => {
       hasTheme: !!panel.querySelector("[aria-pressed]"),
       hasOnlineProxy: !!panel.querySelector("#online-proxy"),
       hasOnlineHeaders: !!panel.querySelector("#online-headers"),
-      // Task 8 渐进式披露：预算滑杆/诊断详情移入二级 Sheet，一级面板只保留摘要。
-      hasStorage: !!panel.querySelector('[data-testid="disk-cache-usage"]'),
+      // #320 起预算滑杆直接在一级 storage 分区；旧 disk-cache-usage 摘要已移除。
+      hasStorage: !!panel.querySelector("#disk-cache-budget"),
       hasPrivacyVersion: !!panel.querySelector('[data-testid="privacy-detail"]'),
       hasWebAccess: !!panel.querySelector('[data-testid="settings-web-access-summary"]'),
       hasDiagnostics: !!panel.querySelector('[data-testid="diagnostics-open"]'),
@@ -1289,7 +1289,7 @@ async function checkSettingsTabs(ctx, report) {
 async function checkSettingsDeepLinks(ctx, report) {
   const cases = [
     { tab: "cache", id: "storage", marker: "hasStorage", selectedTestid: "settings-tab-cache" },
-    { tab: "updates", id: "about", marker: "hasDiagnostics" },
+    { tab: "updates", id: "about", marker: "hasUpdate" },
     { tab: "privacy", id: "privacy", marker: "hasPrivacyVersion" },
   ];
   const problems = [];
@@ -1434,20 +1434,19 @@ async function checkSettingsI18n(ctx, report) {
 
 async function checkDecorationLayerHitTest(ctx, report) {
   const page = ctx.page;
-  await page.eval(`localStorage.setItem("mr-skin", "ink-companion"); true`);
-  await ctx.resetWorkspace();
   await ctx.goto("#/");
   await page
     .waitFor(
-      `!!document.querySelector('[data-testid="theme-decoration-layer"]') && document.querySelectorAll('img.mr-decoration').length > 0`,
-      { timeout: 8000, label: "decoration layer" },
+      `!!document.querySelector('[data-testid="skin-canvas-frame"]')`,
+      { timeout: 8000, label: "skin canvas frame" },
     )
     .catch(() => {});
   const probe = await page.eval(`(() => {
     const visible = ${VISIBLE_FN};
-    const layer = document.querySelector('[data-testid="theme-decoration-layer"]');
-    if (!layer) return { ok: false, reason: "theme-decoration-layer missing" };
-    const style = getComputedStyle(layer);
+    const canvas = document.querySelector('[data-testid="skin-canvas-frame"]');
+    if (!canvas) return { ok: false, reason: "skin-canvas-frame missing" };
+    const backdrop = document.querySelector('[data-testid="skin-canvas-backdrop"]');
+    const frame = document.querySelector('[data-testid="skin-canvas-frame-overlay"]');
     const targets = [];
     const add = (kind, element) => {
       if (!element) return;
@@ -1477,29 +1476,37 @@ async function checkDecorationLayerHitTest(ctx, report) {
         kind: target.kind,
         hitTag: hit ? hit.tagName : null,
         hitClass: hit ? String(hit.className || "").slice(0, 120) : null,
-        inDecorationLayer: !!(hit && hit.closest(".mr-decoration-layer")),
+        inSkinOverlay: !!(
+          hit &&
+          (hit === backdrop ||
+            hit === frame ||
+            backdrop?.contains(hit) ||
+            frame?.contains(hit))
+        ),
         insideTarget: !!(hit && (hit === target.element || target.element.contains(hit))),
       };
     });
     return {
       ok: true,
-      pointerEvents: style.pointerEvents,
-      decorations: layer.querySelectorAll("img.mr-decoration").length,
+      backdropPointer: backdrop ? getComputedStyle(backdrop).pointerEvents : null,
+      framePointer: frame ? getComputedStyle(frame).pointerEvents : null,
       hits,
     };
   })()`);
 
   const problems = [];
-  if (!probe?.ok) problems.push(probe?.reason || "装饰层探针失败");
+  if (!probe?.ok) problems.push(probe?.reason || "皮肤画布探针失败");
   else {
-    if (probe.pointerEvents !== "none") {
-      problems.push(`装饰层 pointer-events=${probe.pointerEvents}，必须为 none`);
-    }
-    if (probe.decorations < 1) problems.push("装饰层没有渲染任何挂件");
-    for (const hit of probe.hits) {
-      if (hit.inDecorationLayer) {
-        problems.push(`${hit.kind} 命中装饰层`);
+    for (const [name, value] of [
+      ["背景层", probe.backdropPointer],
+      ["画框层", probe.framePointer],
+    ]) {
+      if (value !== null && value !== "none") {
+        problems.push(`皮肤${name} pointer-events=${value}，必须为 none`);
       }
+    }
+    for (const hit of probe.hits) {
+      if (hit.inSkinOverlay) problems.push(`${hit.kind} 命中皮肤画布覆盖层`);
       if (!hit.insideTarget) {
         problems.push(`${hit.kind} 未命中目标控件（${hit.hitTag}）`);
       }
@@ -1511,26 +1518,25 @@ async function checkDecorationLayerHitTest(ctx, report) {
       id: "arch:decoration-hit-test",
       suite: "architecture",
       layer: "e2e",
-      title: "主题装饰层拦截了顶栏/搜索/书卡点击",
+      title: "皮肤画布层拦截了顶栏/搜索/书卡点击",
       severity: "P1",
       details: JSON.stringify({ problems, probe }, null, 2),
-      location: "src/components/shell/ThemeDecorationLayer.tsx",
-      expected: "装饰层 pointer-events:none；elementFromPoint 命中真实交互控件",
+      location: "src/components/shell/SkinCanvasFrame.tsx / ContentViewport.tsx",
+      expected: "画布背景/画框 pointer-events:none；默认 dormant 不遮挡内容",
       actual: problems.join(" | "),
-      rootCause: "装饰层进入 pointer-events 或与页面内容同层包裹",
-      fix: "保持装饰层为 pointer-events:none 的兄弟节点，仅 interactive artwork 可点击",
+      rootCause: "画布覆盖层进入 pointer-events 或包裹了内容命中路径",
+      fix: "保持背景层/画框层为 pointer-events:none 的绝对定位层",
     });
   } else {
     ok(report, {
       id: "arch:decoration-hit-test",
       suite: "architecture",
       layer: "e2e",
-      title: "装饰层点击穿透：顶栏/搜索/书卡命中真实控件",
-      details: `${probe.decorations} 个挂件，${probe.hits.length} 个命中点全部穿透`,
+      title: "皮肤画布点击穿透：顶栏/搜索/书卡命中真实控件",
+      details: `${probe.hits.length} 个命中点全部穿透；背景=${probe.backdropPointer ?? "none"} 画框=${probe.framePointer ?? "none"}`,
     });
   }
 
-  await page.eval(`localStorage.removeItem("mr-skin"); true`).catch(() => {});
   await ctx.resetWorkspace().catch(() => {});
 }
 

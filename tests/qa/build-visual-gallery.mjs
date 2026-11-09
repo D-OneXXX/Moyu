@@ -54,27 +54,19 @@ const sections = [
     ],
   },
   {
-    title: "桌面端 · 书库（墨鱼陪伴皮肤 / 角色挂件槽）",
-    note: "装饰层 pointer-events:none；阅读路由自动卸载",
-    items: [
-      ["desktop/library-mascot-light", "Light", "desktop/desktop-library-mascot-light.png"],
-      ["desktop/library-mascot-dark", "Dark", "desktop/desktop-library-mascot-dark.png"],
-    ],
-  },
-  {
-    title: "桌面端 · 设置总览（瘦身一级面板）",
-    note: "5 分区、渐进式披露、无表单轰炸",
+    title: "桌面端 · 设置总览（五分区 + 即时保存）",
+    note: "居中弹窗与即时落盘；无底部保存栏",
     items: [
       ["desktop/settings-overview-light", "Light", "desktop/desktop-settings-overview-light.png"],
       ["desktop/settings-overview-dark", "Dark", "desktop/desktop-settings-overview-dark.png"],
     ],
   },
   {
-    title: "桌面端 · 设置二级抽屉（图标/皮肤选择器）",
-    note: "Sheet 打开态；Escape 关闭由 architecture 套件断言",
+    title: "桌面端 · 设置二级弹窗（快捷键）",
+    note: "Dialog 打开态；Escape 关闭由 architecture 套件断言",
     items: [
-      ["desktop/settings-drawer-light", "Light", "desktop/desktop-settings-drawer-open-light.png"],
-      ["desktop/settings-drawer-dark", "Dark", "desktop/desktop-settings-drawer-open-dark.png"],
+      ["desktop/settings-dialog-light", "Light", "desktop/desktop-settings-dialog-open-light.png"],
+      ["desktop/settings-dialog-dark", "Dark", "desktop/desktop-settings-dialog-open-dark.png"],
     ],
   },
   {

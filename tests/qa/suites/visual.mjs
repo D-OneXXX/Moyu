@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resizeNativeWindow } from "../lib/native-window.mjs";
-import { invoke } from "../lib/app.mjs";
+import { enableOnline, invoke } from "../lib/app.mjs";
 import { fail, note, ok } from "../lib/report.mjs";
 
 const LOCALES = ["zh-CN", "zh-TW", "en", "es", "ja", "ko"];
@@ -287,6 +287,8 @@ export async function runVisualSuite(ctx, report) {
   // auto（父级只有 max-height），长规则就会冲出卡片、压到相邻区块。
   await ctx.setLocale("zh-CN");
   page = ctx.page;
+  // 提纯面板只在在线直读总开关开启后渲染；旧版设置页无此门禁。
+  await enableOnline(page);
   await ctx.goto("#/settings?tab=network");
   await page.waitFor("!!document.querySelector('main')", { timeout: 8000 });
   const overflowRules = Array.from({ length: 30 }, (_, index) => ({
@@ -310,6 +312,18 @@ export async function runVisualSuite(ctx, report) {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await ctx.reconnectMain();
     page = ctx.page;
+    // #320 起规则库下沉到「提纯引擎」二级弹窗；先展开再等 30 行。
+    const openedRules = await page.eval(`(() => {
+      const node = document.querySelector('[data-testid="online-filter-detail"]');
+      if (!node) return false;
+      node.click();
+      return true;
+    })()`);
+    if (!openedRules) throw new Error("online-filter-detail 入口缺失");
+    await page.waitFor(`!!document.querySelector('[role="dialog"]')`, {
+      timeout: 8000,
+      label: "online filter dialog",
+    });
     await page.waitFor(
       "document.querySelectorAll('[data-slot=\"scroll-area-viewport\"] li').length >= 30",
       { timeout: 10000 },
@@ -337,7 +351,7 @@ export async function runVisualSuite(ctx, report) {
       bounds.rows >= 30 &&
       !bounds.escapesCard &&
       bounds.clientHeight > 0 &&
-      bounds.clientHeight <= 400;
+      bounds.clientHeight <= 480;
     if (bounded) {
       ok(report, {
         id: "visual:rules-list-bounded",

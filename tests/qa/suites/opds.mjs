@@ -671,6 +671,25 @@ export async function runOpdsSuite(ctx, report) {
     // the saved Kavita URL back from the local config.
     try {
       await page.navigateHash("#/settings?tab=network");
+      await page.waitFor(
+        `!!document.querySelector('[data-testid="web-access-advanced"]')`,
+        { timeout: 10000, label: "web access advanced trigger" },
+      );
+      // #320 起 Web Access / OPDS 高级配置下沉到居中弹窗；先展开再读输入框。
+      const advanced = await page.eval(`(() => {
+        const node = document.querySelector('[data-testid="web-access-advanced"]');
+        if (!node) return false;
+        node.click();
+        return true;
+      })()`);
+      if (advanced) {
+        await page
+          .waitFor(`!!document.querySelector('[role="dialog"]')`, {
+            timeout: 5000,
+            label: "web access advanced dialog",
+          })
+          .catch(() => {});
+      }
       const panel = await page.waitFor(
         `document.querySelector('[data-testid="opds-url"]') !== null`,
         { timeout: 8000 },
@@ -698,6 +717,7 @@ export async function runOpdsSuite(ctx, report) {
           title: "设置页 OPDS 卡片显示已保存地址",
         });
       }
+      if (advanced) await page.key("Escape").catch(() => {});
       await page.navigateHash("#/");
       await page.waitFor(
         `document.querySelector('[data-testid="opds-open"]') !== null`,

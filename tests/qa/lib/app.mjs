@@ -509,9 +509,9 @@ export function findBook(books, fragment) {
 }
 
 export async function enableOnline(page) {
-  const settings = await invoke(page, "get_settings");
-  const next = { ...settings, experimentalOnline: true, onlineProxy: "" };
-  await invoke(page, "set_settings", { settings: next });
+  // 大功能总开关只接受 set_feature_enabled；set_settings 会忽略 features 字段，
+  // 旧测试写 experimentalOnline 会被 serde 丢弃并让后端返回 feature-disabled。
+  await invoke(page, "set_feature_enabled", { feature: "online", enabled: true });
   await page.eval(`localStorage.setItem("mr-exp-online", "1"); true`);
-  return next;
+  return invoke(page, "get_settings");
 }

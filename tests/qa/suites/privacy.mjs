@@ -23,7 +23,18 @@ export async function runPrivacySuite(ctx, report) {
   let page = ctx.page;
   await ctx.setLocale("en");
   page = ctx.page;
-  await ctx.goto("#/settings?tab=support");
+  // #320 起诊断面板下沉到隐私分区的居中弹窗；先打开二级弹窗再等输入框。
+  await ctx.goto("#/settings?tab=privacy");
+  await page.waitFor(
+    "!!document.querySelector('[data-testid=\"privacy-detail\"]')",
+    { timeout: 10_000, label: "privacy detail trigger" },
+  );
+  await page.eval(`(() => {
+    const node = document.querySelector('[data-testid="privacy-detail"]');
+    if (!node) return false;
+    node.click();
+    return true;
+  })()`);
   await page.waitFor("!!document.getElementById('diagnostics-description')", { timeout: 10_000 });
 
   const sensitiveMessage = [

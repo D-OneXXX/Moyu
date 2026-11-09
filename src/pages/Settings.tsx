@@ -694,23 +694,21 @@ export default function SettingsPage() {
     : 2048;
   const last7Pages = dash ? sumLast7Days(dash.heatmap) : 0;
 
-  const activeTheme =
-    THEME_OPTIONS.find((option) => option.value === mode) ?? THEME_OPTIONS[0];
   const onlineFeature = ONLINE_FEATURE;
   const tabTriggerClass =
     "h-9 min-w-0 whitespace-nowrap rounded-full px-1.5 text-xs font-medium tracking-tight text-muted-foreground hover:bg-accent hover:text-foreground data-active:border-border data-active:bg-primary data-active:text-primary-foreground data-active:shadow-elevation-sm dark:data-active:border-border dark:data-active:bg-primary dark:data-active:text-primary-foreground lg:px-3 xl:px-2.5 xl:text-sm";
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-5 pb-24 pt-4 sm:px-8">
-      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
+    <div className="mx-auto w-full max-w-6xl px-5 pb-24 pt-4 sm:px-8">
+      <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             {t("settings.page.eyebrow")}
           </p>
-          <h1 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl">
+          <h1 className="mt-1 text-3xl font-extrabold tracking-tight sm:text-4xl">
             {t("nav.settings")}
           </h1>
-          <p className="mt-1.5 line-clamp-2 max-w-2xl text-xs leading-5 text-muted-foreground">
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
             {t("settings.page.description")}
           </p>
         </div>
@@ -788,29 +786,43 @@ export default function SettingsPage() {
               <div
                 role="group"
                 aria-label={t("settings.theme.groupLabel")}
-                className="flex w-full max-w-md rounded-full border border-border/60 bg-card/50 p-1"
+                className="grid gap-3 sm:grid-cols-3"
               >
                 {THEME_OPTIONS.map((option) => {
                   const Icon = option.icon;
                   const active = mode === option.value;
                   return (
-                    <Button
+                    <button
                       key={option.value}
                       type="button"
                       aria-pressed={active}
-                      variant={active ? "pill-primary" : "pill-ghost"}
-                      size="pill-sm"
-                      className="min-w-0 flex-1"
+                      data-testid={`theme-card-${option.value}`}
                       onClick={() => onThemeChange(option.value)}
+                      className={cn(
+                        "relative flex min-w-0 flex-col items-start gap-2 rounded-2xl border p-4 text-left transition-colors",
+                        active
+                          ? "border-primary bg-primary/10 shadow-hard-sm"
+                          : "border-border bg-background/60 hover:bg-muted/40",
+                      )}
                     >
-                      <Icon className="size-4 shrink-0" />
-                      <span className="truncate">{t(option.labelKey)}</span>
-                    </Button>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <Icon className="size-4 shrink-0" />
+                        <span className="min-w-0 truncate text-sm font-semibold">
+                          {t(option.labelKey)}
+                        </span>
+                      </span>
+                      <span className="text-xs leading-relaxed text-muted-foreground">
+                        {t(option.hintKey)}
+                      </span>
+                      {active ? (
+                        <Check className="absolute right-3 top-3 size-4 text-primary" />
+                      ) : null}
+                    </button>
                   );
                 })}
               </div>
               <p className="px-1 text-xs text-muted-foreground">
-                {t(activeTheme.hintKey)}
+                {t("settings.theme.systemNote")}
               </p>
             </SettingsSection>
 
@@ -819,10 +831,7 @@ export default function SettingsPage() {
               title={t("settings.language.title")}
               description={t("settings.language.description")}
               rows={
-                <SettingRow
-                  title={t("settings.language.label")}
-                  description={t("settings.language.description")}
-                >
+                <SettingRow title={t("settings.language.label")}>
                   <Select
                     items={LOCALE_OPTIONS}
                     value={locale}
@@ -987,12 +996,6 @@ export default function SettingsPage() {
                   icon={KeyRound}
                   title={t("settings.online.networkTitle")}
                   description={t("settings.online.networkDescription")}
-                  disclosure={{
-                    title: t("settings.online.networkTitle"),
-                    triggerLabel: t("settings.online.headersLabel"),
-                    triggerHint: t(`settings.online.proxyMode.${proxyMode}`),
-                    testId: "online-headers-open",
-                  }}
                 >
                   <div className="flex flex-wrap gap-1.5">
                     <Button
@@ -1191,6 +1194,9 @@ export default function SettingsPage() {
                       </span>
                     </div>
                   </div>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {t("settings.online.storageModeNote")}
+                  </p>
                 </SettingsSection>
 
                 {onlineFeature ? <OnlineFilterPanel /> : null}

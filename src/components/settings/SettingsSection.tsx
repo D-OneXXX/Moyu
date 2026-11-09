@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Card } from "@/components/ui/card";
 import { SettingsDialog } from "./SettingsDialog";
 import { useSettingsSurface } from "./settingsSurface";
 
@@ -55,7 +56,7 @@ export function SettingsSection({
   const [open, setOpen] = useState(false);
   const flat = surface === "dialog";
 
-  const header = (
+  const header = flat ? (
     <div className="flex items-start gap-2 px-1">
       {Icon ? (
         <Icon
@@ -76,10 +77,29 @@ export function SettingsSection({
       </div>
       {action ? <div className="shrink-0">{action}</div> : null}
     </div>
+  ) : (
+    <div className="flex flex-wrap items-start gap-3">
+      {Icon ? (
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl border border-border bg-secondary text-secondary-foreground shadow-hard-sm">
+          <Icon className="size-4" strokeWidth={2.2} aria-hidden />
+        </span>
+      ) : null}
+      <div className="min-w-0 flex-1">
+        <h2 className="break-words text-base font-bold tracking-tight">
+          {title}
+        </h2>
+        {description ? (
+          <p className="mt-1 break-words text-sm leading-relaxed text-muted-foreground">
+            {description}
+          </p>
+        ) : null}
+      </div>
+      {action ? <div className="shrink-0">{action}</div> : null}
+    </div>
   );
 
   const body = summary || rows || children || disclosure ? (
-    <div className="space-y-3">
+    <div className={flat ? "space-y-3" : "space-y-4"}>
       {summary}
       {rows || disclosure ? (
         <SettingsRowList>
@@ -100,10 +120,20 @@ export function SettingsSection({
 
   return (
     <>
-      <section className={cn("space-y-3", flat && "space-y-3", className)}>
-        {header}
-        {body}
-      </section>
+      {flat ? (
+        <section className={cn("space-y-3", className)}>
+          {header}
+          {body}
+        </section>
+      ) : (
+        <Card
+          data-settings-section-card="true"
+          className={cn("gap-4 p-5 sm:p-6", className)}
+        >
+          {header}
+          {body}
+        </Card>
+      )}
       {disclosure ? (
         <SettingsDialog
           open={open}
@@ -135,20 +165,9 @@ export function SettingsRowList({
   return (
     <div
       className={cn(
-        "divide-y divide-border/40 overflow-hidden",
-        flat
-          ? "border-0 bg-transparent"
-          : "rounded-xl border border-border/60 bg-card/50",
+        flat ? "divide-y divide-border/40" : "space-y-3",
         className,
       )}
-      style={
-        flat
-          ? undefined
-          : {
-              borderWidth: "var(--mr-border-width)",
-              borderStyle: "var(--mr-border-style)",
-            }
-      }
     >
       {children}
     </div>
@@ -171,22 +190,27 @@ export function SettingRow({
   children,
   className,
 }: SettingRowProps) {
+  const surface = useSettingsSurface();
+  const flat = surface === "dialog";
   return (
     <div
       className={cn(
-        "flex min-h-[56px] flex-wrap items-center justify-between gap-3 px-4 py-3",
+        "flex min-h-[56px] flex-wrap items-center justify-between gap-3",
+        flat
+          ? "px-4 py-3"
+          : "rounded-2xl border border-border bg-background/60 p-4",
         className,
       )}
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <p className="min-w-0 truncate text-sm font-medium leading-5 text-foreground">
+          <p className="min-w-0 break-words text-sm font-semibold leading-5 text-foreground">
             {title}
           </p>
           {badge}
         </div>
         {description ? (
-          <p className="mt-0.5 truncate text-xs leading-5 text-muted-foreground">
+          <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">
             {description}
           </p>
         ) : null}
@@ -218,6 +242,8 @@ export function SettingActionRow({
   testId,
   className,
 }: SettingActionRowProps) {
+  const surface = useSettingsSurface();
+  const flat = surface === "dialog";
   return (
     <button
       type="button"
@@ -225,6 +251,7 @@ export function SettingActionRow({
       data-testid={testId}
       className={cn(
         "group/row flex w-full min-h-[56px] cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40 active:bg-muted/60",
+        flat ? "" : "rounded-2xl border border-border bg-background/60",
         className,
       )}
     >
@@ -296,7 +323,7 @@ export function SettingsStat({
 
 export function SettingsStatRow({ children }: { children: ReactNode }) {
   return (
-    <div className="grid grid-cols-2 gap-3 rounded-xl border border-border/60 bg-card/50 px-4 py-3 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 rounded-2xl border border-border bg-background/60 px-4 py-3 sm:grid-cols-4">
       {children}
     </div>
   );

@@ -690,6 +690,42 @@ export async function runOpdsSuite(ctx, report) {
           })
           .catch(() => {});
       }
+      const dialogMetrics = await page.eval(`(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return null;
+        const rect = dialog.getBoundingClientRect();
+        return {
+          top: Math.round(rect.top),
+          bottom: Math.round(rect.bottom),
+          height: Math.round(rect.height),
+          viewport: window.innerHeight,
+        };
+      })()`);
+      if (
+        !dialogMetrics ||
+        dialogMetrics.top < -1 ||
+        dialogMetrics.bottom > dialogMetrics.viewport + 1
+      ) {
+        fail(report, {
+          id: "opds:settings-dialog-viewport",
+          suite: "opds",
+          layer: "ui",
+          title: "二级设置弹窗超出视口，标题/关闭按钮被裁切",
+          severity: "P1",
+          details: JSON.stringify(dialogMetrics),
+          location: "src/components/settings/SettingsDialog.tsx",
+          expected: "弹窗上下边界都在视口内，内容区可滚动",
+          actual: JSON.stringify(dialogMetrics),
+        });
+      } else {
+        ok(report, {
+          id: "opds:settings-dialog-viewport",
+          suite: "opds",
+          layer: "ui",
+          title: "二级设置弹窗保持在视口内",
+          details: JSON.stringify(dialogMetrics),
+        });
+      }
       const panel = await page.waitFor(
         `document.querySelector('[data-testid="opds-url"]') !== null`,
         { timeout: 8000 },

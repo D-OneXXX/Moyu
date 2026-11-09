@@ -38,6 +38,7 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "online-blocked-address", key: "error.onlineBlockedAddress" },
   { code: "online-too-many-pages", key: "error.onlineTooManyPages" },
   { code: "online-fetch-failed", key: "error.onlineFetchFailed" },
+  { code: "online-html-no-content", key: "error.onlineHtmlNoContent" },
   { code: "opds-disabled", key: "error.opdsDisabled" },
   { code: "opds-not-configured", key: "error.opdsNotConfigured" },
   { code: "opds-url-invalid", key: "error.opdsUrlInvalid" },

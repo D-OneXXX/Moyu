@@ -282,6 +282,15 @@ pub fn url_template(raw: &str) -> Option<String> {
     ))
 }
 
+/// 只保留数字归一化后的 path，用于“同一章图片”聚类。
+///
+/// 漫画站常把章节图片轮换到 `i1/i2/i3` 等 CDN 子域；按完整 host+path
+/// 分组会让每张图都成为单例，从而被 `isolated` 规则整章误杀。
+fn path_template(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    Some(normalize_digit_runs(url.path()))
+}
+
 /// 保留 host 与 path，去掉 query/fragment；用于规则/事件展示。
 pub fn redacted_url(raw: &str) -> String {
     crate::online::redact_url_for_log(raw)
@@ -359,6 +368,8 @@ pub fn rule_matches(rule: &FilterRule, candidate: &CandidateImage, sha256: Optio
 ///
 /// 仅匹配 URL path、class/id、alt 与容器提示，避免把签名 query 中的随机串
 /// 当成噪音；不收录 `ad`、`icon` 之外的宽泛短词，防止误杀正文文件名。
+/// `loading` / `placeholder` / `thumb` 是懒加载状态词而非内容判据：正文
+/// 图片常带 `lazy-loading`，真正的占位图由 [`placeholder_url`] 与尺寸阶段处理。
 const NEGATIVE_WORDS: &[&str] = &[
     "logo",
     "avatar",
@@ -375,9 +386,6 @@ const NEGATIVE_WORDS: &[&str] = &[
     "button",
     "footer",
     "sponsor",
-    "loading",
-    "placeholder",
-    "thumb",
     "emoji",
     "sticker",
     "share",
@@ -397,6 +405,8 @@ fn placeholder_url(lower: &str) -> bool {
         || lower.contains("spacer")
         || lower.contains("blank.gif")
         || lower.contains("pixel.gif")
+        || lower.contains("spinner")
+        || lower.contains("loader")
 }
 
 fn negative_hit(candidate: &CandidateImage) -> Option<&'static str> {
@@ -462,19 +472,20 @@ pub fn filter_candidates(
     } else {
         memory.host.clone()
     };
-    let templates: Vec<Option<String>> = candidates.iter().map(|c| url_template(&c.url)).collect();
-    let mut template_counts: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
-    for template in templates.iter().flatten() {
-        *template_counts.entry(template.as_str()).or_insert(0) += 1;
+    // 聚类只看 path：轮换 CDN 子域仍是同一章；完整 URL 模板继续用于站点档案。
+    let path_templates: Vec<Option<String>> =
+        candidates.iter().map(|c| path_template(&c.url)).collect();
+    let mut path_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for template in path_templates.iter().flatten() {
+        *path_counts.entry(template.as_str()).or_insert(0) += 1;
     }
-    let main_template = template_counts
+    let main_path = path_counts
         .iter()
         .max_by_key(|(_, count)| **count)
         .map(|(template, _)| *template);
     let main_host = candidates
         .iter()
-        .find(|c| templates.get(c.order).and_then(|t| t.as_deref()) == main_template)
+        .find(|c| path_templates.get(c.order).and_then(|t| t.as_deref()) == main_path)
         .map(|c| url_host(&c.url))
         .unwrap_or_default();
     let max_aspect = memory
@@ -492,7 +503,7 @@ pub fn filter_candidates(
 
     let mut probed = 0usize;
     let mut scored: Vec<ScoredCandidate> = Vec::with_capacity(input_count);
-    for (index, candidate) in candidates.into_iter().enumerate() {
+    for candidate in candidates {
         let mut score = 1.0f32;
         let mut reason: Option<String> = None;
         let mut allow = memory
@@ -583,9 +594,12 @@ pub fn filter_candidates(
                     }
                 }
             }
-            if let Some(template) = templates.get(index).and_then(|t| t.as_deref()) {
-                let count = template_counts.get(template).copied().unwrap_or(0);
-                if main_template != Some(template) && count <= 1 && input_count >= 4 {
+            if let Some(template) = path_templates
+                .get(candidate.order)
+                .and_then(|t| t.as_deref())
+            {
+                let count = path_counts.get(template).copied().unwrap_or(0);
+                if main_path != Some(template) && count <= 1 && input_count >= 4 {
                     score -= 0.4;
                     if url_host(&candidate.url) != main_host {
                         score -= 0.2;
@@ -809,6 +823,24 @@ mod tests {
             .blocked
             .iter()
             .any(|p| p.reason.contains("chrome") || p.reason.contains("keyword")));
+    }
+
+    #[test]
+    fn rotating_cdn_subdomains_are_clustered_by_path() {
+        // 同一章 22 页轮换到 i1..i22；path 模式一致，不能逐张判为 isolated。
+        let candidates: Vec<CandidateImage> = (0..22)
+            .map(|i| {
+                candidate(
+                    &format!("https://i{}.cdn.example/ch/{:03}.jpg", i + 1, i + 1),
+                    800,
+                    1200,
+                    i,
+                )
+            })
+            .collect();
+        let outcome = run(candidates, &FilterMemory::default());
+        assert_eq!(outcome.pages.len(), 22, "blocked={:?}", outcome.blocked);
+        assert!(outcome.blocked.is_empty());
     }
 
     #[test]

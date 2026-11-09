@@ -12,6 +12,7 @@ use regex::Regex;
 use crate::online::direct::{make_filtered_meta, probe_image, OnlineBookMeta};
 use crate::online::filter::{
     filter_candidates, CandidateImage, CandidateSource, FilterMemory, FilterThresholds,
+    FilteredPage,
 };
 use crate::online::http::HttpTransport;
 use crate::online::OnlineError;
@@ -142,6 +143,11 @@ pub fn parse_gallery_with(
         }
     }
 
+    // 仅在完全没有 <img> 时退回 <picture><source srcset>。正常页面同时存在
+    // <source> 与 <img>，此时只取 <img>，避免同一页被 webp/jpeg 双份导入。
+    if candidates.is_empty() {
+        collect_source_candidates(&text, &effective_base, &mut candidates, &mut seen);
+    }
     if candidates.is_empty() {
         return Err(BackendError::Msg(
             "未找到可读图片；分页查看器或依赖 JS 的页面不在支持范围".into(),
@@ -156,8 +162,9 @@ pub fn parse_gallery_with(
     let outcome = filter_candidates(candidates, &memory, thresholds, &mut probe);
     if outcome.pages.is_empty() {
         return Err(BackendError::Msg(format!(
-            "未找到正文图片（已过滤 {} 张非正文图）",
-            outcome.blocked.len()
+            "未找到正文图片（已过滤 {} 张；原因 {}）（online-html-no-content）",
+            outcome.blocked.len(),
+            reason_summary(&outcome.blocked)
         )));
     }
     if outcome.pages.len() > MAX_PAGES {
@@ -230,6 +237,10 @@ fn is_chrome_class(value: &str) -> bool {
         "breadcrumb",
         "toolbar",
     ];
+    // 只收录“结构性”站点 chrome。`loading` / `placeholder` / `thumb`
+    // 是懒加载状态词，正文 `<img class="lazy-loading">` 或
+    // `<div class="chapter-content loading">` 极为常见；把它们当 chrome
+    // 会把整章正文直接判负。占位图由 URL 形态与尺寸阶段处理。
     const CONTAINS: &[&str] = &[
         "header",
         "footer",
@@ -238,10 +249,7 @@ fn is_chrome_class(value: &str) -> bool {
         "avatar",
         "qrcode",
         "watermark",
-        "thumb",
         "icon",
-        "loading",
-        "placeholder",
         "sprite",
         "button",
         "btn",
@@ -412,23 +420,137 @@ fn image_dimensions(attrs: &[(String, String)]) -> (Option<u32>, Option<u32>) {
     )
 }
 
-fn first_srcset_url(value: &str) -> Option<String> {
-    value
-        .split(',')
-        .next()
-        .and_then(|part| part.split_whitespace().next())
-        .map(str::to_string)
+/// 从 srcset 中选择“最大”候选：有 `w` 取最大宽度，有 `x` 取最大倍率；
+/// 无描述符时取第一项。只取第一项会拿到缩略图或 1x 占位图。
+fn best_srcset_url(value: &str) -> Option<String> {
+    let mut best: Option<(f64, String)> = None;
+    for part in value.split(',') {
+        let mut words = part.split_whitespace();
+        let Some(url) = words.next() else { continue };
+        let descriptor = words.next().unwrap_or("");
+        let weight = if let Some(raw) = descriptor.strip_suffix('w') {
+            raw.parse::<f64>().unwrap_or(0.0)
+        } else if let Some(raw) = descriptor.strip_suffix('x') {
+            raw.parse::<f64>().unwrap_or(0.0) * 10_000.0
+        } else {
+            0.0
+        };
+        let is_better = match best.as_ref() {
+            None => true,
+            Some((current, _)) => weight > *current,
+        };
+        if is_better {
+            best = Some((weight, url.to_string()));
+        }
+    }
+    best.map(|(_, url)| url)
+}
+
+/// 汇总过滤原因（去掉 `keyword:` 后缀），最多三项，便于用户判断是
+/// 站点 chrome、尺寸还是用户规则导致整页失败。
+fn reason_summary(blocked: &[FilteredPage]) -> String {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for page in blocked {
+        let reason = page.reason.split(':').next().unwrap_or("unknown");
+        *counts.entry(reason).or_insert(0) += 1;
+    }
+    let mut pairs: Vec<(&str, usize)> = counts.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    pairs
+        .iter()
+        .take(3)
+        .map(|(reason, count)| format!("{reason}×{count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `<picture>` 站点可能只提供 `<source type="image/webp" srcset="...">`。
+/// 只接受声明为图片或无声明但带 srcset 的 source，避免把 `<video>` 源当图片。
+fn collect_source_candidates(
+    text: &str,
+    base_url: &url::Url,
+    out: &mut Vec<CandidateImage>,
+    seen: &mut HashSet<String>,
+) {
+    let mut pos = 0usize;
+    let mut in_picture = false;
+    // `<picture>` 内多个 <source> 是同一页的不同格式回退，只取第一个可用项。
+    let mut picture_used = false;
+    while let Some((start, end)) = next_tag(text, pos) {
+        pos = end;
+        let tag = &text[start..end];
+        let closing = tag.trim_start().starts_with("</");
+        let Some(name) = tag_name(tag) else {
+            continue;
+        };
+        if name == "picture" {
+            in_picture = !closing;
+            picture_used = false;
+            continue;
+        }
+        if closing || name != "source" || !in_picture || picture_used {
+            continue;
+        }
+        let attrs = parse_attrs(tag);
+        let kind = attr_value(&attrs, "type").unwrap_or_default();
+        let lower_kind = kind.to_ascii_lowercase();
+        let has_srcset = attr_value(&attrs, "srcset")
+            .or_else(|| attr_value(&attrs, "data-srcset"))
+            .is_some();
+        if !has_srcset && !lower_kind.starts_with("image/") {
+            continue;
+        }
+        let Some(url) = image_url(&attrs, base_url) else {
+            continue;
+        };
+        picture_used = true;
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        let (width, height) = image_dimensions(&attrs);
+        let class_id = attr_value(&attrs, "class")
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        out.push(CandidateImage {
+            url,
+            width,
+            height,
+            order: out.len(),
+            in_chrome: false,
+            container: None,
+            class_id,
+            alt: attr_value(&attrs, "alt"),
+            source: CandidateSource::Html,
+            anchor: None,
+        });
+        if out.len() > MAX_PAGES.saturating_mul(8) {
+            return;
+        }
+    }
 }
 
 fn image_url(attrs: &[(String, String)], base_url: &url::Url) -> Option<String> {
     let mut candidates = Vec::new();
-    for key in ["data-src", "data-original", "data-lazy-src"] {
+    // 懒加载属性按优先级排列；不同站点/库使用不同命名。
+    for key in [
+        "data-src",
+        "data-original",
+        "data-original-src",
+        "data-lazy-src",
+        "data-lazy",
+        "data-lazyload",
+        "data-echo",
+        "data-url",
+        "data-cfsrc",
+    ] {
         if let Some(value) = attr_value(attrs, key) {
             candidates.push(value);
         }
     }
-    if let Some(value) = attr_value(attrs, "data-srcset").and_then(|v| first_srcset_url(&v)) {
-        candidates.push(value);
+    for key in ["data-srcset", "srcset"] {
+        if let Some(value) = attr_value(attrs, key).and_then(|v| best_srcset_url(&v)) {
+            candidates.push(value);
+        }
     }
     if let Some(value) = attr_value(attrs, "src") {
         candidates.push(value);
@@ -539,6 +661,56 @@ mod tests {
                 || p.reason.contains("keyword")
         }));
         assert!(meta.filter_profile.is_some());
+    }
+
+    #[test]
+    fn lazy_loading_classes_do_not_mark_content_as_chrome() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let mut html = String::from(r#"<html><body><main><div class="chapter-content loading">"#);
+        for i in 1..=22 {
+            html.push_str(&format!(
+                r#"<img class="lazy-loading" data-src="/pages/{i:03}.jpg" src="/placeholder.gif">"#
+            ));
+        }
+        html.push_str("</div></main></body></html>");
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 22);
+    }
+
+    #[test]
+    fn srcset_chooses_largest_candidate() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = br#"<html><body>
+            <img srcset="/small.jpg 320w, /large.jpg 1600w, /mid.jpg 800w">
+            <img srcset="/one.jpg 1x, /three.jpg 3x, /two.jpg 2x">
+            </body></html>"#;
+        let meta = parse_gallery(html, &page, &page).unwrap();
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        assert_eq!(stored.pages[0].url, "http://gallery.example/large.jpg");
+        assert_eq!(stored.pages[1].url, "http://gallery.example/three.jpg");
+    }
+
+    #[test]
+    fn picture_sources_are_used_only_when_no_img_exists() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = br#"<html><body>
+            <picture>
+              <source type="image/webp" srcset="/a-640.webp 640w, /a-1280.webp 1280w">
+              <source type="image/jpeg" srcset="/a-1280.jpg 1280w">
+            </picture>
+            <picture><source type="image/webp" srcset="/b.webp"></picture>
+            <video><source src="/movie.mp4"></video>
+            </body></html>"#;
+        let meta = parse_gallery(html, &page, &page).unwrap();
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let urls: Vec<&str> = stored.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "http://gallery.example/a-1280.webp",
+                "http://gallery.example/b.webp",
+            ]
+        );
     }
 
     #[test]

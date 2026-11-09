@@ -286,6 +286,11 @@ pub fn resolve_with(
     // 只有正文根本不是 JSON 时才回退 HTML；合法 JSON 但清单语义错误
     // （版本、页数、页 URL 非法等）必须原样返回清单错误，避免误当图集导入。
     let body_is_json = serde_json::from_slice::<serde_json::Value>(&resp.body).is_ok();
+    let body_is_html = resp
+        .body
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b'<');
     let mut effective_memory = memory.clone();
     if effective_memory.host.is_empty() {
         effective_memory.host = filter::url_host(url.as_str());
@@ -302,6 +307,11 @@ pub fn resolve_with(
             thresholds,
         ) {
             Ok(meta) => Ok(meta),
+            // 返回的是 HTML 页面时，JSON 解析错误只是“第一列不是 {”，
+            // 对用户没有信息量；只保留 HTML 过滤原因。
+            Err(html_err) if body_is_html => Err(BackendError::Msg(format!(
+                "页面不是 JSON 清单，也未找到正文图片：{html_err}"
+            ))),
             Err(html_err) => Err(BackendError::Msg(format!(
                 "无法解析为 JSON 或 HTML 图集：JSON={json_err}; HTML={html_err}"
             ))),
@@ -691,6 +701,20 @@ mod tests {
         assert!(err.contains("JSON="), "{err}");
         assert!(err.contains("HTML="), "{err}");
         assert_eq!(t.calls(), 1);
+    }
+
+    #[test]
+    fn resolve_html_failure_drops_json_noise_and_reports_filter_reasons() {
+        let t = StubTransport::ok(
+            br#"<html><body><header><img src="/logo.png" class="logo"></header></body></html>"#,
+        );
+        let err = resolve(&t, "http://example.com/chapter")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("页面不是 JSON 清单"), "{err}");
+        assert!(err.contains("原因 chrome"), "{err}");
+        assert!(err.contains("online-html-no-content"), "{err}");
+        assert!(!err.contains("expected value"), "{err}");
     }
 
     #[test]

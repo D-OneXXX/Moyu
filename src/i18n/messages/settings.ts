@@ -341,6 +341,8 @@ const zhCN = {
   "settings.webAccess.start": "启动服务",
   "settings.webAccess.httpWarning": "局域网 HTTP 不加密；同一网络中的设备可能读取或篡改内容和会话。请仅在可信网络使用。",
   "settings.webAccess.startSecure": "高级：使用 HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "手机必须先信任本机根 CA，否则 HTTPS 地址只会显示证书错误或空白；不需要加密时请用默认「启动服务」。",
   "settings.webAccess.plainPairHint": "手机扫码或输入网址后，在此批准设备。无需安装证书。",
   "settings.webAccess.starting": "正在启动",
   "settings.webAccess.stop": "停止服务",
@@ -754,6 +756,8 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.start": "啟動服務",
   "settings.webAccess.httpWarning": "區域網路 HTTP 未加密；同一網路的裝置可能讀取或竄改內容與工作階段。請僅在可信網路使用。",
   "settings.webAccess.startSecure": "進階：使用 HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "手機必須先信任本機根 CA，否則 HTTPS 位址只會顯示憑證錯誤或空白；不需要加密時請用預設「啟動服務」。",
   "settings.webAccess.plainPairHint": "手機掃碼或輸入網址後，在此核准裝置。無需安裝憑證。",
   "settings.webAccess.starting": "正在啟動",
   "settings.webAccess.stop": "停止服務",
@@ -1173,6 +1177,8 @@ const en: SettingsMessages = {
   "settings.webAccess.start": "Start service",
   "settings.webAccess.httpWarning": "Local HTTP is unencrypted. Devices on the network may read or alter content and sessions. Use only on a trusted network.",
   "settings.webAccess.startSecure": "Advanced: use HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "The phone must trust this machine's root CA first; otherwise the HTTPS address only shows a certificate error or a blank page. Use the default Start service when encryption is not required.",
   "settings.webAccess.plainPairHint": "Scan the code or enter the address, then approve the device here. No certificate is needed.",
   "settings.webAccess.starting": "Starting",
   "settings.webAccess.stop": "Stop service",
@@ -1611,6 +1617,8 @@ const es: SettingsMessages = {
   "settings.webAccess.start": "Iniciar servicio",
   "settings.webAccess.httpWarning": "HTTP local no está cifrado. Otros dispositivos de la red pueden leer o modificar el contenido y la sesión. Úsalo solo en redes de confianza.",
   "settings.webAccess.startSecure": "Avanzado: usar HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "El teléfono debe confiar primero en la CA raíz de este equipo; de lo contrario, la dirección HTTPS solo muestra un error de certificado o una página en blanco. Usa el inicio predeterminado si no necesitas cifrado.",
   "settings.webAccess.plainPairHint": "Escanea el código o introduce la dirección y aprueba el dispositivo aquí. No se necesita certificado.",
   "settings.webAccess.starting": "Iniciando",
   "settings.webAccess.stop": "Detener servicio",
@@ -2052,6 +2060,8 @@ const ja: SettingsMessages = {
   "settings.webAccess.start": "サービスを起動",
   "settings.webAccess.httpWarning": "ローカル HTTP は暗号化されません。同じネットワークの機器が内容やセッションを読み取り、改ざんする可能性があります。信頼できるネットワークでのみ使用してください。",
   "settings.webAccess.startSecure": "詳細：HTTPS を使用",
+  "settings.webAccess.httpsRequiresCa":
+    "スマートフォンがこの PC のルート CA を信頼していない場合、HTTPS アドレスは証明書エラーまたは空白ページになります。暗号化が不要なら既定の「サービスを開始」を使用してください。",
   "settings.webAccess.plainPairHint": "コードを読み取るかアドレスを入力し、ここで端末を承認します。証明書は不要です。",
   "settings.webAccess.starting": "起動中",
   "settings.webAccess.stop": "サービスを停止",
@@ -2485,6 +2495,8 @@ const ko: SettingsMessages = {
   "settings.webAccess.start": "서비스 시작",
   "settings.webAccess.httpWarning": "로컬 HTTP는 암호화되지 않습니다. 같은 네트워크의 기기가 콘텐츠와 세션을 읽거나 변경할 수 있습니다. 신뢰할 수 있는 네트워크에서만 사용하세요.",
   "settings.webAccess.startSecure": "고급: HTTPS 사용",
+  "settings.webAccess.httpsRequiresCa":
+    "휴대폰이 이 PC의 루트 CA를 먼저 신뢰해야 합니다. 그렇지 않으면 HTTPS 주소는 인증서 오류나 빈 페이지만 표시합니다. 암호화가 필요 없다면 기본 '서비스 시작'을 사용하세요.",
   "settings.webAccess.plainPairHint": "코드를 스캔하거나 주소를 입력한 뒤 여기서 기기를 승인하세요. 인증서는 필요하지 않습니다.",
   "settings.webAccess.starting": "시작 중",
   "settings.webAccess.stop": "서비스 중지",

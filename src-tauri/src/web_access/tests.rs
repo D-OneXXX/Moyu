@@ -2255,6 +2255,7 @@ async fn real_tls_serves_browser_assets_and_revokes_current_session() {
     let other = service.issue_session_for_test("Other");
     for path in [
         "/",
+        "/reader-boot.js",
         "/reader.js",
         "/reader.css",
         "/reader-theme.css",

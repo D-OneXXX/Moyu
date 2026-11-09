@@ -243,9 +243,7 @@ pub(crate) async fn ensure_online_allowed() -> Result<(), String> {
 fn ensure_online_allowed_at(path: &Path) -> Result<(), String> {
     match read_safe_mode_result(path) {
         Ok(state) if !state.active => Ok(()),
-        Ok(_) => {
-            Err("安全模式保障中，在线与浏览器功能已暂停（web-access-safe-mode）".to_string())
-        }
+        Ok(_) => Err("安全模式保障中，在线与浏览器功能已暂停（web-access-safe-mode）".to_string()),
         Err(error) => {
             crate::logging::log_error(
                 "safe_mode",

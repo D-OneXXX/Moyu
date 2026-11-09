@@ -3,26 +3,28 @@
  * strings (Task 7). Kept in one module so the six dictionaries stay in sync.
  */
 const zhCN = {
-  "settings.brandIcon.open": "更换品牌图标",
-  "settings.brandIcon.openHint": "内置图标 / 自定义上传",
 
-  "settings.skin.title": "界面风格与角色挂件",
+  "settings.skin.title": "画框式界面皮肤",
   "settings.skin.description":
-    "一套 CSS 变量即可切换整体骨骼质感；装饰层永不拦截点击与滚动。",
-  "settings.skin.decorationCount": "{count} 个挂件",
-  "settings.skin.open": "选择界面风格",
-  "settings.skin.openHint": "挂件在阅读路由自动卸载",
+    "整片窗口是一张主题画布，书库与设置是内嵌视窗；没有任何漂浮挂件。",
+  "settings.skin.open": "选择界面皮肤",
+  "settings.skin.openHint": "画框包裹 / 全屏铺满",
   "settings.skin.active": "使用中",
   "settings.skin.apply": "应用",
-  "settings.skin.import": "导入本地立绘",
+  "settings.skin.framedName": "画框包裹",
+  "settings.skin.framedDescription":
+    "整页背景 + 视窗外框环绕装饰，内容区向内收缩成毛玻璃视窗。",
+  "settings.skin.modeFramed": "画框包裹",
+  "settings.skin.modeFullscreen": "全屏铺满",
+  "settings.skin.import": "导入整页背景",
   "settings.skin.importHint":
-    "经后端校验图片头与尺寸后转为 data: URL，全程不联网。",
-  "settings.skin.importDone": "已应用本地立绘",
-  "settings.skin.customName": "自定义素材",
+    "导入后这张图片铺满整片窗口，视窗自动让出外围画框。",
+  "settings.skin.importDone": "已应用整页背景",
+  "settings.skin.importSessionOnly":
+    "图片过大，仅本次会话生效；重启后需要重新导入。",
+  "settings.skin.customName": "自定义背景",
   "settings.skin.defaultName": "极简（默认）",
   "settings.skin.defaultDescription": "零装饰、零额外开销。",
-  "settings.skin.companionName": "墨鱼陪伴",
-  "settings.skin.companionDescription": "右下角看板角色 + 顶栏趴趴挂件。",
   "settings.skin.errorFormat": "不支持的图片格式（仅 PNG / JPEG / WebP / GIF）",
   "settings.skin.errorSize": "图片超过 8 MB 上限",
   "settings.skin.errorDimension": "图片尺寸超过 4096px 上限",
@@ -70,26 +72,28 @@ const zhCN = {
 };
 
 const zhTW = {
-  "settings.brandIcon.open": "更換品牌圖示",
-  "settings.brandIcon.openHint": "內建圖示 / 自訂上傳",
 
-  "settings.skin.title": "介面風格與角色掛件",
+  "settings.skin.title": "畫框式介面板",
   "settings.skin.description":
-    "一組 CSS 變數即可切換整體骨架質感；裝飾層永不攔截點擊與捲動。",
-  "settings.skin.decorationCount": "{count} 個掛件",
-  "settings.skin.open": "選擇介面風格",
-  "settings.skin.openHint": "掛件在閱讀路由自動卸載",
+    "整片視窗是一張主題畫布，書庫與設定是內嵌視窗；沒有任何漂浮掛件。",
+  "settings.skin.open": "選擇介面板",
+  "settings.skin.openHint": "畫框包裹 / 全螢幕鋪滿",
   "settings.skin.active": "使用中",
   "settings.skin.apply": "套用",
-  "settings.skin.import": "匯入本機立繪",
+  "settings.skin.framedName": "畫框包裹",
+  "settings.skin.framedDescription":
+    "整頁背景 + 視窗外框環繞裝飾，內容區向內收縮成毛玻璃視窗。",
+  "settings.skin.modeFramed": "畫框包裹",
+  "settings.skin.modeFullscreen": "全螢幕鋪滿",
+  "settings.skin.import": "匯入整頁背景",
   "settings.skin.importHint":
-    "經後端校驗圖片標頭與尺寸後轉為 data: URL，全程不連網。",
-  "settings.skin.importDone": "已套用本機立繪",
-  "settings.skin.customName": "自訂素材",
+    "匯入後這張圖片鋪滿整片視窗，視窗自動讓出外圍畫框。",
+  "settings.skin.importDone": "已套用整頁背景",
+  "settings.skin.importSessionOnly":
+    "圖片過大，僅本次工作階段生效；重新啟動後需要重新匯入。",
+  "settings.skin.customName": "自訂背景",
   "settings.skin.defaultName": "極簡（預設）",
   "settings.skin.defaultDescription": "零裝飾、零額外開銷。",
-  "settings.skin.companionName": "墨魚陪伴",
-  "settings.skin.companionDescription": "右下角看板角色 + 頂欄趴趴掛件。",
   "settings.skin.errorFormat": "不支援的圖片格式（僅 PNG / JPEG / WebP / GIF）",
   "settings.skin.errorSize": "圖片超過 8 MB 上限",
   "settings.skin.errorDimension": "圖片尺寸超過 4096px 上限",
@@ -137,27 +141,28 @@ const zhTW = {
 };
 
 const en = {
-  "settings.brandIcon.open": "Change brand icon",
-  "settings.brandIcon.openHint": "Built-in presets or your own upload",
 
-  "settings.skin.title": "Appearance & companion",
+  "settings.skin.title": "Framed interface skin",
   "settings.skin.description":
-    "One set of CSS variables reshapes the whole UI; the decoration layer never blocks clicks or scrolling.",
-  "settings.skin.decorationCount": "{count} decorations",
-  "settings.skin.open": "Choose a look",
-  "settings.skin.openHint": "Decorations unmount on the reader route",
+    "The whole window is one themed canvas, with the library and settings inside an inset viewport. No floating mascots.",
+  "settings.skin.open": "Choose an interface skin",
+  "settings.skin.openHint": "Framed / fullscreen",
   "settings.skin.active": "In use",
   "settings.skin.apply": "Apply",
-  "settings.skin.import": "Import artwork",
+  "settings.skin.framedName": "Framed",
+  "settings.skin.framedDescription":
+    "Full-page background with a decorative frame around the viewport; the content area shrinks into a frosted-glass panel.",
+  "settings.skin.modeFramed": "Framed",
+  "settings.skin.modeFullscreen": "Fullscreen",
+  "settings.skin.import": "Import full-page background",
   "settings.skin.importHint":
-    "Validated by the backend (header + dimensions), then loaded as a data: URL. No network.",
-  "settings.skin.importDone": "Artwork applied",
-  "settings.skin.customName": "Custom artwork",
+    "After import the image fills the whole window and the viewport leaves room for the surrounding frame.",
+  "settings.skin.importDone": "Full-page background applied",
+  "settings.skin.importSessionOnly":
+    "The image is too large to keep. It applies to this session only; import it again after a restart.",
+  "settings.skin.customName": "Custom background",
   "settings.skin.defaultName": "Minimal (default)",
   "settings.skin.defaultDescription": "No decorations, no extra cost.",
-  "settings.skin.companionName": "Ink companion",
-  "settings.skin.companionDescription":
-    "A corner companion plus a perch mascot above the top bar.",
   "settings.skin.errorFormat":
     "Unsupported image format (PNG / JPEG / WebP / GIF only)",
   "settings.skin.errorSize": "Image exceeds the 8 MB limit",
@@ -209,27 +214,28 @@ const en = {
 };
 
 const es = {
-  "settings.brandIcon.open": "Cambiar el icono de marca",
-  "settings.brandIcon.openHint": "Iconos integrados o tu propia imagen",
 
-  "settings.skin.title": "Aspecto y compañero",
+  "settings.skin.title": "Piel de interfaz enmarcada",
   "settings.skin.description":
-    "Un juego de variables CSS redefine toda la interfaz; la capa decorativa nunca bloquea clics ni desplazamiento.",
-  "settings.skin.decorationCount": "{count} decoraciones",
-  "settings.skin.open": "Elegir un aspecto",
-  "settings.skin.openHint": "Las decoraciones se desmontan en el lector",
+    "Toda la ventana es un lienzo con tema, y la biblioteca y los ajustes van en una vista interior. Sin mascotas flotantes.",
+  "settings.skin.open": "Elegir una piel de interfaz",
+  "settings.skin.openHint": "Enmarcada / a pantalla completa",
   "settings.skin.active": "En uso",
   "settings.skin.apply": "Aplicar",
-  "settings.skin.import": "Importar ilustración",
+  "settings.skin.framedName": "Enmarcada",
+  "settings.skin.framedDescription":
+    "Fondo de página completa con un marco decorativo alrededor de la vista; el área de contenido se encoge en un panel de cristal esmerilado.",
+  "settings.skin.modeFramed": "Enmarcada",
+  "settings.skin.modeFullscreen": "A pantalla completa",
+  "settings.skin.import": "Importar fondo de página completa",
   "settings.skin.importHint":
-    "El backend valida la cabecera y las dimensiones y la convierte en data: URL. Sin red.",
-  "settings.skin.importDone": "Ilustración aplicada",
-  "settings.skin.customName": "Material propio",
+    "Tras importar, la imagen llena toda la ventana y la vista deja sitio al marco que la rodea.",
+  "settings.skin.importDone": "Fondo de página completa aplicado",
+  "settings.skin.importSessionOnly":
+    "La imagen es demasiado grande para guardarla. Solo se aplica a esta sesión; impórtala de nuevo tras reiniciar.",
+  "settings.skin.customName": "Fondo propio",
   "settings.skin.defaultName": "Mínimo (predeterminado)",
   "settings.skin.defaultDescription": "Sin decoraciones ni coste extra.",
-  "settings.skin.companionName": "Compañero tinta",
-  "settings.skin.companionDescription":
-    "Personaje en la esquina y mascota sobre la barra superior.",
   "settings.skin.errorFormat":
     "Formato no compatible (solo PNG / JPEG / WebP / GIF)",
   "settings.skin.errorSize": "La imagen supera el límite de 8 MB",
@@ -282,27 +288,28 @@ const es = {
 };
 
 const ja = {
-  "settings.brandIcon.open": "ブランドアイコンを変更",
-  "settings.brandIcon.openHint": "内蔵アイコン / 独自アップロード",
 
-  "settings.skin.title": "外観スタイルと相棒キャラ",
+  "settings.skin.title": "額装した外観スタイル",
   "settings.skin.description":
-    "CSS 変数ひと組で UI 全体の質感を切り替えます。装飾レイヤーはクリックもスクロールも妨げません。",
-  "settings.skin.decorationCount": "装飾 {count} 個",
+    "ウィンドウ全体が 1 枚のテーマキャンバスになり、書庫と設定は内側のビューポートに収まります。浮き飾りのマスコットはありません。",
   "settings.skin.open": "外観スタイルを選ぶ",
-  "settings.skin.openHint": "リーダー画面では装飾を自動的に解除",
+  "settings.skin.openHint": "額装 / 全画面表示",
   "settings.skin.active": "使用中",
   "settings.skin.apply": "適用",
-  "settings.skin.import": "立ち絵を読み込む",
+  "settings.skin.framedName": "額装",
+  "settings.skin.framedDescription":
+    "ページ全体の背景に、ビューポートを囲む装飾枠。コンテンツ領域が内側に縮み、フロストガラスのパネルになります。",
+  "settings.skin.modeFramed": "額装",
+  "settings.skin.modeFullscreen": "全画面表示",
+  "settings.skin.import": "ページ全体の背景を読み込む",
   "settings.skin.importHint":
-    "バックエンドが画像ヘッダーと寸法を検証し data: URL に変換します。通信は行いません。",
-  "settings.skin.importDone": "立ち絵を適用しました",
-  "settings.skin.customName": "カスタム素材",
+    "読み込むと画像がウィンドウ全体を埋め、ビューポートは外枠を空けて表示します。",
+  "settings.skin.importDone": "ページ全体の背景を適用しました",
+  "settings.skin.importSessionOnly":
+    "画像が大きすぎて保存できません。このセッションのみで有効になり、再起動後に再インポートが必要です。",
+  "settings.skin.customName": "カスタム背景",
   "settings.skin.defaultName": "ミニマル（既定）",
   "settings.skin.defaultDescription": "装飾なし、追加コストなし。",
-  "settings.skin.companionName": "イカの相棒",
-  "settings.skin.companionDescription":
-    "右下の相棒キャラとトップバー上のちょこんと乗るマスコット。",
   "settings.skin.errorFormat":
     "未対応の画像形式です（PNG / JPEG / WebP / GIF のみ）",
   "settings.skin.errorSize": "画像が 8 MB の上限を超えています",
@@ -353,27 +360,28 @@ const ja = {
 };
 
 const ko = {
-  "settings.brandIcon.open": "브랜드 아이콘 변경",
-  "settings.brandIcon.openHint": "내장 아이콘 / 직접 업로드",
 
-  "settings.skin.title": "화면 스타일과 캐릭터 장식",
+  "settings.skin.title": "액자형 인터페이스 스킨",
   "settings.skin.description":
-    "CSS 변수 한 세트로 전체 질감을 바꿉니다. 장식 레이어는 클릭과 스크롤을 절대 가로막지 않습니다.",
-  "settings.skin.decorationCount": "장식 {count}개",
-  "settings.skin.open": "화면 스타일 선택",
-  "settings.skin.openHint": "리더 화면에서는 장식이 자동으로 해제됩니다",
+    "창 전체가 하나의 테마 캔버스이고, 서재와 설정은 안쪽 뷰포트에 들어갑니다. 떠다니는 마스코트 장식은 없습니다.",
+  "settings.skin.open": "인터페이스 스킨 선택",
+  "settings.skin.openHint": "액자 / 전체 화면",
   "settings.skin.active": "사용 중",
   "settings.skin.apply": "적용",
-  "settings.skin.import": "로컬 일러스트 가져오기",
+  "settings.skin.framedName": "액자",
+  "settings.skin.framedDescription":
+    "페이지 전체 배경에 뷰포트 둘레를 두르는 장식 액자. 콘텐츠 영역이 안쪽으로 줄어들어 서리 유리 패널이 됩니다.",
+  "settings.skin.modeFramed": "액자",
+  "settings.skin.modeFullscreen": "전체 화면",
+  "settings.skin.import": "페이지 전체 배경 가져오기",
   "settings.skin.importHint":
-    "백엔드가 이미지 헤더와 크기를 검증한 뒤 data: URL 로 변환합니다. 네트워크를 쓰지 않습니다.",
-  "settings.skin.importDone": "일러스트를 적용했습니다",
-  "settings.skin.customName": "사용자 소재",
+    "가져오면 이 이미지가 창 전체를 채우고, 뷰포트가 바깥 액자를 비워 둡니다.",
+  "settings.skin.importDone": "전체 배경이 적용되었습니다",
+  "settings.skin.importSessionOnly":
+    "이미지가 너무 커서 저장할 수 없습니다. 이번 세션에만 적용되며, 재시작 후 다시 가져와야 합니다.",
+  "settings.skin.customName": "사용자 배경",
   "settings.skin.defaultName": "미니멀(기본)",
   "settings.skin.defaultDescription": "장식 없음, 추가 비용 없음.",
-  "settings.skin.companionName": "오징어 컴패니언",
-  "settings.skin.companionDescription":
-    "오른쪽 아래 캐릭터와 상단 바 위에 엎드린 마스코트.",
   "settings.skin.errorFormat":
     "지원하지 않는 이미지 형식입니다(PNG / JPEG / WebP / GIF 전용)",
   "settings.skin.errorSize": "이미지가 8 MB 한도를 초과했습니다",

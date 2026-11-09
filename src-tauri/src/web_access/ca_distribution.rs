@@ -201,7 +201,7 @@ impl CaDistributionRuntime {
         }
 
         let mut state = self.state.lock().await;
-        if !self.test_allow_loopback && crate::resilience::ensure_online_allowed().is_err() {
+        if !self.test_allow_loopback && crate::resilience::ensure_online_allowed().await.is_err() {
             return Err(CaDistributionError::SafeMode);
         }
         if state.running.is_some() {
@@ -210,7 +210,13 @@ impl CaDistributionRuntime {
 
         // Read only the public certificate snapshot. The manager and the CA
         // root path are not moved into the accept task.
-        let certificate = CaManager::new(self.ca_root.clone()).root_certificate()?;
+        let ca_root = self.ca_root.clone();
+        let certificate =
+            tokio::task::spawn_blocking(move || CaManager::new(ca_root).root_certificate())
+                .await
+                .map_err(|_| {
+                    CaDistributionError::Io(std::io::Error::other("CA certificate worker failed"))
+                })??;
         let listener = TcpListener::bind(SocketAddr::from((bind_ip, self.port))).await?;
         let local_addr = listener.local_addr()?;
         let authority = local_addr.to_string();

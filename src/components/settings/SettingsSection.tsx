@@ -1,18 +1,19 @@
 import { useState, type ReactNode } from "react";
 import { ChevronRight, type LucideIcon } from "lucide-react";
-import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { SettingsDetailSheet } from "./SettingsDetailSheet";
+import { SettingsDialog } from "./SettingsDialog";
 import { useSettingsSurface } from "./settingsSurface";
 
 export interface SettingsDisclosure {
-  /** Sheet heading. Defaults to the section title. */
+  /** 弹窗标题；缺省回落到分区标题。 */
   title?: string;
   description?: string;
-  /** Label of the always-visible entry row. */
+  /** 一级入口行左侧标签。 */
   triggerLabel: string;
-  /** Right-aligned status subtext on the entry row. */
+  /** 一级入口行右侧的状态摘要文本。 */
   triggerHint?: string;
+  /** 弹窗宽度：md=520px 配置弹窗；lg=640px 规则/快捷键列表弹窗。 */
+  width?: "md" | "lg";
   testId?: string;
 }
 
@@ -20,26 +21,24 @@ interface SettingsSectionProps {
   icon?: LucideIcon;
   title: string;
   description?: string;
-  /** Header trailing slot: a badge or a single compact button. */
+  /** 头部尾随插槽：一个徽章或单个紧凑按钮。 */
   action?: ReactNode;
-  /** Status summary: metrics/switches that stay on the first-level panel. */
+  /** 状态摘要：指标/开关等停留在第一级的区块。 */
   summary?: ReactNode;
-  /** Always-visible action rows (each one opens a deeper surface). */
+  /** 常驻行（每个行可能打开更深一层的弹窗）。 */
   rows?: ReactNode;
-  /** Detail content: inline without `disclosure`, sheet-only with it. */
+  /** 明细内容：无 `disclosure` 时内联；有则放入居中弹窗。 */
   children?: ReactNode;
   disclosure?: SettingsDisclosure;
   className?: string;
 }
 
 /**
- * Settings card.
+ * 分组单层列表（Grouped Setting Rows）。
  *
- * Progressive disclosure contract (Task 2/8):
- *  - first level = header + status summary + action rows;
- *  - anything heavy lives in `disclosure`, mounted only while the sheet is
- *    open (Base UI unmounts the popup, so no portal DOM and no effects);
- *  - typography is fixed: 14px/medium title, 12px/muted description.
+ * 一级只保留「标题 + 状态摘要 + 高频即时行」；复杂低频模块一律下沉到
+ * `disclosure` 的居中模态弹窗（Dialog），关闭时不挂载、不请求。
+ * 排版固定：标题 14px/medium，副标题 12px/muted；行高 56px。
  */
 export function SettingsSection({
   icon: Icon,
@@ -54,21 +53,23 @@ export function SettingsSection({
 }: SettingsSectionProps) {
   const surface = useSettingsSurface();
   const [open, setOpen] = useState(false);
-  const flat = surface === "sheet";
+  const flat = surface === "dialog";
 
   const header = (
-    <div className="flex items-start gap-3">
+    <div className="flex items-start gap-2 px-1">
       {Icon ? (
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border bg-secondary text-secondary-foreground shadow-elevation-sm">
-          <Icon className="size-4" strokeWidth={2.2} aria-hidden />
-        </span>
+        <Icon
+          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+          strokeWidth={2.2}
+          aria-hidden
+        />
       ) : null}
       <div className="min-w-0 flex-1">
         <h2 className="text-sm font-medium leading-5 tracking-tight text-foreground">
           {title}
         </h2>
         {description ? (
-          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
             {description}
           </p>
         ) : null}
@@ -99,42 +100,29 @@ export function SettingsSection({
 
   return (
     <>
-      {flat ? (
-        <section className="space-y-3">
-          {header}
-          {body}
-        </section>
-      ) : (
-        <Card
-          className={cn(
-            "gap-0 rounded-card border border-border bg-card py-0 shadow-elevation-sm",
-            className,
-          )}
-          // 皮肤可通过 --mr-border-width / --mr-border-style 改变卡片质感。
-          style={{
-            borderWidth: "var(--mr-border-width)",
-            borderStyle: "var(--mr-border-style)",
-          }}
-        >
-          <div className="px-4 pt-4 sm:px-5">{header}</div>
-          <div className="px-4 pb-4 pt-3 sm:px-5 sm:pb-5">{body}</div>
-        </Card>
-      )}
+      <section className={cn("space-y-3", flat && "space-y-3", className)}>
+        {header}
+        {body}
+      </section>
       {disclosure ? (
-        <SettingsDetailSheet
+        <SettingsDialog
           open={open}
           onOpenChange={setOpen}
           title={disclosure.title ?? title}
           description={disclosure.description ?? description}
+          width={disclosure.width}
         >
           {children}
-        </SettingsDetailSheet>
+        </SettingsDialog>
       ) : null}
     </>
   );
 }
 
-/** Bordered list that owns the dividers for its rows. */
+/**
+ * 分组容器：一级页上是干净的圆角边框列表；居中弹窗内退化为纯细分割线列表，
+ * 避免框套框。
+ */
 export function SettingsRowList({
   children,
   className,
@@ -142,16 +130,25 @@ export function SettingsRowList({
   children: ReactNode;
   className?: string;
 }) {
+  const surface = useSettingsSurface();
+  const flat = surface === "dialog";
   return (
     <div
       className={cn(
-        "divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-background/60",
+        "divide-y divide-border/40 overflow-hidden",
+        flat
+          ? "border-0 bg-transparent"
+          : "rounded-xl border border-border/60 bg-card/50",
         className,
       )}
-      style={{
-        borderWidth: "var(--mr-border-width)",
-        borderStyle: "var(--mr-border-style)",
-      }}
+      style={
+        flat
+          ? undefined
+          : {
+              borderWidth: "var(--mr-border-width)",
+              borderStyle: "var(--mr-border-style)",
+            }
+      }
     >
       {children}
     </div>
@@ -166,7 +163,7 @@ interface SettingRowProps {
   className?: string;
 }
 
-/** A labelled row with a trailing control. Title 14px/medium, hint 12px/muted. */
+/** 标准高度（56px）的标签行 + 尾随控件。标题 14px/medium，副标题 12px/muted。 */
 export function SettingRow({
   title,
   description,
@@ -177,7 +174,7 @@ export function SettingRow({
   return (
     <div
       className={cn(
-        "flex min-h-12 flex-wrap items-center justify-between gap-3 px-3.5 py-2.5",
+        "flex min-h-[56px] flex-wrap items-center justify-between gap-3 px-4 py-3",
         className,
       )}
     >
@@ -189,7 +186,7 @@ export function SettingRow({
           {badge}
         </div>
         {description ? (
-          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
+          <p className="mt-0.5 truncate text-xs leading-5 text-muted-foreground">
             {description}
           </p>
         ) : null}
@@ -210,8 +207,7 @@ interface SettingActionRowProps {
 }
 
 /**
- * The only sanctioned way to open a secondary surface: a full-width row with
- * a right chevron plus the current state as secondary text.
+ * 唯一合法的二级入口行：整行可点击，右侧为当前状态摘要 + 右箭头。
  */
 export function SettingActionRow({
   label,
@@ -228,7 +224,7 @@ export function SettingActionRow({
       onClick={onClick}
       data-testid={testId}
       className={cn(
-        "group/row flex w-full min-h-12 items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent/50 active:bg-accent/70",
+        "group/row flex w-full min-h-[56px] cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40 active:bg-muted/60",
         className,
       )}
     >
@@ -262,7 +258,7 @@ export function SettingActionRow({
   );
 }
 
-/** Compact metric used in a status summary. */
+/** 状态摘要里的紧凑指标。 */
 export function SettingsStat({
   label,
   value,
@@ -289,7 +285,9 @@ export function SettingsStat({
       >
         <span className="truncate">{value}</span>
         {unit ? (
-          <span className="text-xs font-medium text-muted-foreground">{unit}</span>
+          <span className="text-xs font-medium text-muted-foreground">
+            {unit}
+          </span>
         ) : null}
       </p>
     </div>
@@ -298,7 +296,7 @@ export function SettingsStat({
 
 export function SettingsStatRow({ children }: { children: ReactNode }) {
   return (
-    <div className="grid grid-cols-2 gap-3 rounded-xl border border-border bg-background/60 px-3.5 py-3 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 rounded-xl border border-border/60 bg-card/50 px-4 py-3 sm:grid-cols-4">
       {children}
     </div>
   );

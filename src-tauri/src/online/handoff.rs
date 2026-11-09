@@ -604,22 +604,27 @@ fn focus_main(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub fn start_browser_handoff(
+pub async fn start_browser_handoff(
     app: AppHandle,
     allow_session_headers: bool,
 ) -> Result<HandoffStatus, String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let state = app.state::<Arc<AppState>>().inner().clone();
     crate::features::ensure_enabled(
         &state.settings.lock().features,
         crate::features::FeatureId::Online,
     )?;
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .map_err(|e| format!("启动本地回调失败：{e}"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("读取本地回调端口失败：{e}"))?
-        .port();
+    let (listener, port) = tokio::task::spawn_blocking(|| {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .map_err(|error| format!("启动本地回调失败：{error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("读取本地回调端口失败：{error}"))?
+            .port();
+        Ok::<_, String>((listener, port))
+    })
+    .await
+    .map_err(|_| "启动本地回调失败（blocking-task-failed）".to_string())??;
     let token = generate_handoff_token();
     let callback_url = format!("http://127.0.0.1:{port}{HANDOFF_PATH}?token={token}");
     let script = build_script(&callback_url);
@@ -647,7 +652,12 @@ pub fn start_browser_handoff(
             thread_cancel.clone(),
             move || enabled_state.settings.lock().features.online,
             move |value| {
-                let books = process_handoff_value(&import_state, &value, allow_session_headers)?;
+                let worker_state = Arc::clone(&import_state);
+                let books =
+                    tauri::async_runtime::block_on(tokio::task::spawn_blocking(move || {
+                        process_handoff_value(&worker_state, &value, allow_session_headers)
+                    }))
+                    .map_err(|_| HandoffError::Internal("blocking-task-failed".to_string()))??;
                 import_state.add_handoff_received(&received_flag, books.len() as u32);
                 let _ = emit_app.emit("online-handoff-imported", &books);
                 focus_main(&emit_app);

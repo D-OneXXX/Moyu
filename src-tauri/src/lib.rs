@@ -1,4 +1,4 @@
-//! MangaReader 后端：书库、阅读、在线直读、更新、隐私与韧性。
+//! Moyu 后端：书库、阅读、在线直读、更新、隐私与韧性。
 //! 前端契约见 `src/lib/tauri.ts`。
 
 mod backup;
@@ -349,14 +349,49 @@ fn legacy_data_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("com.local.manga-reader"))
 }
 
+/// `MR_DATA_DIR` 覆盖解析：先 trim，空值视为未设置，只接受绝对路径。
+///
+/// 相对路径会让书库数据库落到进程 CWD，与日志/缓存根分叉，因此一律忽略。
+/// 保持纯函数以便单测；拒绝时的脱敏日志由 [`env_data_dir_override`] 记录。
+fn data_dir_override(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// 读取并校验 `MR_DATA_DIR`；非空但不是绝对路径时记录脱敏日志后忽略。
+///
+/// `data_dir()` 与 `install_app_paths()` 必须共用这一解析入口，避免同一
+/// 环境变量在两处得出不同的数据根。
+fn env_data_dir_override() -> Option<PathBuf> {
+    let raw = std::env::var("MR_DATA_DIR").ok()?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    match data_dir_override(&raw) {
+        Some(path) => Some(path),
+        None => {
+            logging::log_error(
+                "paths",
+                "MR_DATA_DIR 不是绝对路径，已忽略并回落到 app_data_dir",
+            );
+            None
+        }
+    }
+}
+
 /// 统一数据目录解析：`MR_DATA_DIR`（测试隔离）> 已安装的 Tauri 数据根 >
 /// 旧版本地目录。绝不使用 CWD / exe 同级目录。
 pub(crate) fn data_dir() -> Result<PathBuf, String> {
-    if let Ok(raw) = std::env::var("MR_DATA_DIR") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
+    if let Some(dir) = env_data_dir_override() {
+        return Ok(dir);
     }
     if let Some(dir) = paths::data_dir() {
         return Ok(dir.to_path_buf());
@@ -371,39 +406,25 @@ pub(crate) fn data_dir() -> Result<PathBuf, String> {
 ///   `app_cache_dir`；两者都 `create_dir_all`。
 ///
 /// 返回 `(data, cache, 是否 MR_DATA_DIR 隔离)`。
-fn install_app_paths<R: tauri::Runtime>(app: &tauri::App<R>) -> (PathBuf, PathBuf, bool) {
-    let env_override = std::env::var("MR_DATA_DIR")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .filter(|v| {
-            if std::path::Path::new(v).is_absolute() {
-                true
-            } else {
-                logging::log_error(
-                    "paths",
-                    "MR_DATA_DIR 不是绝对路径，已忽略并回落到 app_data_dir",
-                );
-                false
-            }
-        });
-    let legacy = legacy_data_dir();
-    let data = paths::resolve_data_root(
-        env_override.as_deref(),
-        app.path().app_data_dir().ok(),
-        legacy,
-    )
-    .unwrap_or_else(|err| {
-        logging::log_error("paths", &format!("{err}；回落到系统临时目录"));
-        std::env::temp_dir().join("com.local.manga-reader")
-    });
+fn install_app_paths(
+    tauri_data: Option<PathBuf>,
+    app_cache: Option<PathBuf>,
+    legacy: Option<PathBuf>,
+) -> (PathBuf, PathBuf, bool) {
+    let env_override = env_data_dir_override();
+    let data = match env_override.as_ref() {
+        // 覆盖值已在 env_data_dir_override 中完成 trim 与绝对路径校验。
+        Some(dir) => dir.clone(),
+        None => paths::resolve_data_root(None, tauri_data, legacy).unwrap_or_else(|err| {
+            logging::log_error("paths", &format!("{err}；回落到系统临时目录"));
+            std::env::temp_dir().join("com.local.manga-reader")
+        }),
+    };
     let cache = if env_override.is_some() {
         // 隔离模式不触碰真实用户缓存目录。
         data.join("cache")
     } else {
-        app.path()
-            .app_cache_dir()
-            .ok()
+        app_cache
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| data.join("cache"))
     };
@@ -417,6 +438,7 @@ fn install_app_paths<R: tauri::Runtime>(app: &tauri::App<R>) -> (PathBuf, PathBu
     paths::harden_private_dir(&data);
     paths::harden_private_dir(&cache);
     paths::install(data.clone(), cache.clone());
+    logging::init(data.join("logs"));
     (data, cache, env_override.is_some())
 }
 
@@ -439,11 +461,9 @@ fn migrate_legacy_into(data: &Path, isolated: bool) {
     }
 }
 
-fn init_app<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), String> {
-    let dir = data_dir()?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+fn init_app(state: &Arc<AppState>, dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let db_path = dir.join("library.db");
-    let state = app.state::<Arc<AppState>>();
     state.set_db_path(db_path.clone());
     let conn = match db::open(&db_path) {
         Ok(conn) => conn,
@@ -596,14 +616,33 @@ pub fn run() {
         .setup(move |app| {
             diagnostics::install_panic_hook();
             // 1) 先锚定数据/缓存根（app_data_dir / app_cache_dir），再初始化日志。
-            let (data_dir, _cache_dir, isolated) = install_app_paths(app);
-            logging::init(data_dir.join("logs"));
+            let tauri_data = app.path().app_data_dir().ok();
+            let app_cache = app.path().app_cache_dir().ok();
+            let legacy = legacy_data_dir();
+            let (data_dir, _cache_dir, isolated) =
+                tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+                    install_app_paths(tauri_data, app_cache, legacy)
+                }))
+                .map_err(|error| std::io::Error::other(format!("启动路径后台任务失败：{error}")))?;
             // 1.1) 清理上次更新遗留的临时包 / AppImage 旧备份（>24h）。
-            update::cleanup_stale_artifacts();
+            drop(tauri::async_runtime::spawn_blocking(
+                update::cleanup_stale_artifacts,
+            ));
             // 2) 旧 Local AppData 数据一次性接续（仅补缺失文件；隔离模式跳过）。
-            migrate_legacy_into(&data_dir, isolated);
+            let migration_data = data_dir.clone();
+            tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+                migrate_legacy_into(&migration_data, isolated)
+            }))
+            .map_err(|error| std::io::Error::other(format!("旧数据后台迁移任务失败：{error}")))?;
             // 3) AppState 的渲染/在线缓存根依赖已安装的 cache_dir，必须最后创建。
-            app.manage(Arc::new(AppState::new()));
+            let app_state =
+                tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(|| {
+                    Arc::new(AppState::new())
+                }))
+                .map_err(|error| {
+                    std::io::Error::other(format!("缓存状态初始化后台任务失败：{error}"))
+                })?;
+            app.manage(app_state);
             // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
             let ca_root = ca::resolve_ca_root(None, Some(data_dir.as_path()))
                 .unwrap_or_else(|_| data_dir.join("security").join("ca"));
@@ -625,7 +664,16 @@ pub fn run() {
                 .with_progress(web_progress),
             ));
             cache_health::install(app.handle().clone());
-            if init_app(app).is_err() {
+            let init_state = app.state::<Arc<AppState>>().inner().clone();
+            let init_dir = data_dir.clone();
+            let init_result =
+                tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+                    init_app(&init_state, &init_dir)
+                }))
+                .map_err(|error| {
+                    std::io::Error::other(format!("数据库初始化后台任务失败：{error}"))
+                })?;
+            if init_result.is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。
                 logging::log_error("startup", "后端初始化失败（db-init-failed）");
             }
@@ -656,9 +704,9 @@ pub fn run() {
             }
             // 启动时后台 trim 统一磁盘缓存（render + online，共用软上限）。
             let st2 = app.state::<Arc<AppState>>().inner().clone();
-            std::thread::spawn(move || {
-                st2.trim_disk_cache();
-            });
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                st2.trim_disk_cache()
+            }));
             // 之后不再有常驻巡检定时器：写盘累计 256MB（`note_cache_write`）
             // 与设置保存会按需触发淘汰，退出路径再做一次收尾。
             // 空闲静默态不允许任何周期线程唤醒（CPU 归零）。
@@ -768,7 +816,6 @@ pub fn run() {
             web_access::commands::web_access_devices_list,
             web_access::commands::web_access_device_revoke,
             tray::tray_set_locale,
-            tray::tray_set_icon,
             diagnostics::diagnostics_record_frontend_error,
             diagnostics::diagnostics_record_breadcrumb,
             diagnostics::diagnostics_update_context,
@@ -790,17 +837,28 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::ExitRequested { .. } = event {
             // D1b：退出前先关闭控制面监听、配对窗口与全部会话。失败只记录
-            // 稳定码，不自动重试/重启；随后再做缓存在退出路径上的收尾。
+            // 稳定码，不自动重试/重启；随后完成数据库 WAL 收尾。
             let web_access = app_handle.state::<Arc<web_access::WebAccessRuntime>>();
-            let _ = tauri::async_runtime::block_on(web_access.stop(web_access::StopReason::Exit));
+            let shutdown_timeout = std::time::Duration::from_secs(10);
+            if tauri::async_runtime::block_on(web_access.stop_for_exit(shutdown_timeout)).is_err() {
+                logging::log_error("web_access", "退出时停止监听超时（web-access-server-join）");
+            }
             let state = app_handle.state::<Arc<AppState>>();
             state.cancel_handoff();
-            // 退出前做最后一次统一淘汰；只动派生缓存。
-            state.trim_disk_cache();
-            // WAL 合并回主库并截断；失败不影响退出（下次启动继续 checkpoint）。
-            let _ = state
-                .db
-                .with(|conn| db::wal_checkpoint(conn).map_err(|error| error.to_string()));
+            let state = state.inner().clone();
+            // 退出时只做 WAL checkpoint；派生缓存由启动与写入压力路径修剪，
+            // 避免关闭窗口时扫描整棵缓存目录。checkpoint 在阻塞池完成。
+            let checkpoint = tauri::async_runtime::spawn_blocking(move || {
+                state
+                    .db
+                    .with(|conn| db::wal_checkpoint(conn).map_err(|error| error.to_string()))
+            });
+            if !matches!(
+                tauri::async_runtime::block_on(tokio::time::timeout(shutdown_timeout, checkpoint,)),
+                Ok(Ok(Ok(())))
+            ) {
+                logging::log_error("database", "退出时数据库收尾未完成（blocking-task-failed）");
+            }
         }
     });
 }
@@ -861,5 +919,26 @@ mod settings_feature_tests {
             load_normalized_settings(&readonly, Settings::default()).unwrap_err(),
             StartupSettingsError::Normalize
         );
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_override_accepts_only_absolute_paths() {
+        let absolute = std::env::temp_dir().join("mr-data-root");
+        let absolute_text = absolute.to_string_lossy().into_owned();
+        assert_eq!(data_dir_override(&absolute_text), Some(absolute.clone()));
+        // 两端空白先 trim 再判定。
+        assert_eq!(
+            data_dir_override(&format!("  {absolute_text}  ")),
+            Some(absolute)
+        );
+        // 相对路径、空值与纯空白一律视为未设置，不得回落 CWD。
+        for rejected in ["", "   ", "data", "./tmp", "../data"] {
+            assert_eq!(data_dir_override(rejected), None, "{rejected:?}");
+        }
     }
 }

@@ -14,9 +14,10 @@ import { sanitizeStorage } from "@/lib/storageSanitizer";
 export const BACKUP_PREFERENCE_KEYS = [
   "mr-theme",
   "mr-locale",
-  // 界面风格 id（内置皮肤）属于可跨设备迁移的纯外观偏好；
-  // 自定义立绘/品牌图标的数据 URL 体积与隐私风险更高，明确不迁移。
+  // 界面风格 id 属于可跨设备迁移的纯外观偏好；
+  // 自定义皮肤背景的数据 URL 体积与隐私风险更高，明确不迁移。
   "mr-skin",
+  "mr-shortcuts-enabled",
   "mr-reader-mode",
   "mr-reader-dir",
   "mr-reader-cover",

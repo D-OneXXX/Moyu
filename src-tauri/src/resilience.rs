@@ -218,17 +218,38 @@ fn safe_mode_path() -> Result<PathBuf, String> {
 /// Online entry points call this before touching the network. Safe mode is a
 /// user-selected local-only session and must hold even if a stale UI path is
 /// invoked directly.
-pub(crate) fn ensure_online_allowed() -> Result<(), String> {
-    let path = safe_mode_path()?;
-    match read_safe_mode_result(&path) {
+pub(crate) async fn ensure_online_allowed() -> Result<(), String> {
+    let result = tokio::task::spawn_blocking(|| {
+        let path = safe_mode_path()?;
+        ensure_online_allowed_at(&path)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Ok(()),
+        // 内核已经记录了日志，这里只把稳定错误码透出去。
+        Ok(Err(error)) => Err(error),
+        Err(error) => {
+            crate::logging::log_error(
+                "safe_mode",
+                &format!("安全模式检查后台任务失败，已阻断在线功能：{error}"),
+            );
+            Err("安全模式状态不可读，已阻断在线功能（safe-mode-unavailable）".to_string())
+        }
+    }
+}
+
+/// 同步内核：路径可注入，便于单测覆盖「文件缺失 / 未激活 / 已激活 / 损坏」
+/// 四条分支（正常启动必须放行，不能被误判成安全模式）。
+fn ensure_online_allowed_at(path: &Path) -> Result<(), String> {
+    match read_safe_mode_result(path) {
         Ok(state) if !state.active => Ok(()),
-        Ok(_) => Err("安全模式保障中，在线与浏览器功能已暂停".to_string()),
+        Ok(_) => Err("安全模式保障中，在线与浏览器功能已暂停（web-access-safe-mode）".to_string()),
         Err(error) => {
             crate::logging::log_error(
                 "safe_mode",
                 &format!("安全模式状态不可读，按安全模式阻断在线功能：{error}"),
             );
-            Err(format!("安全模式状态不可读，已阻断在线功能：{error}"))
+            Err("安全模式状态不可读，已阻断在线功能（safe-mode-unavailable）".to_string())
         }
     }
 }
@@ -258,6 +279,39 @@ fn read_safe_mode_at(path: &Path) -> SafeModeState {
             }
         }
     }
+}
+
+fn read_safe_mode_from_disk() -> SafeModeState {
+    match safe_mode_path() {
+        Ok(path) => read_safe_mode_at(&path),
+        Err(error) => {
+            crate::logging::log_error("safe_mode", &error);
+            SafeModeState {
+                active: true,
+                reason: Some("unreadable".into()),
+                activated_at: Some(now_string()),
+            }
+        }
+    }
+}
+
+/// Synchronous recovery/watchdog paths still keep disk access on Tokio's
+/// blocking pool. These callers already run outside the async IPC executor.
+fn read_safe_mode_on_blocking_pool() -> SafeModeState {
+    tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(
+        read_safe_mode_from_disk,
+    ))
+    .unwrap_or_else(|error| {
+        crate::logging::log_error(
+            "safe_mode",
+            &format!("安全模式检查后台任务失败（safe-mode-unavailable）：{error}"),
+        );
+        SafeModeState {
+            active: true,
+            reason: Some("unreadable".into()),
+            activated_at: Some(now_string()),
+        }
+    })
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
@@ -301,19 +355,44 @@ fn write_safe_mode_at(path: &Path, state: &SafeModeState) -> Result<(), String> 
 }
 
 fn read_boot_guard_at(path: &Path) -> BootGuard {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return BootGuard::default();
-    };
-    serde_json::from_str::<BootGuard>(&raw).unwrap_or_default()
+    // 首次启动没有文件：按干净状态处理。
+    // 文件存在但读不出/解析失败：故障关闭，按一次未完成启动计数，
+    // 让下一次 begin_launch 达到恢复提示阈值；不能让崩溃信号被静默清零。
+    match std::fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<BootGuard>(&raw) {
+            Ok(guard) => guard,
+            Err(error) => {
+                crate::logging::log_error(
+                    "boot_guard",
+                    &format!("启动守卫文件损坏，按未完成启动处理（boot-guard-corrupt）：{error}"),
+                );
+                unreadable_boot_guard()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BootGuard::default(),
+        Err(error) => {
+            crate::logging::log_error(
+                "boot_guard",
+                &format!("启动守卫文件不可读，按未完成启动处理（boot-guard-unreadable）：{error}"),
+            );
+            unreadable_boot_guard()
+        }
+    }
+}
+
+/// 守卫文件损坏/不可读时的故障关闭取值：至少累计一次未完成启动。
+fn unreadable_boot_guard() -> BootGuard {
+    BootGuard {
+        clean: false,
+        failures: 1,
+        last_launch_at: None,
+    }
 }
 
 fn write_boot_guard_at(path: &Path, guard: &BootGuard) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| format!("无法创建启动守卫目录：{err}"))?;
-    }
     let data =
         serde_json::to_vec_pretty(guard).map_err(|err| format!("无法序列化启动守卫：{err}"))?;
-    std::fs::write(path, data).map_err(|err| format!("无法写入启动守卫：{err}"))
+    atomic_write(path, &data).map_err(|err| format!("无法写入启动守卫：{err}"))
 }
 
 fn begin_launch_at(path: &Path) -> Result<u32, String> {
@@ -536,9 +615,7 @@ fn current_context(
     detail: String,
 ) -> RecoveryContext {
     let (last_route, heartbeat_age_ms, responsive) = heartbeat_readiness(state);
-    let safe_mode = safe_mode_path()
-        .map(|path| read_safe_mode_at(&path))
-        .unwrap_or_default();
+    let safe_mode = read_safe_mode_on_blocking_pool();
     RecoveryContext {
         trigger,
         detail,
@@ -700,10 +777,24 @@ fn spawn_watchdog(app: AppHandle, state: Arc<ResilienceState>) {
 /// repeated startup failures (never auto-enables safe mode).
 pub fn initialize(app: &AppHandle, state: &Arc<ResilienceState>) -> Result<(), String> {
     let path = boot_guard_path()?;
-    let failures = begin_launch_at(&path).unwrap_or_else(|err| {
-        crate::logging::log_error("startup_guard", &format!("初始化启动守卫失败：{err}"));
-        0
-    });
+    let launch_path = path.clone();
+    let failures =
+        match tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+            begin_launch_at(&launch_path)
+        })) {
+            Ok(Ok(failures)) => failures,
+            Ok(Err(err)) => {
+                crate::logging::log_error("startup_guard", &format!("初始化启动守卫失败：{err}"));
+                0
+            }
+            Err(err) => {
+                crate::logging::log_error(
+                    "startup_guard",
+                    &format!("启动守卫后台任务失败（blocking-task-failed）：{err}"),
+                );
+                0
+            }
+        };
     crate::logging::log_error(
         "startup",
         &format!("应用启动；此前连续未完成启动次数：{failures}"),
@@ -711,9 +802,7 @@ pub fn initialize(app: &AppHandle, state: &Arc<ResilienceState>) -> Result<(), S
 
     spawn_watchdog(app.clone(), state.clone());
 
-    let safe_mode = safe_mode_path()
-        .map(|path| read_safe_mode_at(&path))
-        .unwrap_or_default();
+    let safe_mode = read_safe_mode_on_blocking_pool();
     if failures >= 2 && !safe_mode.active {
         let app = app.clone();
         let state = state.clone();
@@ -807,7 +896,7 @@ pub fn resilience_report_rage_click(
 }
 
 #[tauri::command]
-pub fn get_recovery_context(
+pub async fn get_recovery_context(
     app: AppHandle,
     state: State<'_, Arc<ResilienceState>>,
 ) -> Result<RecoveryContext, String> {
@@ -819,9 +908,7 @@ pub fn get_recovery_context(
     let (_, heartbeat_age_ms, responsive) = heartbeat_readiness(&state);
     context.heartbeat_age_ms = heartbeat_age_ms;
     context.responsive = responsive;
-    context.safe_mode = safe_mode_path()
-        .map(|path| read_safe_mode_at(&path))
-        .unwrap_or_default();
+    context.safe_mode = crate::commands::blocking(|| Ok(read_safe_mode_from_disk())).await?;
     *state.recovery_context.lock() = Some(context.clone());
     emit_context(&app, &context);
     Ok(context)
@@ -962,9 +1049,8 @@ pub fn resilience_close_recovery(
 }
 
 #[tauri::command]
-pub fn get_safe_mode_state() -> Result<SafeModeState, String> {
-    let path = safe_mode_path()?;
-    Ok(read_safe_mode_at(&path))
+pub async fn get_safe_mode_state() -> Result<SafeModeState, String> {
+    crate::commands::blocking(|| Ok(read_safe_mode_from_disk())).await
 }
 
 #[tauri::command]
@@ -978,8 +1064,12 @@ pub async fn resilience_enable_safe_mode(
         reason: Some(reason.clone()),
         activated_at: Some(now_string()),
     };
-    let path = safe_mode_path()?;
-    write_safe_mode_at(&path, &state)?;
+    let persisted_state = state.clone();
+    crate::commands::blocking(move || {
+        let path = safe_mode_path().map_err(crate::source::BackendError::Msg)?;
+        write_safe_mode_at(&path, &persisted_state).map_err(crate::source::BackendError::Msg)
+    })
+    .await?;
     crate::logging::log_error("safe_mode", &format!("用户启用安全模式：{reason}"));
 
     // D1b: safe mode closes Web Access before the browser/main window changes.
@@ -1021,34 +1111,7 @@ pub async fn resilience_enable_safe_mode(
     if let Some(runtime) = app.try_state::<Arc<ResilienceState>>() {
         let runtime = runtime.inner().clone();
         if let Some(context) = runtime.recovery_context.lock().as_mut() {
-            context.safe_mode = state_from_file(&path);
-        }
-        let updated = runtime.recovery_context.lock().as_ref().cloned();
-        if let Some(context) = updated {
-            emit_context(&app, &context);
-        }
-    }
-    Ok(state_from_file(&path))
-}
-
-fn state_from_file(path: &Path) -> SafeModeState {
-    read_safe_mode_at(path)
-}
-
-#[tauri::command]
-pub fn resilience_disable_safe_mode(app: AppHandle) -> Result<SafeModeState, String> {
-    let path = safe_mode_path()?;
-    let state = SafeModeState {
-        active: false,
-        reason: None,
-        activated_at: None,
-    };
-    write_safe_mode_at(&path, &state)?;
-    crate::logging::log_error("safe_mode", "用户退出安全模式");
-    if let Some(runtime) = app.try_state::<Arc<ResilienceState>>() {
-        let runtime = runtime.inner().clone();
-        if let Some(context) = runtime.recovery_context.lock().as_mut() {
-            context.safe_mode = state_from_file(&path);
+            context.safe_mode = state.clone();
         }
         let updated = runtime.recovery_context.lock().as_ref().cloned();
         if let Some(context) = updated {
@@ -1059,9 +1122,39 @@ pub fn resilience_disable_safe_mode(app: AppHandle) -> Result<SafeModeState, Str
 }
 
 #[tauri::command]
-pub fn resilience_mark_ready() -> Result<(), String> {
-    let path = boot_guard_path()?;
-    mark_ready_at(&path)
+pub async fn resilience_disable_safe_mode(app: AppHandle) -> Result<SafeModeState, String> {
+    let state = SafeModeState {
+        active: false,
+        reason: None,
+        activated_at: None,
+    };
+    let persisted_state = state.clone();
+    crate::commands::blocking(move || {
+        let path = safe_mode_path().map_err(crate::source::BackendError::Msg)?;
+        write_safe_mode_at(&path, &persisted_state).map_err(crate::source::BackendError::Msg)
+    })
+    .await?;
+    crate::logging::log_error("safe_mode", "用户退出安全模式");
+    if let Some(runtime) = app.try_state::<Arc<ResilienceState>>() {
+        let runtime = runtime.inner().clone();
+        if let Some(context) = runtime.recovery_context.lock().as_mut() {
+            context.safe_mode = state.clone();
+        }
+        let updated = runtime.recovery_context.lock().as_ref().cloned();
+        if let Some(context) = updated {
+            emit_context(&app, &context);
+        }
+    }
+    Ok(state)
+}
+
+#[tauri::command]
+pub async fn resilience_mark_ready() -> Result<(), String> {
+    crate::commands::blocking(move || {
+        let path = boot_guard_path().map_err(crate::source::BackendError::Msg)?;
+        mark_ready_at(&path).map_err(crate::source::BackendError::Msg)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1077,6 +1170,46 @@ mod tests {
             "mr-resilience-{}-{tag}-{nanos}.json",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn online_is_allowed_when_safe_mode_is_absent_or_inactive() {
+        // 正常启动：没有 safe-mode.json，或文件写着 inactive，都必须放行。
+        // 这两条是「在线直读被误判成安全模式」的回归防线。
+        let missing = temp_path("safe-missing");
+        assert!(ensure_online_allowed_at(&missing).is_ok());
+
+        let inactive = temp_path("safe-inactive");
+        std::fs::write(
+            &inactive,
+            br#"{"active":false,"reason":null,"activatedAt":null}"#,
+        )
+        .expect("write");
+        assert!(ensure_online_allowed_at(&inactive).is_ok());
+
+        let _ = std::fs::remove_file(&missing);
+        let _ = std::fs::remove_file(&inactive);
+    }
+
+    #[test]
+    fn online_is_blocked_when_safe_mode_is_active_or_unreadable() {
+        let active = temp_path("safe-active");
+        std::fs::write(
+            &active,
+            br#"{"active":true,"reason":"manual","activatedAt":"2026-11-09T00:00:00"}"#,
+        )
+        .expect("write");
+        let err = ensure_online_allowed_at(&active).expect_err("must block");
+        assert!(err.contains("web-access-safe-mode"), "{err}");
+
+        // 损坏的状态文件按 fail-closed 阻断，但同样带稳定码。
+        let corrupt = temp_path("safe-corrupt");
+        std::fs::write(&corrupt, b"{ not json").expect("write");
+        let err = ensure_online_allowed_at(&corrupt).expect_err("must block");
+        assert!(err.contains("safe-mode-unavailable"), "{err}");
+
+        let _ = std::fs::remove_file(&active);
+        let _ = std::fs::remove_file(&corrupt);
     }
 
     #[test]
@@ -1290,6 +1423,52 @@ mod tests {
         mark_ready_at(&path).unwrap();
         assert_eq!(begin_launch_at(&path).unwrap(), 0);
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn corrupt_boot_guard_is_fail_closed_and_reaches_recovery_threshold() {
+        let path = temp_path("boot-corrupt");
+        std::fs::write(&path, "{not-json").unwrap();
+        // 损坏文件按一次未完成启动计，begin_launch 后必须达到恢复提示阈值。
+        assert!(
+            begin_launch_at(&path).unwrap() >= 2,
+            "损坏的启动守卫不得把崩溃计数清零"
+        );
+        assert_eq!(read_boot_guard_at(&path).failures, 2);
+        assert!(!read_boot_guard_at(&path).clean);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn boot_guard_write_is_atomic_and_leaves_no_temp_files() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("mr-resilience-boot-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(BOOT_GUARD_FILE);
+        let guard = BootGuard {
+            clean: false,
+            failures: 3,
+            last_launch_at: Some("2026-11-09T00:00:00Z".to_string()),
+        };
+        write_boot_guard_at(&path, &guard).unwrap();
+        let read_back = read_boot_guard_at(&path);
+        assert!(!read_back.clean);
+        assert_eq!(read_back.failures, 3);
+        assert_eq!(read_back.last_launch_at, guard.last_launch_at);
+
+        // 原子写用 tmp-* 过渡文件，成功后不得残留。
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件：{leftovers:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

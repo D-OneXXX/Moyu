@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
 // ---------- 常量 ----------
@@ -38,6 +38,25 @@ const CHUNK_WAIT: Duration = Duration::from_millis(750);
 /// 连续约 5 分钟收不到数据视为下载停滞（配合 10 分钟总超时）。
 const MAX_IDLE_WAITS: u32 = 400;
 const UPDATE_DIR_NAME: &str = "mangareader-updates";
+
+/// 共享系统临时目录下的更新子目录名。
+///
+/// Unix 上附加有效 UID，避免另一个系统用户预建的目录（sticky /tmp 下当前
+/// 用户无法删除）把本用户的更新通道永久卡死；Windows 临时目录本就按用户
+/// 隔离，保持原名。
+fn update_dir_name() -> String {
+    // `libc` 只在本项目的 Linux target 依赖中声明；不要用更宽的 `cfg(unix)`。
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        format!("{UPDATE_DIR_NAME}-{euid}")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        UPDATE_DIR_NAME.to_string()
+    }
+}
 const PENDING_INSTALL_FILE: &str = "pending-install.json";
 const FALLBACK_FILE_STEM: &str = "MangaReader-update";
 
@@ -523,7 +542,9 @@ impl Drop for PartialFileGuard {
             return;
         }
         if let Some(path) = self.path.take() {
-            remove_file_quiet(&path);
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                remove_file_quiet(&path)
+            }));
         }
     }
 }
@@ -634,7 +655,7 @@ pub fn last_verification() -> Option<(String, String)> {
     Some((at, status.to_string()))
 }
 
-fn begin_download() -> DownloadSession {
+async fn begin_download() -> DownloadSession {
     let (generation, cancel, previous_ready) = {
         let mut rt = runtime().lock();
         if let Some(active) = rt.active.take() {
@@ -649,7 +670,7 @@ fn begin_download() -> DownloadSession {
         (generation, cancel, rt.ready.take())
     };
     if let Some(stale) = previous_ready {
-        remove_file_quiet(&stale.path);
+        let _ = tokio::task::spawn_blocking(move || remove_file_quiet(&stale.path)).await;
     }
     DownloadSession { generation, cancel }
 }
@@ -1050,10 +1071,57 @@ fn verify_manifest_signature_with(
 
 // ---------- 文件与签名 ----------
 
-fn update_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(UPDATE_DIR_NAME);
-    std::fs::create_dir_all(&dir).map_err(|err| format!("无法创建更新缓存目录：{err}"))?;
+/// 准备更新临时目录：`<base>/mangareader-updates`。
+///
+/// 目录落在共享系统临时目录，复用前必须做安全校验：拒绝符号链接、拒绝
+/// 非目录、拒绝非当前用户所有（Linux），并在 Unix 上收紧到 0700 后读回验证。
+/// 任何校验/创建失败都返回错误，绝不带着可疑目录继续下载。
+fn prepare_update_dir(base: &Path) -> Result<PathBuf, String> {
+    let dir = base.join(update_dir_name());
+    match std::fs::symlink_metadata(&dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&dir).map_err(|err| format!("无法创建更新缓存目录：{err}"))?;
+        }
+        Err(error) => return Err(format!("无法检查更新缓存目录：{error}")),
+    }
+    // 始终用 symlink_metadata（不跟随链接）复核，避免创建与校验之间被替换。
+    let meta =
+        std::fs::symlink_metadata(&dir).map_err(|err| format!("无法检查更新缓存目录：{err}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("更新缓存目录是符号链接，已拒绝使用".to_string());
+    }
+    if !meta.is_dir() {
+        return Err("更新缓存路径不是目录，已拒绝使用".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid {
+            return Err("更新缓存目录不属于当前用户，已拒绝使用".to_string());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| format!("无法收紧更新缓存目录权限：{err}"))?;
+        let mode = std::fs::symlink_metadata(&dir)
+            .map_err(|err| format!("无法校验更新缓存目录权限：{err}"))?
+            .permissions()
+            .mode()
+            & 0o777;
+        if mode != 0o700 {
+            return Err("更新缓存目录权限校验失败，已拒绝使用".to_string());
+        }
+    }
     Ok(dir)
+}
+
+fn update_dir() -> Result<PathBuf, String> {
+    prepare_update_dir(&std::env::temp_dir())
 }
 
 const STALE_UPDATE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -1090,7 +1158,7 @@ fn cleanup_older_than(dir: &Path, now: SystemTime, max_age: Duration) -> usize {
 /// `.old-appimage` 备份只在替换失败时用于回滚，能走到下一次启动说明
 /// 新版本已成功运行，旧备份可以安全删除。
 pub fn cleanup_stale_artifacts() {
-    let dir = std::env::temp_dir().join(UPDATE_DIR_NAME);
+    let dir = std::env::temp_dir().join(update_dir_name());
     let removed = cleanup_older_than(&dir, SystemTime::now(), STALE_UPDATE_AGE);
     if removed > 0 {
         crate::logging::log_error("update", &format!("已清理 {removed} 个陈旧更新临时文件"));
@@ -1107,7 +1175,9 @@ pub fn cleanup_stale_artifacts() {
 }
 
 fn pending_install_path() -> Result<PathBuf, String> {
-    Ok(update_dir()?.join(PENDING_INSTALL_FILE))
+    Ok(std::env::temp_dir()
+        .join(update_dir_name())
+        .join(PENDING_INSTALL_FILE))
 }
 
 fn write_pending_install(ready: &ReadyUpdate) -> Result<(), String> {
@@ -1117,7 +1187,25 @@ fn write_pending_install(ready: &ReadyUpdate) -> Result<(), String> {
         started_at: now_iso8601(),
     };
     let raw = serde_json::to_vec(&pending).map_err(|_| "无法记录更新安装状态".to_string())?;
-    std::fs::write(pending_install_path()?, raw)
+    let path = update_dir()?.join(PENDING_INSTALL_FILE);
+    // 先删除旧的普通文件，再独占创建：既不跟随预置符号链接，也不截断已有文件。
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => {
+            std::fs::remove_file(&path)
+                .map_err(|error| format!("无法记录更新安装状态：{error}"))?;
+        }
+        Ok(_) => return Err("更新安装状态路径不安全，已拒绝写入".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("无法记录更新安装状态：{error}")),
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("无法记录更新安装状态：{error}"))?;
+    use std::io::Write as _;
+    file.write_all(&raw)
+        .and_then(|()| file.sync_all())
         .map_err(|error| format!("无法记录更新安装状态：{error}"))
 }
 
@@ -1296,16 +1384,13 @@ fn verify_signature_file(
     }
 }
 
-async fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|err| format!("无法读取更新安装包：{err}"))?;
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|err| format!("无法读取更新安装包：{err}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         let read = file
             .read(&mut buffer)
-            .await
             .map_err(|err| format!("无法读取更新安装包：{err}"))?;
         if read == 0 {
             break;
@@ -1358,9 +1443,12 @@ async fn stream_artifact(
     on_event: &Channel<UpdateEvent>,
     request_id: &str,
 ) -> Result<StreamedArtifact, String> {
-    let mut file = tokio::fs::File::create(path)
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
         .await
-        .map_err(|err| format!("无法创建更新临时文件：{err}"))?;
+        .map_err(|err| format!("无法创建更新临时文件（已存在或路径不安全）：{err}"))?;
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut speed = 0.0f64;
@@ -1484,7 +1572,9 @@ async fn perform_download(
     };
     let signature = prepare_signature(&artifact)?;
 
-    let dir = update_dir()?;
+    let dir = tokio::task::spawn_blocking(update_dir)
+        .await
+        .map_err(|_| "更新目录后台任务失败（blocking-task-failed）".to_string())??;
     let file_name = artifact_file_name(&artifact, &manifest.version_raw, session.generation);
     let path = dir.join(&file_name);
     if path.parent().map(|parent| parent == dir.as_path()) != Some(true) {
@@ -1589,7 +1679,8 @@ async fn perform_download(
         0.0,
     ) {
         if clear_ready_for_path(session.generation, &path) {
-            remove_file_quiet(&path);
+            let cleanup_path = path.clone();
+            let _ = tokio::task::spawn_blocking(move || remove_file_quiet(&cleanup_path)).await;
         }
         return Err(error);
     }
@@ -1854,7 +1945,7 @@ pub async fn download_update(
     validate_download_url(&manifest_url)?;
     let requested_kind = ArtifactKind::parse(&kind)?;
     let requested_version = Version::parse(&version).map_err(|_| "更新版本号无效".to_string())?;
-    let session = begin_download();
+    let session = begin_download().await;
     perform_download(
         &session,
         &manifest_url,
@@ -1877,7 +1968,56 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
             .ok_or_else(|| "没有可安装的更新包，请先下载".to_string())?
     };
 
-    match tokio::fs::metadata(&stored.path).await {
+    let install_artifact = stored.clone();
+    tokio::task::spawn_blocking(move || verify_and_spawn_install(&install_artifact))
+        .await
+        .map_err(|_| "更新安装后台任务失败（blocking-task-failed）".to_string())??;
+
+    {
+        let mut rt = runtime().lock();
+        if rt
+            .ready
+            .as_ref()
+            .map(|ready| ready.path == stored.path)
+            .unwrap_or(false)
+        {
+            rt.ready = None;
+        }
+    }
+    app.exit(0);
+    Ok(())
+}
+
+fn verify_and_spawn_install(stored: &StoredArtifact) -> Result<(), String> {
+    // 安装前确认制品父目录仍在受控更新目录内（canonicalize 后再比较，
+    // 目录/文件若是符号链接会在这里被识破）。
+    let update_root = update_dir()?;
+    let parent = stored
+        .path
+        .parent()
+        .ok_or_else(|| "更新安装包路径无效".to_string())?;
+    let canonical_root = match std::fs::canonicalize(&update_root) {
+        Ok(path) => path,
+        Err(err) => {
+            // 临时目录可能已被系统清理（Storage Sense / tmpfiles.d）。与
+            // NotFound 分支一致，清掉 ready 让用户重新下载，而不是永久卡住。
+            clear_ready_path(&stored.path);
+            return Err(format!("无法定位更新缓存目录，请重新下载：{err}"));
+        }
+    };
+    let canonical_parent = match std::fs::canonicalize(parent) {
+        Ok(path) => path,
+        Err(err) => {
+            clear_ready_path(&stored.path);
+            return Err(format!("无法定位更新安装包目录，请重新下载：{err}"));
+        }
+    };
+    if canonical_parent != canonical_root {
+        clear_ready_path(&stored.path);
+        return Err("更新安装包不在受控临时目录，请重新下载".to_string());
+    }
+
+    match std::fs::metadata(&stored.path) {
         Ok(meta) if meta.is_file() => {}
         Ok(_) => {
             clear_ready_path(&stored.path);
@@ -1890,7 +2030,7 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
         Err(error) => return Err(format!("无法读取更新安装包：{error}")),
     }
 
-    let digest = sha256_file(&stored.path).await?;
+    let digest = sha256_file(&stored.path)?;
     if !sha256_matches(&digest, &stored.ready.sha256) {
         record_verification_failure();
         clear_ready_path(&stored.path);
@@ -1905,19 +2045,6 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
         clear_pending_install();
         return Err(error);
     }
-
-    {
-        let mut rt = runtime().lock();
-        if rt
-            .ready
-            .as_ref()
-            .map(|ready| ready.path == stored.path)
-            .unwrap_or(false)
-        {
-            rt.ready = None;
-        }
-    }
-    app.exit(0);
     Ok(())
 }
 
@@ -1941,19 +2068,21 @@ pub fn cancel_update() {
 
 /// 返回可安装制品与下载状态，供前端重挂载后恢复。
 #[tauri::command]
-pub fn get_update_snapshot() -> UpdateSnapshot {
-    let pending_failure = take_pending_install_failure();
+pub async fn get_update_snapshot() -> Result<UpdateSnapshot, String> {
+    let pending_failure = tokio::task::spawn_blocking(take_pending_install_failure)
+        .await
+        .map_err(|_| "读取更新状态后台任务失败（blocking-task-failed）".to_string())?;
     let mut rt = runtime().lock();
     if rt.previous_failure.is_none() {
         rt.previous_failure = pending_failure;
     }
-    UpdateSnapshot {
+    Ok(UpdateSnapshot {
         ready: rt.ready.as_ref().map(|stored| stored.ready.clone()),
         downloading: rt.active.is_some(),
         last_verified_at: rt.last_verified_at.clone(),
         last_verified_kind: rt.last_verified_kind.clone(),
         previous_attempt_failed: rt.previous_failure.clone(),
-    }
+    })
 }
 
 // ---------- 测试 ----------
@@ -2544,6 +2673,79 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
         let decoded = String::from_utf16(&units).unwrap();
         assert_eq!(decoded, script);
         assert!(decoded.contains("漫画 目录"));
+    }
+
+    /// 独立测试目录：绝不触碰真实的系统更新临时目录。
+    fn unique_update_dir_base(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mr-update-dir-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_dir_rejects_symlinked_cache_directory() {
+        let base = unique_update_dir_base("symlink");
+        let target = base.join("attacker-target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, base.join(update_dir_name())).unwrap();
+        let error = prepare_update_dir(&base).expect_err("符号链接目录必须拒绝");
+        assert!(error.contains("符号链接"), "{error}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_dir_tightens_permissions_to_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = unique_update_dir_base("perm");
+        let dir = base.join(update_dir_name());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let prepared = prepare_update_dir(&base).expect("普通目录应通过校验");
+        assert_eq!(prepared, dir);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "更新目录必须收紧到 0700");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn update_dir_rejects_non_directory_path() {
+        let base = unique_update_dir_base("file");
+        std::fs::write(base.join(update_dir_name()), b"not-a-dir").unwrap();
+        let error = prepare_update_dir(&base).expect_err("同名文件必须拒绝");
+        assert!(error.contains("不是目录"), "{error}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn artifact_creation_is_exclusive_and_never_truncates() {
+        let base = unique_update_dir_base("exclusive");
+        let dir = prepare_update_dir(&base).expect("更新目录应可创建");
+        let path = dir.join("artifact.exe");
+        {
+            use std::io::Write as _;
+            let mut first = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .expect("首次独占创建应成功");
+            first.write_all(b"original").unwrap();
+        }
+        let second = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        assert!(second.is_err(), "同路径二次 create_new 必须被拒绝");
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

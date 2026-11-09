@@ -10,6 +10,9 @@ const CJK = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
  */
 const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "feature-disabled", key: "error.featureDisabled" },
+  { code: "cache-clear-failed", key: "error.cacheClearFailed" },
+  { code: "safe-mode-unavailable", key: "error.safeModeUnavailable" },
+  { code: "blocking-task-failed", key: "error.blockingTaskFailed" },
   { code: "archive-disguised-rar", key: "error.archiveDisguisedRar" },
   { code: "archive-disguised-7z", key: "error.archiveDisguised7z" },
   { code: "archive-not-zip", key: "error.archiveNotZip" },
@@ -30,6 +33,7 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "backup-integrity-failed", key: "error.backupIntegrity" },
   { code: "backup-too-large", key: "error.backupTooLarge" },
   { code: "backup-restore-failed", key: "error.backupRestoreFailed" },
+  { code: "backup-requires-confirmation", key: "error.backupRequiresConfirmation" },
   { code: "online-url-invalid", key: "error.onlineUrlInvalid" },
   { code: "online-blocked-address", key: "error.onlineBlockedAddress" },
   { code: "online-too-many-pages", key: "error.onlineTooManyPages" },
@@ -157,10 +161,7 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "invalid-page-limit", key: "error.pageInvalidLimit" },
   { code: "invalid-page-query", key: "error.pageInvalidQuery" },
   { code: "invalid-page-cursor", key: "error.pageInvalidCursor" },
-  // Task 7：系统托盘动态图标（前端栅格化后推送，失败只保留原图标）。
-  { code: "tray-icon-invalid", key: "error.trayIconInvalid" },
-  { code: "tray-icon-too-large", key: "error.trayIconInvalid" },
-  // Task 7：皮肤素材导入（Rust 侧校验图片头与尺寸）。
+  // 皮肤素材导入（Rust 侧校验图片头与尺寸）。
   { code: "skin-read-failed", key: "settings.skin.errorRead" },
   { code: "skin-empty", key: "settings.skin.errorRead" },
   { code: "skin-too-large", key: "settings.skin.errorSize" },

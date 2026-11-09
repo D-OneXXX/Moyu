@@ -976,11 +976,13 @@ export default function LibraryPage() {
           onClose={() => setCtxMenu(null)}
           items={[
             {
+              id: "details",
               label: t("menu.details"),
               icon: <BookOpen />,
               onSelect: () => openDetail(ctxBook),
             },
             {
+              id: "open",
               label: ctxBook.missing
                 ? t("relocate.choose")
                 : t("menu.continue"),
@@ -991,11 +993,13 @@ export default function LibraryPage() {
                   : openReader(ctxBook.id),
             },
             {
+              id: "remove",
               label: t("menu.remove"),
               icon: <BookX />,
               onSelect: () => void doRemove([ctxBook.id]),
             },
             {
+              id: "delete",
               label:
                 ctxBook.sourceType === "local"
                   ? t("menu.deleteLocal")

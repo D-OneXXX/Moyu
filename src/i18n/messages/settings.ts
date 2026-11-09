@@ -6,7 +6,6 @@ const zhCN = {
   "settings.features.title": "功能开关",
   "settings.features.description":
     "每项功能可独立开启或关闭；关闭后入口隐藏，后端调用会被拒绝。更改立即生效。",
-  "settings.features.managedInGeneral": "由「功能开关」统一控制",
   "settings.features.browser.description":
     "用于站点验证与下载导入的辅助浏览器。关闭后顶栏入口隐藏。",
   "settings.features.pdf.title": "PDF 阅读",
@@ -55,27 +54,6 @@ const zhCN = {
   "settings.theme.systemNote":
     "「跟随系统」会随操作系统的深浅色自动切换。",
 
-  "settings.brandIcon.title": "品牌图标",
-  "settings.brandIcon.description":
-    "选择内置图标或上传自己的图片；切换后顶栏立即更新。",
-  "settings.brandIcon.current": "当前图标",
-  "settings.brandIcon.groupLabel": "品牌图标选择",
-  "settings.brandIcon.presetBook": "开卷",
-  "settings.brandIcon.presetFish": "墨鱼",
-  "settings.brandIcon.presetMoon": "夜读",
-  "settings.brandIcon.presetWave": "潮汐",
-  "settings.brandIcon.upload": "选择自定义图标",
-  "settings.brandIcon.replace": "更换自定义图标",
-  "settings.brandIcon.reset": "恢复默认",
-  "settings.brandIcon.customActive": "自定义图标",
-  "settings.brandIcon.hint":
-    "图标只保存在本机，不会上传或写入日志。支持 PNG / JPEG / WebP，文件不超过 200 KiB，单边不超过 1024 px。",
-  "settings.brandIcon.errorType": "请选择 PNG、JPEG 或 WebP 图片。",
-  "settings.brandIcon.errorSize": "图片不能超过 200 KiB。",
-  "settings.brandIcon.errorDimension": "图片单边不能超过 1024 px。",
-  "settings.brandIcon.errorRead": "无法读取这张图片，请换一张。",
-  "settings.brandIcon.errorSave":
-    "无法保存图标偏好，请检查本机存储权限。",
 
   "settings.experimental.webtoonTitle": "条漫模式",
   "settings.experimental.webtoonDescription":
@@ -241,7 +219,7 @@ const zhCN = {
 
   "settings.toast.scanDone": "扫描完成，书库共 {count} 本",
   "settings.toast.scanErrors": "有 {count} 个条目无法读取，已跳过",
-  "settings.toast.proxyFilled": "已填入系统代理，保存后生效",
+  "settings.toast.proxyFilled": "已填入系统代理并保存",
   "settings.toast.proxyNotFound": "未检测到开启的系统代理",
   "settings.toast.sessionCleared": "已清空内存凭据",
   "settings.toast.urlRequired": "请填写清单或图集 URL",
@@ -425,6 +403,11 @@ const zhCN = {
     "撤销「{name}」会立即断开它的访问，之后必须重新完成配对。",
   "settings.webAccess.securityNote":
     "设备名由手机自行上报，可能被修改；本项目没有 SAS 或密码学绑定，桌面端的人工批准是唯一授权。请不要因为设备出现在列表里就认为它已通过验证。",
+
+  "settings.autoSaved": "已自动保存",
+  "settings.autoSaving": "正在保存…",
+  "settings.autoSaveFailed": "保存失败",
+  "settings.filter.blockedShort": "已拦截 {count} 项",
 } as const;
 
 type SettingsMessages = { [K in keyof typeof zhCN]: string };
@@ -433,7 +416,6 @@ const zhTW: SettingsMessages = {
   "settings.features.title": "功能開關",
   "settings.features.description":
     "每項功能可獨立開啟或關閉；關閉後入口隱藏，後端呼叫會被拒絕。變更立即生效。",
-  "settings.features.managedInGeneral": "由「功能開關」統一控制",
   "settings.features.browser.description":
     "用於站點驗證與下載匯入的輔助瀏覽器。關閉後頂欄入口隱藏。",
   "settings.features.pdf.title": "PDF 閱讀",
@@ -483,27 +465,6 @@ const zhTW: SettingsMessages = {
   "settings.theme.systemNote":
     "「跟隨系統」會隨作業系統的深淺色自動切換。",
 
-  "settings.brandIcon.title": "品牌圖示",
-  "settings.brandIcon.description":
-    "選擇內建圖示或上傳自己的圖片；切換後頂欄立即更新。",
-  "settings.brandIcon.current": "目前圖示",
-  "settings.brandIcon.groupLabel": "品牌圖示選擇",
-  "settings.brandIcon.presetBook": "開卷",
-  "settings.brandIcon.presetFish": "墨魚",
-  "settings.brandIcon.presetMoon": "夜讀",
-  "settings.brandIcon.presetWave": "潮汐",
-  "settings.brandIcon.upload": "選擇自訂圖示",
-  "settings.brandIcon.replace": "更換自訂圖示",
-  "settings.brandIcon.reset": "恢復預設",
-  "settings.brandIcon.customActive": "自訂圖示",
-  "settings.brandIcon.hint":
-    "圖示只保存在本機，不會上傳或寫入日誌。支援 PNG / JPEG / WebP，檔案不超過 200 KiB，單邊不超過 1024 px。",
-  "settings.brandIcon.errorType": "請選擇 PNG、JPEG 或 WebP 圖片。",
-  "settings.brandIcon.errorSize": "圖片不能超過 200 KiB。",
-  "settings.brandIcon.errorDimension": "圖片單邊不能超過 1024 px。",
-  "settings.brandIcon.errorRead": "無法讀取這張圖片，請換一張。",
-  "settings.brandIcon.errorSave":
-    "無法保存圖示偏好，請檢查本機儲存權限。",
 
   "settings.experimental.webtoonTitle": "條漫模式",
   "settings.experimental.webtoonDescription":
@@ -671,7 +632,7 @@ const zhTW: SettingsMessages = {
 
   "settings.toast.scanDone": "掃描完成，書庫共 {count} 本",
   "settings.toast.scanErrors": "有 {count} 個項目無法讀取，已跳過",
-  "settings.toast.proxyFilled": "已填入系統代理，儲存後生效",
+  "settings.toast.proxyFilled": "已填入系統代理並儲存",
   "settings.toast.proxyNotFound": "未偵測到開啟的系統代理",
   "settings.toast.sessionCleared": "已清空記憶體憑證",
   "settings.toast.urlRequired": "請填寫清單或圖集 URL",
@@ -855,13 +816,17 @@ const zhTW: SettingsMessages = {
     "撤銷「{name}」會立即中斷它的存取，之後必須重新完成配對。",
   "settings.webAccess.securityNote":
     "裝置名稱由手機自行回報，可能被修改；本專案沒有 SAS 或密碼學綁定，桌面端的人工批准是唯一授權。請不要因為裝置出現在清單裡就認為它已通過驗證。",
+
+  "settings.autoSaved": "已自動儲存",
+  "settings.autoSaving": "正在儲存…",
+  "settings.autoSaveFailed": "儲存失敗",
+  "settings.filter.blockedShort": "已攔截 {count} 項",
 };
 
 const en: SettingsMessages = {
   "settings.features.title": "Feature switches",
   "settings.features.description":
     "Enable or disable each feature independently. Turning one off hides its entry points and blocks backend calls. Changes apply immediately.",
-  "settings.features.managedInGeneral": "Managed by Feature switches",
   "settings.features.browser.description":
     "Auxiliary browser for site verification and download import. Turning it off hides the top-bar entry.",
   "settings.features.pdf.title": "PDF reading",
@@ -911,29 +876,6 @@ const en: SettingsMessages = {
   "settings.theme.systemNote":
     "“System” follows your operating system's light and dark appearance automatically.",
 
-  "settings.brandIcon.title": "Brand icon",
-  "settings.brandIcon.description":
-    "Pick a built-in icon or upload your own image. Changes appear in the top bar immediately.",
-  "settings.brandIcon.current": "Current icon",
-  "settings.brandIcon.groupLabel": "Brand icon selection",
-  "settings.brandIcon.presetBook": "Open book",
-  "settings.brandIcon.presetFish": "Ink fish",
-  "settings.brandIcon.presetMoon": "Night read",
-  "settings.brandIcon.presetWave": "Tide",
-  "settings.brandIcon.upload": "Choose custom icon",
-  "settings.brandIcon.replace": "Replace custom icon",
-  "settings.brandIcon.reset": "Restore default",
-  "settings.brandIcon.customActive": "Custom icon",
-  "settings.brandIcon.hint":
-    "The icon stays on this device and is never uploaded or written to logs. PNG / JPEG / WebP, up to 200 KiB, max 1024 px per side.",
-  "settings.brandIcon.errorType": "Choose a PNG, JPEG or WebP image.",
-  "settings.brandIcon.errorSize": "The image must be 200 KiB or smaller.",
-  "settings.brandIcon.errorDimension":
-    "Each side must be 1024 px or smaller.",
-  "settings.brandIcon.errorRead":
-    "Could not read this image. Try another file.",
-  "settings.brandIcon.errorSave":
-    "Could not save the icon preference. Check local storage permissions.",
 
   "settings.experimental.webtoonTitle": "Webtoon mode",
   "settings.experimental.webtoonDescription":
@@ -1103,7 +1045,7 @@ const en: SettingsMessages = {
 
   "settings.toast.scanDone": "Scan complete. {count} books in the library.",
   "settings.toast.scanErrors": "{count} entries could not be read and were skipped",
-  "settings.toast.proxyFilled": "System proxy filled in; save to apply",
+  "settings.toast.proxyFilled": "System proxy detected and saved",
   "settings.toast.proxyNotFound": "No enabled system proxy detected",
   "settings.toast.sessionCleared": "Memory credentials cleared",
   "settings.toast.urlRequired": "Enter a manifest or gallery URL",
@@ -1300,13 +1242,17 @@ const en: SettingsMessages = {
     "Revoking “{name}” disconnects it immediately; it must pair again to reconnect.",
   "settings.webAccess.securityNote":
     "Device names are self-reported by the phone and can change. This project has no SAS or cryptographic binding; manual approval on this desktop is the only authorization. Do not treat a device as verified just because it appears in this list.",
+
+  "settings.autoSaved": "Auto-saved",
+  "settings.autoSaving": "Saving…",
+  "settings.autoSaveFailed": "Save failed",
+  "settings.filter.blockedShort": "{count} blocked",
 };
 
 const es: SettingsMessages = {
   "settings.features.title": "Interruptores de funciones",
   "settings.features.description":
     "Activa o desactiva cada función de forma independiente. Al desactivarla se ocultan sus entradas y se bloquean las llamadas al backend. Los cambios se aplican al instante.",
-  "settings.features.managedInGeneral": "Gestionado por Interruptores de funciones",
   "settings.features.browser.description":
     "Navegador auxiliar para verificación de sitios e importación de descargas. Al desactivarlo se oculta la entrada de la barra superior.",
   "settings.features.pdf.title": "Lectura de PDF",
@@ -1357,29 +1303,6 @@ const es: SettingsMessages = {
   "settings.theme.systemNote":
     "«Sistema» sigue automáticamente el modo claro u oscuro del sistema operativo.",
 
-  "settings.brandIcon.title": "Icono de marca",
-  "settings.brandIcon.description":
-    "Elige un icono integrado o sube tu propia imagen. El cambio aparece al instante en la barra superior.",
-  "settings.brandIcon.current": "Icono actual",
-  "settings.brandIcon.groupLabel": "Selección del icono de marca",
-  "settings.brandIcon.presetBook": "Libro abierto",
-  "settings.brandIcon.presetFish": "Pez tinta",
-  "settings.brandIcon.presetMoon": "Lectura nocturna",
-  "settings.brandIcon.presetWave": "Marea",
-  "settings.brandIcon.upload": "Elegir icono personalizado",
-  "settings.brandIcon.replace": "Cambiar icono personalizado",
-  "settings.brandIcon.reset": "Restaurar predeterminado",
-  "settings.brandIcon.customActive": "Icono personalizado",
-  "settings.brandIcon.hint":
-    "El icono permanece en este dispositivo y nunca se sube ni se escribe en los registros. PNG / JPEG / WebP, hasta 200 KiB y 1024 px por lado.",
-  "settings.brandIcon.errorType": "Elige una imagen PNG, JPEG o WebP.",
-  "settings.brandIcon.errorSize": "La imagen no puede superar 200 KiB.",
-  "settings.brandIcon.errorDimension":
-    "Cada lado debe medir 1024 px o menos.",
-  "settings.brandIcon.errorRead":
-    "No se pudo leer esta imagen. Prueba con otro archivo.",
-  "settings.brandIcon.errorSave":
-    "No se pudo guardar el icono. Revisa los permisos de almacenamiento local.",
 
   "settings.experimental.webtoonTitle": "Modo webtoon",
   "settings.experimental.webtoonDescription":
@@ -1554,7 +1477,7 @@ const es: SettingsMessages = {
   "settings.toast.scanErrors":
     "No se pudieron leer {count} entradas; se omitieron",
   "settings.toast.proxyFilled":
-    "Proxy del sistema rellenado; guarda para aplicar",
+    "Proxy del sistema detectado y guardado",
   "settings.toast.proxyNotFound":
     "No se detectó ningún proxy del sistema activado",
   "settings.toast.sessionCleared": "Credenciales en memoria borradas",
@@ -1760,13 +1683,17 @@ const es: SettingsMessages = {
     "Al revocar «{name}» se corta su acceso de inmediato y tendrá que vincularse de nuevo.",
   "settings.webAccess.securityNote":
     "El nombre del dispositivo lo declara el teléfono y puede cambiarse; este proyecto no tiene SAS ni vínculo criptográfico, y la aprobación manual en el escritorio es la única autorización. No consideres un dispositivo verificado solo porque aparezca en la lista.",
+
+  "settings.autoSaved": "Guardado automáticamente",
+  "settings.autoSaving": "Guardando…",
+  "settings.autoSaveFailed": "Error al guardar",
+  "settings.filter.blockedShort": "{count} bloqueados",
 };
 
 const ja: SettingsMessages = {
   "settings.features.title": "機能スイッチ",
   "settings.features.description":
     "各機能を個別にオン・オフできます。オフにすると入口が非表示になり、バックエンド呼び出しは拒否されます。変更は即時反映されます。",
-  "settings.features.managedInGeneral": "「機能スイッチ」で管理",
   "settings.features.browser.description":
     "サイト検証とダウンロード取り込み用の補助ブラウザー。オフにすると上部バーの入口が非表示になります。",
   "settings.features.pdf.title": "PDF 閲覧",
@@ -1816,29 +1743,6 @@ const ja: SettingsMessages = {
   "settings.theme.systemNote":
     "「システム」は OS のライト / ダークに合わせて自動で切り替わります。",
 
-  "settings.brandIcon.title": "ブランドアイコン",
-  "settings.brandIcon.description":
-    "内蔵アイコンを選ぶか、画像をアップロードします。変更は上部バーにすぐ反映されます。",
-  "settings.brandIcon.current": "現在のアイコン",
-  "settings.brandIcon.groupLabel": "ブランドアイコンの選択",
-  "settings.brandIcon.presetBook": "開いた本",
-  "settings.brandIcon.presetFish": "墨魚",
-  "settings.brandIcon.presetMoon": "夜読み",
-  "settings.brandIcon.presetWave": "潮汐",
-  "settings.brandIcon.upload": "カスタムアイコンを選択",
-  "settings.brandIcon.replace": "カスタムアイコンを変更",
-  "settings.brandIcon.reset": "既定に戻す",
-  "settings.brandIcon.customActive": "カスタムアイコン",
-  "settings.brandIcon.hint":
-    "アイコンはこの端末にのみ保存され、アップロードやログ出力は行いません。PNG / JPEG / WebP、200 KiB 以下、各辺 1024 px 以下。",
-  "settings.brandIcon.errorType":
-    "PNG、JPEG、WebP の画像を選択してください。",
-  "settings.brandIcon.errorSize": "画像は 200 KiB 以下にしてください。",
-  "settings.brandIcon.errorDimension": "各辺は 1024 px 以下にしてください。",
-  "settings.brandIcon.errorRead":
-    "この画像を読み取れません。別のファイルをお試しください。",
-  "settings.brandIcon.errorSave":
-    "アイコン設定を保存できません。ローカルストレージの権限を確認してください。",
 
   "settings.experimental.webtoonTitle": "Webtoon モード",
   "settings.experimental.webtoonDescription":
@@ -2014,7 +1918,7 @@ const ja: SettingsMessages = {
   "settings.toast.scanErrors":
     "{count} 件を読み込めずスキップしました",
   "settings.toast.proxyFilled":
-    "システムプロキシを入力しました。保存で反映されます",
+    "システムプロキシを検出して保存しました",
   "settings.toast.proxyNotFound": "有効なシステムプロキシが見つかりません",
   "settings.toast.sessionCleared": "メモリ上の認証情報を消去しました",
   "settings.toast.urlRequired":
@@ -2217,13 +2121,17 @@ const ja: SettingsMessages = {
     "「{name}」を取り消すと、ただちにアクセスが切断され、再度ペアリングが必要になります。",
   "settings.webAccess.securityNote":
     "端末名はスマートフォンの自己申告であり、変更される可能性があります。本プロジェクトには SAS や暗号学的な紐付けはなく、デスクトップ側での手動承認だけが認可です。一覧に表示されているだけで検証済みとみなさないでください。",
+
+  "settings.autoSaved": "自動保存しました",
+  "settings.autoSaving": "保存中…",
+  "settings.autoSaveFailed": "保存に失敗",
+  "settings.filter.blockedShort": "{count} 件をブロック",
 };
 
 const ko: SettingsMessages = {
   "settings.features.title": "기능 스위치",
   "settings.features.description":
     "각 기능을 독립적으로 켜고 끌 수 있습니다. 끄면 진입점이 숨겨지고 백엔드 호출이 거부됩니다. 변경 사항은 즉시 적용됩니다.",
-  "settings.features.managedInGeneral": "기능 스위치에서 관리",
   "settings.features.browser.description":
     "사이트 확인과 다운로드 가져오기에 쓰는 보조 브라우저입니다. 끄면 상단 표시줄의 진입점이 숨겨집니다.",
   "settings.features.pdf.title": "PDF 읽기",
@@ -2273,29 +2181,6 @@ const ko: SettingsMessages = {
   "settings.theme.systemNote":
     "「시스템」은 운영체제의 라이트/다크 모드를 자동으로 따릅니다.",
 
-  "settings.brandIcon.title": "브랜드 아이콘",
-  "settings.brandIcon.description":
-    "내장 아이콘을 선택하거나 직접 이미지를 업로드하세요. 변경 사항은 상단 바에 즉시 반영됩니다.",
-  "settings.brandIcon.current": "현재 아이콘",
-  "settings.brandIcon.groupLabel": "브랜드 아이콘 선택",
-  "settings.brandIcon.presetBook": "펼친 책",
-  "settings.brandIcon.presetFish": "먹물고기",
-  "settings.brandIcon.presetMoon": "밤 읽기",
-  "settings.brandIcon.presetWave": "조수",
-  "settings.brandIcon.upload": "사용자 아이콘 선택",
-  "settings.brandIcon.replace": "사용자 아이콘 변경",
-  "settings.brandIcon.reset": "기본값 복원",
-  "settings.brandIcon.customActive": "사용자 아이콘",
-  "settings.brandIcon.hint":
-    "아이콘은 이 기기에만 저장되며 업로드되거나 로그에 기록되지 않습니다. PNG / JPEG / WebP, 200 KiB 이하, 각 변 1024 px 이하.",
-  "settings.brandIcon.errorType":
-    "PNG, JPEG 또는 WebP 이미지를 선택하세요.",
-  "settings.brandIcon.errorSize": "이미지는 200 KiB 이하여야 합니다.",
-  "settings.brandIcon.errorDimension": "각 변은 1024 px 이하여야 합니다.",
-  "settings.brandIcon.errorRead":
-    "이미지를 읽을 수 없습니다. 다른 파일을 선택하세요.",
-  "settings.brandIcon.errorSave":
-    "아이콘 설정을 저장할 수 없습니다. 로컬 저장소 권한을 확인하세요.",
 
   "settings.experimental.webtoonTitle": "웹툰 모드",
   "settings.experimental.webtoonDescription":
@@ -2468,7 +2353,7 @@ const ko: SettingsMessages = {
   "settings.toast.scanDone": "스캔 완료. 서재에 {count}권이 있습니다.",
   "settings.toast.scanErrors": "항목 {count}개를 읽지 못해 건너뛰었습니다",
   "settings.toast.proxyFilled":
-    "시스템 프록시를 채웠습니다. 저장 후 적용됩니다",
+    "시스템 프록시를 감지하여 저장했습니다",
   "settings.toast.proxyNotFound": "활성화된 시스템 프록시를 찾지 못했습니다",
   "settings.toast.sessionCleared": "메모리 자격 증명을 지웠습니다",
   "settings.toast.urlRequired": "매니페스트 또는 갤러리 URL을 입력하세요",
@@ -2666,6 +2551,11 @@ const ko: SettingsMessages = {
     "'{name}' 기기를 취소하면 즉시 연결이 끊기고 다시 페어링해야 합니다.",
   "settings.webAccess.securityNote":
     "기기 이름은 휴대폰이 스스로 신고한 값이라 바뀔 수 있습니다. 이 프로젝트에는 SAS나 암호학적 바인딩이 없으며 데스크톱에서의 수동 승인만이 유일한 인가입니다. 목록에 보인다는 이유만으로 검증된 기기로 간주하지 마세요.",
+
+  "settings.autoSaved": "자동 저장됨",
+  "settings.autoSaving": "저장 중…",
+  "settings.autoSaveFailed": "저장 실패",
+  "settings.filter.blockedShort": "{count}개 차단됨",
 };
 
 export const settingsMessages = {

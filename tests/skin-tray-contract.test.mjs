@@ -43,17 +43,23 @@ test("built-in skins and the shortcut switch survive startup sanitization", () =
     assert.equal(storage.getItem("mr-shortcuts-enabled"), "0");
   }
 
-  const dirty = new MemoryStorage();
-  dirty.setItem("mr-skin", "custom-123");
-  dirty.setItem("mr-shortcuts-enabled", "yes");
-  sanitizeStorage(dirty);
-  assert.equal(dirty.getItem("mr-skin"), null);
-  assert.equal(dirty.getItem("mr-shortcuts-enabled"), null);
+  const custom = new MemoryStorage();
+  custom.setItem("mr-skin", "custom-123");
+  custom.setItem("mr-shortcuts-enabled", "yes");
+  sanitizeStorage(custom);
+  assert.equal(custom.getItem("mr-skin"), "custom-123", "custom skin ids are free-form within 128 chars");
+  assert.equal(custom.getItem("mr-shortcuts-enabled"), null);
+
+  const tooLong = new MemoryStorage();
+  tooLong.setItem("mr-skin", "x".repeat(129));
+  sanitizeStorage(tooLong);
+  assert.equal(tooLong.getItem("mr-skin"), null);
 });
 
-test("backup preferences migrate the skin but never custom icon data", () => {
+test("backup preferences migrate skin and shortcut preferences", () => {
   const source = read("src/features/backup/preferences.ts");
   assert.match(source, /"mr-skin"/);
+  assert.match(source, /"mr-shortcuts-enabled"/);
   assert.doesNotMatch(source, /"mr-brand-icon"/);
 });
 
@@ -62,19 +68,15 @@ test("SQLite backup whitelist carries the close-to-tray preference", () => {
   assert.match(source, /"close_to_tray"/);
 });
 
-test("tray icon failures have stable localized codes", () => {
+test("backup confirmation failures have localized codes", () => {
   const localize = read("src/features/errors/localize.ts");
-  const tray = read("src-tauri/src/tray.rs");
-  for (const code of ["tray-icon-invalid", "tray-icon-too-large"]) {
-    assert.match(tray, new RegExp(`"${code}"`));
-    assert.match(localize, new RegExp(`code: "${code}"`));
-  }
-  assert.match(localize, /"error\.trayIconInvalid"/);
+  assert.match(localize, /code: "backup-requires-confirmation"/);
+  assert.match(localize, /"error\.backupRequiresConfirmation"/);
   const common = read("src/i18n/messages/common.ts");
   assert.equal(
-    (common.match(/"error\.trayIconInvalid"/g) || []).length,
+    (common.match(/"error\.backupRequiresConfirmation"/g) || []).length,
     6,
-    "tray icon error text must exist in all six dictionaries",
+    "backup confirmation text must exist in all six dictionaries",
   );
 });
 

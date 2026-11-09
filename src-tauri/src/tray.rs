@@ -15,12 +15,10 @@ use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
-use base64::Engine as _;
-
 use crate::state::AppState;
 use crate::web_access::{StopReason, WebAccessRuntime, WebAccessStatusView};
 
-const TRAY_ID: &str = "moyu-tray";
+pub(crate) const TRAY_ID: &str = "moyu-tray";
 const MENU_STATUS: &str = "moyu-tray-status";
 const MENU_TOGGLE: &str = "moyu-tray-toggle";
 const MENU_SHOW: &str = "moyu-tray-show";
@@ -37,6 +35,11 @@ static EXITING: AtomicBool = AtomicBool::new(false);
 fn last_status() -> &'static Mutex<Option<WebAccessStatusView>> {
     static SLOT: OnceLock<Mutex<Option<WebAccessStatusView>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn locale_slot() -> &'static Mutex<String> {
+    static SLOT: OnceLock<Mutex<String>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new("zh-CN".to_owned()))
 }
 
 /// True once the user chose "quit" from the tray; the close interceptor must
@@ -212,7 +215,16 @@ pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if app.tray_by_id(TRAY_ID).is_some() {
         return Ok(());
     }
-    let locale = current_locale(app);
+    // Locale lookup touches SQLite; do it on the blocking pool before creating
+    // native menu objects.
+    let locale_app = (*app).clone();
+    let locale = tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+        current_locale(&locale_app)
+    }))
+    .unwrap_or_else(|_| "zh-CN".to_owned());
+    if let Ok(mut slot) = locale_slot().lock() {
+        *slot = locale.clone();
+    }
     let menu = build_menu(app, &locale, None)?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -230,11 +242,9 @@ pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             }
         });
 
-    // Task 7 hook: a user-selected Moyu icon is written to
-    // `<data>/brand/icon.png`; fall back to the bundled window icon.
-    if let Some(icon) = custom_icon() {
-        builder = builder.icon(icon);
-    } else if let Some(icon) = app.default_window_icon() {
+    // 托盘图标恒为随包构建图标（src-tauri/icons/）：不做用户自定义，
+    // 也不与主界面左上角的 UI 图标联动——两者是两套独立设计。
+    if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
 
@@ -242,65 +252,6 @@ pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Dropping the last handle removes the icon; keep it owned by the app.
     app.manage(tray);
     Ok(())
-}
-
-fn custom_icon() -> Option<tauri::image::Image<'static>> {
-    let root = crate::paths::data_dir()?;
-    for relative in ["brand/icon.png", "brand/tray.png"] {
-        let path = root.join(relative);
-        if path.is_file() {
-            if let Ok(image) = tauri::image::Image::from_path(&path) {
-                return Some(image);
-            }
-        }
-    }
-    None
-}
-
-/// Decode the 64×64 PNG produced by the webview. Never returns raw bytes to
-/// the caller; invalid payloads are log-only and keep the previous icon.
-fn decode_tray_png(raw: &str) -> Result<tauri::image::Image<'static>, &'static str> {
-    const PREFIX: &str = "data:image/png;base64,";
-    const MAX_BYTES: usize = 512 * 1024;
-    let payload = raw.strip_prefix(PREFIX).ok_or("tray-icon-invalid")?;
-    if payload.len() > MAX_BYTES {
-        return Err("tray-icon-too-large");
-    }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(payload)
-        .map_err(|_| "tray-icon-invalid")?;
-    tauri::image::Image::from_bytes(&bytes).map_err(|_| "tray-icon-invalid")
-}
-
-/// Apply the Task 7 brand icon (preset or custom upload) to the tray.
-///
-/// Task 7 keeps the preference in `localStorage`, so the main window rasterizes
-/// the live SVG/image and pushes PNG here. Best-effort: a missing tray or a bad
-/// payload only logs, it never surfaces a user-facing error.
-#[tauri::command]
-pub(crate) async fn tray_set_icon(app: AppHandle, data_url: Option<String>) {
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
-        return;
-    };
-    let Some(raw) = data_url else {
-        if let Some(icon) = app.default_window_icon() {
-            let _ = tray.set_icon(Some(icon.clone()));
-        }
-        return;
-    };
-    match tauri::async_runtime::spawn_blocking(move || decode_tray_png(&raw)).await {
-        Ok(Ok(image)) => {
-            if let Err(error) = tray.set_icon(Some(image)) {
-                crate::logging::log_error("tray", &format!("托盘图标设置失败：{error}"));
-            }
-        }
-        Ok(Err(code)) => {
-            crate::logging::log_error("tray", &format!("托盘图标无效（{code}）"));
-        }
-        Err(_) => {
-            crate::logging::log_error("tray", "托盘图标解码任务失败");
-        }
-    }
 }
 
 /// Refresh menu text/tooltip from the latest runtime snapshot. Called from the
@@ -317,7 +268,10 @@ pub(crate) fn refresh_menu<R: Runtime>(app: &AppHandle<R>) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    let locale = current_locale(app);
+    let locale = locale_slot()
+        .lock()
+        .map(|locale| locale.clone())
+        .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
     let status = match last_status().lock() {
         Ok(slot) => slot.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
@@ -429,7 +383,10 @@ pub(crate) async fn tray_set_locale(
         })
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|_| "托盘语言设置失败（blocking-task-failed）".to_string())??;
+    if let Ok(mut slot) = locale_slot().lock() {
+        *slot = normalized.clone();
+    }
     refresh_menu(&app);
     Ok(())
 }

@@ -36,6 +36,7 @@ const zhCN = {
   "common.on": "开启",
   "common.off": "关闭",
   "common.enabled": "已开启",
+  "common.enableNow": "立即开启",
   "common.disabled": "未开启",
   "common.all": "全部",
   "common.page": "页",
@@ -116,7 +117,9 @@ const zhCN = {
   "error.pageInvalidCursor": "分页游标无效或已过期，请重新加载书库",
   "error.requestFailed": "调用 {cmd} 失败",
   "error.backendGeneric": "操作失败；详情已写入本地日志。",
-  "error.trayIconInvalid": "托盘图标无效或超过 64 KiB 上限，已保留原图标。",
+  "error.cacheClearFailed": "无法清理在线缓存，请重试。（cache-clear-failed）",
+  "error.safeModeUnavailable": "无法读取安全模式状态，在线与浏览器功能已暂停。（safe-mode-unavailable）",
+  "error.blockingTaskFailed": "后台操作未完成，请重试。（blocking-task-failed）",
   "error.featureDisabled": "该功能已在设置中关闭（feature-disabled）",
   "feature.disabled.title": "功能已关闭",
   "feature.disabled.description":
@@ -132,6 +135,8 @@ const zhCN = {
   "error.backupIntegrity": "备份完整性校验失败，当前书库未被修改",
   "error.backupTooLarge": "备份文件超过 1 GiB 上限",
   "error.backupRestoreFailed": "恢复备份失败，当前书库未被修改",
+  "error.backupRequiresConfirmation":
+    "备份中有书源文件当前不可达；恢复会移除这些书的进度与阅读历史，请确认后重试。",
   "error.onlineUrlInvalid": "链接无效：仅支持不含账号密码的 http/https 地址",
   "error.onlineBlockedAddress": "该链接指向本机、私网或链路本地地址，已拒绝",
   "error.onlineTooManyPages": "页面数量超过上限，请拆分后重试",
@@ -239,6 +244,7 @@ const zhTW: CommonMessages = {
   "common.on": "開啟",
   "common.off": "關閉",
   "common.enabled": "已開啟",
+  "common.enableNow": "立即開啟",
   "common.disabled": "未開啟",
   "common.all": "全部",
   "common.page": "頁",
@@ -319,7 +325,9 @@ const zhTW: CommonMessages = {
   "error.pageInvalidCursor": "分頁游標無效或已過期，請重新載入書庫",
   "error.requestFailed": "呼叫 {cmd} 失敗",
   "error.backendGeneric": "操作失敗；詳情已寫入本機日誌。",
-  "error.trayIconInvalid": "托盤圖示無效或超過 64 KiB 上限，已保留原圖示。",
+  "error.cacheClearFailed": "無法清理線上快取，請重試。（cache-clear-failed）",
+  "error.safeModeUnavailable": "無法讀取安全模式狀態，線上與瀏覽器功能已暫停。（safe-mode-unavailable）",
+  "error.blockingTaskFailed": "背景操作未完成，請重試。（blocking-task-failed）",
   "error.featureDisabled": "該功能已在設定中關閉（feature-disabled）",
   "feature.disabled.title": "功能已關閉",
   "feature.disabled.description":
@@ -335,6 +343,8 @@ const zhTW: CommonMessages = {
   "error.backupIntegrity": "備份完整性校驗失敗，目前書庫未被修改",
   "error.backupTooLarge": "備份檔案超過 1 GiB 上限",
   "error.backupRestoreFailed": "還原備份失敗，目前書庫未被修改",
+  "error.backupRequiresConfirmation":
+    "備份中有書籍來源檔目前無法存取；還原會移除這些書的進度與閱讀紀錄，請確認後再試。",
   "error.onlineUrlInvalid": "連結無效：僅支援不含帳號密碼的 http/https 位址",
   "error.onlineBlockedAddress": "此連結指向本機、私網或連結本地位址，已拒絕",
   "error.onlineTooManyPages": "頁面數量超過上限，請拆分後再試",
@@ -441,6 +451,7 @@ const en: CommonMessages = {
   "common.on": "On",
   "common.off": "Off",
   "common.enabled": "Enabled",
+  "common.enableNow": "Enable now",
   "common.disabled": "Disabled",
   "common.all": "All",
   "common.page": "Page",
@@ -524,8 +535,9 @@ const en: CommonMessages = {
   "error.pageInvalidCursor": "The pagination cursor is invalid or expired. Reload the library.",
   "error.requestFailed": "Request failed: {cmd}",
   "error.backendGeneric": "The operation failed. Details were written to the local log.",
-  "error.trayIconInvalid":
-    "The tray icon is invalid or exceeds the 64 KiB limit; the previous icon was kept.",
+  "error.cacheClearFailed": "Could not clear the online cache. Try again. (cache-clear-failed)",
+  "error.safeModeUnavailable": "Safe mode status is unavailable; online and browser functions are blocked. (safe-mode-unavailable)",
+  "error.blockingTaskFailed": "The background operation did not finish. Try again. (blocking-task-failed)",
   "error.featureDisabled": "This feature is turned off in Settings (feature-disabled).",
   "feature.disabled.title": "Feature disabled",
   "feature.disabled.description":
@@ -541,6 +553,8 @@ const en: CommonMessages = {
   "error.backupIntegrity": "Backup integrity check failed. Your current library was not modified.",
   "error.backupTooLarge": "The backup exceeds the 1 GiB limit.",
   "error.backupRestoreFailed": "Restoring the backup failed. Your current library was not modified.",
+  "error.backupRequiresConfirmation":
+    "Some book sources in this backup are currently unreachable. Restoring will remove their progress and reading history; confirm and try again.",
   "error.onlineUrlInvalid": "Invalid link: only http/https addresses without credentials are supported.",
   "error.onlineBlockedAddress": "This link points to a local, private, or link-local address and was rejected.",
   "error.onlineTooManyPages": "Too many pages. Split the source and try again.",
@@ -658,6 +672,7 @@ const es: CommonMessages = {
   "common.on": "Activado",
   "common.off": "Desactivado",
   "common.enabled": "Activado",
+  "common.enableNow": "Activar ahora",
   "common.disabled": "Desactivado",
   "common.all": "Todo",
   "common.page": "Página",
@@ -743,8 +758,9 @@ const es: CommonMessages = {
   "error.pageInvalidCursor": "El cursor de paginación no es válido o ha caducado. Recarga la biblioteca.",
   "error.requestFailed": "Error al llamar a {cmd}",
   "error.backendGeneric": "La operación falló. Los detalles se guardaron en el registro local.",
-  "error.trayIconInvalid":
-    "El icono de la bandeja no es válido o supera el límite de 64 KiB; se mantuvo el icono anterior.",
+  "error.cacheClearFailed": "No se pudo borrar la caché en línea. Inténtalo de nuevo. (cache-clear-failed)",
+  "error.safeModeUnavailable": "No se pudo leer el estado del modo seguro; se bloquearon las funciones en línea y del navegador. (safe-mode-unavailable)",
+  "error.blockingTaskFailed": "La operación en segundo plano no terminó. Inténtalo de nuevo. (blocking-task-failed)",
   "error.featureDisabled": "Esta función está desactivada en Ajustes (feature-disabled).",
   "feature.disabled.title": "Función desactivada",
   "feature.disabled.description":
@@ -760,6 +776,8 @@ const es: CommonMessages = {
   "error.backupIntegrity": "Falló la verificación de integridad. Tu biblioteca actual no se modificó.",
   "error.backupTooLarge": "La copia supera el límite de 1 GiB.",
   "error.backupRestoreFailed": "No se pudo restaurar la copia. Tu biblioteca actual no se modificó.",
+  "error.backupRequiresConfirmation":
+    "Algunas fuentes de libros de esta copia no están accesibles. Restaurar eliminará su progreso e historial de lectura; confírmalo e inténtalo de nuevo.",
   "error.onlineUrlInvalid": "Enlace no válido: solo se admiten direcciones http/https sin credenciales.",
   "error.onlineBlockedAddress": "Este enlace apunta a una dirección local, privada o link-local y fue rechazado.",
   "error.onlineTooManyPages": "Hay demasiadas páginas. Divide el origen e inténtalo de nuevo.",
@@ -895,6 +913,7 @@ const ja: CommonMessages = {
   "common.on": "オン",
   "common.off": "オフ",
   "common.enabled": "有効",
+  "common.enableNow": "今すぐ有効にする",
   "common.disabled": "無効",
   "common.all": "すべて",
   "common.page": "ページ",
@@ -980,8 +999,9 @@ const ja: CommonMessages = {
   "error.pageInvalidCursor": "ページカーソルが無効または期限切れです。書庫を再読み込みしてください。",
   "error.requestFailed": "{cmd} の呼び出しに失敗しました",
   "error.backendGeneric": "操作に失敗しました。詳細はローカルログに記録しました。",
-  "error.trayIconInvalid":
-    "トレイアイコンが無効か 64 KiB を超えています。以前のアイコンを維持しました。",
+  "error.cacheClearFailed": "オンラインキャッシュを消去できませんでした。もう一度お試しください。（cache-clear-failed）",
+  "error.safeModeUnavailable": "セーフモードの状態を読み取れないため、オンライン機能とブラウザー機能を停止しました。（safe-mode-unavailable）",
+  "error.blockingTaskFailed": "バックグラウンド処理が完了しませんでした。もう一度お試しください。（blocking-task-failed）",
   "error.featureDisabled": "この機能は設定でオフになっています（feature-disabled）。",
   "feature.disabled.title": "機能はオフです",
   "feature.disabled.description":
@@ -997,6 +1017,8 @@ const ja: CommonMessages = {
   "error.backupIntegrity": "バックアップの整合性チェックに失敗しました。現在の書庫は変更されていません。",
   "error.backupTooLarge": "バックアップが 1 GiB の上限を超えています。",
   "error.backupRestoreFailed": "バックアップの復元に失敗しました。現在の書庫は変更されていません。",
+  "error.backupRequiresConfirmation":
+    "このバックアップには現在アクセスできない書籍ソースがあります。復元するとその進捗と閲覧履歴が削除されます。確認してから再試行してください。",
   "error.onlineUrlInvalid": "リンクが無効です。認証情報を含まない http/https アドレスのみ対応しています。",
   "error.onlineBlockedAddress": "このリンクはローカル・プライベート・リンクローカルアドレスを指すため拒否されました。",
   "error.onlineTooManyPages": "ページ数が上限を超えています。分割してから再試行してください。",
@@ -1126,6 +1148,7 @@ const ko: CommonMessages = {
   "common.on": "켜짐",
   "common.off": "꺼짐",
   "common.enabled": "사용 중",
+  "common.enableNow": "지금 켜기",
   "common.disabled": "사용 안 함",
   "common.all": "전체",
   "common.page": "페이지",
@@ -1211,8 +1234,9 @@ const ko: CommonMessages = {
   "error.pageInvalidCursor": "페이지 커서가 유효하지 않거나 만료되었습니다. 서재를 다시 불러오세요.",
   "error.requestFailed": "{cmd} 호출 실패",
   "error.backendGeneric": "작업에 실패했습니다. 자세한 내용은 로컬 로그에 기록했습니다.",
-  "error.trayIconInvalid":
-    "트레이 아이콘이 유효하지 않거나 64 KiB 제한을 초과하여 이전 아이콘을 유지했습니다.",
+  "error.cacheClearFailed": "온라인 캐시를 지우지 못했습니다. 다시 시도하세요. (cache-clear-failed)",
+  "error.safeModeUnavailable": "안전 모드 상태를 읽을 수 없어 온라인 및 브라우저 기능을 차단했습니다. (safe-mode-unavailable)",
+  "error.blockingTaskFailed": "백그라운드 작업이 완료되지 않았습니다. 다시 시도하세요. (blocking-task-failed)",
   "error.featureDisabled": "이 기능은 설정에서 꺼져 있습니다(feature-disabled).",
   "feature.disabled.title": "기능이 꺼져 있습니다",
   "feature.disabled.description":
@@ -1228,6 +1252,8 @@ const ko: CommonMessages = {
   "error.backupIntegrity": "백업 무결성 검사에 실패했습니다. 현재 서재는 변경되지 않았습니다.",
   "error.backupTooLarge": "백업 파일이 1 GiB 한도를 초과했습니다.",
   "error.backupRestoreFailed": "백업 복원에 실패했습니다. 현재 서재는 변경되지 않았습니다.",
+  "error.backupRequiresConfirmation":
+    "이 백업에는 현재 접근할 수 없는 책 원본이 있습니다. 복원하면 해당 책의 진행 상황과 읽기 기록이 삭제됩니다. 확인 후 다시 시도하세요.",
   "error.onlineUrlInvalid": "잘못된 링크입니다. 계정 정보가 없는 http/https 주소만 지원합니다.",
   "error.onlineBlockedAddress": "이 링크는 로컬, 사설 또는 링크 로컬 주소를 가리켜 거부되었습니다.",
   "error.onlineTooManyPages": "페이지 수가 한도를 초과했습니다. 나눈 뒤 다시 시도하세요.",

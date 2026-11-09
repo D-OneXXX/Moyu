@@ -6,6 +6,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 
@@ -22,6 +23,18 @@ fn safe_book_id(book_id: &str) -> String {
     } else {
         hex::encode(Sha256::digest(book_id.as_bytes()))
     }
+}
+
+/// 同一缓存键并发落盘时，临时文件也必须彼此唯一：否则一个线程的 rename /
+/// 失败清理会删掉另一个线程正在写的文件，误记 cache-write-failed。
+fn unique_temp_path(dir: &Path, stem: &str) -> PathBuf {
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    dir.join(format!(".tmp-{stem}-{}-{nanos}-{seq}", std::process::id()))
 }
 
 impl RenderCache {
@@ -112,7 +125,7 @@ impl RenderCache {
             return;
         }
         let final_path = self.file_path(book_id, index, req_w, req_h);
-        let tmp = dir.join(format!(".tmp-{index:06}@{req_w}x{req_h}"));
+        let tmp = unique_temp_path(&dir, &format!("{index:06}@{req_w}x{req_h}"));
         if std::fs::write(&tmp, bytes).is_ok() {
             if std::fs::rename(&tmp, &final_path).is_err() {
                 let _ = std::fs::remove_file(&tmp);
@@ -132,7 +145,7 @@ impl RenderCache {
             return;
         }
         let final_path = self.cover_file_path(book_id, edge);
-        let tmp = dir.join(format!(".tmp-cover-{edge}x{edge}"));
+        let tmp = unique_temp_path(&dir, &format!("cover-{edge}x{edge}"));
         if std::fs::write(&tmp, bytes).is_ok() {
             if std::fs::rename(&tmp, &final_path).is_err() {
                 let _ = std::fs::remove_file(&tmp);
@@ -174,7 +187,7 @@ impl RenderCache {
             return;
         }
         let final_path = dir.join(format!("{index:06}v2t{tile:02}@{w}.jpg"));
-        let tmp = dir.join(format!(".tmp-{index:06}v2t{tile:02}@{w}"));
+        let tmp = unique_temp_path(&dir, &format!("{index:06}v2t{tile:02}@{w}"));
         if std::fs::write(&tmp, bytes).is_ok() {
             if std::fs::rename(&tmp, &final_path).is_err() {
                 let _ = std::fs::remove_file(&tmp);
@@ -415,5 +428,43 @@ mod tests {
         );
         assert_eq!(cache.clear_thumb_files(), 0, "重复清理应返回零");
         assert!(legacy.exists(), "清理不得误删无法区分的旧页面缓存");
+    }
+
+    #[test]
+    fn concurrent_same_key_writes_keep_temp_files_unique() {
+        use std::sync::{Arc, Barrier};
+
+        let root = TempCacheRoot::new("rc-concurrent");
+        let cache = Arc::new(RenderCache::new(root.0.clone()));
+        let barrier = Arc::new(Barrier::new(8));
+        let mut workers = Vec::new();
+        for worker in 0..8 {
+            let cache = Arc::clone(&cache);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                for round in 0..16 {
+                    let payload = format!("payload-{worker}-{round}");
+                    cache.put("book", 0, 320, 480, payload.as_bytes());
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let final_path = cache.file_path("book", 0, 320, 480);
+        assert!(final_path.exists(), "并发写后至少应留下一个成品");
+        let final_bytes = std::fs::read(&final_path).unwrap();
+        assert!(String::from_utf8_lossy(&final_bytes).starts_with("payload-"));
+
+        // 任一线程的失败清理都不得删除另一线程仍在写的临时文件。
+        let leftovers: Vec<String> = std::fs::read_dir(cache.page_dir("book"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "并发写入残留临时文件：{leftovers:?}");
     }
 }

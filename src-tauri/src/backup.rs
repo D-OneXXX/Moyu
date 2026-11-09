@@ -552,11 +552,10 @@ fn recover_from_backup_blocking(
 
 /// 恢复后回读设置并修复越界值。调用方必须在 blocking pool 中执行。
 fn load_settings_after_restore(state: &AppState) -> Result<crate::Settings, SettingsLoadError> {
-    let result = state
+    state
         .db
         .with(|conn| Ok(load_settings_from_connection(conn)))
-        .map_err(|_| SettingsLoadError::Read)?;
-    result
+        .map_err(|_| SettingsLoadError::Read)?
 }
 
 #[derive(Debug)]
@@ -1683,10 +1682,7 @@ mod tests {
         fs::write(&staging, b"restored database").expect("创建恢复暂存库");
 
         let result = quarantine_and_replace(&db_path, &staging, "1-4-0", |_, _| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "injected replacement failure",
-            ))
+            Err(std::io::Error::other("injected replacement failure"))
         });
 
         assert!(result.is_err());

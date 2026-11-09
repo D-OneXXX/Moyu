@@ -33,6 +33,8 @@ const demoArt = {
 };
 const id = "a".repeat(64);
 let paired = false;
+let sessionRequests = 0;
+let localClaimRequests = 0;
 let writes = 0;
 let lastWrite = null;
 let progressState = { page: 0, pageCount: 3, scrollPct: -1, rev: 4 };
@@ -190,7 +192,12 @@ const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const claim = JSON.parse(raw);
-    assert.match(claim.pairingId, /^pair_[a-f0-9]{32}$|^local$/);
+    if (claim.pairingId === "local") {
+      localClaimRequests += 1;
+      json(403, { error: { code: "pairing-unavailable" } });
+      return;
+    }
+    assert.match(claim.pairingId, /^pair_[a-f0-9]{32}$/);
     assert.match(claim.claimNonce, /^[a-zA-Z0-9_-]{22}$/);
     assert.equal(req.headers["x-moyu-request"], "1");
     json(202, { claimId: "claim_123" });
@@ -227,6 +234,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname === "/api/session") {
+    sessionRequests += 1;
     if (paired) json(200, { deviceName: "test" });
     else json(401, { error: { code: "unauthorized" } });
     return;
@@ -349,7 +357,7 @@ try {
       "--no-default-browser-check",
       "--remote-debugging-port=0",
       `--user-data-dir=${profile}`,
-      `http://127.0.0.1:${port}/#pair_${"b".repeat(32)}`,
+      `http://127.0.0.1:${port}/`,
     ],
     { windowsHide: true, stdio: "ignore" },
   );
@@ -392,6 +400,18 @@ try {
       await fs.writeFile(path.join(shotDir, name), Buffer.from(capture.data, "base64"));
     }
   };
+
+  /* An unauthenticated HTTP start requests local pairing and displays failure. */
+  await wait("document.querySelector('.pair-card .notice-error') !== null");
+  assert.equal(sessionRequests, 1, "boot checks the session");
+  assert.equal(localClaimRequests, 1, "401 requests local pairing");
+  assert.equal(await page.eval("document.querySelectorAll('.card').length"), 0);
+  assert.ok(await page.eval("document.querySelector('.pair-card button') !== null"));
+  // A hash-only navigation would not reboot the app (boot clears and consumes
+  // the fragment once); add a query so this is a fresh document navigation.
+  await page.send("Page.navigate", {
+    url: `http://127.0.0.1:${port}/?pair=1#pair_${"b".repeat(32)}`,
+  });
 
   /* ---------------------------------------------------------------- pairing */
   await wait("document.querySelector('#pair-name') && document.querySelector('#pair-submit')");
@@ -796,7 +816,26 @@ try {
     await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5e3))]);
   }
   await new Promise((resolve) => server.close(resolve));
-  await fs.rm(profile, { recursive: true, force: true });
+  // Chrome can release profile handles a moment after the parent exits. Retry
+  // briefly and never let cleanup mask the test's original result.
+  let profileRemoved = false;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      await fs.rm(profile, { recursive: true, force: true });
+      profileRemoved = true;
+      break;
+    } catch (error) {
+      if (attempt === 5) {
+        console.warn(
+          `Cleanup warning: temporary profile not removed (${profile}): ${error.code || error.message}`,
+        );
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
   console.log(`L2 resources: mock HTTP 127.0.0.1:${port ?? "not-started"}; owned headless Chrome PID ${child?.pid ?? "not-started"}; CDP ${cdpPort ?? "not-started"}.`);
-  console.log("Cleanup: owned Chrome stopped, mock server closed, temporary browser profile removed.");
+  console.log(
+    `Cleanup: owned Chrome stopped, mock server closed, temporary browser profile ${profileRemoved ? "removed" : "cleanup deferred"}.`,
+  );
 }

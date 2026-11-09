@@ -10,6 +10,8 @@ import { cpSync, existsSync, readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+// @ts-expect-error JS module without type declarations
+import { assertReleaseSurface } from "./scripts/release-surface.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -95,6 +97,64 @@ function projectVersion(): string {
   return manifest.version;
 }
 
+function readUtf8(rel: string): string {
+  return readFileSync(new URL(rel, import.meta.url), "utf8");
+}
+
+/**
+ * 公开快照不再携带独立的版本检查脚本，但版本单一事实源仍必须成立。
+ * 在 Vite 配置加载时校验 package.json、Tauri 配置、Cargo 与 lockfile 一致，
+ * 任何不一致直接阻断 dev/build。
+ */
+function assertVersionConsistency(): void {
+  const expected = projectVersion();
+  const errors: string[] = [];
+
+  const tauri = JSON.parse(readUtf8("./src-tauri/tauri.conf.json")) as {
+    version?: unknown;
+  };
+  if (tauri.version !== expected) {
+    errors.push(`src-tauri/tauri.conf.json: ${String(tauri.version)}`);
+  }
+
+  const cargoToml = readUtf8("./src-tauri/Cargo.toml");
+  const packageSection =
+    cargoToml.split(/^\s*\[/m).find((section) => section.startsWith("package]")) ?? "";
+  const cargoVersion = packageSection.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1];
+  if (cargoVersion !== expected) {
+    errors.push(`src-tauri/Cargo.toml: ${cargoVersion ?? "<missing>"}`);
+  }
+
+  const cargoLock = readUtf8("./src-tauri/Cargo.lock");
+  const lockBlock =
+    cargoLock
+      .split("[[package]]")
+      .find((block) => /name\s*=\s*"manga-reader-tauri"/.test(block)) ?? "";
+  const cargoLockVersion = lockBlock.match(/version\s*=\s*"([^"]+)"/)?.[1];
+  if (cargoLockVersion !== expected) {
+    errors.push(`src-tauri/Cargo.lock: ${cargoLockVersion ?? "<missing>"}`);
+  }
+
+  const packageLock = JSON.parse(readUtf8("./package-lock.json")) as {
+    version?: unknown;
+    packages?: Record<string, { version?: unknown }>;
+  };
+  if (packageLock.version !== expected) {
+    errors.push(`package-lock.json: ${String(packageLock.version)}`);
+  }
+  if (packageLock.packages?.[""]?.version !== expected) {
+    errors.push(
+      `package-lock.json packages[""]: ${String(packageLock.packages?.[""]?.version)}`,
+    );
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `Version mismatch with package.json ${expected}: ${errors.join(", ")}`,
+    );
+  }
+}
+
 function buildCommit(): string {
   try {
     const commit = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
@@ -115,6 +175,9 @@ function buildCommit(): string {
   }
 }
 
+assertVersionConsistency();
+// static:release-surface：升级身份锚点与品牌展示名一旦漂移，dev/build 直接失败。
+await assertReleaseSurface();
 const appVersion = projectVersion();
 const gitCommit = buildCommit();
 

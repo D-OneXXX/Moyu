@@ -612,7 +612,7 @@ where
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|e| format!("后台任务失败：{e}"))?
+        .map_err(|_| "后台任务失败（blocking-task-failed）".to_string())?
         .map_err(err)
 }
 
@@ -830,6 +830,7 @@ pub async fn remove_books(
     delete_source_files: bool,
 ) -> Result<RemoveResult, String> {
     let db_path = state.db_path();
+    let cache_state = state.inner().clone();
     let ids_for_db = ids.clone();
     let (removed, deleted_files, errors) = blocking(move || {
         let ids = ids_for_db;
@@ -837,7 +838,7 @@ pub async fn remove_books(
         db::init_schema(&conn)?;
         let mut errors: Vec<String> = Vec::new();
         let mut deleted_files = 0usize;
-        if delete_source_files {
+        let result = if delete_source_files {
             let mut hard: Vec<String> = Vec::new();
             for id in &ids {
                 let Some(b) = db::get_book(&conn, id)? else {
@@ -864,18 +865,18 @@ pub async fn remove_books(
         } else {
             let n = db::soft_remove_books(&conn, &ids)?;
             Ok::<_, BackendError>((n, 0usize, errors))
+        };
+        let (removed, deleted_files, errors) = result?;
+        // Cache deletion touches the filesystem, so keep it on the same
+        // blocking worker as the book removal transaction.
+        for id in &ids {
+            cache_state.remove_book_caches(id);
+            cache_state.webtoon_layouts.lock().remove(id);
         }
+        cache_state.invalidate_sources();
+        Ok((removed, deleted_files, errors))
     })
     .await?;
-    // 内存缓存 + 磁盘渲染缓存 + 条漫布局缓存 + 常开源句柄级联清理。
-    // 注意：在途预取/后台渲染无法撤回，旧页可能在此之后又写回 L1/L2；
-    // 本次不引入 generation key，接受该残留竞态（重新进入阅读会按新源重建）。
-    for id in &ids {
-        state.remove_book_caches(id);
-        state.webtoon_layouts.lock().remove(id);
-    }
-    // 句柄池按代际整体失效：避免删除与在途打开竞态时旧句柄重新插回。
-    state.invalidate_sources();
     Ok(RemoveResult {
         removed,
         deleted_files,
@@ -1152,20 +1153,22 @@ pub async fn relocate_book(
     new_path: String,
 ) -> Result<BookInfo, String> {
     let db_path = state.db_path();
+    let cache_state = state.inner().clone();
     let old_id = book_id.clone();
-    let row = blocking(move || {
+    blocking(move || {
         let conn = db::open(db_path)?;
         db::init_schema(&conn)?;
-        relocate_book_impl(&conn, &old_id, &new_path)
+        let row = relocate_book_impl(&conn, &old_id, &new_path)?;
+        // Cache deletion and missing-source metadata checks both touch the
+        // filesystem; complete them before leaving the blocking pool.
+        cache_state.remove_book_caches(&old_id);
+        cache_state.remove_book_caches(&row.id);
+        cache_state.webtoon_layouts.lock().remove(&old_id);
+        cache_state.webtoon_layouts.lock().remove(&row.id);
+        cache_state.invalidate_sources();
+        Ok(to_book_info(row))
     })
-    .await?;
-
-    state.remove_book_caches(&book_id);
-    state.remove_book_caches(&row.id);
-    state.webtoon_layouts.lock().remove(&book_id);
-    state.webtoon_layouts.lock().remove(&row.id);
-    state.invalidate_sources();
-    Ok(to_book_info(row))
+    .await
 }
 
 #[tauri::command]
@@ -1482,6 +1485,7 @@ pub(crate) fn prefetch_is_current(captured: u64, current: u64) -> bool {
 /// 服务端邻页预取：主请求落地后，后台把邻页灌进 L1/L2，
 /// 翻页不依赖前端 idle 回调时机（P0 手感：命中翻页零等待）。
 /// 本地读盘廉价，预取 ±1/±2；在线走网络，只预取 +1/+2（不向前回读）。
+#[allow(clippy::too_many_arguments)] // 参数都是预取上下文的独立事实，拆结构只会增加调用点噪音。
 fn prefetch_neighbors(
     state: &State<'_, Arc<AppState>>,
     book_id: &str,
@@ -1889,8 +1893,11 @@ fn blocking_memory(
 /// 更新下载前预检：系统临时目录所在卷的可用字节数。
 /// 失败返回 None，由前端决定是否放行（不把探测失败伪装成磁盘耗尽）。
 #[tauri::command]
-pub fn get_temp_free_bytes() -> Option<u64> {
-    crate::platform::free_bytes(&std::env::temp_dir())
+pub async fn get_temp_free_bytes() -> Option<u64> {
+    tokio::task::spawn_blocking(|| crate::platform::free_bytes(&std::env::temp_dir()))
+        .await
+        .ok()
+        .flatten()
 }
 
 #[tauri::command]
@@ -2524,9 +2531,9 @@ pub async fn resolve_online_url(
     state: State<'_, Arc<AppState>>,
     url: String,
 ) -> Result<BookInfo, String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
-    let (row, changed) = blocking(move || {
+    blocking(move || {
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
@@ -2546,18 +2553,12 @@ pub async fn resolve_online_url(
         if let Err(e) = persist_filter_learning(&st, &meta, &row.id) {
             crate::logging::log_error("online_filter", &format!("站点学习落库失败：{e}"));
         }
-        Ok((row, changed))
+        if changed {
+            invalidate_book_caches(&st, &row.id);
+        }
+        Ok(to_book_info(row))
     })
-    .await?;
-
-    if changed {
-        state.remove_book_caches(&row.id);
-        state.webtoon_layouts.lock().remove(&row.id);
-        state.invalidate_sources();
-        // 在途预取/后台渲染无法撤回，旧页可能在此之后又写回 L1/L2；
-        // 本次不引入 generation key，接受该残留竞态（重新阅读会按新清单重建）。
-    }
-    Ok(to_book_info(row))
+    .await
 }
 
 /// 接收前端已解析的页面 URL 列表并直接入库（不采集会话凭据）。
@@ -2568,7 +2569,7 @@ pub async fn import_resolved_pages(
     title: String,
     page_urls: Vec<String>,
 ) -> Result<BookInfo, String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     crate::features::ensure_enabled(
         &state.settings.lock().features,
         crate::features::FeatureId::Online,
@@ -2582,7 +2583,7 @@ pub async fn resolve_online_batch(
     state: State<'_, Arc<AppState>>,
     payload_json: String,
 ) -> Result<Vec<BookInfo>, String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     crate::features::ensure_enabled(
         &state.settings.lock().features,
         crate::features::FeatureId::Online,
@@ -2623,7 +2624,7 @@ pub async fn test_online_connection(
     state: State<'_, Arc<AppState>>,
     url: String,
 ) -> Result<OnlineProbe, String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
@@ -2989,7 +2990,7 @@ pub async fn mark_online_page_non_content(
     let st = state.inner().clone();
     let st_work = st.clone();
     let book_id_for_cache = book_id.clone();
-    let row = blocking(move || {
+    blocking(move || {
         let st = st_work;
         let (row, stored) = st
             .db
@@ -3135,11 +3136,10 @@ pub async fn mark_online_page_non_content(
                     .ok_or_else(|| err("标记后回读书籍失败"))
             })
             .map_err(BackendError::Msg)?;
-        Ok(row)
+        invalidate_book_caches(&st, &book_id_for_cache);
+        Ok(to_book_info(row))
     })
-    .await?;
-    invalidate_book_caches(&st, &book_id_for_cache);
-    Ok(to_book_info(row))
+    .await
 }
 
 #[tauri::command]
@@ -3151,7 +3151,7 @@ pub async fn restore_online_filtered_page(
     let st = state.inner().clone();
     let st_work = st.clone();
     let book_id_for_cache = book_id.clone();
-    let row = blocking(move || {
+    blocking(move || {
         let st = st_work;
         let (row, stored) = st
             .db
@@ -3303,11 +3303,10 @@ pub async fn restore_online_filtered_page(
                     .ok_or_else(|| err("恢复后回读书籍失败"))
             })
             .map_err(BackendError::Msg)?;
-        Ok(row)
+        invalidate_book_caches(&st, &book_id_for_cache);
+        Ok(to_book_info(row))
     })
-    .await?;
-    invalidate_book_caches(&st, &book_id_for_cache);
-    Ok(to_book_info(row))
+    .await
 }
 
 #[tauri::command]
@@ -3404,7 +3403,7 @@ pub async fn resolve_telegram_channel(
     url: String,
     before: Option<i64>,
 ) -> Result<crate::online::telegram::TelegramChannel, String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
@@ -3462,11 +3461,9 @@ pub async fn download_telegram_document(
     url: String,
     filename: String,
 ) -> Result<BookInfo, String> {
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
-    let st_work = st.clone();
-    let row = blocking(move || {
-        let st = st_work;
+    blocking(move || {
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
@@ -3517,17 +3514,17 @@ pub async fn download_telegram_document(
             db::init_schema(&conn)?;
             scan_single_book(&conn, &path)
         };
-        match imported {
+        let book = match imported {
             Ok(book) => Ok(book),
             Err(e) => {
                 let _ = std::fs::remove_file(&path);
                 Err(e)
             }
-        }
+        }?;
+        invalidate_book_caches(&st, &book.id);
+        Ok(book)
     })
-    .await?;
-    invalidate_book_caches(&st, &row.id);
-    Ok(row)
+    .await
 }
 
 fn set_readonly_flag(path: &Path, readonly: bool) -> Result<(), std::io::Error> {
@@ -3932,7 +3929,7 @@ pub async fn opds_set_config(
 #[tauri::command]
 pub async fn opds_test_connection(state: State<'_, Arc<AppState>>) -> Result<OnlineProbe, String> {
     ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
     blocking(move || {
         let runtime = opds_runtime(&st)?;
@@ -3960,7 +3957,7 @@ pub async fn opds_browse(
     url: Option<String>,
 ) -> Result<crate::opds::OpdsFeedView, String> {
     ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
     blocking(move || {
         let runtime = opds_runtime(&st)?;
@@ -3982,7 +3979,7 @@ pub async fn opds_browse(
 #[tauri::command]
 pub async fn opds_cover(state: State<'_, Arc<AppState>>, url: String) -> Result<PageImage, String> {
     ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
-    crate::resilience::ensure_online_allowed()?;
+    crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
     blocking(move || {
         let runtime = opds_runtime(&st)?;
@@ -4024,10 +4021,9 @@ pub async fn opds_download_entry(
     title: String,
 ) -> Result<BookInfo, String> {
     ensure_feature(state.inner(), crate::features::FeatureId::Opds)?;
-    crate::resilience::ensure_online_allowed()?;
-    let st = state.inner().clone();
-    let st_work = st.clone();
-    let row = blocking(move || {
+    crate::resilience::ensure_online_allowed().await?;
+    let st_work = state.inner().clone();
+    blocking(move || {
         let runtime = opds_runtime(&st_work)?;
         let client = crate::opds::client_for(&runtime)?;
         let target = opds_target(&runtime, &url)?;
@@ -4038,11 +4034,11 @@ pub async fn opds_download_entry(
         let path = crate::opds::download_archive(&client, &target, &root, &title)?;
         let conn = db::open(st_work.db_path())?;
         db::init_schema(&conn)?;
-        scan_single_book_with_title(&conn, &path, Some(&title))
+        let book = scan_single_book_with_title(&conn, &path, Some(&title))?;
+        invalidate_book_caches(&st_work, &book.id);
+        Ok(book)
     })
-    .await?;
-    invalidate_book_caches(&st, &row.id);
-    Ok(row)
+    .await
 }
 
 #[cfg(test)]
@@ -4231,10 +4227,14 @@ mod tests {
     #[tokio::test]
     async fn settings_writes_are_serialized_and_failures_keep_memory_unchanged() {
         let state = online_state();
-        let mut first = Settings::default();
-        first.cache_budget_mb = 96;
-        let mut second = Settings::default();
-        second.cache_budget_mb = 192;
+        let first = Settings {
+            cache_budget_mb: 96,
+            ..Default::default()
+        };
+        let second = Settings {
+            cache_budget_mb: 192,
+            ..Default::default()
+        };
 
         let first_task = {
             let state = state.clone();
@@ -4269,8 +4269,10 @@ mod tests {
         let settings_before_failure = current;
         let cache_budget_before_failure = state.cache.stats().1;
         state.db.clear();
-        let mut failed = Settings::default();
-        failed.cache_budget_mb = 384;
+        let failed = Settings {
+            cache_budget_mb: 384,
+            ..Default::default()
+        };
         assert!(update_settings(state.clone(), failed).await.is_err());
         assert_eq!(
             state.settings.lock().cache_budget_mb,
@@ -4287,9 +4289,11 @@ mod tests {
     #[tokio::test]
     async fn multi_key_settings_failure_rolls_back_database_and_keeps_memory_unchanged() {
         let state = online_state();
-        let mut previous = Settings::default();
-        previous.theme = "dark".into();
-        previous.cache_budget_mb = 64;
+        let previous = Settings {
+            theme: "dark".into(),
+            cache_budget_mb: 64,
+            ..Default::default()
+        };
         *state.settings.lock() = previous.clone();
         state
             .db

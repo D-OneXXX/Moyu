@@ -162,7 +162,7 @@ pub fn handle_launch(app: &AppHandle, argv: Vec<String>) {
     };
     let db_path = state.db_path();
     let app_handle = app.clone();
-    std::thread::spawn(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let request = import_into_request(db_path, paths);
         state.push_open_request(request);
         if let Err(error) = app_handle.emit("open-with-pending", ()) {

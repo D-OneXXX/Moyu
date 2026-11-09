@@ -14,6 +14,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use super::addrs::is_private_lan_ipv4;
 use super::error::{WebAccessError, WebAccessResult};
 use super::http::{HEADER_READ_TIMEOUT, HTTP_CONNECTION_TIMEOUT};
+use super::session_auth::SESSION_COOKIE;
 use super::tls::{ConnectionLimiter, HandlerFactory, MAX_ACTIVE_CONNECTIONS};
 
 pub(crate) struct PlainServerHandle {
@@ -68,8 +69,8 @@ fn inbound_cookies(headers: &mut hyper::HeaderMap) {
                     return Some(trimmed.to_owned());
                 };
                 match name.trim() {
-                    "moyus_session" | "moyu_claim" => None,
-                    "moyul_session" => Some(format!("moyus_session={rest}")),
+                    SESSION_COOKIE | "moyu_claim" => None,
+                    "moyul_session" => Some(format!("{SESSION_COOKIE}={rest}")),
                     "moyul_claim" => Some(format!("moyu_claim={rest}")),
                     _ => Some(trimmed.to_owned()),
                 }
@@ -94,7 +95,10 @@ fn outbound_cookies(headers: &mut hyper::HeaderMap) {
             headers.append(SET_COOKIE, value);
             continue;
         };
-        let replacement = if let Some(rest) = text.strip_prefix("moyus_session=") {
+        let replacement = if let Some(rest) = text
+            .strip_prefix(SESSION_COOKIE)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
             format!("moyul_session={rest}")
         } else if let Some(rest) = text.strip_prefix("moyu_claim=") {
             format!("moyul_claim={rest}")

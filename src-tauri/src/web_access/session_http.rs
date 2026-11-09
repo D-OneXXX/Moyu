@@ -12,7 +12,7 @@ use serde_json::json;
 use super::auth::PairingService;
 use super::data::error_response;
 use super::secret::random_hex;
-use super::session_auth::authenticate_request;
+use super::session_auth::{authenticate_request, clear_session_cookie_header};
 
 type SessionResponse = Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>;
 
@@ -62,10 +62,7 @@ pub(crate) fn handle<B>(
             return Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .header(CACHE_CONTROL, "no-store")
-                .header(
-                    SET_COOKIE,
-                    "moyus_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-                )
+                .header(SET_COOKIE, clear_session_cookie_header())
                 .body(Full::new(Bytes::new()))
                 .expect("static response");
         }

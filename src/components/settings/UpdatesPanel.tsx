@@ -291,7 +291,7 @@ export default function UpdatesPanel() {
         }
       >
         {isLinux ? (
-          <div className="flex items-start gap-2 rounded-2xl border border-border bg-background/60 p-3">
+          <div className="flex items-start gap-2 rounded-lg border border-border/60 bg-card/40 p-3">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
             <p className="text-xs leading-relaxed text-muted-foreground">
               {t("updates.native.linuxCriticalChannel")}
@@ -332,7 +332,7 @@ export default function UpdatesPanel() {
             <p className="text-xs font-semibold text-foreground">
               {t("updates.native.notes")}
             </p>
-            <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-2xl border border-border bg-background/60 p-4 text-sm leading-relaxed text-muted-foreground">
+            <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-card/40 p-4 text-sm leading-relaxed text-muted-foreground">
               {nativeNotes}
             </div>
           </div>
@@ -340,7 +340,7 @@ export default function UpdatesPanel() {
 
         {nativePhase === "available" ? (
           linuxManualInstall ? (
-            <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
+            <div className="rounded-lg border border-warning/40 bg-warning/10 p-3">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
                 <div className="min-w-0">

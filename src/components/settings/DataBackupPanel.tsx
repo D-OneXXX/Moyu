@@ -267,7 +267,7 @@ export default function DataBackupPanel({ onRestored }: DataBackupPanelProps) {
       </SettingsSection>
 
       {lastSkipped.length > 0 ? (
-        <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4 shadow-hard-sm">
+        <div className="rounded-lg border border-warning/40 bg-warning/10 p-3">
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
             <div className="min-w-0">

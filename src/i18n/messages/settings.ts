@@ -164,7 +164,7 @@ const zhCN = {
   "settings.cache.diskLabel": "磁盘缓存上限",
   "settings.cache.diskAria": "磁盘缓存上限（MB）",
   "settings.cache.diskHint":
-    "保存后立即套用；降低上限后，超出部分会在后续访问时清理。",
+    "保存后立即套用；上限只约束渲染成品，在线原图会保留到删除书籍或手动清空。",
   "settings.cache.diskUsage": "磁盘占用",
   "settings.cache.diskRender": "渲染缓存",
   "settings.cache.diskOnline": "在线原图",
@@ -577,7 +577,7 @@ const zhTW: SettingsMessages = {
   "settings.cache.diskLabel": "磁碟快取上限",
   "settings.cache.diskAria": "磁碟快取上限（MB）",
   "settings.cache.diskHint":
-    "儲存後立即套用；調低上限後，超出部分會在後續存取時清理。",
+    "儲存後立即套用；上限只約束渲染成品，線上原圖會保留到刪除書籍或手動清空。",
   "settings.cache.diskUsage": "磁碟占用",
   "settings.cache.diskRender": "渲染快取",
   "settings.cache.diskOnline": "線上原圖",
@@ -990,7 +990,7 @@ const en: SettingsMessages = {
   "settings.cache.diskLabel": "Disk cache limit",
   "settings.cache.diskAria": "Disk cache limit (MB)",
   "settings.cache.diskHint":
-    "Applied immediately after saving; lowering the limit cleans up excess files on later access.",
+    "Applied immediately after saving; the limit only covers rendered pages, while online originals stay until you delete the book or clear the cache.",
   "settings.cache.diskUsage": "Disk usage",
   "settings.cache.diskRender": "Render cache",
   "settings.cache.diskOnline": "Online originals",
@@ -1418,7 +1418,7 @@ const es: SettingsMessages = {
   "settings.cache.diskLabel": "Límite de caché en disco",
   "settings.cache.diskAria": "Límite de caché en disco (MB)",
   "settings.cache.diskHint":
-    "Se aplica al guardar; al bajar el límite, el exceso se limpia en accesos posteriores.",
+    "Se aplica al guardar; el límite solo afecta a las páginas renderizadas, mientras que los originales en línea se conservan hasta borrar el libro o vaciar la caché.",
   "settings.cache.diskUsage": "Uso en disco",
   "settings.cache.diskRender": "Caché de renderizado",
   "settings.cache.diskOnline": "Originales en línea",
@@ -1858,7 +1858,7 @@ const ja: SettingsMessages = {
   "settings.cache.diskLabel": "ディスクキャッシュ上限",
   "settings.cache.diskAria": "ディスクキャッシュ上限（MB）",
   "settings.cache.diskHint":
-    "保存後すぐに適用されます。上限を下げた場合、超過分は以降のアクセス時に整理されます。",
+    "保存後すぐに適用されます。上限はレンダリング画像のみ対象で、オンライン原画は書籍削除またはキャッシュ消去まで保持されます。",
   "settings.cache.diskUsage": "ディスク使用量",
   "settings.cache.diskRender": "レンダリングキャッシュ",
   "settings.cache.diskOnline": "オンライン原画",
@@ -2296,7 +2296,7 @@ const ko: SettingsMessages = {
   "settings.cache.diskLabel": "디스크 캐시 상한",
   "settings.cache.diskAria": "디스크 캐시 상한(MB)",
   "settings.cache.diskHint":
-    "저장 후 즉시 적용됩니다. 상한을 낮추면 초과분은 이후 접근 시 정리됩니다.",
+    "저장 후 즉시 적용됩니다. 상한은 렌더링 이미지에만 적용되며 온라인 원본은 책 삭제 또는 캐시 비우기까지 보관됩니다.",
   "settings.cache.diskUsage": "디스크 사용량",
   "settings.cache.diskRender": "렌더링 캐시",
   "settings.cache.diskOnline": "온라인 원본",

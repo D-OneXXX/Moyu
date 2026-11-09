@@ -344,7 +344,6 @@ const zhCN = {
   "settings.webAccess.httpsRequiresCa":
     "手机必须先信任本机根 CA，否则 HTTPS 地址只会显示证书错误或空白；不需要加密时请用默认「启动服务」。",
   "settings.webAccess.plainPairHint": "手机扫码或输入网址后，在此批准设备。无需安装证书。",
-  "settings.webAccess.networkHint": "手机与电脑需在同一局域网；若首次启动弹出防火墙提示，请允许「专用网络」。",
   "settings.webAccess.starting": "正在启动",
   "settings.webAccess.stop": "停止服务",
   "settings.webAccess.stopping": "正在停止",
@@ -760,7 +759,6 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.httpsRequiresCa":
     "手機必須先信任本機根 CA，否則 HTTPS 位址只會顯示憑證錯誤或空白；不需要加密時請用預設「啟動服務」。",
   "settings.webAccess.plainPairHint": "手機掃碼或輸入網址後，在此核准裝置。無需安裝憑證。",
-  "settings.webAccess.networkHint": "手機與電腦需在同一區域網路；首次啟動若出現防火牆提示，請允許「私人網路」。",
   "settings.webAccess.starting": "正在啟動",
   "settings.webAccess.stop": "停止服務",
   "settings.webAccess.stopping": "正在停止",
@@ -1182,7 +1180,6 @@ const en: SettingsMessages = {
   "settings.webAccess.httpsRequiresCa":
     "The phone must trust this machine's root CA first; otherwise the HTTPS address only shows a certificate error or a blank page. Use the default Start service when encryption is not required.",
   "settings.webAccess.plainPairHint": "Scan the code or enter the address, then approve the device here. No certificate is needed.",
-  "settings.webAccess.networkHint": "The phone and computer must be on the same LAN. If a firewall prompt appears on first start, allow Private networks.",
   "settings.webAccess.starting": "Starting",
   "settings.webAccess.stop": "Stop service",
   "settings.webAccess.stopping": "Stopping",
@@ -1623,7 +1620,6 @@ const es: SettingsMessages = {
   "settings.webAccess.httpsRequiresCa":
     "El teléfono debe confiar primero en la CA raíz de este equipo; de lo contrario, la dirección HTTPS solo muestra un error de certificado o una página en blanco. Usa el inicio predeterminado si no necesitas cifrado.",
   "settings.webAccess.plainPairHint": "Escanea el código o introduce la dirección y aprueba el dispositivo aquí. No se necesita certificado.",
-  "settings.webAccess.networkHint": "El teléfono y el ordenador deben estar en la misma LAN. Si aparece un aviso de firewall al iniciar, permite Redes privadas.",
   "settings.webAccess.starting": "Iniciando",
   "settings.webAccess.stop": "Detener servicio",
   "settings.webAccess.stopping": "Deteniendo",
@@ -2067,7 +2063,6 @@ const ja: SettingsMessages = {
   "settings.webAccess.httpsRequiresCa":
     "スマートフォンがこの PC のルート CA を信頼していない場合、HTTPS アドレスは証明書エラーまたは空白ページになります。暗号化が不要なら既定の「サービスを開始」を使用してください。",
   "settings.webAccess.plainPairHint": "コードを読み取るかアドレスを入力し、ここで端末を承認します。証明書は不要です。",
-  "settings.webAccess.networkHint": "スマートフォンと PC は同じ LAN に接続してください。初回起動でファイアウォールの確認が出たら「プライベートネットワーク」を許可してください。",
   "settings.webAccess.starting": "起動中",
   "settings.webAccess.stop": "サービスを停止",
   "settings.webAccess.stopping": "停止中",
@@ -2503,7 +2498,6 @@ const ko: SettingsMessages = {
   "settings.webAccess.httpsRequiresCa":
     "휴대폰이 이 PC의 루트 CA를 먼저 신뢰해야 합니다. 그렇지 않으면 HTTPS 주소는 인증서 오류나 빈 페이지만 표시합니다. 암호화가 필요 없다면 기본 '서비스 시작'을 사용하세요.",
   "settings.webAccess.plainPairHint": "코드를 스캔하거나 주소를 입력한 뒤 여기서 기기를 승인하세요. 인증서는 필요하지 않습니다.",
-  "settings.webAccess.networkHint": "휴대폰과 컴퓨터가 같은 LAN에 있어야 합니다. 처음 시작할 때 방화벽 알림이 뜨면 '개인 네트워크'를 허용하세요.",
   "settings.webAccess.starting": "시작 중",
   "settings.webAccess.stop": "서비스 중지",
   "settings.webAccess.stopping": "중지 중",

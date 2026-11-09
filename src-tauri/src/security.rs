@@ -193,7 +193,7 @@ pub async fn clear_online_traces(
     state: tauri::State<'_, std::sync::Arc<crate::AppState>>,
 ) -> Result<ClearTracesResult, String> {
     let cache_state = state.inner().clone();
-    *state.session_online_headers.lock() = None;
+    crate::state::clear_session_online_headers(state.inner());
     // 辅助会话（受控 WebView 验证后的 UA/用户自备请求头）同样只驻留内存，
     // 清理在线痕迹时必须一起作废。
     state.clear_assisted_sessions();

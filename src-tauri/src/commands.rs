@@ -2376,6 +2376,7 @@ pub async fn set_feature_enabled(
         match feature {
             crate::features::FeatureId::Online => {
                 crate::online::handoff::stop_handoff(&shutdown_app, &shutdown_state);
+                crate::state::clear_session_online_headers(&shutdown_state);
                 shutdown_state.invalidate_sources();
             }
             crate::features::FeatureId::Browser => {
@@ -2537,9 +2538,7 @@ pub async fn resolve_online_url(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -2591,9 +2590,9 @@ pub async fn resolve_online_batch(
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        // 批量 payload 可能跨多个 origin，会话头无法安全绑定到单一站点；
+        // 这里只用用户显式持久化的全局请求头，绝不附带内存会话凭据。
+        let headers = s.online_headers.clone();
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -2630,9 +2629,7 @@ pub async fn test_online_connection(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -3317,6 +3314,7 @@ pub async fn get_filtered_preview(
 ) -> Result<PageImage, String> {
     let st = state.inner().clone();
     blocking(move || {
+        ensure_feature(&st, crate::features::FeatureId::Online).map_err(BackendError::Msg)?;
         let row = st
             .db
             .with(|conn| db::get_book(conn, &book_id).map_err(err))
@@ -3329,9 +3327,7 @@ pub async fn get_filtered_preview(
             .cloned()
             .ok_or_else(|| BackendError::Msg("过滤记录不存在".into()))?;
         let s = st.settings.lock().clone();
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &row.path);
         let transport = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -3409,9 +3405,7 @@ pub async fn resolve_telegram_channel(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -3478,9 +3472,8 @@ pub async fn download_telegram_document(
         {
             return Err(BackendError::Msg("仅支持公开的 .zip/.cbz 漫画附件".into()));
         }
-        let session_headers = st.session_online_headers.lock().clone();
         let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+            crate::state::effective_online_headers_for(&st, &s.online_headers, canonical.as_str());
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -3804,7 +3797,14 @@ pub(crate) fn apply_session_online_headers(
         }
         None => None,
     };
-    *state.session_online_headers.lock() = headers;
+    match headers {
+        Some(raw) => {
+            *state.session_online_headers.lock() = Some(raw);
+            // 重新填写后解除旧 origin 绑定，下一次请求重新绑定。
+            *state.session_online_headers_origin.lock() = None;
+        }
+        None => crate::state::clear_session_online_headers(state),
+    }
     state.invalidate_sources();
     Ok(())
 }
@@ -5399,6 +5399,10 @@ mod tests {
             st.session_online_headers.lock().as_deref(),
             Some("Cookie: sid=abc")
         );
+        assert!(
+            st.session_online_headers_origin.lock().is_none(),
+            "重新填写后应处于未绑定状态"
+        );
         assert_eq!(settings_count(&st), before, "会话头不得写入 settings");
 
         assert!(apply_session_online_headers(&st, Some("Host: example.com".into())).is_err());
@@ -5410,6 +5414,7 @@ mod tests {
 
         apply_session_online_headers(&st, None).unwrap();
         assert!(st.session_online_headers.lock().is_none());
+        assert!(st.session_online_headers_origin.lock().is_none());
         assert_eq!(settings_count(&st), before);
     }
 

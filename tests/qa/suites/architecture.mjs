@@ -1088,6 +1088,8 @@ const SETTINGS_TABS_PROBE = `(() => {
       hasLanguage: !!panel.querySelector("#ui-language"),
       hasLibraryDir: !!panel.querySelector("#library-dir"),
       hasTheme: !!panel.querySelector("[aria-pressed]"),
+      hasThemeCards: panel.querySelectorAll('[data-testid^="theme-card-"]').length,
+      hasSettingsCard: !!panel.querySelector('[data-settings-section-card="true"]'),
       hasOnlineProxy: !!panel.querySelector("#online-proxy"),
       hasOnlineHeaders: !!panel.querySelector("#online-headers"),
       // #320 起预算滑杆直接在一级 storage 分区；旧 disk-cache-usage 摘要已移除。
@@ -1136,9 +1138,13 @@ function settingsMarker(id, panel) {
   if (!panel) return false;
   switch (id) {
     case "general":
-      return panel.hasLanguage || panel.hasLibraryDir || panel.hasTheme;
+      return (
+        panel.hasThemeCards === 3 &&
+        panel.hasSettingsCard &&
+        (panel.hasLanguage || panel.hasLibraryDir || panel.hasTheme)
+      );
     case "network":
-      return panel.hasOnlineProxy || panel.hasOnlineHeaders || panel.hasWebAccess;
+      return panel.hasOnlineProxy && panel.hasOnlineHeaders;
     case "storage":
       return panel.hasStorage;
     case "privacy":
@@ -1543,7 +1549,6 @@ async function checkDecorationLayerHitTest(ctx, report) {
 const SHEET_ENTRY_IDS = new Set([
   "skin-open",
   "shortcuts-open",
-  "online-headers-open",
   "cache-detail-open",
   "diagnostics-open",
 ]);

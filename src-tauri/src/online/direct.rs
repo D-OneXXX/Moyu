@@ -236,7 +236,17 @@ pub fn parse_manifest_with(
         memory.host = crate::online::filter::url_host(url.as_str());
     }
     let referer = url.as_str().to_string();
-    let mut probe = |candidate: &CandidateImage| probe_image(http, &referer, candidate);
+    let prefetched = if thresholds.probe_missing_dimensions {
+        preprobe_missing(
+            http,
+            &referer,
+            &candidates,
+            crate::online::filter::MAX_PROBE_IMAGES,
+        )
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut probe = |candidate: &CandidateImage| prefetched.get(&candidate.url).cloned();
     let outcome = filter_candidates(candidates, &memory, thresholds, &mut probe);
     if outcome.pages.is_empty() && !parsed.pages.is_empty() {
         return Err(BackendError::Msg(format!(
@@ -317,18 +327,70 @@ fn parse_raw_manifest(body: &[u8], url: &url::Url) -> Result<RawParsedManifest, 
     })
 }
 
+/// 图片头部探测上限：只读 Range，不再为尺寸探测下载整张图。
+pub(crate) const PROBE_HEADER_BYTES: usize = 256 * 1024;
+/// 单次解析最多并行多少个头部探测；4 路足以压低串行等待，又不会形成请求风暴。
+const PROBE_WORKERS: usize = 4;
+
+/// 预先并行探测缺尺寸候选，最多 `limit` 张；返回 URL → 探测结果。
+///
+/// 探测仍是纯只读、同 origin 请求头作用域；并行度固定为 4，避免把站点打爆。
+/// 调用方把结果作为 `filter_candidates` 的 probe 闭包数据源：命中直接返回，
+/// 未命中也不发起第二次网络请求，同时保留内容哈希规则。
+pub(crate) fn preprobe_missing(
+    http: &dyn HttpTransport,
+    referer: &str,
+    candidates: &[CandidateImage],
+    limit: usize,
+) -> std::collections::HashMap<String, ProbeInfo> {
+    let needed: Vec<&CandidateImage> = candidates
+        .iter()
+        .filter(|candidate| candidate.width.is_none() || candidate.height.is_none())
+        .take(limit)
+        .collect();
+    if needed.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let results: std::sync::Mutex<Vec<Option<ProbeInfo>>> =
+        std::sync::Mutex::new(vec![None; needed.len()]);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..PROBE_WORKERS.min(needed.len()) {
+            scope.spawn(|| loop {
+                let slot = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if slot >= needed.len() {
+                    break;
+                }
+                let info = probe_image(http, referer, needed[slot]);
+                results
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())[slot] = info;
+            });
+        }
+    });
+    results
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .into_iter()
+        .enumerate()
+        .filter_map(|(slot, info)| info.map(|info| (needed[slot].url.clone(), info)))
+        .collect()
+}
+
 pub(crate) fn probe_image(
     http: &dyn HttpTransport,
     referer: &str,
     candidate: &CandidateImage,
 ) -> Option<ProbeInfo> {
-    // 4 MiB 足够覆盖绝大多数图片头；超限时放弃探测，交给声明尺寸/规则。
+    // 256 KiB 足以覆盖 JPEG SOF / PNG IHDR / WebP / GIF；服务端忽略 Range
+    // 时传输层也会在 max_bytes 处截断，不会退回 4 MiB 整页下载。
     let resp = http
-        .get(
+        .get_range(
             &candidate.url,
-            4 * 1024 * 1024,
+            PROBE_HEADER_BYTES,
             Some(referer),
             Some(referer),
+            0,
         )
         .ok()?;
     if !(200..300).contains(&resp.status) {
@@ -342,10 +404,13 @@ pub(crate) fn probe_image(
     if width == 0 || height == 0 {
         return None;
     }
+    // 只有拿到完整响应时才计算内容指纹；截断字节的哈希不能用于匹配。
+    let sha256 =
+        (resp.body.len() < PROBE_HEADER_BYTES).then(|| hex::encode(Sha256::digest(&resp.body)));
     Some(ProbeInfo {
         width,
         height,
-        sha256: Some(hex::encode(Sha256::digest(&resp.body))),
+        sha256,
     })
 }
 
@@ -591,7 +656,17 @@ pub fn parse_batch_payload_with(
                 anchor: page.anchor.clone(),
             })
             .collect();
-        let mut probe = |candidate: &CandidateImage| probe_image(http, &referer, candidate);
+        let prefetched = if thresholds.probe_missing_dimensions {
+            preprobe_missing(
+                http,
+                &referer,
+                &candidates,
+                crate::online::filter::MAX_PROBE_IMAGES,
+            )
+        } else {
+            std::collections::HashMap::new()
+        };
+        let mut probe = |candidate: &CandidateImage| prefetched.get(&candidate.url).cloned();
         let outcome = filter_candidates(candidates, &memory, thresholds, &mut probe);
         if outcome.pages.is_empty() && !stored.pages.is_empty() {
             return Err(BackendError::Msg(format!(
@@ -651,6 +726,86 @@ mod tests {
             },
             "http://example.com/manifest.json",
         )
+    }
+
+    struct RangeProbeHttp {
+        body: Vec<u8>,
+        calls: std::sync::Mutex<Vec<(usize, u64)>>,
+    }
+
+    impl HttpTransport for RangeProbeHttp {
+        fn get(
+            &self,
+            _url: &str,
+            _max_bytes: usize,
+            _referer: Option<&str>,
+            _header_scope: Option<&str>,
+        ) -> Result<HttpResponse, OnlineError> {
+            panic!("尺寸探测不得退回整页 GET");
+        }
+        fn get_range(
+            &self,
+            _url: &str,
+            max_bytes: usize,
+            _referer: Option<&str>,
+            _header_scope: Option<&str>,
+            start: u64,
+        ) -> Result<HttpResponse, OnlineError> {
+            self.calls.lock().unwrap().push((max_bytes, start));
+            Ok(HttpResponse {
+                status: 206,
+                final_url: "http://example.com/1.png".into(),
+                content_type: Some("image/png".into()),
+                body: self.body.clone(),
+            })
+        }
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        use image::ImageEncoder as _;
+        let mut buf = Vec::new();
+        let pixels = [255u8, 0, 0, 255].repeat(6);
+        image::codecs::png::PngEncoder::new(&mut buf)
+            .write_image(&pixels, 3, 2, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        buf
+    }
+
+    #[test]
+    fn probe_image_uses_bounded_range_and_skips_partial_hash() {
+        let mut padded = tiny_png();
+        padded.resize(PROBE_HEADER_BYTES, 0);
+        let http = RangeProbeHttp {
+            body: padded,
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let candidate = CandidateImage::new("http://example.com/1.png", 0);
+        let info = probe_image(&http, "http://example.com", &candidate).expect("dims");
+        assert_eq!((info.width, info.height), (3, 2));
+        assert!(info.sha256.is_none(), "截断响应不得生成内容哈希");
+        assert_eq!(*http.calls.lock().unwrap(), vec![(PROBE_HEADER_BYTES, 0)]);
+    }
+
+    #[test]
+    fn preprobe_missing_is_bounded_and_fills_dimensions() {
+        let http = RangeProbeHttp {
+            body: tiny_png(),
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let candidates: Vec<CandidateImage> = (0..3)
+            .map(|i| CandidateImage::new(format!("http://example.com/{i}.png"), i))
+            .collect();
+        let prefetched = preprobe_missing(&http, "http://example.com", &candidates, 2);
+        assert_eq!(http.calls.lock().unwrap().len(), 2, "limit 必须生效");
+        assert_eq!(prefetched.len(), 2);
+        for url in ["http://example.com/0.png", "http://example.com/1.png"] {
+            let info = prefetched.get(url).expect("前两张应被探测");
+            assert_eq!((info.width, info.height), (3, 2));
+        }
+        assert!(
+            !prefetched.contains_key("http://example.com/2.png"),
+            "超出 limit 的候选不应被探测"
+        );
     }
 
     #[test]

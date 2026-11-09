@@ -13,8 +13,11 @@ pub const DEFAULT_MIN_WIDTH: u32 = 320;
 pub const DEFAULT_MIN_HEIGHT: u32 = 240;
 pub const DEFAULT_MAX_ASPECT: f32 = 2.8;
 pub const DEFAULT_MEDIAN_TOLERANCE: f32 = 0.4;
-/// 单次解析最多探测多少张缺尺寸图片的头部（避免首屏请求风暴）。
-pub const MAX_PROBE_IMAGES: usize = 24;
+/// 单次解析最多探测多少张缺尺寸图片的头部。
+///
+/// 探测已改为 256 KiB Range + 4 路有界并发；48 张约 12 MiB、并发 4 路，
+/// 既覆盖常见整章又不会形成请求风暴。
+pub const MAX_PROBE_IMAGES: usize = 48;
 
 fn default_min_width() -> u32 {
     DEFAULT_MIN_WIDTH

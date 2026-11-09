@@ -523,6 +523,60 @@ impl OnlineSource {
         }
     }
 
+    /// 只读前 `max_bytes` 字节；优先命中整页缓存，否则发 Range 请求。
+    /// 不写缓存（截断字节不能当整页复用）。
+    fn read_partial(&self, index: usize, max_bytes: u64) -> Result<RawPage, BackendError> {
+        let page = self.page_at(index)?;
+        if let Some(cache) = &self.cache {
+            if let Some(hit) = cache.get(&self.book_id, &page.url, &self.referer) {
+                let take = hit.bytes.len().min(max_bytes as usize);
+                return Ok(RawPage {
+                    bytes: hit.bytes[..take].to_vec(),
+                    ext: hit.ext,
+                });
+            }
+        }
+        let _guard = self.permits.acquire();
+        let max_bytes = max_bytes.min(PAGE_MAX_BYTES as u64) as usize;
+        let resp = self
+            .http
+            .get_range(
+                &page.url,
+                max_bytes,
+                Some(&self.referer),
+                Some(&self.referer),
+                0,
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "第 {} 页头部请求失败（{}）：{e}",
+                    index + 1,
+                    crate::online::redact_url_for_log(&page.url)
+                );
+                crate::logging::log_error("online_page", &msg);
+                BackendError::from(e)
+            })?;
+        if !(200..300).contains(&resp.status) {
+            let msg = format!("第 {} 页头部 HTTP {}", index + 1, resp.status);
+            crate::logging::log_error(
+                "online_page",
+                &format!("{msg}：{}", crate::online::redact_url_for_log(&page.url)),
+            );
+            return Err(BackendError::Network(msg));
+        }
+        let ext = match image::guess_format(&resp.body) {
+            Ok(image::ImageFormat::Jpeg) => "jpg",
+            Ok(image::ImageFormat::Png) => "png",
+            Ok(image::ImageFormat::Gif) => "gif",
+            Ok(image::ImageFormat::WebP) => "webp",
+            _ => "",
+        };
+        Ok(RawPage {
+            bytes: resp.body,
+            ext: ext.into(),
+        })
+    }
+
     fn get_page(
         &self,
         page: &PageRef,
@@ -832,8 +886,7 @@ impl SourceHandle {
                     .to_ascii_lowercase();
                 Ok(RawPage { bytes, ext })
             }
-            // 在线页没有可廉价读取的本地 header：头部探测必须走整页下载，直接拒绝。
-            HandleKind::Online(_) => Err(BackendError::Msg("在线源不支持 header 探测".into())),
+            HandleKind::Online(s) => s.read_partial(index, max_bytes),
         }
     }
 }
@@ -1071,6 +1124,55 @@ mod tests {
                 Some("http://x/gallery/1".to_string()),
             )]
         );
+    }
+
+    #[test]
+    fn online_source_partial_read_uses_range_instead_of_full_get() {
+        struct RangeHttp {
+            calls: Mutex<Vec<(usize, u64)>>,
+        }
+        impl HttpTransport for RangeHttp {
+            fn get(
+                &self,
+                _url: &str,
+                _max_bytes: usize,
+                _referer: Option<&str>,
+                _header_scope: Option<&str>,
+            ) -> Result<HttpResponse, OnlineError> {
+                panic!("头部探测不得退回整页 GET");
+            }
+            fn get_range(
+                &self,
+                _url: &str,
+                max_bytes: usize,
+                _referer: Option<&str>,
+                _header_scope: Option<&str>,
+                start: u64,
+            ) -> Result<HttpResponse, OnlineError> {
+                self.calls.lock().unwrap().push((max_bytes, start));
+                Ok(HttpResponse {
+                    status: 206,
+                    final_url: "http://x/001.png".into(),
+                    content_type: Some("image/png".into()),
+                    body: tiny_png(),
+                })
+            }
+        }
+        let http = Arc::new(RangeHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-test".into(),
+            pages(),
+            http.clone(),
+            2,
+            "http://x/gallery/1".into(),
+            None,
+        );
+        let partial = src.read_partial(0, 256 * 1024).unwrap();
+        assert!(partial.bytes.starts_with(b"\x89PNG"));
+        assert_eq!(partial.ext, "png");
+        assert_eq!(*http.calls.lock().unwrap(), vec![(256 * 1024, 0)]);
     }
 
     #[test]
@@ -1399,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn online_handle_rejects_header_probe() {
+    fn online_handle_supports_bounded_header_probe() {
         let handle = super::SourceHandle::open_online(
             "book-test".into(),
             "http://x/gallery/1".into(),
@@ -1411,12 +1513,9 @@ mod tests {
         .unwrap();
         assert_eq!(handle.page_count().unwrap(), 2);
         assert_eq!(handle.path(), Path::new("http://x/gallery/1"));
-        let err = handle
-            .read_partial(0, 1024)
-            .err()
-            .expect("在线源 header 探测应返回错误")
-            .to_string();
-        assert_eq!(err, "在线源不支持 header 探测");
+        let partial = handle.read_partial(0, 1024).expect("在线源应支持头部探测");
+        assert!(partial.bytes.starts_with(b"\x89PNG"));
+        assert_eq!(partial.ext, "png");
     }
 
     #[test]

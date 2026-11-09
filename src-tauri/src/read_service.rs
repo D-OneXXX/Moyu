@@ -28,6 +28,19 @@ const MAX_WEB_PAGES: u32 = 10_000;
 /// Frozen cover edge; the Web contract does not accept a size parameter.
 pub(crate) const WEB_THUMB_EDGE: u32 = 256;
 
+/// 图片头部探测上限：覆盖 JPEG SOF / PNG IHDR / WebP / GIF 所需字节。
+/// 在线布局与导入探测都只读这一段，不再下载整页。
+pub(crate) const HEADER_PROBE_BYTES: u64 = 256 * 1024;
+
+fn header_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+        .filter(|(width, height)| *width > 0 && *height > 0)
+}
+
 /// Stable data-plane failure classes; HTTP mapping is added by the route layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -614,14 +627,36 @@ fn layout_sync_bounded(
             .collect();
         if !missing.is_empty() {
             let handle = state.source_handle_for_book(book_id)?;
-            for index in missing {
-                let raw = handle.read_raw(index)?;
-                let (width, height) = image::ImageReader::new(std::io::Cursor::new(&raw.bytes))
-                    .with_guessed_format()?
-                    .into_dimensions()?;
-                if width == 0 || height == 0 {
-                    return Err(BackendError::Msg(format!("第 {} 页尺寸无效", index + 1)));
+            // 只读 256 KiB 头部解尺寸，4 路有界并发；解析失败保留 0，由前端
+            // 占位比例兜底。条漫布局绝不以“整本下载”为前置条件。
+            let results: std::sync::Mutex<Vec<Option<(u32, u32)>>> =
+                std::sync::Mutex::new(vec![None; missing.len()]);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for _ in 0..4.min(missing.len()) {
+                    scope.spawn(|| loop {
+                        let slot = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if slot >= missing.len() {
+                            break;
+                        }
+                        let dimensions = handle
+                            .read_partial(missing[slot], HEADER_PROBE_BYTES)
+                            .ok()
+                            .and_then(|partial| header_dimensions(&partial.bytes));
+                        results
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())[slot] = dimensions;
+                    });
                 }
+            });
+            let results = results
+                .into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (slot, dimensions) in results.into_iter().enumerate() {
+                let Some((width, height)) = dimensions else {
+                    continue;
+                };
+                let index = missing[slot];
                 dims[index] = (width, height);
                 if let Some(page) = meta.pages.get_mut(index) {
                     page.width = Some(width);
@@ -665,17 +700,10 @@ fn layout_sync_bounded(
     }
     let mut dims: Vec<(u32, u32)> = Vec::with_capacity(count);
     for index in 0..count {
-        let header: Option<(u32, u32)> =
-            handle
-                .read_partial(index, 256 * 1024)
-                .ok()
-                .and_then(|partial| {
-                    image::ImageReader::new(std::io::Cursor::new(&partial.bytes))
-                        .with_guessed_format()
-                        .ok()
-                        .and_then(|reader| reader.into_dimensions().ok())
-                        .filter(|(width, height)| *width > 0 && *height > 0)
-                });
+        let header: Option<(u32, u32)> = handle
+            .read_partial(index, HEADER_PROBE_BYTES)
+            .ok()
+            .and_then(|partial| header_dimensions(&partial.bytes));
         let (width, height) = match header {
             Some(dimensions) => dimensions,
             None => {

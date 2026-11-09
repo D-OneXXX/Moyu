@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::online::direct::{make_filtered_meta, probe_image, MetaLinks, OnlineBookMeta};
+use crate::online::direct::{make_filtered_meta, preprobe_missing, MetaLinks, OnlineBookMeta};
 use crate::online::filter::{
     filter_candidates, CandidateImage, CandidateSource, FilterMemory, FilterThresholds,
 };
@@ -389,7 +389,17 @@ fn resolve_message(
         })
         .collect();
     let referer = canonical.as_str().to_string();
-    let mut probe = |candidate: &CandidateImage| probe_image(http, &referer, candidate);
+    let prefetched = if thresholds.probe_missing_dimensions {
+        preprobe_missing(
+            http,
+            &referer,
+            &candidates,
+            crate::online::filter::MAX_PROBE_IMAGES,
+        )
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut probe = |candidate: &CandidateImage| prefetched.get(&candidate.url).cloned();
     let outcome = filter_candidates(candidates, memory, thresholds, &mut probe);
     if outcome.pages.is_empty() {
         return Err(BackendError::Msg(format!(
@@ -467,7 +477,17 @@ fn resolve_telegraph(
         return Err(BackendError::Msg("Telegraph 页面未找到图片".into()));
     }
     let referer = canonical.as_str().to_string();
-    let mut probe = |candidate: &CandidateImage| probe_image(http, &referer, candidate);
+    let prefetched = if thresholds.probe_missing_dimensions {
+        preprobe_missing(
+            http,
+            &referer,
+            &candidates,
+            crate::online::filter::MAX_PROBE_IMAGES,
+        )
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut probe = |candidate: &CandidateImage| prefetched.get(&candidate.url).cloned();
     let outcome = filter_candidates(candidates, memory, thresholds, &mut probe);
     if outcome.pages.is_empty() {
         return Err(BackendError::Msg(format!(

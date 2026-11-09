@@ -139,6 +139,7 @@ class CdpPage {
 
 const assets = new Map([
   ["/", [path.join(reader, "index.html"), "text/html"]],
+  ["/reader-boot.js", [path.join(reader, "reader-boot.js"), "text/javascript"]],
   ["/reader.js", [path.join(reader, "reader.js"), "text/javascript"]],
   ["/reader.css", [path.join(reader, "reader.css"), "text/css"]],
   [

@@ -711,6 +711,9 @@ export default function WebAccessPanel() {
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                 {t(isPlain ? "settings.webAccess.plainPairHint" : "settings.webAccess.pairingDescription")}
               </p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {t("settings.webAccess.networkHint")}
+              </p>
 
               {phase !== "enabled" ? (
                 <p className="mt-3 rounded-xl border border-border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">

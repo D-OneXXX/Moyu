@@ -853,8 +853,13 @@ pub fn run() {
                     .db
                     .with(|conn| db::wal_checkpoint(conn).map_err(|error| error.to_string()))
             });
+            // timeout 必须在 runtime 内创建：直接放在 block_on 的参数位置
+            // 会先构造 Sleep，触发 "there is no reactor running" panic，
+            // 导致 checkpoint 根本没有执行。
+            let wait_for_checkpoint =
+                async move { tokio::time::timeout(shutdown_timeout, checkpoint).await };
             if !matches!(
-                tauri::async_runtime::block_on(tokio::time::timeout(shutdown_timeout, checkpoint,)),
+                tauri::async_runtime::block_on(wait_for_checkpoint),
                 Ok(Ok(Ok(())))
             ) {
                 logging::log_error("database", "退出时数据库收尾未完成（blocking-task-failed）");

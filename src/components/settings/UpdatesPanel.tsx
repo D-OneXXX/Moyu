@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -22,7 +22,6 @@ import { cn } from "@/lib/utils";
 import { useUpdater } from "@/features/update/UpdateProvider";
 import {
   checkNativeUpdate,
-  closeNativeUpdate,
   getTempFreeBytes,
   installNativeUpdate,
   isWindowsPlatform,
@@ -101,27 +100,11 @@ export default function UpdatesPanel() {
   const [nativeUpToDate, setNativeUpToDate] = useState(false);
   const [nativeRelaunching, setNativeRelaunching] = useState(false);
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
-  const nativePhaseRef = useRef<NativePhase>("idle");
   const nativeCheckRef = useRef<NativeUpdateCheck | null>(null);
   const nativeBusyRef = useRef(false);
 
-  const setNativePhaseSafe = (next: NativePhase) => {
-    nativePhaseRef.current = next;
-    setNativePhase(next);
-  };
-
-  // The Update handle owns a Rust-side resource: release it on unmount unless a
-  // download/install is still in flight.
-  useEffect(() => {
-    return () => {
-      const phase = nativePhaseRef.current;
-      if (phase === "downloading" || phase === "installing") return;
-      const held = nativeCheckRef.current;
-      nativeCheckRef.current = null;
-      if (held) void closeNativeUpdate(held.update);
-    };
-  }, []);
-
+  // The backend holds no long-lived update resource: each command rebuilds the
+  // update from the manifest returned by the check, so unmount needs no cleanup.
   const handleNativeCheck = async () => {
     if (nativeBusyRef.current) return;
     nativeBusyRef.current = true;
@@ -129,24 +112,22 @@ export default function UpdatesPanel() {
     setNativeUpToDate(false);
     setNativeInfo(null);
     setNativeDownload(null);
-    setNativePhaseSafe("checking");
-    const previous = nativeCheckRef.current;
+    setNativePhase("checking");
     nativeCheckRef.current = null;
-    await closeNativeUpdate(previous?.update);
     try {
       const next = await checkNativeUpdate();
       if (!next) {
         setNativeUpToDate(true);
-        setNativePhaseSafe("idle");
+        setNativePhase("idle");
         return;
       }
       nativeCheckRef.current = next;
       setNativeInfo(next.info);
-      setNativePhaseSafe("available");
+      setNativePhase("available");
     } catch (reason) {
       reportNativeUpdateFailure("check", reason);
       setNativeFailure("check");
-      setNativePhaseSafe("error");
+      setNativePhase("error");
     } finally {
       setLastCheckedAt(Date.now());
       nativeBusyRef.current = false;
@@ -171,10 +152,10 @@ export default function UpdatesPanel() {
     }
     setNativeFailure(null);
     setNativeDownload({ downloaded: 0, total: null, percent: null });
-    setNativePhaseSafe("downloading");
+    setNativePhase("downloading");
     const onProgress = (event: NativeInstallEvent) => {
       if (event.phase === "installing") {
-        setNativePhaseSafe("installing");
+        setNativePhase("installing");
         return;
       }
       setNativeDownload({
@@ -184,14 +165,14 @@ export default function UpdatesPanel() {
       });
     };
     try {
-      await installNativeUpdate(held.update, onProgress);
+      await installNativeUpdate(held, onProgress);
       nativeCheckRef.current = null;
       setNativeDownload(null);
-      setNativePhaseSafe("installed");
+      setNativePhase("installed");
     } catch (reason) {
       reportNativeUpdateFailure("install", reason);
       setNativeFailure("install");
-      setNativePhaseSafe("error");
+      setNativePhase("error");
     } finally {
       nativeBusyRef.current = false;
     }
@@ -205,7 +186,7 @@ export default function UpdatesPanel() {
     } catch (reason) {
       reportNativeUpdateFailure("relaunch", reason);
       setNativeFailure("relaunch");
-      setNativePhaseSafe("error");
+      setNativePhase("error");
     } finally {
       setNativeRelaunching(false);
     }

@@ -32,6 +32,7 @@ mod state;
 mod system_proxy;
 mod tray;
 pub mod update;
+mod updater_gate;
 mod versioning;
 pub mod web_access;
 pub mod web_contract;
@@ -797,6 +798,10 @@ pub fn run() {
             // 用户点击后的 restart_app；旧校验代码/负向测试仍可作为回归资产。
             update::get_app_info,
             update::restart_app,
+            // 官方 GitHub 更新通道的受控代理：WebView 不再持有 updater:default，
+            // 检查/安装都必须经这两个命令先过 FeatureId::Updates 门卫。
+            updater_gate::check_native_update,
+            updater_gate::install_native_update,
             // Task 7：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变。
             skin::skin_import_asset,
             security::security_audit,

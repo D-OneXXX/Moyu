@@ -597,9 +597,24 @@ mod tests {
     }
 
     #[test]
-    fn embedded_capabilities_include_the_updater_file() {
+    fn embedded_capabilities_include_the_updater_file_without_plugin_permission() {
         // 审计数据源必须与 Tauri 实际扫描的 capabilities/ 三文件一致。
-        assert!(CAPABILITIES_JSON.contains("updater:default"));
+        // updater.json 仍然存在（绑定 main 窗口并参与审计），但**不授予**任何
+        // updater 插件权限：页面调用 `plugin:updater|*` 必须被 ACL 拒绝，
+        // 检查/安装只能走 check_native_update / install_native_update 代理命令。
+        let updater_json = include_str!("../capabilities/updater.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(updater_json).expect("updater.json 应可解析");
+        assert_eq!(parsed["windows"], serde_json::json!(["main"]));
+        let permissions = parsed["permissions"]
+            .as_array()
+            .expect("updater.json permissions 必须是数组");
+        assert!(
+            permissions.is_empty(),
+            "updater.json 不得授予任何插件权限：{permissions:?}"
+        );
+        assert!(!CAPABILITIES_JSON.contains("updater:default"));
+        assert!(!CAPABILITIES_JSON.contains("process:"));
         let evidence = parse_capability_evidence(CAPABILITIES_JSON).expect("capability 应可解析");
         assert_eq!(evidence.remote_capabilities, 0);
         assert!(evidence.scoped);

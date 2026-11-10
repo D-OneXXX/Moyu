@@ -1406,11 +1406,57 @@ export function checkReleaseSurface(root, report) {
     if (windows.length !== 1 || windows[0] !== "main") {
       errors.push("updater.json 只能覆盖 main 窗口");
     }
-    if (!permissions.includes("updater:default")) {
-      errors.push("updater.json 缺少 updater:default");
+    // WebView 不得直连官方更新插件：check/install 只能经自研代理命令。
+    if (permissions.includes("updater:default")) {
+      errors.push(
+        "updater.json 不得授予 updater:default（检查/安装只走 check_native_update / install_native_update 代理命令）",
+      );
     }
-    if (permissions.some((permission) => String(permission).startsWith("process:"))) {
-      errors.push("updater.json 不得声明 process:* 权限（重启走自研 restart_app）");
+    if (
+      permissions.some(
+        (permission) =>
+          String(permission).startsWith("updater:") ||
+          String(permission).startsWith("process:"),
+      )
+    ) {
+      errors.push(
+        "updater.json 不得声明 updater:* / process:* 权限（代理命令 + 自研 restart_app）",
+      );
+    }
+  }
+
+  // 官方更新通道的代理契约：前端不再 import 插件，只调用两个自研命令；
+  // 两个命令在 lib.rs 注册，且 updater_gate 必须先过 FeatureId::Updates 门卫。
+  const nativeUpdateSource = read("src/features/update/native.ts");
+  const libSourceForUpdater = read("src-tauri/src/lib.rs");
+  if (nativeUpdateSource.includes("@tauri-apps/plugin-updater")) {
+    errors.push(
+      "native.ts 不得 import @tauri-apps/plugin-updater（WebView 无 updater 权限）",
+    );
+  }
+  for (const command of ["check_native_update", "install_native_update"]) {
+    if (!nativeUpdateSource.includes(`"${command}"`)) {
+      errors.push(`native.ts 未调用代理命令 ${command}`);
+    }
+    if (!libSourceForUpdater.includes(`updater_gate::${command}`)) {
+      errors.push(`lib.rs 未注册 updater_gate::${command}`);
+    }
+  }
+  const updaterGateSource = read("src-tauri/src/updater_gate.rs");
+  if (!updaterGateSource.includes("FeatureId::Updates")) {
+    errors.push("updater_gate 未调用 FeatureId::Updates 门卫");
+  }
+  for (const command of ["check_native_update", "install_native_update"]) {
+    const gateIndex = updaterGateSource.indexOf(`pub async fn ${command}`);
+    const gateCallIndex = updaterGateSource.indexOf(
+      "open_updates(&flags)",
+      gateIndex,
+    );
+    const updaterIndex = updaterGateSource.indexOf(".updater()", gateIndex);
+    if (gateIndex < 0 || gateCallIndex < 0) {
+      errors.push(`${command} 未先调用 open_updates 门卫`);
+    } else if (updaterIndex >= 0 && updaterIndex < gateCallIndex) {
+      errors.push(`${command} 在门卫之前访问了 updater`);
     }
   }
 
@@ -1691,7 +1737,7 @@ export function checkReleaseSurface(root, report) {
       details: errors.join(" | "),
       location: "src-tauri/tauri.conf.json",
       expected:
-        "文件关联 .cbz/.zip、createUpdaterArtifacts、plugins.updater、签名 CI、主窗 updater 权限、五个命令与三个用户入口齐全",
+        "文件关联 .cbz/.zip、createUpdaterArtifacts、plugins.updater、签名 CI、主窗 updater 代理命令（无 updater:default）、五个命令与三个用户入口齐全",
       actual: errors.join(" | "),
       rootCause: "新增发行能力时漏改配置、命令注册或权限文件",
       fix: "按内部发布与技术文档（维护者本地维护）补齐缺失项",

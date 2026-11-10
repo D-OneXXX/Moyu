@@ -142,6 +142,12 @@ browser WebView
   critical-fix channel (deb/rpm/AppImage). System package installs are not replaced in place.
 - Update manifests and artifacts are verified with the configured Tauri updater key. The
   Windows installer is not Authenticode-signed; the updater signature is a separate control.
+- The updater plugin stays registered for Rust-side use, but the webview holds no updater
+  capability. The check and install steps are app-owned proxy commands
+  (`check_native_update` / `install_native_update`); both consult the `updates` feature
+  switch before touching the updater, so a console caller cannot bypass the switch. Install
+  replays the manifest returned by the check (`restore_update`), rejects a version that no
+  longer matches, and still requires the package signature to bind the announced version.
 
 ## Security boundaries
 

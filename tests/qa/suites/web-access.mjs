@@ -22,7 +22,7 @@ const INSTALL_MOCK = `(() => {
   const status = {
     phase: "enabled",
     transport: "https",
-    bindAddress: "192.168.1.10:7443",
+    bindAddress: "192.168.1.10",
     bindIp: "192.168.1.10",
     port: 7443,
     caInitialized: true,
@@ -210,7 +210,7 @@ export async function runWebAccessSuite(ctx, report) {
       return {
         text,
         claimId: row ? row.getAttribute("data-claim-id") : null,
-        unverified: /Unverified device/i.test(text),
+        unverified: /Unverified name/i.test(text),
         sourceIp: text.includes("192.168.1.44"),
         countdown: countdown ? countdown.textContent || "" : "",
         tabular: countdown ? getComputedStyle(countdown).fontVariantNumeric || "" : "",
@@ -229,7 +229,7 @@ export async function runWebAccessSuite(ctx, report) {
         "web-access:claim-card",
         "待批准设备卡片缺少身份/风险/倒计时信息",
         JSON.stringify(claimSnapshot),
-        "显示设备名、Unverified device 风险徽章、来源 IP、tabular-nums 倒计时",
+        "显示设备名、Unverified name 风险徽章、来源 IP、tabular-nums 倒计时",
         claimSnapshot.text.slice(0, 200),
         "恢复 ClaimRow 的风险徽章与 tabular-nums 倒计时",
       );
@@ -394,7 +394,7 @@ export async function runWebAccessSuite(ctx, report) {
     await page.eval("window.__qaSetWebAccessClaim(2)");
     await page.eval(`(() => {
       const buttons = [...document.querySelectorAll("button")];
-      const refresh = buttons.find((b) => (b.textContent || "").trim() === "Refresh");
+      const refresh = buttons.find((b) => (b.textContent || "").includes("Refresh"));
       if (refresh) refresh.click();
       return !!refresh;
     })()`);
@@ -409,7 +409,8 @@ export async function runWebAccessSuite(ctx, report) {
       const text = panel ? panel.textContent || "" : "";
       return {
         row: !!row,
-        pendingZero: /0 pending/i.test(text),
+        pendingZero:
+          /Pending requests:\s*0/i.test(text) || /0 pending/i.test(text),
         stateCalls: window.__qaWebAccess.calls.filter((c) => c === "web_access_pairing_state").length,
       };
     })()`);

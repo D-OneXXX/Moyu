@@ -152,7 +152,10 @@ browser WebView
 - Online URL and redirect handling rejects loopback, private, link-local, and metadata
   addresses in release builds.
 - The repository’s static QA suite guards the capability surface, CSP profile, route fallbacks,
-  storage sanitization, and other long-lived invariants.
+  storage sanitization, and other long-lived invariants. The Web Access pairing UI is covered by
+  an automated DOM integration suite that drives the real panel while replacing only the
+  `web_access_*` control-plane IPC; real phone/TLS pairing remains a separately authorized L3
+  check and is never implied by the mocked run.
 
 ## Brand, icons, and skins
 

@@ -160,7 +160,11 @@ pub struct SeriesProgress {
 pub struct Dashboard {
     pub total_books: u32,
     pub reading: u32,
+    /// 已开始且翻到最后一页的书数（`page_count=0` 不计）。
+    pub finished: u32,
     pub today_pages: u32,
+    /// 累计阅读页数（`reading_log.pages` 总和，含软删书的历史）。
+    pub total_pages_read: u64,
     pub heatmap: Vec<HeatDay>,
     pub series: Vec<SeriesProgress>,
 }

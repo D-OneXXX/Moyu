@@ -2026,7 +2026,9 @@ pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard,
                 Ok(Dashboard {
                     total_books: counts.total_books,
                     reading: counts.reading,
+                    finished: counts.finished,
                     today_pages,
+                    total_pages_read: counts.total_pages_read,
                     heatmap,
                     series,
                 })

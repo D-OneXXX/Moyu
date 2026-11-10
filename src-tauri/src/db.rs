@@ -999,11 +999,15 @@ pub fn last_read_book(
     }
 }
 
-/// 仪表盘计数（Issue #236）：一次 SQL 求未软删总数与「在读」数。
+/// 仪表盘计数（Issue #236）：一次 SQL 求未软删总数、在读数、已读完数与累计阅读页数。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DashboardCounts {
     pub total_books: u32,
     pub reading: u32,
+    /// 已开始且翻到/越过最后一页的书（`page_count=0` 永不计入）。
+    pub finished: u32,
+    /// `reading_log.pages` 总和：全书库累计阅读页数，**包含软删书的历史**。
+    pub total_pages_read: u64,
 }
 
 /// 仪表盘「最近在读」行：只含渲染所需字段，不解析 meta_json。
@@ -1018,17 +1022,26 @@ pub struct DashboardSeriesRow {
 /// 仪表盘聚合计数：与 `list_books(None)` 的 `removed=0` 口径一致，
 /// 但不再把全表物化为 `BookRow`（Issue #236）。
 pub fn dashboard_counts(conn: &Connection) -> Result<DashboardCounts, BackendError> {
-    let (total, reading): (i64, i64) = conn.query_row(
+    // 单次聚合同时求四个量，避免多次全表扫描（Issue #236）：
+    // - reading / finished 是互补集合：`current_page+1` 与 `page_count` 比较；
+    // - `page_count=0` 的行既不算在读也不算读完（页数未知，不能判定读毕）；
+    // - total_pages_read 取整个 `reading_log`（不过滤 books.removed）：
+    //   软删只隐藏书，历史阅读量仍属于用户，不能被悄悄抹掉。
+    let (total, reading, finished, total_pages_read): (i64, i64, i64, i64) = conn.query_row(
         "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN current_page > 0 AND current_page + 1 < page_count THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN current_page > 0 AND current_page + 1 < page_count THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN current_page > 0 AND page_count > 0 AND current_page + 1 >= page_count THEN 1 ELSE 0 END), 0),
+                (SELECT COALESCE(SUM(pages), 0) FROM reading_log)
          FROM books
          WHERE removed=0",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     Ok(DashboardCounts {
         total_books: u32::try_from(total).unwrap_or(u32::MAX),
         reading: u32::try_from(reading).unwrap_or(u32::MAX),
+        finished: u32::try_from(finished).unwrap_or(u32::MAX),
+        total_pages_read: u64::try_from(total_pages_read.max(0)).unwrap_or(u64::MAX),
     })
 }
 
@@ -1928,6 +1941,33 @@ mod tests {
             get_setting(&conn, "theme").unwrap().as_deref(),
             Some("dark")
         );
+    }
+
+    /// Issue #267：INSERT 触发失败时，同组内**先写入**的键也必须整体回滚；
+    /// 否则设置页会落成「部分新、部分旧」的撕裂状态。
+    #[test]
+    fn set_settings_atomic_rolls_back_all_keys_on_failure() {
+        let conn = mem();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_boom_insert
+             BEFORE INSERT ON settings
+             WHEN NEW.k = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'injected settings failure'); END;",
+        )
+        .expect("install failure trigger");
+
+        let result = set_settings_atomic(
+            &conn,
+            &[("a", "1".to_string()), ("boom", "x".to_string())],
+        );
+
+        assert!(result.is_err(), "injected insert must fail");
+        assert_eq!(
+            get_setting(&conn, "a").unwrap(),
+            None,
+            "the key written before the failure must roll back"
+        );
+        assert_eq!(get_setting(&conn, "boom").unwrap(), None);
     }
 
     #[test]
@@ -4151,6 +4191,11 @@ mod tests {
             init_schema(&conn).expect("建表");
             let empty = dashboard_counts(&conn).expect("空库计数");
             assert_eq!((empty.total_books, empty.reading), (0, 0));
+            assert_eq!(
+                (empty.finished, empty.total_pages_read),
+                (0, 0),
+                "空库：无读完书、无累计页数"
+            );
             assert!(dashboard_series(&conn).expect("空库系列").is_empty());
 
             for i in 0..25u32 {
@@ -4185,9 +4230,26 @@ mod tests {
             .unwrap();
             soft_remove_books(&conn, &["gone".to_string()]).unwrap();
 
+            // 累计页数：reading_log 全量求和——软删书的阅读历史与旧版
+            // NULL book_id 的全局历史都必须计入，不能被软删/迁移静默抹掉。
+            conn.execute_batch(
+                "INSERT INTO reading_log(date, book_id, pages) VALUES
+                    ('2026-11-01', 'b00', 5),
+                    ('2026-11-01', 'b01', 7),
+                    ('2026-11-02', 'gone', 11),
+                    ('2026-11-03', NULL, 9);",
+            )
+            .unwrap();
+
             let counts = dashboard_counts(&conn).expect("计数");
             assert_eq!(counts.total_books, 27, "25 在读 + 读完 + 未开始；软删排除");
             assert_eq!(counts.reading, 25, "只有已开始未读完计入 reading");
+            assert_eq!(counts.finished, 1, "仅 done 已开始且到最后一页");
+            assert_eq!(
+                counts.total_pages_read,
+                5 + 7 + 11 + 9,
+                "累计页数含软删书历史与 NULL 全局旧史"
+            );
 
             let series = dashboard_series(&conn).expect("系列");
             assert_eq!(series.len(), 20, "最多 20 本");
@@ -4197,5 +4259,34 @@ mod tests {
             assert!(series.iter().all(|row| row.id != "ns" && row.id != "gone"));
         }
         cleanup_db_files(&path);
+    }
+
+    /// 读完判定边界：`current_page == page_count-1` 才算读完；
+    /// 未开始（`current_page=0`）与页数未知（`page_count=0`）永不算读完。
+    #[test]
+    fn dashboard_finished_excludes_unstarted_and_zero_page_books() {
+        let conn = mem();
+        // 已开始且停在最后一页：读完。
+        upsert_book(&conn, "last", "p/last", "末页", 100).unwrap();
+        // 已开始但还差一页：在读，未读完。
+        upsert_book(&conn, "before", "p/before", "倒数第二页", 100).unwrap();
+        // 单页书停在第一页（current_page=0）：视为未开始。
+        upsert_book(&conn, "single", "p/single", "单页", 1).unwrap();
+        // 页数未知：即使 current_page>0 也不能判定读完。
+        upsert_book(&conn, "zero", "p/zero", "零页", 0).unwrap();
+        upsert_book(&conn, "zero_started", "p/zero-started", "零页已开始", 0).unwrap();
+        for (id, page) in [("last", 99), ("before", 98), ("single", 0), ("zero", 0), ("zero_started", 5)] {
+            conn.execute(
+                "UPDATE books SET current_page=?1 WHERE id=?2",
+                params![page, id],
+            )
+            .unwrap();
+        }
+
+        let counts = dashboard_counts(&conn).expect("边界计数");
+        assert_eq!(counts.total_books, 5);
+        assert_eq!(counts.finished, 1, "只有 last 位于最后一页");
+        assert_eq!(counts.reading, 1, "before 是唯一在读");
+        assert_eq!(counts.total_pages_read, 0, "未写 reading_log 即 0");
     }
 }

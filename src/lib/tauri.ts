@@ -194,7 +194,11 @@ export interface SeriesProgress {
 export interface Dashboard {
   totalBooks: number;
   reading: number;
+  /** 已开始且翻到最后一页的书数；pageCount=0 的书不计入。 */
+  finished: number;
   todayPages: number;
+  /** 累计阅读页数（reading_log 总和，包含已软删书的历史）。 */
+  totalPagesRead: number;
   heatmap: HeatDay[];
   series: SeriesProgress[];
 }

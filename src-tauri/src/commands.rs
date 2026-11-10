@@ -447,6 +447,7 @@ fn archive_stamp(path: &Path) -> Option<db::SourceStamp> {
 /// 扫描一本书：打开源 → 取页数 → upsert。
 ///
 /// 显式扫描总是重新读取源目录；文件时间和字节数相同也可能换了内容。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn scan_single_book(
     conn: &rusqlite::Connection,
     path: &Path,
@@ -553,7 +554,8 @@ pub(crate) fn import_local_archive_prepared(
     Ok(Some((book.id, prepared)))
 }
 
-/// 兼容入口：只返回书 id。
+/// 兼容入口：只返回书 id（生产下载链使用 prepared 变体）。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn import_local_archive(
     db_path: PathBuf,
     path: &Path,

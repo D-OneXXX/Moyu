@@ -739,6 +739,7 @@ pub fn run() {
             commands::put_pdf_thumbnail,
             commands::clear_thumbnail_cache,
             commands::clear_temp_cache,
+            commands::clear_online_cache,
             commands::get_webtoon_layout,
             commands::get_webtoon_tile,
             commands::get_memory_stats,

@@ -600,6 +600,51 @@ pub fn upsert_online_book(
     Ok(())
 }
 
+/// 在线原图缓存清理候选（Issue #338）。
+///
+/// - 只有在线书（`source_type <> 'local'`）且未软删（`removed=0`）参与；
+/// - `keep_unread=true`：保留未读完且 30 天内打开过的书，只选中
+///   「已完成」（`page_count > 0 AND current_page + 1 >= page_count`）或
+///   「超过 30 天未活动」的书；从未打开过的书（`last_opened_at = ''`）
+///   以 `updated_at` 作为活动时间；
+/// - `keep_unread=false`：显式全量清理，返回全部在线书。
+///
+/// 时间比较统一使用本地 `YYYY-MM-DD HH:MM:SS`（与 `now_str` 同格式），
+/// 由调用方传入 30 天前的 cutoff。只返回书 id，绝不返回路径或标题。
+pub fn online_cache_clear_candidates(
+    conn: &Connection,
+    keep_unread: bool,
+    cutoff: &str,
+) -> Result<Vec<String>, BackendError> {
+    let mut ids = Vec::new();
+    if keep_unread {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM books
+             WHERE removed=0 AND source_type <> 'local'
+               AND (
+                 (page_count > 0 AND current_page + 1 >= page_count)
+                 OR (CASE WHEN last_opened_at = '' THEN updated_at ELSE last_opened_at END) < ?1
+               )
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![cutoff], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            ids.push(row?);
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM books
+             WHERE removed=0 AND source_type <> 'local'
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            ids.push(row?);
+        }
+    }
+    Ok(ids)
+}
+
 /// 无损重定位：把一本书从旧 id/path 迁到新 id/path（单事务）。
 ///
 /// - 保留 `scroll_pct` / `updated_at` / `source_type` / `meta_json` / `format`，清 `removed`；
@@ -2393,6 +2438,79 @@ mod tests {
             )
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn online_cache_clear_candidates_respect_progress_and_inactivity() {
+        let conn = mem();
+        let cutoff = (Local::now() - chrono::Duration::days(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let old = (Local::now() - chrono::Duration::days(40))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let recent = (Local::now() - chrono::Duration::days(5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let insert = |id: &str,
+                      source: &str,
+                      pages: i64,
+                      current: i64,
+                      updated: &str,
+                      opened: &str,
+                      removed: i64| {
+            conn.execute(
+                "INSERT INTO books(id, path, title, page_count, current_page, updated_at,
+                                   last_opened_at, source_type, removed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    format!("http://x/{id}"),
+                    id,
+                    pages,
+                    current,
+                    updated,
+                    opened,
+                    source,
+                    removed
+                ],
+            )
+            .unwrap();
+        };
+        // 已完成：即使刚打开也清理。
+        insert("finished", "generic_manga", 10, 9, &recent, &recent, 0);
+        // 超过 30 天未打开：保留未读完也可能清理。
+        insert("stale", "generic_manga", 10, 2, &old, &old, 0);
+        // 未读完且 30 天内打开：必须保留。
+        insert("in-progress", "generic_manga", 10, 2, &recent, &recent, 0);
+        // 本地书永不参与，即便已完成且很久没打开。
+        insert("local-done", "local", 10, 9, &old, &old, 0);
+        // 从未打开：以 updated_at 判定，旧的导入书可清理。
+        insert("never-opened-old", "generic_manga", 10, 0, &old, "", 0);
+        // 从未打开且最近导入：必须保留。
+        insert("never-opened-new", "generic_manga", 10, 0, &recent, "", 0);
+        // 软删书不参与。
+        insert("removed-done", "generic_manga", 10, 9, &old, &old, 1);
+
+        let keep = online_cache_clear_candidates(&conn, true, &cutoff).unwrap();
+        assert_eq!(
+            keep,
+            vec!["finished", "never-opened-old", "stale"],
+            "只清理已完成 / 超期未活动的在线书"
+        );
+
+        let all = online_cache_clear_candidates(&conn, false, &cutoff).unwrap();
+        assert_eq!(
+            all,
+            vec![
+                "finished",
+                "in-progress",
+                "never-opened-new",
+                "never-opened-old",
+                "stale"
+            ],
+            "显式全量清理覆盖全部未删除在线书，但排除本地书与软删书"
+        );
     }
 
     #[test]

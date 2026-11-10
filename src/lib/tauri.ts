@@ -258,6 +258,13 @@ export interface ClearCacheResult {
   files: number;
 }
 
+/** `clear_online_cache` 结果：只统计在线原图，`books` 为实际清理的书本数量。 */
+export interface ClearOnlineCacheResult {
+  bytesFreed: number;
+  files: number;
+  books: number;
+}
+
 export interface Settings {
   theme: string;
   /** 内存缓存预算（MB）。 */
@@ -451,6 +458,9 @@ export const api = {
     invoke<void>("put_pdf_thumbnail", { bookId, dataBase64 }),
   // 清空临时磁盘缓存（render + online 原图），返回释放体积与文件数。
   clearTempCache: () => invoke<ClearCacheResult>("clear_temp_cache"),
+  // 只清理在线原图：keepUnread=true 保留未读完且 30 天内打开过的书。
+  clearOnlineCache: (keepUnread: boolean) =>
+    invoke<ClearOnlineCacheResult>("clear_online_cache", { keepUnread }),
   getMemoryStats: () => invoke<MemoryStats>("get_memory_stats"),
   getDashboard: () => invoke<Dashboard>("get_dashboard"),
   // 逐日阅读页数：bookId=null 全局；Some(id) 只看该书。days 1..365。

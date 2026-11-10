@@ -1997,6 +1997,64 @@ pub async fn clear_temp_cache(state: State<'_, Arc<AppState>>) -> Result<ClearCa
     .await
 }
 
+/// 在线原图清理结果（Issue #338）：只统计在线原图目录，绝不包含渲染缓存。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearOnlineCacheResult {
+    pub bytes_freed: u64,
+    pub files: u64,
+    /// 实际删除了在线原图目录的书本数量（不是书 id 列表）。
+    pub books: u64,
+}
+
+/// 按需清理在线原图缓存（Issues #338）。
+///
+/// - `keep_unread=true`：保留未读完且 30 天内打开过的书，只清理已完成或
+///   超过 30 天未活动的在线书；
+/// - `keep_unread=false`：清理全部未删除在线书的原图，属于用户显式全量清理。
+///
+/// 候选书 id 在 `DbSlot` 锁内一次性取出，随后在 DB 锁外（blocking 线程）
+/// 删除缓存目录。只动了 `online_cache`，绝不触碰 render 缓存、`library.db`、
+/// 书库行与阅读进度。
+#[tauri::command]
+pub async fn clear_online_cache(
+    state: State<'_, Arc<AppState>>,
+    keep_unread: bool,
+) -> Result<ClearOnlineCacheResult, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let cutoff = (chrono::Local::now() - chrono::Duration::days(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        // 只在这里短暂持有数据库锁；删除目录在锁外执行。
+        let ids = st
+            .db
+            .with(|conn| db::online_cache_clear_candidates(conn, keep_unread, &cutoff).map_err(err))
+            .map_err(BackendError::Msg)?;
+        let mut bytes_freed = 0u64;
+        let mut files = 0u64;
+        let mut books = 0u64;
+        for id in &ids {
+            let (bytes, count) = st.online_cache.remove_book_with_stats(id);
+            if bytes > 0 || count > 0 {
+                books = books.saturating_add(1);
+            }
+            bytes_freed = bytes_freed.saturating_add(bytes);
+            files = files.saturating_add(count);
+        }
+        crate::logging::log_error(
+            "clear_online_cache",
+            &format!("已清理 {books} 本在线原图缓存，释放 {bytes_freed} 字节 / {files} 个文件"),
+        );
+        Ok(ClearOnlineCacheResult {
+            bytes_freed,
+            files,
+            books,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
     // ADR-036：SQLite 聚合同样移入 blocking 线程，避免占用 async 执行器。

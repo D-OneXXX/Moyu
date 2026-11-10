@@ -15,6 +15,8 @@
 //! - 单页/双页路径兜底：缩放后仍超 `MAX_SAFE_TEXTURE_H` 就等比再缩小，
 //!   宁可变小也不能把超限纹理交给前端。
 
+use std::sync::{Condvar, Mutex, OnceLock};
+
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use image::ImageFormat;
 
@@ -52,6 +54,100 @@ pub const MAX_SLICE_H: u32 = 4096;
 /// 上限由本常量兜住（160M px × 4B ≈ 640MB，仅极端输入才会触及）。
 /// 解码后立刻转 RGB 再缩放（见 `render_raw_with`），不再额外分配一份 RGBA 缩放副本。
 const MAX_SOURCE_PIXELS: u64 = 160_000_000;
+
+/// **整图展开并发上限**（进程级）。
+///
+/// WebP / GIF / 交错 PNG / 非长图 PNG 等没有逐带解码路径，只能一次性把源图
+/// 展开成完整 RGBA 栅格；单张 160M px 的极端页面峰值可达数百 MB。多页同时
+/// 渲染时若不设闸，内存会按页数线性叠加（审计中的 OOM 风险）。
+/// 这里只允许 2 个重解码同时进行，其余线程在闸门处等待。
+pub(crate) const HEAVY_DECODE_SEMAPHORE: usize = 2;
+
+/// 进入闸门的源图像素阈值：小于 16M px（约 4096×4096）的展开很快、
+/// 峰值可控，直接放行，避免小图被无谓排队。
+const HEAVY_DECODE_MIN_PIXELS: u64 = 16_000_000;
+
+/// 进程级重解码闸门（`Mutex<usize>` + `Condvar` + RAII 名额）。
+///
+/// 毒化容错：任何持有者 panic 后锁会中毒，但名额在 `Drop` 里仍会归还，
+/// 后续 `lock()` 一律 `into_inner()` 继续使用，绝不因为一次解码 panic
+/// 就把整个阅读器卡死。
+struct HeavyDecodeGate {
+    active: Mutex<usize>,
+    released: Condvar,
+}
+
+impl HeavyDecodeGate {
+    fn new() -> Self {
+        Self {
+            active: Mutex::new(0),
+            released: Condvar::new(),
+        }
+    }
+
+    /// 持有名额直到返回的 permit 被 drop；`pixels` 低于阈值时返回 `None`
+    /// （不触碰任何名额，调用方直接放行）。
+    fn acquire(&self, pixels: u64) -> Option<HeavyDecodePermit<'_>> {
+        if pixels < HEAVY_DECODE_MIN_PIXELS {
+            return None;
+        }
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        while *active >= HEAVY_DECODE_SEMAPHORE {
+            active = self.released.wait(active).unwrap_or_else(|e| e.into_inner());
+        }
+        *active += 1;
+        Some(HeavyDecodePermit { gate: self })
+    }
+
+    #[cfg(test)]
+    fn try_acquire(&self, pixels: u64) -> Option<HeavyDecodePermit<'_>> {
+        if pixels < HEAVY_DECODE_MIN_PIXELS {
+            return None;
+        }
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        if *active >= HEAVY_DECODE_SEMAPHORE {
+            return None;
+        }
+        *active += 1;
+        Some(HeavyDecodePermit { gate: self })
+    }
+
+    #[cfg(test)]
+    fn active_count(&self) -> usize {
+        *self.active.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+static HEAVY_DECODE_GATE: OnceLock<HeavyDecodeGate> = OnceLock::new();
+
+fn heavy_decode_gate() -> &'static HeavyDecodeGate {
+    HEAVY_DECODE_GATE.get_or_init(HeavyDecodeGate::new)
+}
+
+/// 申请重解码名额；返回 `None` 表示图片低于阈值、无需排队。
+fn acquire_heavy_decode(pixels: u64) -> Option<HeavyDecodePermit<'static>> {
+    heavy_decode_gate().acquire(pixels)
+}
+
+/// RAII 重解码名额：drop 时归还并唤醒一个等待者。
+struct HeavyDecodePermit<'a> {
+    gate: &'a HeavyDecodeGate,
+}
+
+impl Drop for HeavyDecodePermit<'_> {
+    fn drop(&mut self) {
+        let mut active = self.gate.active.lock().unwrap_or_else(|e| e.into_inner());
+        *active = active.saturating_sub(1);
+        drop(active);
+        self.gate.released.notify_one();
+    }
+}
+
+/// 源图像素数（u64，避免 32 位溢出）。
+fn pixel_count(w: u32, h: u32) -> u64 {
+    u64::from(w).saturating_mul(u64::from(h))
+}
+
 /// Web requests materialize a complete logical page at once. Bound both the
 /// tile plan and the accumulated encoded output before caching any of it.
 pub(crate) const MAX_WEBTOON_WEB_TILES: u32 = 1024;
@@ -283,6 +379,9 @@ fn render_raw_with(
         return render_tall_jpeg_with(raw, sw, sh, max_w, max_h, encode_data_url);
     }
 
+    // 非长图 JPEG 的这条路径是**整图解码**（含 WebP / GIF / 交错 PNG）：
+    // 16M px 以上进入进程级闸门，最多 2 张同时展开。
+    let _heavy_decode = acquire_heavy_decode(pixel_count(sw, sh));
     let img = image::load_from_memory_with_format(&raw.bytes, fmt)?;
     // 目标尺寸直接落到纹理安全线内：避免先缩放成超限大图再压扁（省一份峰值内存）。
     let (tw, th) = fit_size(sw, sh, max_w, max_h);
@@ -333,7 +432,12 @@ fn render_tall_jpeg_with(
     let (tw, th) = fit_size(sw, sh, max_w, max_h);
     // 纹理安全兜底先算目标尺寸：直接缩到安全尺寸，不生成整高副本。
     let (fw, fh) = safe_fit(tw, th);
-    let raster = decode_tall_jpeg_raster(raw, tw, tall_want_h(sw, sh, tw))?;
+    let raster = decode_tall_jpeg_raster(
+        raw,
+        tw,
+        tall_want_h(sw, sh, tw),
+        pixel_count(sw, sh),
+    )?;
     // 缩放解码的结果可能比目标略大（档位 1/2^k），精确缩到位。
     let rgb = if raster.width() == fw && raster.height() == fh {
         raster
@@ -359,6 +463,7 @@ fn decode_tall_jpeg_raster(
     raw: &RawPage,
     req_w: u32,
     req_h: u32,
+    source_px: u64,
 ) -> Result<image::RgbImage, BackendError> {
     let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(&raw.bytes));
     decoder
@@ -396,6 +501,9 @@ fn decode_tall_jpeg_raster(
         }
         _ => {
             // CMYK 等罕见格式退回常规解码（长图 CMYK 极罕见；牺牲一次全分辨率）。
+            // 这是整图展开：先释放 IDCT 缩放缓冲，再按源像素数进入闸门。
+            drop(pixels);
+            let _heavy_decode = acquire_heavy_decode(source_px);
             let img = image::load_from_memory_with_format(&raw.bytes, ImageFormat::Jpeg)?;
             Ok(into_rgb(img))
         }
@@ -562,8 +670,10 @@ fn render_webtoon_tiles_with(
 
     // 工作栅格（只解码一次）：长图 JPEG 走 IDCT 缩放解码；其余格式整图解码。
     let work: image::RgbImage = if sh > TALL_IMAGE_H && fmt == ImageFormat::Jpeg {
-        decode_tall_jpeg_raster(raw, tw, tall_want_h(sw, sh, tw))?
+        decode_tall_jpeg_raster(raw, tw, tall_want_h(sw, sh, tw), pixel_count(sw, sh))?
     } else {
+        // WebP / GIF / 交错 PNG 等没有逐带路径：整图展开受进程级闸门约束。
+        let _heavy_decode = acquire_heavy_decode(pixel_count(sw, sh));
         let img = image::load_from_memory_with_format(&raw.bytes, fmt)?;
         into_rgb(img)
     };
@@ -1631,6 +1741,96 @@ mod tests {
             requested,
             format!("data:image/jpeg;base64,{}", B64.encode(&pages[0].bytes))
         );
+    }
+
+    /* ---------------- 进程级重解码闸门（整图展开并发上限） ---------------- */
+
+    /// 4 个线程同时申请名额：任意时刻实际并发不得超过 2。
+    #[test]
+    fn heavy_decode_gate_caps_concurrency_at_two() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let gate = Arc::new(HeavyDecodeGate::new());
+        let barrier = Arc::new(Barrier::new(4));
+        let current = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let gate = gate.clone();
+            let barrier = barrier.clone();
+            let current = current.clone();
+            let peak = peak.clone();
+            let completed = completed.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let _permit = gate
+                    .acquire(HEAVY_DECODE_MIN_PIXELS)
+                    .expect("超过阈值的解码必须进入闸门");
+                let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                // 留出重叠窗口：若闸门失效，4 个线程会同时观察到 4。
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                current.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), 4, "所有等待者最终都要拿到名额");
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            HEAVY_DECODE_SEMAPHORE,
+            "并发峰值必须恰好等于闸门上限 {HEAVY_DECODE_SEMAPHORE}"
+        );
+    }
+
+    /// 小于阈值的图片直接放行，不占用也不排队任何名额。
+    #[test]
+    fn heavy_decode_gate_bypasses_small_images() {
+        let gate = HeavyDecodeGate::new();
+        assert!(
+            gate.acquire(HEAVY_DECODE_MIN_PIXELS - 1).is_none(),
+            "低于阈值的图片不应进入闸门"
+        );
+        assert_eq!(gate.active_count(), 0, "绕过的图片不得占用名额");
+
+        let permit = gate.acquire(HEAVY_DECODE_MIN_PIXELS).expect("阈值本身必须受控");
+        assert_eq!(gate.active_count(), 1);
+        drop(permit);
+        assert_eq!(gate.active_count(), 0, "drop 必须归还名额");
+
+        // 进程级闸门同样遵守阈值：小图永远不触碰全局名额。
+        assert!(acquire_heavy_decode(HEAVY_DECODE_MIN_PIXELS - 1).is_none());
+    }
+
+    /// 持有名额的线程 panic：RAII 必须在 unwind 时归还名额，不得永久泄漏。
+    #[test]
+    fn panicking_heavy_decode_holder_releases_the_slot() {
+        use std::sync::Arc;
+
+        let gate = Arc::new(HeavyDecodeGate::new());
+        let holder = gate.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _permit = holder
+                .acquire(HEAVY_DECODE_MIN_PIXELS)
+                .expect("超过阈值的解码必须进入闸门");
+            panic!("模拟解码 panic");
+        }));
+        assert!(result.is_err(), "panic 必须被 catch_unwind 捕获");
+
+        // 两个名额都必须重新可用；若泄漏一个，第二次 try_acquire 会返回 None
+        // （而不是在 release 构建里永久阻塞）。
+        let first = gate.try_acquire(HEAVY_DECODE_MIN_PIXELS).expect("名额 1 未归还");
+        let second = gate.try_acquire(HEAVY_DECODE_MIN_PIXELS).expect("名额 2 未归还");
+        assert!(
+            gate.try_acquire(HEAVY_DECODE_MIN_PIXELS).is_none(),
+            "第三个并发请求必须被闸门拒绝"
+        );
+        drop((first, second));
+        assert_eq!(gate.active_count(), 0);
     }
 
     /// WS3 characterization（**非 RED**）：按需生成的 data_url 与旧预生成逐字节一致，

@@ -3509,6 +3509,53 @@ fn safe_telegram_download_name(raw: &str) -> String {
     }
 }
 
+/// `foo.cbz` → `foo.cbz.part`：不经过字符串转换，保留任意合法文件名。
+fn telegram_part_path(target: &Path) -> PathBuf {
+    let mut raw = target.as_os_str().to_os_string();
+    raw.push(".part");
+    PathBuf::from(raw)
+}
+
+/// 下载完成后校验魔数，再把 `.part` 改名成最终路径。
+///
+/// Telegram CDN 可能返回登录页/错误页而不是附件，入库前必须嗅探内容：
+/// - ZIP / RAR → 接受（RAR 后续由 `prepare_import_cbz` 转码）；
+/// - 7z → 拒绝并给出稳定码 `archive-disguised-7z`；
+/// - 其它（HTML/图片/空文件）→ 拒绝并给出稳定码 `archive-not-zip`。
+///
+/// 任何失败都会删除 `.part`，绝不让半成品或伪装文件进入书库。
+fn finalize_downloaded_archive(part: &Path, target: &Path) -> Result<(), BackendError> {
+    use crate::archive_convert::{sniff_archive, ArchiveKind};
+    let outcome = (|| -> Result<(), BackendError> {
+        match sniff_archive(part)? {
+            ArchiveKind::Zip | ArchiveKind::Rar => {}
+            ArchiveKind::SevenZ => {
+                return Err(BackendError::Zip(
+                    "该文件实际是 7z 压缩包，请转换为标准无密码 ZIP/CBZ 后再导入（archive-disguised-7z）"
+                        .into(),
+                ));
+            }
+            ArchiveKind::Other => {
+                return Err(BackendError::Zip(
+                    "该文件不是有效的 ZIP/CBZ 压缩包，请转为标准无密码 ZIP/CBZ（archive-not-zip）"
+                        .into(),
+                ));
+            }
+        }
+        if target.exists() {
+            std::fs::remove_file(target)?;
+        }
+        std::fs::rename(part, target).map_err(|_| {
+            BackendError::Network("Telegram 附件落盘失败（online-fetch-failed）".into())
+        })?;
+        Ok(())
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(part);
+    }
+    outcome
+}
+
 #[tauri::command]
 pub async fn download_telegram_document(
     state: State<'_, Arc<AppState>>,
@@ -3545,18 +3592,6 @@ pub async fn download_telegram_document(
             &headers,
             st.assisted_sessions.clone(),
         )?;
-        let resp = http.get(
-            canonical.as_str(),
-            TELEGRAM_DOC_MAX_BYTES,
-            Some("https://t.me/"),
-            Some(canonical.as_str()),
-        )?;
-        if !(200..300).contains(&resp.status) {
-            return Err(BackendError::Network(format!(
-                "Telegram 附件 HTTP {}",
-                resp.status
-            )));
-        }
         let safe_name = safe_telegram_download_name(&filename);
         let display_title = title_for(Path::new(&safe_name));
         let root = st
@@ -3567,7 +3602,21 @@ pub async fn download_telegram_document(
         std::fs::create_dir_all(&root)?;
         let digest = hex::encode(Sha256::digest(canonical.as_str().as_bytes()));
         let path = root.join(format!("{}-{}", &digest[..12], safe_name));
-        std::fs::write(&path, &resp.body)?;
+        // 流式落盘到 `.part`：256 MiB 的附件不再整包驻留内存；
+        // 上次中断留下的 `.part` 先删除，`create_new` 保证只写全新文件。
+        let part = telegram_part_path(&path);
+        let _ = std::fs::remove_file(&part);
+        if let Err(error) = http.download_to(
+            canonical.as_str(),
+            TELEGRAM_DOC_MAX_BYTES,
+            Some("https://t.me/"),
+            Some(canonical.as_str()),
+            &part,
+        ) {
+            let _ = std::fs::remove_file(&part);
+            return Err(error.into());
+        }
+        finalize_downloaded_archive(&part, &path)?;
         let db_path = st.db_path();
         let converted_root = converted_root_for(&db_path);
         let prepared = match crate::archive_convert::prepare_import_cbz(&path, &converted_root) {
@@ -4962,6 +5011,69 @@ mod tests {
         assert_eq!(safe_telegram_download_name("book.cbr"), "book.cbr");
         assert_eq!(safe_telegram_download_name("book.RAR"), "book.RAR");
         assert_eq!(safe_telegram_download_name("book"), "book.cbz");
+    }
+
+    #[test]
+    fn telegram_part_path_appends_part_without_losing_extension() {
+        assert_eq!(
+            telegram_part_path(Path::new("lib/foo.cbz")),
+            PathBuf::from("lib/foo.cbz.part")
+        );
+        assert_eq!(
+            telegram_part_path(Path::new("foo")),
+            PathBuf::from("foo.part")
+        );
+    }
+
+    #[test]
+    fn telegram_finalize_accepts_zip_and_rar_and_replaces_stale_target() {
+        let dir = test_temp_dir("telegram-finalize-ok");
+        for (name, magic) in [
+            ("book.cbz", b"PK\x03\x04zip-payload".as_slice()),
+            ("book.cbr", b"Rar!\x1a\x07\x00rar-payload".as_slice()),
+        ] {
+            let target = dir.join(name);
+            let part = telegram_part_path(&target);
+            // 旧目标（上一次下载）必须被新附件替换。
+            std::fs::write(&target, b"stale").unwrap();
+            std::fs::write(&part, magic).unwrap();
+            finalize_downloaded_archive(&part, &target).unwrap();
+            assert!(!part.exists(), "{name}: .part 必须改名消失");
+            assert_eq!(std::fs::read(&target).unwrap(), magic, "{name}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn telegram_finalize_rejects_7z_and_junk_and_removes_part() {
+        let dir = test_temp_dir("telegram-finalize-reject");
+        let target = dir.join("book.cbz");
+        let part = telegram_part_path(&target);
+
+        // 7z 魔数（37 7A BC AF 27 1C）→ 稳定码 archive-disguised-7z。
+        std::fs::write(&part, [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00]).unwrap();
+        let error = finalize_downloaded_archive(&part, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("archive-disguised-7z"), "{error}");
+        assert!(!part.exists(), "7z 必须删除 .part");
+        assert!(!target.exists(), "7z 不得改名成目标文件");
+
+        // Telegram 错误页/登录页 → 稳定码 archive-not-zip。
+        std::fs::write(&part, b"<html>please login</html>").unwrap();
+        let error = finalize_downloaded_archive(&part, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("archive-not-zip"), "{error}");
+        assert!(!part.exists(), "伪装内容必须删除 .part");
+        assert!(!target.exists());
+
+        // 空文件同样拒绝，不留半成品。
+        std::fs::write(&part, b"").unwrap();
+        assert!(finalize_downloaded_archive(&part, &target).is_err());
+        assert!(!part.exists() && !target.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

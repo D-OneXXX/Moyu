@@ -440,16 +440,16 @@ export async function runOnlineSuite(ctx, report) {
     const telegramBook = await invoke(page, "resolve_online_url", {
       url: "https://t.me/testchannel/102",
     });
-    if (pageCount(telegramBook) !== 3) {
+    if (pageCount(telegramBook) !== 5) {
       fail(report, {
         id: "online:telegram-message",
         suite: "online",
         layer: "integration",
-        title: "Telegram 相册消息未解析为正文页",
+        title: "Telegram 相册消息未聚合为完整正文页",
         severity: "P1",
         details: JSON.stringify(telegramBook),
         location: "src-tauri/src/online/telegram.rs",
-        expected: "3 张相册图，头像/贴纸剔除",
+        expected: "5 张相册图（102+103 同 grouped-id 聚合），头像/贴纸剔除",
         actual: `${pageCount(telegramBook)} 页`,
       });
     } else {

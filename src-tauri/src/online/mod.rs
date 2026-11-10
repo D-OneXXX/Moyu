@@ -4,6 +4,7 @@
 
 pub mod direct;
 pub mod filter;
+pub mod gallery;
 pub mod handoff;
 pub mod html;
 pub mod http;
@@ -38,10 +39,18 @@ pub struct PageAnchor {
     pub refresh_base: Option<String>,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// 单个页面引用（URL + 可选尺寸提示 + 过期源锚点）。
+///
+/// `viewer = true` 表示该 URL 是二级查看器页面：读取时才解析真实图片地址。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PageRef {
     pub url: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub viewer: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,6 +199,7 @@ pub fn normalize_page_urls(page_urls: &[String]) -> Result<Vec<PageRef>, Backend
         if seen.insert(page.clone()) {
             pages.push(PageRef {
                 url: page,
+                viewer: false,
                 width: None,
                 height: None,
                 anchor: None,
@@ -291,6 +301,12 @@ pub fn resolve_with(
         .iter()
         .find(|byte| !byte.is_ascii_whitespace())
         .is_some_and(|byte| *byte == b'<');
+    // 二级分页索引画廊：阶段一只收集 viewer URL，不请求查看器页面。
+    if body_is_html {
+        if let Some(meta) = gallery::resolve_from_html(http, &resp.body, &base_url, &url)? {
+            return Ok(meta);
+        }
+    }
     let mut effective_memory = memory.clone();
     if effective_memory.host.is_empty() {
         effective_memory.host = filter::url_host(url.as_str());
@@ -479,9 +495,35 @@ mod tests {
     }
 
     #[test]
+    fn page_ref_viewer_flag_is_backward_compatible() {
+        let legacy: PageRef = serde_json::from_str(r#"{"url":"https://x/s/1-2"}"#).unwrap();
+        assert!(!legacy.viewer);
+        let image = PageRef {
+            url: "https://x/1.jpg".into(),
+            viewer: false,
+            width: None,
+            height: None,
+            anchor: None,
+        };
+        assert!(!serde_json::to_string(&image).unwrap().contains("viewer"));
+        let viewer = PageRef {
+            url: "https://x/s/1-2".into(),
+            viewer: true,
+            width: None,
+            height: None,
+            anchor: None,
+        };
+        let json = serde_json::to_string(&viewer).unwrap();
+        assert!(json.contains(r#""viewer":true"#), "{json}");
+        let round: PageRef = serde_json::from_str(&json).unwrap();
+        assert!(round.viewer);
+    }
+
+    #[test]
     fn page_name_uses_filename_or_index() {
         let p = PageRef {
             url: "https://x/a/001.jpg".into(),
+            viewer: false,
             width: None,
             height: None,
             anchor: None,
@@ -489,6 +531,7 @@ mod tests {
         assert_eq!(page_name(&p, 0), "001.jpg");
         let p = PageRef {
             url: "https://x/".into(),
+            viewer: false,
             width: None,
             height: None,
             anchor: None,

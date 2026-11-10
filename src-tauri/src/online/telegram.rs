@@ -344,34 +344,28 @@ fn resolve_message(
     memory: &FilterMemory,
     thresholds: &FilterThresholds,
 ) -> Result<OnlineBookMeta, BackendError> {
-    let embed_url = format!("{refresh_base}/{channel}/{message_id}?embed=1");
-    let html = get_html(http, &embed_url, "https://t.me/")?;
-    let messages = parse_messages(&html);
-    let message = messages
-        .iter()
-        .find(|m| m.id == message_id)
-        .or_else(|| messages.first())
-        .ok_or_else(|| BackendError::Msg("Telegram 消息页没有可解析内容".into()))?;
-    if message.photos.is_empty() {
-        if let Some(telegraph) = message.telegraph.as_deref() {
+    let group = fetch_message_group(http, channel, message_id, refresh_base)?;
+    if group.photos.is_empty() {
+        if let Some(telegraph) = group.telegraph.as_deref() {
             return resolve_telegraph(http, telegraph, memory, thresholds);
         }
-        if message.document.is_some() {
+        if group.document.is_some() {
             return Err(BackendError::Msg("压缩包附件请使用下载按钮导入".into()));
         }
         return Err(BackendError::Msg(
             "未找到正文图片；该消息可能是纯文本或贴纸".into(),
         ));
     }
-    let canonical = url::Url::parse(&format!("https://t.me/{channel}/{message_id}"))
+    // 合并后的章节以首条消息为书身份，和频道章节列表保持一致。
+    let canonical = url::Url::parse(&format!("https://t.me/{channel}/{}", group.first_id))
         .map_err(|e| BackendError::Msg(format!("Telegram 规范化失败：{e}")))?;
-    let title = chapter_title(&message.text, message_id);
-    let candidates: Vec<CandidateImage> = message
+    let title = chapter_title(&group.text, group.first_id);
+    let candidates: Vec<CandidateImage> = group
         .photos
         .iter()
         .enumerate()
-        .map(|(index, url)| CandidateImage {
-            url: url.clone(),
+        .map(|(index, photo)| CandidateImage {
+            url: photo.url.clone(),
             width: None,
             height: None,
             order: index,
@@ -382,20 +376,16 @@ fn resolve_message(
             source: CandidateSource::Telegram,
             anchor: Some(PageAnchor {
                 channel: channel.to_string(),
-                message_id,
-                photo_index: index as u32,
+                message_id: photo.message_id,
+                photo_index: photo.photo_index,
                 refresh_base: Some(refresh_base.to_string()),
             }),
         })
         .collect();
     let referer = canonical.as_str().to_string();
+    // 白名单来源不做 48 张截断：21 页以上的分包相册必须全部保留。
     let prefetched = if thresholds.probe_missing_dimensions {
-        preprobe_missing(
-            http,
-            &referer,
-            &candidates,
-            crate::online::filter::MAX_PROBE_IMAGES,
-        )
+        preprobe_missing(http, &referer, &candidates, candidates.len())
     } else {
         std::collections::HashMap::new()
     };
@@ -408,6 +398,34 @@ fn resolve_message(
         )));
     }
     make_filtered_meta(&canonical, &title, outcome, MetaLinks::default())
+}
+
+/// 先看目标消息前后 11 条（连续分包相册通常同页）；失败再退回单消息 embed。
+fn fetch_message_group(
+    http: &dyn HttpTransport,
+    channel: &str,
+    message_id: i64,
+    refresh_base: &str,
+) -> Result<MessageGroup, BackendError> {
+    let preview_url = format!(
+        "{refresh_base}/s/{channel}?before={}",
+        message_id.saturating_add(11)
+    );
+    if let Ok(html) = get_html(http, &preview_url, "https://t.me/") {
+        if let Some(group) = find_message_group(&html, message_id) {
+            return Ok(group);
+        }
+    }
+    let embed_url = format!("{refresh_base}/{channel}/{message_id}?embed=1");
+    let html = get_html(http, &embed_url, "https://t.me/")?;
+    find_message_group(&html, message_id)
+        .ok_or_else(|| BackendError::Msg("Telegram 消息页没有可解析内容".into()))
+}
+
+fn find_message_group(html: &str, message_id: i64) -> Option<MessageGroup> {
+    group_messages(parse_messages(html))
+        .into_iter()
+        .find(|group| group.member_ids.contains(&message_id))
 }
 
 fn resolve_telegraph(
@@ -478,12 +496,7 @@ fn resolve_telegraph(
     }
     let referer = canonical.as_str().to_string();
     let prefetched = if thresholds.probe_missing_dimensions {
-        preprobe_missing(
-            http,
-            &referer,
-            &candidates,
-            crate::online::filter::MAX_PROBE_IMAGES,
-        )
+        preprobe_missing(http, &referer, &candidates, candidates.len())
     } else {
         std::collections::HashMap::new()
     };
@@ -537,6 +550,7 @@ pub fn refresh_page_url(
 struct ParsedMessage {
     id: i64,
     grouped_id: Option<String>,
+    published: Option<i64>,
     text: String,
     photos: Vec<String>,
     telegraph: Option<String>,
@@ -544,41 +558,93 @@ struct ParsedMessage {
 }
 
 #[derive(Debug, Clone)]
+struct GroupPhoto {
+    /// 图片实际所在消息；跨相册合并后仍按该消息刷新直链。
+    message_id: i64,
+    /// 该消息内部的 photo 序号。
+    photo_index: u32,
+    url: String,
+}
+
+#[derive(Debug, Clone)]
 struct MessageGroup {
     first_id: i64,
-    grouped_id: Option<String>,
     messages: usize,
     text: String,
-    photos: Vec<String>,
+    last_text: String,
+    published: Option<i64>,
+    last_published: Option<i64>,
+    photos: Vec<GroupPhoto>,
     telegraph: Option<String>,
     document: Option<TelegramDocument>,
+    member_ids: Vec<i64>,
 }
 
 impl MessageGroup {
     fn from_message(message: ParsedMessage) -> Self {
+        let photos = message
+            .photos
+            .iter()
+            .enumerate()
+            .map(|(index, url)| GroupPhoto {
+                message_id: message.id,
+                photo_index: index as u32,
+                url: url.clone(),
+            })
+            .collect();
         Self {
             first_id: message.id,
-            grouped_id: message.grouped_id,
             messages: 1,
-            text: message.text,
-            photos: message.photos,
+            text: message.text.clone(),
+            last_text: message.text,
+            published: message.published,
+            last_published: message.published,
+            photos,
             telegraph: message.telegraph,
             document: message.document,
+            member_ids: vec![message.id],
         }
     }
 
     fn push(&mut self, message: ParsedMessage) {
         self.messages += 1;
         if self.text.is_empty() {
-            self.text = message.text;
+            self.text = message.text.clone();
         }
-        self.photos.extend(message.photos);
+        for (index, url) in message.photos.iter().enumerate() {
+            self.photos.push(GroupPhoto {
+                message_id: message.id,
+                photo_index: index as u32,
+                url: url.clone(),
+            });
+        }
         if self.telegraph.is_none() {
             self.telegraph = message.telegraph;
         }
         if self.document.is_none() {
             self.document = message.document;
         }
+        self.last_text = message.text;
+        self.last_published = message.published;
+        self.member_ids.push(message.id);
+    }
+
+    fn absorb(&mut self, other: MessageGroup) {
+        self.messages += other.messages;
+        self.photos.extend(other.photos);
+        self.member_ids.extend(other.member_ids);
+        if self.telegraph.is_none() {
+            self.telegraph = other.telegraph;
+        }
+        if self.document.is_none() {
+            self.document = other.document;
+        }
+        self.last_text = other.last_text;
+        self.last_published = other.last_published;
+    }
+
+    fn photo_only(&self) -> bool {
+        self.telegraph.is_none() && self.document.is_none() && !self.photos.is_empty()
     }
 }
 
@@ -586,6 +652,8 @@ fn parse_messages(html: &str) -> Vec<ParsedMessage> {
     let wrap_re =
         Regex::new(r#"(?is)<div[^>]*class="(?:[^"]*\s)?tgme_widget_message(?:\s[^"]*)?"[^>]*>"#)
             .expect("message regex");
+    let time_re =
+        Regex::new(r#"(?is)<time[^>]*datetime\s*=\s*["']([^"']+)["']"#).expect("time regex");
     let mut starts = Vec::new();
     for m in wrap_re.find_iter(html) {
         starts.push((m.start(), m.end(), m.as_str().to_string()));
@@ -604,6 +672,10 @@ fn parse_messages(html: &str) -> Vec<ParsedMessage> {
             continue;
         };
         let grouped_id = attr(tag, "data-grouped-id").filter(|v| !v.trim().is_empty());
+        let published = time_re
+            .captures(block)
+            .and_then(|caps| chrono::DateTime::parse_from_rfc3339(caps[1].trim()).ok())
+            .map(|time| time.timestamp());
         let text = message_text(block);
         let photos = message_photos(block);
         let telegraph = telegraph_link(block);
@@ -612,6 +684,7 @@ fn parse_messages(html: &str) -> Vec<ParsedMessage> {
         out.push(ParsedMessage {
             id,
             grouped_id,
+            published,
             text,
             photos,
             telegraph,
@@ -623,39 +696,61 @@ fn parse_messages(html: &str) -> Vec<ParsedMessage> {
 }
 
 fn group_messages(messages: Vec<ParsedMessage>) -> Vec<MessageGroup> {
+    // 第一阶段：同一 grouped_id 的相册成员聚合。
     let mut groups: Vec<MessageGroup> = Vec::new();
+    let mut grouped_positions: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for message in messages {
         if let Some(grouped_id) = message.grouped_id.as_deref() {
-            if let Some(group) = groups
-                .iter_mut()
-                .find(|g| g.grouped_id.as_deref() == Some(grouped_id))
-            {
-                group.push(message);
+            if let Some(&position) = grouped_positions.get(grouped_id) {
+                groups[position].push(message);
                 continue;
             }
         }
-        let can_merge = groups.last().is_some_and(|last| {
-            let current_photo_only = !message.photos.is_empty()
-                && message.telegraph.is_none()
-                && message.document.is_none();
-            let last_photo_only =
-                last.telegraph.is_none() && last.document.is_none() && !last.photos.is_empty();
-            current_photo_only
-                && last_photo_only
-                && message.id - last.first_id <= 1
-                && (message.text.trim().is_empty()
-                    || last.text.trim().is_empty()
-                    || message.text.trim() == last.text.trim())
-        });
-        if can_merge {
-            if let Some(last) = groups.last_mut() {
-                last.push(message);
-            }
-        } else {
-            groups.push(MessageGroup::from_message(message));
+        if let Some(grouped_id) = message.grouped_id.clone() {
+            grouped_positions.insert(grouped_id, groups.len());
         }
+        groups.push(MessageGroup::from_message(message));
     }
-    groups
+    // 第二阶段：Telegram 单相册上限 10 图，连续分包相册按时间/标题合并。
+    let mut merged: Vec<MessageGroup> = Vec::new();
+    for group in groups {
+        if let Some(last) = merged.last_mut() {
+            if can_merge_adjacent(last, &group) {
+                last.absorb(group);
+                continue;
+            }
+        }
+        merged.push(group);
+    }
+    merged
+}
+
+fn can_merge_adjacent(previous: &MessageGroup, current: &MessageGroup) -> bool {
+    if !previous.photo_only() || !current.photo_only() {
+        return false;
+    }
+    let time_ok = match (previous.last_published, current.published) {
+        (Some(previous_time), Some(current_time)) => (current_time - previous_time).abs() <= 180,
+        // 旧预览页没有 <time>：保留原相邻 message id 规则。
+        _ => current.first_id - previous.first_id <= 1,
+    };
+    if !time_ok {
+        return false;
+    }
+    let current_title = first_line(&current.text);
+    let previous_title = first_line(&previous.text);
+    current.text.trim().is_empty()
+        || current_title == previous_title
+        || current.text.trim() == previous.last_text.trim()
+}
+
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn channel_title(html: &str) -> Option<String> {
@@ -1140,6 +1235,144 @@ mod tests {
         assert_eq!(meta.page_count, 3);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
         assert_eq!(stored.filtered.len(), 1);
+    }
+
+    /// 构造频道/预览页：每条消息可带发布时间、标题与 N 张相册图。
+    fn album_page(messages: &[(i64, &str, &str, usize)]) -> String {
+        let mut html = String::from(
+            r#"<html><head><meta property="og:title" content="QA Channel"></head><body>"#,
+        );
+        for (id, datetime, text, photos) in messages {
+            html.push_str(&format!(
+                r#"<div class="tgme_widget_message" data-post="demo/{id}">"#
+            ));
+            if !datetime.is_empty() {
+                html.push_str(&format!(
+                    r#"<time class="tgme_widget_message_date" datetime="{datetime}">t</time>"#
+                ));
+            }
+            if !text.is_empty() {
+                html.push_str(&format!(
+                    r#"<div class="tgme_widget_message_text">{text}</div>"#
+                ));
+            }
+            for index in 1..=*photos {
+                html.push_str(&format!(
+                    r#"<a class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn/{id}-{index}.png')"></a>"#
+                ));
+            }
+            html.push_str("</div>");
+        }
+        html.push_str("</body></html>");
+        html
+    }
+
+    fn resolve_without_probes(http: &MapHttp, url: &str) -> Result<OnlineBookMeta, BackendError> {
+        resolve_book(
+            http,
+            url,
+            &FilterMemory::default(),
+            &FilterThresholds {
+                probe_missing_dimensions: false,
+                ..FilterThresholds::default()
+            },
+        )
+    }
+
+    #[test]
+    fn channel_merges_consecutive_albums_within_180_seconds() {
+        let html = album_page(&[
+            (200, "2024-01-01T00:00:00Z", "第01话 相册", 7),
+            (201, "2024-01-01T00:00:30Z", "", 7),
+            (202, "2024-01-01T00:01:00Z", "", 7),
+        ]);
+        let http = MapHttp::new(vec![("https://t.me/s/demo", 200, html.into_bytes())]);
+        let channel = fetch_channel(
+            &http,
+            "https://t.me/s/demo",
+            None,
+            &FilterMemory::default(),
+            &FilterThresholds::default(),
+        )
+        .unwrap();
+        assert_eq!(channel.chapters.len(), 1, "{:?}", channel.chapters);
+        assert_eq!(channel.chapters[0].page_count, Some(21));
+        assert_eq!(channel.chapters[0].message_id, 200);
+        assert!(channel.chapters[0].grouped);
+    }
+
+    #[test]
+    fn single_message_resolves_all_parts_with_per_message_anchors() {
+        let html = album_page(&[
+            (200, "2024-01-01T00:00:00Z", "第01话 相册", 7),
+            (201, "2024-01-01T00:00:30Z", "", 7),
+            (202, "2024-01-01T00:01:00Z", "", 7),
+        ]);
+        let http = MapHttp::new(vec![(
+            "https://t.me/s/demo?before=211",
+            200,
+            html.into_bytes(),
+        )]);
+        let meta = resolve_without_probes(&http, "https://t.me/demo/200").unwrap();
+        assert_eq!(meta.page_count, 21);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let anchors: Vec<(i64, u32)> = stored
+            .pages
+            .iter()
+            .map(|page| {
+                let anchor = page.anchor.as_ref().expect("相册页必须带锚点");
+                (anchor.message_id, anchor.photo_index)
+            })
+            .collect();
+        assert_eq!(anchors[0], (200, 0));
+        assert_eq!(anchors[6], (200, 6));
+        assert_eq!(anchors[7], (201, 0));
+        assert_eq!(anchors[13], (201, 6));
+        assert_eq!(anchors[14], (202, 0));
+        assert_eq!(anchors[20], (202, 6));
+        assert_eq!(stored.pages[0].url, "https://cdn/200-1.png");
+    }
+
+    #[test]
+    fn channel_does_not_merge_albums_beyond_180_seconds() {
+        let html = album_page(&[
+            (200, "2024-01-01T00:00:00Z", "第01话", 7),
+            (201, "2024-01-01T00:00:30Z", "", 7),
+            (202, "2024-01-01T00:05:00Z", "", 7),
+        ]);
+        let http = MapHttp::new(vec![("https://t.me/s/demo", 200, html.into_bytes())]);
+        let channel = fetch_channel(
+            &http,
+            "https://t.me/s/demo",
+            None,
+            &FilterMemory::default(),
+            &FilterThresholds::default(),
+        )
+        .unwrap();
+        assert_eq!(channel.chapters.len(), 2);
+        assert_eq!(channel.chapters[0].page_count, Some(14));
+        assert_eq!(channel.chapters[1].page_count, Some(7));
+    }
+
+    #[test]
+    fn channel_does_not_merge_album_with_independent_title() {
+        let html = album_page(&[
+            (200, "2024-01-01T00:00:00Z", "第01话", 7),
+            (201, "2024-01-01T00:00:30Z", "", 7),
+            (202, "2024-01-01T00:01:00Z", "第02话", 7),
+        ]);
+        let http = MapHttp::new(vec![("https://t.me/s/demo", 200, html.into_bytes())]);
+        let channel = fetch_channel(
+            &http,
+            "https://t.me/s/demo",
+            None,
+            &FilterMemory::default(),
+            &FilterThresholds::default(),
+        )
+        .unwrap();
+        assert_eq!(channel.chapters.len(), 2);
+        assert_eq!(channel.chapters[0].page_count, Some(14));
+        assert_eq!(channel.chapters[1].page_count, Some(7));
     }
 
     #[test]

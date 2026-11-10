@@ -85,6 +85,14 @@ pub enum CandidateSource {
     Telegraph,
 }
 
+impl CandidateSource {
+    /// Telegram / Telegraph 的图片来自用户明确打开的消息或文章，不再用
+    /// 中位宽度偏差与 48 张探测截断做二次猜测。
+    fn is_trusted(self) -> bool {
+        matches!(self, Self::Telegram | Self::Telegraph)
+    }
+}
+
 /// 图片探测结果（自然尺寸 + 可选内容指纹）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeInfo {
@@ -527,7 +535,7 @@ pub fn filter_candidates(
         let mut sha256 = None;
         if (width.is_none() || height.is_none())
             && thresholds.probe_missing_dimensions
-            && probed < MAX_PROBE_IMAGES
+            && (candidate.source.is_trusted() || probed < MAX_PROBE_IMAGES)
         {
             probed += 1;
             if let Some(info) = probe(&candidate) {
@@ -632,7 +640,7 @@ pub fn filter_candidates(
         let median_f = median as f32;
         let scored_len = scored.len();
         for (index, item) in scored.iter_mut().enumerate() {
-            if item.allow {
+            if item.allow || item.candidate.source.is_trusted() {
                 continue;
             }
             let (Some(width), Some(height)) = (item.width, item.height) else {
@@ -667,6 +675,7 @@ pub fn filter_candidates(
             }
             pages.push(PageRef {
                 url: item.candidate.url,
+                viewer: false,
                 width: item.width,
                 height: item.height,
                 anchor: item.candidate.anchor,
@@ -1010,6 +1019,88 @@ mod tests {
             outcome.blocked[0].reason.contains("profile")
                 || outcome.blocked[0].reason.contains("median")
         );
+    }
+
+    #[test]
+    fn trusted_sources_skip_median_width_penalty() {
+        let make = |source: CandidateSource| {
+            let mut candidates: Vec<CandidateImage> = (0..59)
+                .map(|index| {
+                    let mut item = candidate(
+                        &format!("https://cdn.example/pages/{:03}.jpg", index + 1),
+                        800,
+                        1200,
+                        index + 1,
+                    );
+                    item.source = source;
+                    item
+                })
+                .collect();
+            let mut cover = candidate("https://cdn.example/cover.jpg", 2000, 2000, 0);
+            cover.source = source;
+            candidates.insert(0, cover);
+            candidates
+        };
+        let trusted = run(make(CandidateSource::Telegram), &FilterMemory::default());
+        assert_eq!(trusted.pages.len(), 60, "{:?}", trusted.blocked);
+        let generic = run(make(CandidateSource::Json), &FilterMemory::default());
+        assert_eq!(generic.pages.len(), 59);
+        assert!(generic
+            .blocked
+            .iter()
+            .any(|page| page.url.ends_with("/cover.jpg")));
+    }
+
+    #[test]
+    fn trusted_sources_skip_probe_truncation() {
+        let make = |source: CandidateSource| {
+            (0..60)
+                .map(|index| {
+                    let mut item = CandidateImage::new(
+                        format!("https://cdn.example/pages/{:03}.jpg", index + 1),
+                        index,
+                    );
+                    item.source = source;
+                    item
+                })
+                .collect::<Vec<_>>()
+        };
+        let thresholds = FilterThresholds::default();
+        let mut trusted_probes = 0usize;
+        let mut trusted_probe = |_: &CandidateImage| {
+            trusted_probes += 1;
+            Some(ProbeInfo {
+                width: 800,
+                height: 1200,
+                sha256: None,
+            })
+        };
+        let trusted = filter_candidates(
+            make(CandidateSource::Telegram),
+            &FilterMemory::default(),
+            &thresholds,
+            &mut trusted_probe,
+        );
+        assert_eq!(trusted_probes, 60);
+        assert_eq!(trusted.pages.len(), 60);
+
+        let mut generic_probes = 0usize;
+        let mut generic_probe = |_: &CandidateImage| {
+            generic_probes += 1;
+            Some(ProbeInfo {
+                width: 800,
+                height: 1200,
+                sha256: None,
+            })
+        };
+        let generic = filter_candidates(
+            make(CandidateSource::Json),
+            &FilterMemory::default(),
+            &thresholds,
+            &mut generic_probe,
+        );
+        assert_eq!(generic_probes, crate::online::filter::MAX_PROBE_IMAGES);
+        assert_eq!(generic.pages.len(), 60);
     }
 
     #[test]

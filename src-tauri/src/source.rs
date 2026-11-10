@@ -487,6 +487,8 @@ pub struct OnlineSource {
     referer: String,
     /// 在线原图磁盘 L2；按 book + URL + Referer 缓存，离线重读不再发请求。
     cache: Option<Arc<crate::disk_cache::OnlinePageCache>>,
+    /// viewer URL -> 已解析的真实图片 URL（仅内存，避免重复抓查看器 HTML）。
+    viewer_targets: parking_lot::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl OnlineSource {
@@ -505,6 +507,7 @@ impl OnlineSource {
             permits: Arc::new(BlockingSemaphore::new(concurrency)),
             referer,
             cache,
+            viewer_targets: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -523,6 +526,76 @@ impl OnlineSource {
         }
     }
 
+    /// 二级查看器按需解包：只有缓存未命中时才请求 viewer HTML。
+    ///
+    /// `refresh = true` 时忽略内存映射，重新抓查看器页面（用于 403/404 直链过期）。
+    fn resolve_viewer_target(
+        &self,
+        page: &PageRef,
+        index: usize,
+        refresh: bool,
+    ) -> Result<String, BackendError> {
+        if !page.viewer {
+            return Ok(page.url.clone());
+        }
+        if !refresh {
+            if let Some(target) = self.viewer_targets.lock().get(&page.url).cloned() {
+                return Ok(target);
+            }
+        }
+        let viewer_url = url::Url::parse(&page.url)
+            .map_err(|e| BackendError::Msg(format!("查看器 URL 无效：{e}")))?;
+        let resp = self
+            .http
+            .get(
+                &page.url,
+                crate::online::MANIFEST_MAX_BYTES,
+                Some(&self.referer),
+                Some(&self.referer),
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "第 {} 页查看器请求失败（{}）：{e}",
+                    index + 1,
+                    crate::online::redact_url_for_log(&page.url)
+                );
+                crate::logging::log_error("online_viewer", &msg);
+                BackendError::from(e)
+            })?;
+        if !(200..300).contains(&resp.status) {
+            let msg = format!("第 {} 页查看器 HTTP {}", index + 1, resp.status);
+            crate::logging::log_error(
+                "online_viewer",
+                &format!("{msg}：{}", crate::online::redact_url_for_log(&page.url)),
+            );
+            return Err(BackendError::Network(msg));
+        }
+        let target = crate::online::html::extract_viewer_image(&resp.body, &viewer_url)?;
+        self.viewer_targets
+            .lock()
+            .insert(page.url.clone(), target.clone());
+        Ok(target)
+    }
+
+    fn get_range_page(
+        &self,
+        url: &str,
+        index: usize,
+        max_bytes: usize,
+    ) -> Result<crate::online::http::HttpResponse, BackendError> {
+        self.http
+            .get_range(url, max_bytes, Some(&self.referer), Some(&self.referer), 0)
+            .map_err(|e| {
+                let msg = format!(
+                    "第 {} 页头部请求失败（{}）：{e}",
+                    index + 1,
+                    crate::online::redact_url_for_log(url)
+                );
+                crate::logging::log_error("online_page", &msg);
+                BackendError::from(e)
+            })
+    }
+
     /// 只读前 `max_bytes` 字节；优先命中整页缓存，否则发 Range 请求。
     /// 不写缓存（截断字节不能当整页复用）。
     fn read_partial(&self, index: usize, max_bytes: u64) -> Result<RawPage, BackendError> {
@@ -538,29 +611,17 @@ impl OnlineSource {
         }
         let _guard = self.permits.acquire();
         let max_bytes = max_bytes.min(PAGE_MAX_BYTES as u64) as usize;
-        let resp = self
-            .http
-            .get_range(
-                &page.url,
-                max_bytes,
-                Some(&self.referer),
-                Some(&self.referer),
-                0,
-            )
-            .map_err(|e| {
-                let msg = format!(
-                    "第 {} 页头部请求失败（{}）：{e}",
-                    index + 1,
-                    crate::online::redact_url_for_log(&page.url)
-                );
-                crate::logging::log_error("online_page", &msg);
-                BackendError::from(e)
-            })?;
+        let mut target = self.resolve_viewer_target(&page, index, false)?;
+        let mut resp = self.get_range_page(&target, index, max_bytes)?;
+        if matches!(resp.status, 403 | 404) && page.viewer {
+            target = self.resolve_viewer_target(&page, index, true)?;
+            resp = self.get_range_page(&target, index, max_bytes)?;
+        }
         if !(200..300).contains(&resp.status) {
             let msg = format!("第 {} 页头部 HTTP {}", index + 1, resp.status);
             crate::logging::log_error(
                 "online_page",
-                &format!("{msg}：{}", crate::online::redact_url_for_log(&page.url)),
+                &format!("{msg}：{}", crate::online::redact_url_for_log(&target)),
             );
             return Err(BackendError::Network(msg));
         }
@@ -579,12 +640,12 @@ impl OnlineSource {
 
     fn get_page(
         &self,
-        page: &PageRef,
+        url: &str,
         index: usize,
     ) -> Result<crate::online::http::HttpResponse, BackendError> {
         self.http
             .get(
-                &page.url,
+                url,
                 PAGE_MAX_BYTES,
                 Some(&self.referer),
                 Some(&self.referer),
@@ -594,7 +655,7 @@ impl OnlineSource {
                 let msg = format!(
                     "第 {} 页请求失败（{}）：{e}",
                     index + 1,
-                    crate::online::redact_url_for_log(&page.url)
+                    crate::online::redact_url_for_log(url)
                 );
                 crate::logging::log_error("online_page", &msg);
                 BackendError::from(e)
@@ -630,10 +691,14 @@ impl ImageSource for OnlineSource {
         }
         // 每本书独立的并发闸门：限制同时在途的页面下载数。
         let _guard = self.permits.acquire();
-        let mut resp = self.get_page(&page, index)?;
-        // Telegram CDN 直链过期：403/404 时按原消息坐标重新解析一次。
+        let mut target = self.resolve_viewer_target(&page, index, false)?;
+        let mut resp = self.get_page(&target, index)?;
+        // 二级查看器/Telegram CDN 直链过期：403/404 时按需重解包/重解析一次。
         if matches!(resp.status, 403 | 404) {
-            if let Some(anchor) = page.anchor.as_ref() {
+            if page.viewer {
+                target = self.resolve_viewer_target(&page, index, true)?;
+                resp = self.get_page(&target, index)?;
+            } else if let Some(anchor) = page.anchor.as_ref() {
                 match crate::online::telegram::refresh_page_url(&*self.http, anchor) {
                     Ok(Some(fresh)) => {
                         if let Ok(normalized) = crate::online::normalize_url(&fresh) {
@@ -644,8 +709,9 @@ impl ImageSource for OnlineSource {
                                     &format!("第 {} 页直链失效，已按消息锚点刷新", index + 1),
                                 );
                                 self.replace_page_url(index, fresh.clone());
-                                page.url = fresh;
-                                resp = self.get_page(&page, index)?;
+                                page.url = fresh.clone();
+                                target = fresh;
+                                resp = self.get_page(&target, index)?;
                             }
                         }
                     }
@@ -663,7 +729,7 @@ impl ImageSource for OnlineSource {
             let msg = format!("第 {} 页 HTTP {}", index + 1, resp.status);
             crate::logging::log_error(
                 "online_page",
-                &format!("{msg}：{}", crate::online::redact_url_for_log(&page.url)),
+                &format!("{msg}：{}", crate::online::redact_url_for_log(&target)),
             );
             return Err(BackendError::Network(msg));
         }
@@ -1084,12 +1150,14 @@ mod tests {
         vec![
             PageRef {
                 url: "http://x/001.png".into(),
+                viewer: false,
                 width: Some(1),
                 height: Some(1),
                 anchor: None,
             },
             PageRef {
                 url: "http://x/002.png".into(),
+                viewer: false,
                 width: None,
                 height: None,
                 anchor: None,
@@ -1173,6 +1241,132 @@ mod tests {
         assert!(partial.bytes.starts_with(b"\x89PNG"));
         assert_eq!(partial.ext, "png");
         assert_eq!(*http.calls.lock().unwrap(), vec![(256 * 1024, 0)]);
+    }
+
+    struct ViewerHttp {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl HttpTransport for ViewerHttp {
+        fn get(
+            &self,
+            url: &str,
+            _max_bytes: usize,
+            _referer: Option<&str>,
+            _header_scope: Option<&str>,
+        ) -> Result<HttpResponse, OnlineError> {
+            self.calls.lock().unwrap().push(url.to_string());
+            if url.contains("/s/hash/") {
+                Ok(HttpResponse {
+                    status: 200,
+                    final_url: url.to_string(),
+                    content_type: Some("text/html".into()),
+                    body: br#"<html><body><img id="img" src="https://cdn.example/real.png"></body></html>"#.to_vec(),
+                })
+            } else {
+                Ok(HttpResponse {
+                    status: 200,
+                    final_url: url.to_string(),
+                    content_type: Some("image/png".into()),
+                    body: tiny_png(),
+                })
+            }
+        }
+    }
+
+    fn viewer_cache_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("mr-viewer-{}-{tag}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn online_source_resolves_viewer_only_on_cache_miss() {
+        let dir = viewer_cache_dir("read");
+        let http = Arc::new(ViewerHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-viewer".into(),
+            vec![PageRef {
+                url: "http://gallery.example/s/hash/100-1".into(),
+                viewer: true,
+                width: None,
+                height: None,
+                anchor: None,
+            }],
+            http.clone(),
+            2,
+            "http://gallery.example/g/100/token".into(),
+            Some(Arc::new(crate::disk_cache::OnlinePageCache::new(
+                dir.join("online"),
+            ))),
+        );
+        let first = src.read_raw(0).unwrap();
+        assert!(first.bytes.starts_with(b"\x89PNG"));
+        let second = src.read_raw(0).unwrap();
+        assert_eq!(first.bytes, second.bytes);
+        let calls = http.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|url| url.as_str() == "http://gallery.example/s/hash/100-1")
+                .count(),
+            1,
+            "{calls:?}"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|url| url.as_str() == "https://cdn.example/real.png")
+                .count(),
+            1,
+            "{calls:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn online_source_partial_read_resolves_viewer_once() {
+        let dir = viewer_cache_dir("partial");
+        let http = Arc::new(ViewerHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-viewer".into(),
+            vec![PageRef {
+                url: "http://gallery.example/s/hash/100-2".into(),
+                viewer: true,
+                width: None,
+                height: None,
+                anchor: None,
+            }],
+            http.clone(),
+            1,
+            "http://gallery.example/g/100/token".into(),
+            Some(Arc::new(crate::disk_cache::OnlinePageCache::new(
+                dir.join("online"),
+            ))),
+        );
+        let first = src.read_partial(0, 256 * 1024).unwrap();
+        assert!(first.bytes.starts_with(b"\x89PNG"));
+        let second = src.read_partial(0, 256 * 1024).unwrap();
+        assert_eq!(first.bytes, second.bytes);
+        let calls = http.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|url| url.as_str() == "http://gallery.example/s/hash/100-2")
+                .count(),
+            1,
+            "{calls:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1299,6 +1493,7 @@ mod tests {
 
         let page = PageRef {
             url: "http://cdn.test/old.png".into(),
+            viewer: false,
             width: Some(800),
             height: Some(1200),
             anchor: Some(crate::online::PageAnchor {

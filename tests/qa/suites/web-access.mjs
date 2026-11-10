@@ -110,6 +110,15 @@ const INSTALL_MOCK = `(() => {
       state.status.deviceCount = 1;
       return state.status;
     },
+    web_access_stop: () => {
+      calls.push("stop");
+      state.status.phase = "disabled";
+      state.status.pairingActive = false;
+      state.pairing.window = null;
+      state.pairing.claims = [];
+      state.status.pendingClaimCount = 0;
+      return state.status;
+    },
     web_access_devices_list: () => state.devices,
     web_access_device_revoke: () => {
       state.devices = [];
@@ -393,7 +402,8 @@ export async function runWebAccessSuite(ctx, report) {
     // both the row and pending count without a manual reload.
     await page.eval("window.__qaSetWebAccessClaim(2)");
     await page.eval(`(() => {
-      const buttons = [...document.querySelectorAll("button")];
+      const panel = document.querySelector('[data-testid="settings-web-access"]');
+      const buttons = panel ? [...panel.querySelectorAll("button")] : [];
       const refresh = buttons.find((b) => (b.textContent || "").includes("Refresh"));
       if (refresh) refresh.click();
       return !!refresh;
@@ -433,6 +443,43 @@ export async function runWebAccessSuite(ctx, report) {
         details: JSON.stringify(expiry),
       });
     }
+
+    // Startup cancellation: while the listener is still starting, "Cancel
+    // start" must route to the backend stop command instead of leaving a
+    // half-bound service behind.
+    await page.eval(`(() => {
+      const state = window.__qaWebAccess;
+      state.status.phase = "starting";
+      state.status.bindAddress = null;
+      state.status.port = null;
+      const panel = document.querySelector('[data-testid="settings-web-access"]');
+      const buttons = panel ? [...panel.querySelectorAll("button")] : [];
+      const refresh = buttons.find((b) => (b.textContent || "").includes("Refresh"));
+      if (refresh) refresh.click();
+      return !!refresh;
+    })()`);
+    await page.waitFor(
+      `(() => [...document.querySelectorAll("button")].some((b) => (b.textContent || "").trim() === "Cancel start"))()`,
+      { timeout: 8000, label: "cancel start button" },
+    );
+    await page.eval(`(() => {
+      const button = [...document.querySelectorAll("button")].find(
+        (b) => (b.textContent || "").trim() === "Cancel start",
+      );
+      if (button) button.click();
+      return !!button;
+    })()`);
+    await page.waitFor(
+      `window.__qaWebAccess.calls.includes("stop")`,
+      { timeout: 8000, label: "startup cancel routed to stop" },
+    );
+    ok(report, {
+      id: "web-access:cancel-start",
+      suite: "web-access",
+      layer: "integration",
+      title: "启动中取消会调用后端 stop，不留半绑定监听",
+      details: "Cancel start -> web_access_stop",
+    });
   } finally {
     await ctx.page.eval("window.__qaRestoreWebAccess && window.__qaRestoreWebAccess()").catch(() => {});
   }

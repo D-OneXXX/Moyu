@@ -1458,11 +1458,15 @@ pub fn set_setting(conn: &Connection, k: &str, v: &str) -> Result<(), BackendErr
 
 /// Persist a related group of settings atomically. If any write fails, dropping
 /// the transaction rolls back every earlier key in the group.
+///
+/// `BEGIN IMMEDIATE` takes the write lock up front: a deferred transaction would
+/// first take a read snapshot and later upgrade, which can fail with `BUSY` (or
+/// leave a half group in a multi-connection race) under WAL.
 pub fn set_settings_atomic(
     conn: &Connection,
     pairs: &[(&str, String)],
 ) -> Result<(), BackendError> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     for (key, value) in pairs {
         set_setting(&tx, key, value)?;
     }
@@ -1956,10 +1960,8 @@ mod tests {
         )
         .expect("install failure trigger");
 
-        let result = set_settings_atomic(
-            &conn,
-            &[("a", "1".to_string()), ("boom", "x".to_string())],
-        );
+        let result =
+            set_settings_atomic(&conn, &[("a", "1".to_string()), ("boom", "x".to_string())]);
 
         assert!(result.is_err(), "injected insert must fail");
         assert_eq!(
@@ -4275,7 +4277,13 @@ mod tests {
         // 页数未知：即使 current_page>0 也不能判定读完。
         upsert_book(&conn, "zero", "p/zero", "零页", 0).unwrap();
         upsert_book(&conn, "zero_started", "p/zero-started", "零页已开始", 0).unwrap();
-        for (id, page) in [("last", 99), ("before", 98), ("single", 0), ("zero", 0), ("zero_started", 5)] {
+        for (id, page) in [
+            ("last", 99),
+            ("before", 98),
+            ("single", 0),
+            ("zero", 0),
+            ("zero_started", 5),
+        ] {
             conn.execute(
                 "UPDATE books SET current_page=?1 WHERE id=?2",
                 params![page, id],

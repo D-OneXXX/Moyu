@@ -44,8 +44,12 @@ browser WebView
 - Library metadata, progress, statistics, settings, and filter rules live in SQLite under
   Tauri’s `app_data_dir`.
 - Database connections use WAL, a busy timeout, foreign keys, and normal synchronous mode.
-- Related settings keys commit in one SQLite transaction. Cache/settings memory changes happen
-  only after commit; disabling an optional feature persists its gate before runtime cleanup.
+- Related settings keys commit in one immediate SQLite transaction. Cache/settings memory
+  changes happen only after commit; disabling an optional feature persists its gate before
+  runtime cleanup.
+- Dashboard totals are aggregate SQL: library size, in-progress, finished, and cumulative
+  pages read do not materialize `books` rows. Series counts ignore malformed `meta_json`
+  rows for grouping while still counting them as single books.
 - Missing setting keys use defaults, but SQL read failures and normalization failures propagate.
   Startup and backup recovery publish a database connection only after settings load and repair
   succeed; the settings repair batch commits atomically.
@@ -82,6 +86,13 @@ browser WebView
 - The reader offers single-page, double-page, RTL/LTR, and continuous webtoon layouts.
 - Very tall webtoon images are sliced into bounded tiles before rendering; the frontend
   stitches them in order. A failed tile has a visible failure state, not an empty gap.
+- Full-image fallback decodes (WebP, GIF, interlaced PNG, and oversized non-banded images)
+  are capped at two concurrent expansions by a process-wide gate; banded PNG rows and JPEG
+  IDCT paths bypass it.
+- Telegram archive attachments stream to a sibling `.part` file in 64 KiB chunks with a
+  256 MiB hard cap, then fsync, ZIP/RAR magic validation, and an atomic rename. The
+  attachment is never buffered whole in memory. Browser downloads are written directly by
+  the WebView, and OPDS archives use the existing streaming download path.
 - Progress writes update the book row and reading log in one transaction.
 
 ## Online reading and the browser

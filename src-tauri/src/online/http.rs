@@ -872,6 +872,7 @@ fn stream_response_to_file(
         .and_then(|value| value.trim().parse::<u64>().ok())
     {
         if declared > max_bytes as u64 {
+            let _ = std::fs::remove_file(dest);
             return Err(OnlineError::TooLarge(max_bytes));
         }
     }
@@ -909,6 +910,13 @@ fn stream_response_to_file(
                 "下载写入失败（online-fetch-failed）".into(),
             ));
         }
+    }
+    if writer.flush().is_err() {
+        drop(writer);
+        let _ = std::fs::remove_file(dest);
+        return Err(OnlineError::Network(
+            "下载写入失败（online-fetch-failed）".into(),
+        ));
     }
     let file = match writer.into_inner() {
         Ok(file) => file,
@@ -1698,7 +1706,7 @@ mod tests {
     fn download_to_rejects_error_status_without_writing() {
         let (url, h) = spawn_server(vec![(404, "text/plain", b"missing".to_vec())]);
         let t = UreqTransport::new("", "").unwrap();
-        let dest = download_temp_path("error-status");
+        let dest = download_temp_path("status404");
         let error = t
             .download_to(&url, 1024, None, None, &dest)
             .unwrap_err()

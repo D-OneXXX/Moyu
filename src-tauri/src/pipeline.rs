@@ -93,28 +93,13 @@ impl HeavyDecodeGate {
         }
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         while *active >= HEAVY_DECODE_SEMAPHORE {
-            active = self.released.wait(active).unwrap_or_else(|e| e.into_inner());
+            active = self
+                .released
+                .wait(active)
+                .unwrap_or_else(|e| e.into_inner());
         }
         *active += 1;
         Some(HeavyDecodePermit { gate: self })
-    }
-
-    #[cfg(test)]
-    fn try_acquire(&self, pixels: u64) -> Option<HeavyDecodePermit<'_>> {
-        if pixels < HEAVY_DECODE_MIN_PIXELS {
-            return None;
-        }
-        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        if *active >= HEAVY_DECODE_SEMAPHORE {
-            return None;
-        }
-        *active += 1;
-        Some(HeavyDecodePermit { gate: self })
-    }
-
-    #[cfg(test)]
-    fn active_count(&self) -> usize {
-        *self.active.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -432,12 +417,7 @@ fn render_tall_jpeg_with(
     let (tw, th) = fit_size(sw, sh, max_w, max_h);
     // 纹理安全兜底先算目标尺寸：直接缩到安全尺寸，不生成整高副本。
     let (fw, fh) = safe_fit(tw, th);
-    let raster = decode_tall_jpeg_raster(
-        raw,
-        tw,
-        tall_want_h(sw, sh, tw),
-        pixel_count(sw, sh),
-    )?;
+    let raster = decode_tall_jpeg_raster(raw, tw, tall_want_h(sw, sh, tw), pixel_count(sw, sh))?;
     // 缩放解码的结果可能比目标略大（档位 1/2^k），精确缩到位。
     let rgb = if raster.width() == fw && raster.height() == fh {
         raster
@@ -923,6 +903,26 @@ fn render_band_tile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试专用闸门探针：不进入生产构建，避免把 `#[cfg(test)]` 提前到
+    /// 条漫入口之前（静态守卫按首个 `#[cfg(test)]` 切分生产/测试源码）。
+    impl HeavyDecodeGate {
+        fn try_acquire(&self, pixels: u64) -> Option<HeavyDecodePermit<'_>> {
+            if pixels < HEAVY_DECODE_MIN_PIXELS {
+                return None;
+            }
+            let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+            if *active >= HEAVY_DECODE_SEMAPHORE {
+                return None;
+            }
+            *active += 1;
+            Some(HeavyDecodePermit { gate: self })
+        }
+
+        fn active_count(&self) -> usize {
+            *self.active.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
 
     /// 线程内峰值内存统计（只在测试构建安装）。
     ///
@@ -1779,7 +1779,11 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
-        assert_eq!(completed.load(Ordering::SeqCst), 4, "所有等待者最终都要拿到名额");
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            4,
+            "所有等待者最终都要拿到名额"
+        );
         assert_eq!(
             peak.load(Ordering::SeqCst),
             HEAVY_DECODE_SEMAPHORE,
@@ -1797,7 +1801,9 @@ mod tests {
         );
         assert_eq!(gate.active_count(), 0, "绕过的图片不得占用名额");
 
-        let permit = gate.acquire(HEAVY_DECODE_MIN_PIXELS).expect("阈值本身必须受控");
+        let permit = gate
+            .acquire(HEAVY_DECODE_MIN_PIXELS)
+            .expect("阈值本身必须受控");
         assert_eq!(gate.active_count(), 1);
         drop(permit);
         assert_eq!(gate.active_count(), 0, "drop 必须归还名额");
@@ -1823,8 +1829,12 @@ mod tests {
 
         // 两个名额都必须重新可用；若泄漏一个，第二次 try_acquire 会返回 None
         // （而不是在 release 构建里永久阻塞）。
-        let first = gate.try_acquire(HEAVY_DECODE_MIN_PIXELS).expect("名额 1 未归还");
-        let second = gate.try_acquire(HEAVY_DECODE_MIN_PIXELS).expect("名额 2 未归还");
+        let first = gate
+            .try_acquire(HEAVY_DECODE_MIN_PIXELS)
+            .expect("名额 1 未归还");
+        let second = gate
+            .try_acquire(HEAVY_DECODE_MIN_PIXELS)
+            .expect("名额 2 未归还");
         assert!(
             gate.try_acquire(HEAVY_DECODE_MIN_PIXELS).is_none(),
             "第三个并发请求必须被闸门拒绝"

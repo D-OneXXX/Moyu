@@ -11,13 +11,16 @@ use regex::Regex;
 
 use crate::online::direct::{make_filtered_meta, preprobe_missing, OnlineBookMeta};
 use crate::online::filter::{
-    filter_candidates, CandidateImage, CandidateSource, FilterMemory, FilterThresholds,
-    FilteredPage,
+    filter_candidates, path_template, CandidateImage, CandidateSource, FilterMemory, FilterOutcome,
+    FilterThresholds, FilteredPage,
 };
 use crate::online::http::HttpTransport;
 use crate::online::OnlineError;
-use crate::online::{normalize_url, truncate_chars, MAX_PAGES};
+use crate::online::{normalize_url, truncate_chars, PageRef, MAX_PAGES};
 use crate::source::BackendError;
+
+/// DOM 候选少于此数时，尝试扫描 SSR 内联 JSON/脚本中的图片直链。
+const MIN_DOM_IMAGES_BEFORE_INLINE: usize = 4;
 
 /// 解析单页 HTML 图集正文（离线/兼容入口；不做网络尺寸探测）。
 #[allow(dead_code)]
@@ -99,8 +102,15 @@ pub fn parse_gallery_with(
             .collect::<Vec<_>>()
             .join(" ");
         let parent = stack.last();
-        let self_chrome = is_chrome_tag(&name) || is_chrome_class(&class_id);
-        let chrome = parent.map(|el| el.chrome).unwrap_or(false) || self_chrome;
+        // 主容器/正文语义节点重置 chrome：顶层布局状态类名
+        // （header-fixed / nav-sticky 等）不得污染整棵正文子树。
+        let main_container = is_main_container(&name, &class_id);
+        let self_chrome = !main_container && (is_chrome_tag(&name) || is_chrome_class(&class_id));
+        let chrome = if main_container {
+            false
+        } else {
+            parent.map(|el| el.chrome).unwrap_or(false) || self_chrome
+        };
         let container = if is_content_tag(&name) || is_content_class(&class_id) {
             Some(selector_hint(&name, &attrs))
         } else {
@@ -148,6 +158,10 @@ pub fn parse_gallery_with(
     if candidates.is_empty() {
         collect_source_candidates(&text, &effective_base, &mut candidates, &mut seen);
     }
+    // SSR/内联数据回退：DOM 标签不足时，解析 __NEXT_DATA__ 与脚本内的有序图片直链。
+    if candidates.len() < MIN_DOM_IMAGES_BEFORE_INLINE {
+        extract_inline_images(&text, &effective_base, &mut candidates, &mut seen);
+    }
     if candidates.is_empty() {
         return Err(BackendError::Msg(
             "未找到可读图片；分页查看器或依赖 JS 的页面不在支持范围".into(),
@@ -169,14 +183,23 @@ pub fn parse_gallery_with(
         std::collections::HashMap::new()
     };
     let mut probe = |candidate: &CandidateImage| prefetched.get(&candidate.url).cloned();
+    let raw_candidates = candidates.clone();
     let outcome = filter_candidates(candidates, &memory, thresholds, &mut probe);
-    if outcome.pages.is_empty() {
-        return Err(BackendError::Msg(format!(
-            "未找到正文图片（已过滤 {} 张；原因 {}）（online-html-no-content）",
-            outcome.blocked.len(),
-            reason_summary(&outcome.blocked)
-        )));
-    }
+    let outcome = if outcome.pages.is_empty() {
+        // 顶层布局状态类名/序列聚类曾把整章误杀：按 path 模板回退一次。
+        match fallback_cluster(&raw_candidates, &outcome) {
+            Some(fallback) => fallback,
+            None => {
+                return Err(BackendError::Msg(format!(
+                    "未找到正文图片（已过滤 {} 张；原因 {}）（online-html-no-content）",
+                    outcome.blocked.len(),
+                    reason_summary(&outcome.blocked)
+                )));
+            }
+        }
+    } else {
+        outcome
+    };
     if outcome.pages.len() > MAX_PAGES {
         return Err(BackendError::Msg(format!(
             "HTML 图片数超过上限 {MAX_PAGES}"
@@ -228,6 +251,25 @@ fn tokens(value: &str) -> impl Iterator<Item = String> + '_ {
         .map(|token| token.to_ascii_lowercase())
 }
 
+/// 布局状态后缀：`header-fixed` / `nav-sticky` / `sidebar-none` 等是
+/// 页面状态标记，不是结构性 chrome。命中后缀时不得把节点或子树判为 chrome。
+fn is_layout_state_token(token: &str) -> bool {
+    const SUFFIXES: &[&str] = &[
+        "-fixed",
+        "-sticky",
+        "-none",
+        "-disabled",
+        "-hidden",
+        "-open",
+        "-closed",
+        "-active",
+        "-visible",
+        "-shown",
+    ];
+    let normalized = token.replace('_', "-");
+    SUFFIXES.iter().any(|suffix| normalized.ends_with(suffix))
+}
+
 fn is_chrome_class(value: &str) -> bool {
     const EXACT: &[&str] = &[
         "ad",
@@ -267,8 +309,18 @@ fn is_chrome_class(value: &str) -> bool {
         "emoji",
     ];
     let lower = value.to_ascii_lowercase();
-    tokens(&lower).any(|token| EXACT.contains(&token.as_str()))
-        || CONTAINS.iter().any(|word| lower.contains(word))
+    let matched = tokens(&lower).any(|token| {
+        if is_layout_state_token(&token) {
+            return false;
+        }
+        EXACT.contains(&token.as_str()) || CONTAINS.iter().any(|word| token.contains(word))
+    });
+    matched
+}
+
+/// 主容器/正文语义节点：自身与后代忽略外层 chrome 继承。
+fn is_main_container(name: &str, class_id: &str) -> bool {
+    matches!(name, "html" | "body" | "main" | "article") || is_content_class(class_id)
 }
 
 fn is_content_tag(name: &str) -> bool {
@@ -472,6 +524,220 @@ fn reason_summary(blocked: &[FilteredPage]) -> String {
         .map(|(reason, count)| format!("{reason}×{count}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// 零结果回退：忽略父级 chrome 标记，按归一化 path 模板取最大同构簇。
+///
+/// 仅在常规过滤因 `chrome` / `isolated` 归零、原始候选 >=5 时触发；
+/// 最大簇 >=4 才作为正文图集返回，避免把广告/图标簇当正文。
+fn fallback_cluster(
+    candidates: &[CandidateImage],
+    outcome: &FilterOutcome,
+) -> Option<FilterOutcome> {
+    const MIN_RAW_CANDIDATES: usize = 5;
+    const MIN_CLUSTER_SIZE: usize = 4;
+    if candidates.len() < MIN_RAW_CANDIDATES {
+        return None;
+    }
+    let chrome_or_isolated = outcome
+        .blocked
+        .iter()
+        .any(|page| page.reason.starts_with("chrome") || page.reason.starts_with("isolated"));
+    if !chrome_or_isolated {
+        return None;
+    }
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for candidate in candidates {
+        if let Some(template) = path_template(&candidate.url) {
+            *counts.entry(template).or_insert(0) += 1;
+        }
+    }
+    let (main_template, main_count) =
+        counts
+            .into_iter()
+            .max_by(|(a_template, a_count), (b_template, b_count)| {
+                a_count
+                    .cmp(b_count)
+                    .then_with(|| b_template.cmp(a_template))
+            })?;
+    if main_count < MIN_CLUSTER_SIZE {
+        return None;
+    }
+    let mut pages = Vec::new();
+    let mut selected = HashSet::new();
+    for candidate in candidates {
+        if path_template(&candidate.url).as_deref() != Some(main_template.as_str()) {
+            continue;
+        }
+        if pages.len() >= MAX_PAGES {
+            break;
+        }
+        selected.insert(candidate.url.clone());
+        pages.push(PageRef {
+            url: candidate.url.clone(),
+            width: candidate.width,
+            height: candidate.height,
+            anchor: candidate.anchor.clone(),
+        });
+    }
+    if pages.len() < MIN_CLUSTER_SIZE {
+        return None;
+    }
+    let blocked = outcome
+        .blocked
+        .iter()
+        .filter(|page| !selected.contains(&page.url))
+        .cloned()
+        .collect::<Vec<_>>();
+    let kept_ratio = pages.len() as f32 / candidates.len() as f32;
+    Some(FilterOutcome {
+        pages,
+        blocked,
+        profile: outcome.profile.clone(),
+        input_count: outcome.input_count,
+        kept_ratio,
+    })
+}
+
+/// 扫描内联 `<script>`：`__NEXT_DATA__`/JSON 优先按数组顺序递归，
+/// 其余脚本按图片 URL 字面量顺序提取；不执行任何脚本。
+fn extract_inline_images(
+    text: &str,
+    base_url: &url::Url,
+    out: &mut Vec<CandidateImage>,
+    seen: &mut HashSet<String>,
+) {
+    let mut pos = 0usize;
+    while let Some((start, end)) = next_tag(text, pos) {
+        pos = end;
+        let tag = &text[start..end];
+        if tag.trim_start().starts_with("</") {
+            continue;
+        }
+        let Some(name) = tag_name(tag) else {
+            continue;
+        };
+        if name != "script" || tag.trim_end().ends_with("/>") {
+            continue;
+        }
+        let Some(close) = find_ci(text, "</script", pos) else {
+            break;
+        };
+        let Some(close_end) = text[close..].find('>').map(|offset| close + offset + 1) else {
+            break;
+        };
+        let body = &text[pos..close];
+        pos = close_end;
+        let attrs = parse_attrs(tag);
+        if attr_value(&attrs, "src").is_some() {
+            continue;
+        }
+        let id = attr_value(&attrs, "id").unwrap_or_default();
+        let kind = attr_value(&attrs, "type")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        // JSON 字符串里的 `\/` 与 `\u002F` 先还原成普通路径分隔符。
+        let normalized = body.replace("\\/", "/").replace("\\u002F", "/");
+        let json_like = id.eq_ignore_ascii_case("__NEXT_DATA__") || kind.contains("json");
+        if json_like {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(normalized.trim()) {
+                collect_json_images(&value, base_url, out, seen);
+                if out.len() > MAX_PAGES.saturating_mul(8) {
+                    return;
+                }
+                continue;
+            }
+        }
+        collect_script_image_literals(&normalized, base_url, out, seen);
+        if out.len() > MAX_PAGES.saturating_mul(8) {
+            return;
+        }
+    }
+}
+
+fn collect_json_images(
+    value: &serde_json::Value,
+    base_url: &url::Url,
+    out: &mut Vec<CandidateImage>,
+    seen: &mut HashSet<String>,
+) {
+    match value {
+        serde_json::Value::String(raw) => {
+            if let Some(url) = inline_image_url(raw, base_url) {
+                push_inline_candidate(url, out, seen);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_images(item, base_url, out, seen);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_json_images(item, base_url, out, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_script_image_literals(
+    text: &str,
+    base_url: &url::Url,
+    out: &mut Vec<CandidateImage>,
+    seen: &mut HashSet<String>,
+) {
+    let re = Regex::new(
+        r#"(?i)(?:https?:)?//[^\s"'<>\\)]+?\.(?:jpe?g|png|gif|webp)(?:\?[^\s"'<>\\)]*)?"#,
+    )
+    .expect("inline image regex");
+    for hit in re.find_iter(text) {
+        if let Some(url) = inline_image_url(hit.as_str().trim(), base_url) {
+            push_inline_candidate(url, out, seen);
+        }
+    }
+}
+
+fn inline_image_url(raw: &str, base_url: &url::Url) -> Option<String> {
+    let raw = decode_entities(raw.trim());
+    if raw.is_empty() {
+        return None;
+    }
+    let lower = raw.to_ascii_lowercase();
+    if lower.starts_with("data:") || lower.starts_with("blob:") || lower.starts_with("javascript:")
+    {
+        return None;
+    }
+    let raw = if let Some(rest) = raw.strip_prefix("//") {
+        format!("https://{rest}")
+    } else {
+        raw
+    };
+    let joined = base_url.join(&raw).ok()?;
+    let normalized = normalize_url(joined.as_str()).ok()?;
+    let path = normalized.path().to_ascii_lowercase();
+    let image_like = [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+        .iter()
+        .any(|extension| path.ends_with(extension));
+    image_like.then(|| normalized.to_string())
+}
+
+fn push_inline_candidate(url: String, out: &mut Vec<CandidateImage>, seen: &mut HashSet<String>) {
+    if out.len() > MAX_PAGES.saturating_mul(8) || !seen.insert(url.clone()) {
+        return;
+    }
+    out.push(CandidateImage {
+        url,
+        width: None,
+        height: None,
+        order: out.len(),
+        in_chrome: false,
+        container: Some("inline-json".into()),
+        class_id: None,
+        alt: None,
+        source: CandidateSource::InlineJson,
+        anchor: None,
+    });
 }
 
 /// `<picture>` 站点可能只提供 `<source type="image/webp" srcset="...">`。
@@ -896,5 +1162,122 @@ mod tests {
         assert_eq!(meta.page_count, 1);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
         assert_eq!(stored.pages[0].url, "http://gallery.example/real.png");
+    }
+
+    #[test]
+    fn layout_state_suffixes_are_not_structural_chrome() {
+        for value in [
+            "header-fixed",
+            "nav-sticky",
+            "sidebar-none",
+            "comment-disabled",
+            "app-hidden",
+            "menu_open",
+            "panel-closed",
+            "nav-active",
+        ] {
+            assert!(!is_chrome_class(value), "{value} 不应判为 chrome");
+        }
+        for value in ["site-header", "ad", "banner", "nav-menu", "footer-links"] {
+            assert!(is_chrome_class(value), "{value} 应判为 chrome");
+        }
+    }
+
+    #[test]
+    fn body_layout_state_classes_do_not_poison_direct_content() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><body class="header-fixed sidebar-none comment-disabled nav-sticky">
+            <img src="/a.jpg" width="800" height="1200">
+            <img src="/b.png" width="800" height="1200">
+            <img src="/c.gif" width="800" height="1200">
+            <img src="/d.webp" width="800" height="1200">
+            <img src="/e.jpg" width="800" height="1200">
+            <img src="/f.png" width="800" height="1200">
+            </body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 6);
+    }
+
+    #[test]
+    fn zero_result_falls_back_to_largest_path_cluster() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let mut html =
+            String::from(r#"<html><body><div id="app" class="page-wrapper site-header nav-menu">"#);
+        for i in 1..=6 {
+            html.push_str(&format!(
+                r#"<img src="/pages/{i:03}.jpg" width="800" height="1200">"#
+            ));
+        }
+        html.push_str("</div></body></html>");
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 6);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        assert_eq!(stored.pages[0].url, "http://gallery.example/pages/001.jpg");
+        assert_eq!(stored.pages[5].url, "http://gallery.example/pages/006.jpg");
+    }
+
+    #[test]
+    fn fallback_still_rejects_clusters_smaller_than_four() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><body><div class="site-header">
+            <img src="/a.jpg" width="800" height="1200">
+            <img src="/b.png" width="800" height="1200">
+            <img src="/c.gif" width="800" height="1200">
+            <img src="/d.webp" width="800" height="1200">
+            <img src="/e.jpg" width="800" height="1200">
+            </div></body></html>"#;
+        let err = parse_gallery(html.as_bytes(), &page, &page)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("online-html-no-content"), "{err}");
+    }
+
+    #[test]
+    fn inline_next_data_images_are_extracted_when_dom_is_insufficient() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><head>
+            <script id="__NEXT_DATA__" type="application/json">
+            {"props":{"pageProps":{"images":[
+              "https://cdn.example/img/1.jpg",
+              "https://cdn.example/img/2.jpg",
+              "https://cdn.example/img/3.jpg",
+              "https://cdn.example/img/4.jpg"
+            ]}}}
+            </script></head><body>
+            <img src="/cover.jpg" width="800" height="1200">
+            </body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        // 单张跨 host 封面被序列聚类判为 isolated；SSR 的 4 张同构直链为正文。
+        assert_eq!(meta.page_count, 4);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let urls: Vec<&str> = stored.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://cdn.example/img/1.jpg",
+                "https://cdn.example/img/2.jpg",
+                "https://cdn.example/img/3.jpg",
+                "https://cdn.example/img/4.jpg",
+            ]
+        );
+        assert!(stored.filtered.iter().any(|p| p.reason == "isolated"));
+    }
+
+    #[test]
+    fn inline_script_image_literals_are_extracted_in_order() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><body>
+            <script>
+              window.__GALLERY__ = {
+                pages: ["https:\/\/cdn.example\/p\/01.webp", "https:\/\/cdn.example\/p\/02.webp"]
+              };
+            </script>
+            </body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 2);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        assert_eq!(stored.pages[0].url, "https://cdn.example/p/01.webp");
+        assert_eq!(stored.pages[1].url, "https://cdn.example/p/02.webp");
     }
 }

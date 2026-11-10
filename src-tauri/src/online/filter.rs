@@ -79,6 +79,8 @@ pub enum CandidateSource {
     #[default]
     Json,
     Html,
+    /// `__NEXT_DATA__` / 内联脚本中的静态图片直链。
+    InlineJson,
     Telegram,
     Telegraph,
 }
@@ -289,7 +291,7 @@ pub fn url_template(raw: &str) -> Option<String> {
 ///
 /// 漫画站常把章节图片轮换到 `i1/i2/i3` 等 CDN 子域；按完整 host+path
 /// 分组会让每张图都成为单例，从而被 `isolated` 规则整章误杀。
-fn path_template(raw: &str) -> Option<String> {
+pub(crate) fn path_template(raw: &str) -> Option<String> {
     let url = url::Url::parse(raw).ok()?;
     Some(normalize_digit_runs(url.path()))
 }

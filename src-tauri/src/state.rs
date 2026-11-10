@@ -1061,12 +1061,14 @@ mod tests {
             pages: vec![
                 crate::online::PageRef {
                     url: "http://example.test/001.png".into(),
+                    viewer: false,
                     width: Some(1),
                     height: Some(1),
                     anchor: None,
                 },
                 crate::online::PageRef {
                     url: "http://example.test/002.png".into(),
+                    viewer: false,
                     width: None,
                     height: None,
                     anchor: None,

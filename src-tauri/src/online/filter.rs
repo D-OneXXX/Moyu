@@ -1054,7 +1054,7 @@ mod tests {
             (0..60)
                 .map(|index| {
                     let mut item = CandidateImage::new(
-                        &format!("https://cdn.example/pages/{:03}.jpg", index + 1),
+                        format!("https://cdn.example/pages/{:03}.jpg", index + 1),
                         index,
                     );
                     item.source = source;

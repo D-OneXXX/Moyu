@@ -578,6 +578,7 @@ fn fallback_cluster(
             width: candidate.width,
             height: candidate.height,
             anchor: candidate.anchor.clone(),
+            viewer: false,
         });
     }
     if pages.len() < MIN_CLUSTER_SIZE {

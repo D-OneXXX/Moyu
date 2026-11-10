@@ -55,6 +55,7 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "opds-cbr-multivolume", key: "error.opdsCbrMultivolume" },
   { code: "opds-io-failed", key: "error.opdsIoFailed" },
   { code: "update-unsupported-format", key: "error.updateUnsupportedFormat" },
+  { code: "update-disk-space-low", key: "updates.disk.full" },
   { code: "not-a-sha", key: "error.updateUnsupportedFormat" },
   { code: "not-decoded-by-import", key: "error.updateUnsupportedFormat" },
   { code: "non-utf8-path", key: "error.nonUtf8Path" },

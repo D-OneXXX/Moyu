@@ -357,7 +357,7 @@ fn selector_hint(name: &str, attrs: &[(String, String)]) -> String {
 
 /// 按 BOM / `<meta charset>` / `Content-Type` meta 解码 HTML；无声明时按 UTF-8
 /// lossy。编码标签只在前 8 KiB 内查找，避免把正文误当标签。
-fn decode_html(body: &[u8]) -> String {
+pub(crate) fn decode_html(body: &[u8]) -> String {
     use encoding_rs::{Encoding, UTF_8};
     if let Some((encoding, bom_len)) = Encoding::for_bom(body) {
         let (text, _, _) = encoding.decode(&body[bom_len..]);
@@ -389,7 +389,7 @@ fn base_href(text: &str, base_url: &url::Url) -> Option<url::Url> {
     normalize_url(joined.as_str()).ok()
 }
 
-fn extract_title(text: &str) -> Option<String> {
+pub(crate) fn extract_title(text: &str) -> Option<String> {
     let re = Regex::new(r"(?is)<title[^>]*>(.*?)</title>").ok()?;
     re.captures(text)
         .map(|c| decode_entities(&strip_tags(&c[1])))
@@ -398,7 +398,7 @@ fn extract_title(text: &str) -> Option<String> {
 }
 
 /// 找到下一个标签的字节区间 `[start, end)`；跳过注释与 doctype。
-fn next_tag(text: &str, from: usize) -> Option<(usize, usize)> {
+pub(crate) fn next_tag(text: &str, from: usize) -> Option<(usize, usize)> {
     let mut cursor = from;
     loop {
         let start = text[cursor..].find('<')? + cursor;
@@ -430,7 +430,7 @@ fn next_tag(text: &str, from: usize) -> Option<(usize, usize)> {
     }
 }
 
-fn tag_name(tag: &str) -> Option<String> {
+pub(crate) fn tag_name(tag: &str) -> Option<String> {
     let inner = tag
         .trim_start_matches('<')
         .trim_start_matches('/')
@@ -443,7 +443,7 @@ fn tag_name(tag: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn parse_attrs(tag: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_attrs(tag: &str) -> Vec<(String, String)> {
     let re = Regex::new(
         r#"(?is)([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#,
     )
@@ -462,7 +462,7 @@ fn parse_attrs(tag: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn attr_value(attrs: &[(String, String)], name: &str) -> Option<String> {
+pub(crate) fn attr_value(attrs: &[(String, String)], name: &str) -> Option<String> {
     attrs
         .iter()
         .find(|(key, _)| key == name)
@@ -578,6 +578,7 @@ fn fallback_cluster(
             width: candidate.width,
             height: candidate.height,
             anchor: candidate.anchor.clone(),
+            viewer: false,
         });
     }
     if pages.len() < MIN_CLUSTER_SIZE {
@@ -855,6 +856,88 @@ fn image_url(attrs: &[(String, String)], base_url: &url::Url) -> Option<String> 
     None
 }
 
+/// 从二级查看器 HTML 提取真实大图地址。
+///
+/// 优先 `id="img"` / `id="image"`；否则取声明面积最大的正文图；
+/// 都没有声明尺寸时退回第一张非 chrome 图，最后才用 `og:image`。
+pub(crate) fn extract_viewer_image(
+    body: &[u8],
+    base_url: &url::Url,
+) -> Result<String, BackendError> {
+    let text = decode_html(body);
+    let mut best: Option<(u64, usize, String)> = None;
+    let mut first: Option<String> = None;
+    let mut order = 0usize;
+    let mut pos = 0usize;
+    while let Some((start, end)) = next_tag(&text, pos) {
+        pos = end;
+        let tag = &text[start..end];
+        if tag.trim_start().starts_with("</") {
+            continue;
+        }
+        let Some(name) = tag_name(tag) else {
+            continue;
+        };
+        if name != "img" {
+            continue;
+        }
+        let attrs = parse_attrs(tag);
+        let id = attr_value(&attrs, "id").unwrap_or_default();
+        let class_id = attr_value(&attrs, "class").unwrap_or_default();
+        if is_chrome_class(&id) || is_chrome_class(&class_id) {
+            continue;
+        }
+        let Some(url) = image_url(&attrs, base_url) else {
+            continue;
+        };
+        if id.eq_ignore_ascii_case("img") || id.eq_ignore_ascii_case("image") {
+            return Ok(url);
+        }
+        let (width, height) = image_dimensions(&attrs);
+        let area = width.unwrap_or(0) as u64 * height.unwrap_or(0) as u64;
+        if first.is_none() {
+            first = Some(url.clone());
+        }
+        let better = match best.as_ref() {
+            None => true,
+            Some((best_area, _, _)) => area > *best_area,
+        };
+        if better {
+            best = Some((area, order, url));
+        }
+        order += 1;
+    }
+    if let Some((_, _, url)) = best {
+        return Ok(url);
+    }
+    if let Some(url) = og_image(&text, base_url) {
+        return Ok(url);
+    }
+    first.ok_or_else(|| {
+        BackendError::Msg("查看器页面未找到正文大图（online-html-no-content）".into())
+    })
+}
+
+fn og_image(text: &str, base_url: &url::Url) -> Option<String> {
+    let pattern = [
+        r#"(?is)<meta[^>]+(?:property|name)\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["']"#,
+        r#"(?is)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:property|name)\s*=\s*["']og:image["']"#,
+    ];
+    for pattern in pattern {
+        let Ok(re) = Regex::new(pattern) else {
+            continue;
+        };
+        if let Some(caps) = re.captures(text) {
+            let raw = decode_entities(caps[1].trim());
+            let attrs = vec![("src".to_string(), raw)];
+            if let Some(url) = image_url(&attrs, base_url) {
+                return Some(url);
+            }
+        }
+    }
+    None
+}
+
 /// 去掉标题中的 HTML 标签。
 fn strip_tags(s: &str) -> String {
     Regex::new(r"(?is)<[^>]+>")
@@ -864,7 +947,7 @@ fn strip_tags(s: &str) -> String {
 }
 
 /// 解码标题中的常见 HTML 实体（单次解码）。
-fn decode_entities(s: &str) -> String {
+pub(crate) fn decode_entities(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
@@ -1148,6 +1231,43 @@ mod tests {
         assert_eq!(meta.title, "中文图集");
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
         assert_eq!(stored.pages[0].url, "https://cdn.example/gallery/01.jpg");
+    }
+
+    #[test]
+    fn viewer_prefers_img_id_then_largest_declared_image() {
+        let base = url::Url::parse("http://gallery.example/s/hash/100-1").unwrap();
+        let with_id = br#"<html><body>
+            <img src="/logo.png" class="logo">
+            <img id="img" data-src="https://cdn.example/real.jpg">
+            </body></html>"#;
+        assert_eq!(
+            extract_viewer_image(with_id, &base).unwrap(),
+            "https://cdn.example/real.jpg"
+        );
+        let largest = br#"<html><body>
+            <img src="/small.jpg" width="200" height="300">
+            <img src="/large.jpg" width="800" height="1200">
+            </body></html>"#;
+        assert_eq!(
+            extract_viewer_image(largest, &base).unwrap(),
+            "http://gallery.example/large.jpg"
+        );
+    }
+
+    #[test]
+    fn viewer_falls_back_to_og_image_and_reports_missing_content() {
+        let base = url::Url::parse("http://gallery.example/s/hash/100-1").unwrap();
+        let meta = br#"<html><head>
+            <meta property="og:image" content="https://cdn.example/og.jpg">
+            </head><body></body></html>"#;
+        assert_eq!(
+            extract_viewer_image(meta, &base).unwrap(),
+            "https://cdn.example/og.jpg"
+        );
+        let err = extract_viewer_image(b"<html><body>empty</body></html>", &base)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("online-html-no-content"), "{err}");
     }
 
     #[test]

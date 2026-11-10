@@ -667,6 +667,7 @@ pub fn filter_candidates(
             }
             pages.push(PageRef {
                 url: item.candidate.url,
+                viewer: false,
                 width: item.width,
                 height: item.height,
                 anchor: item.candidate.anchor,

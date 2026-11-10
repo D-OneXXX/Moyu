@@ -67,7 +67,13 @@ browser WebView
   and database writes to the blocking pool.
 - Schema versions move forward only; migrations and startup checks are part of the boot path.
 - Rendered pages and online images share a bounded disk cache under `app_cache_dir`. Cache
-  cleanup removes derived data only, never `library.db` or reading progress.
+  cleanup removes derived data only, never `library.db` or reading progress. Only rendered
+  output participates in automatic LRU; persistent online originals are shown separately in
+  Settings, with a selective cleanup for finished or 30-day-inactive online books.
+- Online page dimensions are first probed from a 256 KiB header. A fresh desktop decode writes
+  the real full-page width/height back to that page's `meta_json` (meta-only update, progress
+  and timestamps untouched); the webtoon view applies the corrected ratio with scroll-anchored
+  reflow so the visible center does not jump. Web read-only paths never write metadata.
 - Missing source files are marked and can be relocated. Relocation preserves progress,
   webtoon position, and reading statistics.
 

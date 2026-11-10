@@ -300,6 +300,7 @@ fn parse_raw_manifest(body: &[u8], url: &url::Url) -> Result<RawParsedManifest, 
         }
         pages.push(PageRef {
             url: normalized,
+            viewer: false,
             width,
             height,
             anchor: None,
@@ -924,6 +925,7 @@ mod tests {
         let url = url::Url::parse("http://example.com/gallery").unwrap();
         let pages = vec![PageRef {
             url: "http://x/1.jpg".into(),
+            viewer: false,
             width: None,
             height: None,
             anchor: None,

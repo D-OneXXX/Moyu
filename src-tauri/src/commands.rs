@@ -3174,6 +3174,7 @@ pub async fn restore_online_filtered_page(
             insert_at,
             crate::online::PageRef {
                 url: filtered_page.url.clone(),
+                viewer: false,
                 width: filtered_page.width,
                 height: filtered_page.height,
                 anchor: filtered_page.anchor.clone(),
@@ -5261,6 +5262,7 @@ mod tests {
     fn page_ref(index: u32) -> crate::online::PageRef {
         crate::online::PageRef {
             url: format!("https://example.com/pages/{index}.jpg"),
+            viewer: false,
             width: Some(800),
             height: Some(1200),
             anchor: None,

@@ -235,10 +235,7 @@ fn page_query(url: &Url) -> Option<u32> {
 
 /// 从 `/s/{hash}/{id}-{page}` 这类末段提取页码；纯 id 不算页码。
 fn trailing_page_number(url: &Url) -> Option<u32> {
-    let segment = url
-        .path_segments()?
-        .filter(|segment| !segment.is_empty())
-        .next_back()?;
+    let segment = url.path_segments()?.rfind(|segment| !segment.is_empty())?;
     let stem = segment.split('.').next().unwrap_or(segment);
     let re = Regex::new(r"(?i)[-_](?:p(?:age)?)?(\d{1,6})$").ok()?;
     let caps = re.captures(stem)?;

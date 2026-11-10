@@ -1901,6 +1901,84 @@ mod tests {
     }
 
     #[test]
+    fn prepare_import_cbz_converts_rar_next_to_source_and_keeps_original() {
+        let png = test_png();
+        let cbr = rar5_archive(&[
+            ("001.png", png.as_slice(), png.len() as u64),
+            ("002.png", png.as_slice(), png.len() as u64),
+        ]);
+        let root = test_temp_dir("prepare-cbr");
+        let src = root.join("book.cbr");
+        std::fs::write(&src, &cbr).unwrap();
+        let prepared =
+            crate::archive_convert::prepare_import_cbz(&src, &root.join("data-converted")).unwrap();
+        assert_eq!(prepared, root.join("book-converted.cbz"));
+        assert!(src.is_file(), "原 .cbr 必须保留");
+        let handle = crate::source::open_source(&prepared).unwrap();
+        assert_eq!(handle.page_count().unwrap(), 2);
+        drop(handle);
+        let again =
+            crate::archive_convert::prepare_import_cbz(&src, &root.join("data-converted")).unwrap();
+        assert_eq!(again, prepared);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_import_cbz_handles_disguised_rar_and_naming_conflicts() {
+        let png = test_png();
+        let cbr = rar5_archive(&[("001.png", png.as_slice(), png.len() as u64)]);
+        let root = test_temp_dir("prepare-disguised");
+        let src = root.join("book.cbz");
+        std::fs::write(&src, &cbr).unwrap();
+        std::fs::write(root.join("book-converted.cbz"), b"not a zip").unwrap();
+        let prepared =
+            crate::archive_convert::prepare_import_cbz(&src, &root.join("data-converted")).unwrap();
+        assert_eq!(prepared, root.join("book-converted-2.cbz"));
+        assert_eq!(
+            std::fs::read(root.join("book-converted.cbz")).unwrap(),
+            b"not a zip"
+        );
+        let handle = crate::source::open_source(&prepared).unwrap();
+        assert_eq!(handle.page_count().unwrap(), 1);
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_import_cbz_rejects_invalid_rar() {
+        let root = test_temp_dir("prepare-invalid");
+        let src = root.join("book.cbr");
+        std::fs::write(&src, b"not a rar").unwrap();
+        let error = crate::archive_convert::prepare_import_cbz(&src, &root.join("converted"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("opds-cbr-failed"), "{error}");
+        assert!(src.is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_rar_import_uses_converted_cbz_and_keeps_source() {
+        let png = test_png();
+        let cbr = rar5_archive(&[("001.png", png.as_slice(), png.len() as u64)]);
+        let root = test_temp_dir("local-rar-import");
+        let src = root.join("book.cbr");
+        std::fs::write(&src, &cbr).unwrap();
+        let db_path = root.join("library.db");
+        let id = crate::commands::import_local_archive(db_path.clone(), &src)
+            .unwrap()
+            .expect("应导入 RAR");
+        let conn = crate::db::open(db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+        let book = crate::db::get_book(&conn, &id).unwrap().expect("书应存在");
+        assert!(book.path.ends_with("book-converted.cbz"), "{}", book.path);
+        assert_eq!(book.page_count, 1);
+        assert!(src.is_file());
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn multivolume_cbr_fails_closed_with_stable_code() {
         let png = test_png();
         let vol0 = rar5_split_archive(&png, png.len() / 2);

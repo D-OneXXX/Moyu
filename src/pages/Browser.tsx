@@ -429,6 +429,8 @@ export default function BrowserPage() {
     setNotice(null);
     try {
       await api.openBrowserWindow(target);
+      // 页面加载完成后由 on_page_load 注入；这里补一次，覆盖交接已启动的场景。
+      void api.syncBrowserToolbar().catch(() => {});
       recordBreadcrumb("onlineRead");
       setUrl(target);
       remember(target);
@@ -482,6 +484,7 @@ export default function BrowserPage() {
     setHandoffBusy("start");
     try {
       await startBrowserHandoffSession(allowSessionHeaders);
+      void api.syncBrowserToolbar().catch(() => {});
     } catch (e) {
       toastErr("start_browser_handoff", e);
     } finally {
@@ -494,6 +497,7 @@ export default function BrowserPage() {
     setHandoffBusy("stop");
     try {
       await stopBrowserHandoffSession();
+      void api.syncBrowserToolbar().catch(() => {});
     } catch (e) {
       toastErr("stop_browser_handoff", e);
     } finally {

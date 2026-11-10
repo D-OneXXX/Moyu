@@ -1,6 +1,7 @@
 //! Moyu 后端：书库、阅读、在线直读、更新、隐私与韧性。
 //! 前端契约见 `src/lib/tauri.ts`。
 
+mod archive_convert;
 mod backup;
 mod browser;
 pub mod ca;
@@ -783,6 +784,7 @@ pub fn run() {
             system_proxy::detect_system_proxy,
             browser::open_browser_window,
             browser::navigate_browser,
+            browser::sync_browser_toolbar,
             browser::list_browser_downloads,
             browser::import_browser_download,
             // 旧自定义补丁通道（check/download/install/cancel/snapshot）已下线：

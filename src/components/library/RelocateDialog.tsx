@@ -72,7 +72,7 @@ export default function RelocateDialog({
             filters: [
               {
                 name: t("import.filesFilter"),
-                extensions: ["zip", "cbz", "pdf"],
+                extensions: ["zip", "cbz", "rar", "cbr", "pdf"],
               },
             ],
           })

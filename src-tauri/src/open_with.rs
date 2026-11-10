@@ -52,7 +52,7 @@ fn dedup_key(path: &str) -> String {
 ///
 /// - 跳过 argv[0]（可执行文件自身）；
 /// - 跳过空串与以 `-` 开头的开关参数；
-/// - 只接受**已存在的目录**或扩展名为 `.zip` / `.cbz` 的文件（大小写不敏感）；
+/// - 只接受**已存在的目录**或扩展名为 `.zip` / `.cbz` / `.rar` / `.cbr` 的文件（大小写不敏感）；
 /// - 按平台语义去重（Windows 忽略大小写，Linux/macOS 精确匹配），保留首次出现顺序。
 pub fn extract_paths(argv: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut out = Vec::new();
@@ -66,7 +66,10 @@ pub fn extract_paths(argv: impl IntoIterator<Item = String>) -> Vec<String> {
             continue;
         }
         let path = Path::new(trimmed);
-        let supported = path.is_dir() || (path.is_file() && crate::source::is_archive_path(path));
+        let supported = path.is_dir()
+            || (path.is_file()
+                && (crate::source::is_archive_path(path)
+                    || crate::archive_convert::is_convertible_archive_path(path)));
         if !supported {
             continue;
         }
@@ -199,6 +202,8 @@ mod tests {
         std::fs::write(&archive, b"cbz").unwrap();
         let upper = dir.join("BOOK.ZIP");
         std::fs::write(&upper, b"zip").unwrap();
+        let cbr = dir.join("book.cbr");
+        std::fs::write(&cbr, b"rar").unwrap();
         let text = dir.join("notes.txt");
         std::fs::write(&text, b"text").unwrap();
         let missing = dir.join("missing.cbz");
@@ -213,18 +218,20 @@ mod tests {
             missing.to_string_lossy().into_owned(),
             archive.to_string_lossy().into_owned(),
             upper.to_string_lossy().into_owned(),
+            cbr.to_string_lossy().into_owned(),
             folder.to_string_lossy().into_owned(),
             archive.to_string_lossy().into_owned(),
         ];
         let paths = extract_paths(argv);
         assert_eq!(
             paths.len(),
-            3,
-            "zip/cbz/目录各一条，重复项被去掉：{paths:?}"
+            4,
+            "zip/cbz/cbr/目录各一条，重复项被去掉：{paths:?}"
         );
         assert_eq!(paths[0], archive.to_string_lossy());
         assert_eq!(paths[1], upper.to_string_lossy());
-        assert_eq!(paths[2], folder.to_string_lossy());
+        assert_eq!(paths[2], cbr.to_string_lossy());
+        assert_eq!(paths[3], folder.to_string_lossy());
 
         std::fs::remove_dir_all(&dir).ok();
     }

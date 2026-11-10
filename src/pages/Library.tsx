@@ -594,7 +594,7 @@ export default function LibraryPage() {
         filters: [
           {
             name: translate("import.filesFilter"),
-            extensions: ["zip", "cbz", "pdf"].filter(
+            extensions: ["zip", "cbz", "rar", "cbr", "pdf"].filter(
               (ext) => ext !== "pdf" || isFeatureEnabled("pdf"),
             ),
           },

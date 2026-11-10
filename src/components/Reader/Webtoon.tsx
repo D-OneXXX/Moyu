@@ -16,6 +16,12 @@ import {
   type PageDim,
 } from "../../lib/tauri";
 import { webtoonTileCount } from "../../lib/webtoonGeometry";
+import {
+  centerAnchor,
+  pageIndexAt,
+  reflowScrollTop,
+  shouldCorrectPageDims,
+} from "../../lib/webtoonGeometry";
 import ErrorState from "../ErrorState";
 import PixelPet from "../PixelPet";
 import { useI18n } from "@/i18n";
@@ -95,27 +101,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clamp = (v: number, lo: number, hi: number) =>
   Math.max(lo, Math.min(hi, v));
 
-/** 前缀高度二分：返回 y 落在的**逻辑页**（越界钳到最后/第一页）。O(log n)。
- *
- * 返回值的语义与后端 `get_webtoon_layout` 的页数组下标一致（0..pageCount-1），
- * 是阅读进度、scrubber、SQLite `set_progress` 的唯一页标识；切片号不参与计算。
- */
-function pageIndexAt(pages: readonly PageLayout[], y: number): number {
-  let lo = 0;
-  let hi = pages.length - 1;
-  let ans = 0;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (pages[mid].start <= y) {
-      ans = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return ans;
-}
-
 /**
  * 页内切片边界取整：相邻切片共享同一条整数像素线，
  * 避免小数 top/height 被浏览器分别舍入后出现 1px 交替缝隙。
@@ -129,27 +114,6 @@ function tileTopAt(p: PageLayout, tile: number): number {
 }
 function tileHeightAt(p: PageLayout, tile: number): number {
   return tileTopAt(p, tile + 1) - tileTopAt(p, tile);
-}
-
-/**
- * 视口中心锚点（页 + 页内比例），按给定布局计算。
- *
- * `page` 是**逻辑页下标**（0..pages.length-1），用于锚定/进度/scrubber；
- * 页内比例 = 中心点在该逻辑页总显示高里的位置（与切了几片无关）。
- */
-function centerAnchor(
-  layout: StripLayout,
-  top: number,
-  vh: number,
-): { page: number; frac: number } {
-  if (layout.pages.length === 0) return { page: 0, frac: 0 };
-  const mid = top + vh * 0.5;
-  const page = pageIndexAt(layout.pages, mid);
-  const p = layout.pages[page];
-  return {
-    page,
-    frac: p && p.dispH > 0 ? clamp((mid - p.start) / p.dispH, 0, 1) : 0,
-  };
 }
 
 /** 先让浏览器解码 dataURL，再进 React 状态，避免插入时白闪。
@@ -261,6 +225,16 @@ const WebtoonView = memo(function WebtoonView({
   // 当前布局的保留窗口（绝对像素），预取结果超出即丢弃，避免无界缓存。
   const layoutRef = useRef<StripLayout | null>(null);
   const keepRef = useRef({ lo: -Infinity, hi: Infinity });
+  // 解码尺寸纠正：每页只纠正一次。后端纠正落库后仍可能有在途切片响应
+  // 携带旧布局尺寸，重复纠正会让页高在两种比例之间来回跳。
+  const correctedRef = useRef<Set<number>>(new Set());
+  const dimsRef = useRef<PageDim[] | null>(null);
+  // 纠正前的布局 / 滚动快照：等新布局进 DOM 后按视口中心锚点还原。
+  const reflowRef = useRef<{
+    layout: StripLayout | null;
+    top: number;
+    vh: number;
+  } | null>(null);
 
   const pct = clamp(Number.isFinite(widthPct) ? widthPct : 100, MIN_WIDTH_PCT, MAX_WIDTH_PCT);
   const widthRef = useRef(pct);
@@ -273,6 +247,8 @@ const WebtoonView = memo(function WebtoonView({
     setErr(null);
     setWin({ lo: 0, hi: 0 });
     restoreDone.current = false;
+    correctedRef.current = new Set();
+    reflowRef.current = null;
     lastProgress.current = { pct: 0, page: startPage };
     anchorRef.current = { page: startPage, frac: 0 };
     api
@@ -346,6 +322,7 @@ const WebtoonView = memo(function WebtoonView({
     return { pages, total: acc, contentWidth };
   }, [dims, vw, pct, W]);
   layoutRef.current = layout;
+  dimsRef.current = dims;
 
   /* ---------- 换书 / 渲染宽变化：清空切片缓存并让旧请求失效 ---------- */
   useEffect(() => {
@@ -405,6 +382,42 @@ const WebtoonView = memo(function WebtoonView({
             requestedRef.current.delete(key);
             return false;
           }
+        }
+        // 头部探测失败的在线页只有 (0,0) 占位：用这次真实解码的整页尺寸
+        // 纠正一次布局，并按视口中心锚点还原滚动位置（见下方 reflow effect）。
+        const current = dimsRef.current?.[i];
+        if (
+          current &&
+          !correctedRef.current.has(i) &&
+          shouldCorrectPageDims({
+            origWidth: img.origWidth,
+            origHeight: img.origHeight,
+            tileWidth: img.width,
+            tileHeight: img.height,
+            currentWidth: current.width,
+            currentHeight: current.height,
+          })
+        ) {
+          correctedRef.current.add(i);
+          const el = scrollerRef.current;
+          reflowRef.current = {
+            layout: layoutRef.current,
+            top: el ? el.scrollTop : 0,
+            vh: el ? el.clientHeight : 0,
+          };
+          setDims((prev) => {
+            const target = prev?.[i];
+            if (!prev || !target) return prev;
+            if (
+              target.width === img.origWidth &&
+              target.height === img.origHeight
+            ) {
+              return prev;
+            }
+            const next = prev.slice();
+            next[i] = { ...target, width: img.origWidth, height: img.origHeight };
+            return next;
+          });
         }
         setTiles((prev) =>
           prev[key] !== undefined ? prev : { ...prev, [key]: img.dataUrl },
@@ -724,6 +737,31 @@ const WebtoonView = memo(function WebtoonView({
     applyScrollTop,
     syncFromScroll,
   ]);
+
+  /* ---------- 解码尺寸纠正后的滚动锚定（视觉中心不动，CLS = 0） ---------- */
+  // 与新布局同一次 commit 执行：浏览器尚未绘制，因此不存在可见跳动。
+  // 被纠正页在视口上方时等效 `scrollTop += deltaHeight`；在下方时锚点页
+  // 的 start 不变，滚动位置保持。宽度锚定逻辑只看 contentWidth/viewport，
+  // 两者的触发条件互不重叠，不会互相拉扯。
+  useLayoutEffect(() => {
+    const pending = reflowRef.current;
+    if (!pending || !layout) return;
+    if (!restoreDone.current) {
+      reflowRef.current = null;
+      return;
+    }
+    reflowRef.current = null;
+    const el = scrollerRef.current;
+    if (!el) return;
+    const vhNow = pending.vh > 0 ? pending.vh : el.clientHeight;
+    const target = reflowScrollTop(pending.layout, layout, pending.top, vhNow);
+    const before = el.scrollTop;
+    el.scrollTop = target;
+    // 程序化滚动：不让 scroll 事件把它当成用户滚动重复提交进度。
+    if (el.scrollTop !== before) programmaticScroll.current = true;
+    // 只刷新布局快照/窗口/待提交进度，不额外调度一次落库。
+    syncFromScroll(false);
+  }, [layout, syncFromScroll]);
 
   /* ---------- 切片渲染宽变化：重新请求窗口（缩放窗口宽度时） ---------- */
   useEffect(() => {

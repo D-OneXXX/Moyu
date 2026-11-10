@@ -15,6 +15,7 @@ use chrono::{Local, NaiveDateTime, TimeZone};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+use crate::online::StoredMeta;
 use crate::source::BackendError;
 
 /// 写锁等待上限：并发扫描/阅读写入时最多排队 5 秒，超出才报 `database is locked`。
@@ -643,6 +644,76 @@ pub fn online_cache_clear_candidates(
         }
     }
     Ok(ids)
+}
+
+/// 只更新在线书的 `meta_json`（`source_type <> 'local'`）。
+///
+/// **不得**复用 [`upsert_online_book`]：那条路径会把 `last_opened_at` 改成
+/// “现在”、重写 path/title/页数，并在页数缩小时递增 `progress_rev`。
+/// 这里只做元数据替换，身份列与进度列一律不碰。返回是否命中一行。
+pub fn update_online_book_meta(
+    conn: &Connection,
+    id: &str,
+    meta_json: &str,
+) -> Result<bool, BackendError> {
+    let changed = conn.execute(
+        "UPDATE books SET meta_json=?2 WHERE id=?1 AND source_type <> 'local'",
+        params![id, meta_json],
+    )?;
+    Ok(changed > 0)
+}
+
+/// 纯函数：把单页真实尺寸合并进 `meta_json`。
+///
+/// - 解析失败（脏 JSON）→ `None`，绝不覆盖原值；
+/// - 解码尺寸非正 → `None`；
+/// - 下标越界或该页尺寸已一致 → `None`（无变化不写库）；
+/// - 只改目标页的 `width`/`height`，其它页、系列字段与过滤元数据原样保留。
+pub fn merge_page_dimensions(
+    meta_json: &str,
+    index: u32,
+    width: u32,
+    height: u32,
+) -> Option<String> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut meta: StoredMeta = serde_json::from_str(meta_json).ok()?;
+    let page = meta.pages.get_mut(index as usize)?;
+    if page.width == Some(width) && page.height == Some(height) {
+        return None;
+    }
+    page.width = Some(width);
+    page.height = Some(height);
+    serde_json::to_string(&meta).ok()
+}
+
+/// 读-合并-写：仅当合并确实产生变化时才落库，返回新的 `meta_json`。
+/// 非在线书、下标越界、尺寸未变一律返回 `None`（调用方据此跳过内存同步）。
+pub fn update_online_page_dimensions(
+    conn: &Connection,
+    id: &str,
+    index: u32,
+    width: u32,
+    height: u32,
+) -> Result<Option<String>, BackendError> {
+    let meta_json: Option<String> = conn
+        .query_row(
+            "SELECT meta_json FROM books WHERE id=?1 AND source_type <> 'local'",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(meta_json) = meta_json else {
+        return Ok(None);
+    };
+    let Some(merged) = merge_page_dimensions(&meta_json, index, width, height) else {
+        return Ok(None);
+    };
+    if !update_online_book_meta(conn, id, &merged)? {
+        return Ok(None);
+    }
+    Ok(Some(merged))
 }
 
 /// 无损重定位：把一本书从旧 id/path 迁到新 id/path（单事务）。
@@ -2438,6 +2509,156 @@ mod tests {
             )
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    fn online_meta(pages: &[(Option<u32>, Option<u32>)]) -> String {
+        let pages: Vec<serde_json::Value> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, (width, height))| {
+                let mut page = serde_json::json!({
+                    "url": format!("https://example.com/{}.jpg", index + 1)
+                });
+                if let Some(width) = width {
+                    page["width"] = serde_json::json!(width);
+                }
+                if let Some(height) = height {
+                    page["height"] = serde_json::json!(height);
+                }
+                page
+            })
+            .collect();
+        serde_json::json!({
+            "schema": 1,
+            "manifestHash": "h",
+            "fetchedAt": "t",
+            "pages": pages,
+            "seriesId": "s1",
+            "chapterIndex": 2,
+            "filtered": [{"url": "https://example.com/ad.gif", "reason": "size"}]
+        })
+        .to_string()
+    }
+
+    fn parsed(meta_json: &str) -> serde_json::Value {
+        serde_json::from_str(meta_json).unwrap()
+    }
+
+    #[test]
+    fn merge_page_dimensions_fills_missing_and_preserves_everything_else() {
+        let meta = online_meta(&[(None, None), (Some(10), Some(20))]);
+        let merged = merge_page_dimensions(&meta, 0, 800, 12000).expect("filled");
+        let value = parsed(&merged);
+        assert_eq!(value["pages"][0]["width"], 800);
+        assert_eq!(value["pages"][0]["height"], 12000);
+        // 其它页与系列/过滤元数据原样保留。
+        assert_eq!(value["pages"][1]["width"], 10);
+        assert_eq!(value["pages"][1]["height"], 20);
+        assert_eq!(value["seriesId"], "s1");
+        assert_eq!(value["chapterIndex"], 2);
+        assert_eq!(value["filtered"][0]["reason"], "size");
+        assert_eq!(value["pages"][0]["url"], "https://example.com/1.jpg");
+    }
+
+    #[test]
+    fn merge_page_dimensions_rejects_noops_and_invalid_input() {
+        let meta = online_meta(&[(Some(800), Some(12000)), (None, None)]);
+        assert!(
+            merge_page_dimensions(&meta, 0, 800, 12000).is_none(),
+            "same dims must not rewrite meta_json"
+        );
+        assert!(
+            merge_page_dimensions(&meta, 9, 800, 12000).is_none(),
+            "out-of-range index is a no-op"
+        );
+        assert!(
+            merge_page_dimensions(&meta, 1, 0, 12000).is_none(),
+            "zero width is not a real dimension"
+        );
+        assert!(
+            merge_page_dimensions(&meta, 1, 800, 0).is_none(),
+            "zero height is not a real dimension"
+        );
+        assert!(merge_page_dimensions("not json", 0, 800, 12000).is_none());
+        assert!(merge_page_dimensions("{}", 0, 800, 12000).is_none());
+    }
+
+    #[test]
+    fn update_online_page_dimensions_only_touches_meta_json() {
+        let conn = mem();
+        let meta = online_meta(&[(None, None), (Some(10), Some(20))]);
+        upsert_online_book(
+            &conn,
+            "o1",
+            "https://example.com/a",
+            "A",
+            2,
+            "generic_manga",
+            &meta,
+        )
+        .unwrap();
+        set_progress(&conn, "o1", 1, Some(0.5)).unwrap();
+        conn.execute(
+            "UPDATE books SET last_opened_at='2026-01-02 03:04:05' WHERE id='o1'",
+            [],
+        )
+        .unwrap();
+        let before = get_book(&conn, "o1").unwrap().unwrap();
+
+        let merged = update_online_page_dimensions(&conn, "o1", 0, 800, 12000)
+            .unwrap()
+            .expect("dimensions merged");
+        assert_eq!(parsed(&merged)["pages"][0]["width"], 800);
+
+        let after = get_book(&conn, "o1").unwrap().unwrap();
+        assert_eq!(after.meta_json, merged);
+        // 只改 meta_json：身份列、进度列、页数与时间戳全部保持。
+        assert_eq!(after.last_opened_at, before.last_opened_at);
+        assert_eq!(after.updated_at, before.updated_at);
+        assert_eq!(after.progress_rev, before.progress_rev);
+        assert_eq!(after.current_page, before.current_page);
+        assert_eq!(after.scroll_pct.to_bits(), before.scroll_pct.to_bits());
+        assert_eq!(after.page_count, before.page_count);
+        assert_eq!(after.path, before.path);
+        assert_eq!(after.title, before.title);
+        assert_eq!(after.source_type, before.source_type);
+
+        // 相同尺寸再写一次是无变化（不产生新的 meta_json）。
+        assert_eq!(
+            update_online_page_dimensions(&conn, "o1", 0, 800, 12000).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn update_online_page_dimensions_skips_local_and_unknown_books() {
+        let conn = mem();
+        let meta = online_meta(&[(None, None)]);
+        upsert_book(&conn, "local1", "p/local1", "Local", 1).unwrap();
+        upsert_online_book(
+            &conn,
+            "o1",
+            "https://example.com/a",
+            "A",
+            1,
+            "generic_manga",
+            &meta,
+        )
+        .unwrap();
+
+        assert_eq!(
+            update_online_page_dimensions(&conn, "local1", 0, 800, 12000).unwrap(),
+            None
+        );
+        assert_eq!(
+            get_book(&conn, "local1").unwrap().unwrap().meta_json,
+            "{}",
+            "local books must not have meta_json rewritten"
+        );
+        assert_eq!(
+            update_online_page_dimensions(&conn, "missing", 0, 800, 12000).unwrap(),
+            None
+        );
     }
 
     #[test]

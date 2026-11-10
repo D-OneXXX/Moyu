@@ -1388,6 +1388,52 @@ fn assembled_page(
     })
 }
 
+/// 在线页真实解码尺寸回写（fresh render 专用）。
+///
+/// 在线书的尺寸来自 `get_webtoon_layout` 的 256 KiB 头部探测：带巨型
+/// EXIF/XMP/ICC 头的图片探测会失败并留下占位 `(0,0)`，前端只能吃兜底比例。
+/// 一旦该页**真正解码**（`get_page` / `get_webtoon_tile` 的非 L2 路径），
+/// 就把真实整页尺寸合并进 `meta_json`，并同步内存布局缓存，让后续 L2/切片
+/// 请求复用同一逻辑页尺寸。失败只记脱敏日志（书 ID 前缀 + 页码），阅读照旧。
+fn persist_decoded_page_dimensions(
+    state: &AppState,
+    book_id: &str,
+    index: u32,
+    width: u32,
+    height: u32,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let persisted = state.db.with(|conn| {
+        db::update_online_page_dimensions(conn, book_id, index, width, height)
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = persisted {
+        crate::logging::log_error(
+            "online-metadata-write",
+            &format!(
+                "book={} 第 {} 页：{}",
+                short_book_ref(book_id),
+                index + 1,
+                safe_error_text(&e)
+            ),
+        );
+    }
+    // 内存布局同步与落库成败无关：本次请求已经拿到真实尺寸，后续切片/L2
+    // 请求应当立刻用上，而不是等下次重新加载布局。
+    let mut layouts = state.webtoon_layouts.lock();
+    if let Some(entry) = layouts.get(book_id) {
+        if entry.get(index as usize).copied() != Some((width, height)) {
+            let mut dims = entry.as_ref().clone();
+            if let Some(slot) = dims.get_mut(index as usize) {
+                *slot = (width, height);
+                layouts.insert(book_id.to_string(), Arc::new(dims));
+            }
+        }
+    }
+}
+
 /// 三级缓存取页（v3 毫秒级路径）：
 /// L1 内存 LRU（命中 ~0.1ms）→ L2 磁盘成品 JPEG（~1ms）→ 全管线
 /// （常开句柄单页读 → Triangle 降采样 → JPEG 编码，典型 30-60ms），
@@ -1457,6 +1503,11 @@ pub async fn get_page(
         let raw = handle.read_raw(index as usize)?;
         let raw_bytes = raw.bytes.len();
         let page = pipeline::render_raw(&raw, max_width, max_height)?;
+        // 仅在线源的 fresh render 才有「真实整页尺寸」这一事实；L2 命中没有
+        // 源尺寸，不能拿来当权威值（见上面的兜底注释）。
+        if is_online {
+            persist_decoded_page_dimensions(&st, &book, index, page.orig_width, page.orig_height);
+        }
         st.cache_if_current(cache_epoch, || {
             st.render.put(&book, index, w, h, &page.bytes)
         });
@@ -2272,12 +2323,12 @@ pub async fn get_webtoon_tile(
     }
     let st = state.inner().clone();
     let lookup_book_id = book_id.clone();
-    blocking(move || {
+    let is_online = blocking(move || {
         st.db
             .with(|conn| {
                 db::get_book(conn, &lookup_book_id)
                     .map_err(err)?
-                    .map(|_| ())
+                    .map(|b| b.source_type != "local")
                     .ok_or_else(|| "书籍不存在".into())
             })
             .map_err(BackendError::Msg)
@@ -2316,7 +2367,7 @@ pub async fn get_webtoon_tile(
         // 其它书/页的切片请求；锁内只做“双检 + 解码切片 + 落盘”。
         let handle = st.source_handle_for_book(&book)?;
         let raw = handle.read_raw(index as usize)?;
-        let _guard = st.tile_lock.lock();
+        let guard = st.tile_lock.lock();
         // 双检：等锁期间可能已被别的请求物化。
         if let Some(bytes) = st.render.get_tile(&book, index, tile, w) {
             return assembled_page(bytes, orig_dims.0, orig_dims.1);
@@ -2343,6 +2394,18 @@ pub async fn get_webtoon_tile(
         // 空 dataUrl，后续滚动命中将返回黑块。单次请求只在此编码 1 次。
         let mut requested = pages.into_iter().nth(tile as usize).expect("切片在界内");
         requested.data_url = requested.data_url_from_bytes();
+        // 整页物化完成后释放串行锁再写库：DB 写不能卡住下一张切片的解码。
+        drop(guard);
+        // fresh render 才有真实整页尺寸；L2 命中借的是布局缓存里的旧值。
+        if is_online {
+            persist_decoded_page_dimensions(
+                &st,
+                &book,
+                index,
+                requested.orig_width,
+                requested.orig_height,
+            );
+        }
         Ok(requested)
     })
     .await

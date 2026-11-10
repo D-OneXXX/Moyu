@@ -1466,7 +1466,7 @@ export default function SettingsPage() {
                 {onlineCacheLarge ? (
                   <Badge
                     variant="warning"
-                    className="max-w-full whitespace-normal text-left leading-4"
+                    className="max-w-full whitespace-normal text-left leading-4 tabular-nums"
                     data-testid="online-cache-hint"
                   >
                     {t("settings.cache.onlineLarge", {

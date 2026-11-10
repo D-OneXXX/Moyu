@@ -554,6 +554,8 @@ export const api = {
     invoke<void>("open_browser_window", { url }),
   navigateBrowser: (url: string) =>
     invoke<void>("navigate_browser", { url }),
+  // Handoff 启停后刷新辅助浏览器顶部条（窗口不存在时静默成功）。
+  syncBrowserToolbar: () => invoke<void>("sync_browser_toolbar"),
   listBrowserDownloads: () =>
     invoke<BrowserDownload[]>("list_browser_downloads"),
   importBrowserDownload: (path: string) =>

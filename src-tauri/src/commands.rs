@@ -415,11 +415,20 @@ fn title_for(path: &Path) -> String {
         return name.to_string();
     }
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["zip", "cbz", "pdf"].contains(&ext.to_ascii_lowercase().as_str()) => {
+        Some((stem, ext))
+            if ["zip", "cbz", "pdf", "rar", "cbr"].contains(&ext.to_ascii_lowercase().as_str()) =>
+        {
             stem.to_string()
         }
         _ => name.to_string(),
     }
+}
+
+fn converted_root_for(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .map(|parent| parent.join("converted"))
+        .unwrap_or_else(|| std::env::temp_dir().join("moyu-converted"))
 }
 
 /// 压缩包（单文件）的增量扫描指纹；目录不参与，避免漏掉嵌套变更。
@@ -438,6 +447,7 @@ fn archive_stamp(path: &Path) -> Option<db::SourceStamp> {
 /// 扫描一本书：打开源 → 取页数 → upsert。
 ///
 /// 显式扫描总是重新读取源目录；文件时间和字节数相同也可能换了内容。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn scan_single_book(
     conn: &rusqlite::Connection,
     path: &Path,
@@ -524,18 +534,33 @@ pub(crate) fn scan_single_book_with_title(
     result.map(to_book_info)
 }
 
-/// 下载文件复用现有单本扫描/入库逻辑；非 zip/cbz 返回 None。
+/// 下载文件复用现有单本扫描/入库逻辑；非 zip/cbz/rar/cbr 返回 None。
+///
+/// RAR/CBR（含伪装成 `.zip/.cbz` 的 RAR）先转码为 `.cbz`；返回书 id 与
+/// 实际入库路径，供浏览器下载标记只读与事件展示。
+pub(crate) fn import_local_archive_prepared(
+    db_path: PathBuf,
+    path: &Path,
+) -> Result<Option<(String, PathBuf)>, BackendError> {
+    if !source::is_archive_path(path) && !crate::archive_convert::is_convertible_archive_path(path)
+    {
+        return Ok(None);
+    }
+    let converted_root = converted_root_for(&db_path);
+    let prepared = crate::archive_convert::prepare_import_cbz(path, &converted_root)?;
+    let conn = db::open(db_path)?;
+    db::init_schema(&conn)?;
+    let book = scan_single_book_with_title(&conn, &prepared, Some(&title_for(path)))?;
+    Ok(Some((book.id, prepared)))
+}
+
+/// 兼容入口：只返回书 id（生产下载链使用 prepared 变体）。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn import_local_archive(
     db_path: PathBuf,
     path: &Path,
 ) -> Result<Option<String>, BackendError> {
-    if !source::is_archive_path(path) {
-        return Ok(None);
-    }
-    let conn = db::open(db_path)?;
-    db::init_schema(&conn)?;
-    let book = scan_single_book(&conn, path)?;
-    Ok(Some(book.id))
+    Ok(import_local_archive_prepared(db_path, path)?.map(|(id, _)| id))
 }
 
 /// 递归收集书籍路径：直下有图片的目录视为一本书；否则继续向下找章节目录
@@ -565,7 +590,10 @@ fn collect_book_paths(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         }
         if kid.is_dir() {
             collect_book_paths(&kid, depth + 1, out);
-        } else if source::is_archive_path(&kid) || source::is_pdf_path(&kid) {
+        } else if source::is_archive_path(&kid)
+            || source::is_pdf_path(&kid)
+            || crate::archive_convert::is_convertible_archive_path(&kid)
+        {
             out.push(kid);
         }
     }
@@ -577,6 +605,7 @@ fn blocking_scan(
     root: &str,
 ) -> Result<(Vec<BookInfo>, Vec<String>), BackendError> {
     let path = PathBuf::from(root);
+    let converted_root = converted_root_for(&db_path);
     let conn = db::open(db_path)?;
     db::init_schema(&conn)?;
 
@@ -585,11 +614,15 @@ fn blocking_scan(
     let mut candidates = Vec::new();
     if path.is_dir() {
         collect_book_paths(&path, 0, &mut candidates);
-    } else if path.is_file() && (source::is_archive_path(&path) || source::is_pdf_path(&path)) {
+    } else if path.is_file()
+        && (source::is_archive_path(&path)
+            || source::is_pdf_path(&path)
+            || crate::archive_convert::is_convertible_archive_path(&path))
+    {
         candidates.push(path.clone());
     } else {
         return Err(BackendError::Msg(format!(
-            "扫描路径无效（需要目录或 .zip/.cbz/.pdf）：{root}"
+            "扫描路径无效（需要目录或 .zip/.cbz/.rar/.cbr/.pdf）：{root}"
         )));
     }
     let mut seen = std::collections::HashSet::new();
@@ -597,9 +630,11 @@ fn blocking_scan(
         if !seen.insert(candidate.clone()) {
             continue;
         }
-        match scan_single_book(&conn, &candidate) {
-            Ok(book) => books.push(book),
-            Err(error) => errors.push(format!("{}：{error}", candidate.display())),
+        let item = import_one(&conn, &candidate, &converted_root);
+        if let Some(book) = item.book {
+            books.push(book);
+        } else {
+            errors.push(format!("{}：{}", item.path, item.message));
         }
     }
     Ok((books, errors))
@@ -675,13 +710,18 @@ fn import_outcome(
 
 /// 单本书路径导入：已入库也重新扫描并 upsert，刷新页数/元数据，保留进度；
 /// 软删的书同样恢复。读取失败进入 failed，而不是静默 skipped。
-fn import_one(conn: &rusqlite::Connection, p: &Path) -> ImportItemResult {
+fn import_one(conn: &rusqlite::Connection, p: &Path, converted_root: &Path) -> ImportItemResult {
     let path = p.to_string_lossy().to_string();
-    let existed = db::find_book_id_by_path(conn, &path)
+    let prepared = match crate::archive_convert::prepare_import_cbz(p, converted_root) {
+        Ok(prepared) => prepared,
+        Err(error) => return import_outcome(&path, "failed", error.to_string(), None),
+    };
+    let prepared_path = prepared.to_string_lossy().to_string();
+    let existed = db::find_book_id_by_path(conn, &prepared_path)
         .ok()
         .flatten()
         .is_some();
-    match scan_single_book(conn, p) {
+    match scan_single_book_with_title(conn, &prepared, Some(&title_for(p))) {
         Ok(book) => {
             let (status, message) = if existed {
                 ("restored", "已刷新页数与元数据，阅读进度保留")
@@ -710,6 +750,7 @@ pub(crate) fn import_blocking(
     db_path: PathBuf,
     paths: Vec<String>,
 ) -> Result<Vec<ImportItemResult>, BackendError> {
+    let converted_root = converted_root_for(&db_path);
     let conn = db::open(db_path)?;
     db::init_schema(&conn)?;
     let mut out = Vec::new();
@@ -730,19 +771,22 @@ pub(crate) fn import_blocking(
             continue;
         }
         if p.is_file() {
-            if !source::is_archive_path(&p) && !source::is_pdf_path(&p) {
+            if !source::is_archive_path(&p)
+                && !source::is_pdf_path(&p)
+                && !crate::archive_convert::is_convertible_archive_path(&p)
+            {
                 out.push(import_outcome(
                     &path,
                     "failed",
-                    "不支持的文件（需要 .zip/.cbz/.pdf；图片文件夹请拖文件夹）".into(),
+                    "不支持的文件（需要 .zip/.cbz/.rar/.cbr/.pdf；图片文件夹请拖文件夹）".into(),
                     None,
                 ));
             } else {
-                out.push(import_one(&conn, &p));
+                out.push(import_one(&conn, &p, &converted_root));
             }
         } else if p.is_dir() {
             if dir_has_direct_images(&p) {
-                out.push(import_one(&conn, &p));
+                out.push(import_one(&conn, &p, &converted_root));
             } else {
                 let mut candidates = Vec::new();
                 collect_book_paths(&p, 0, &mut candidates);
@@ -753,13 +797,13 @@ pub(crate) fn import_blocking(
                         continue;
                     }
                     found += 1;
-                    out.push(import_one(&conn, &candidate));
+                    out.push(import_one(&conn, &candidate, &converted_root));
                 }
                 if found == 0 {
                     out.push(import_outcome(
                         &path,
                         "failed",
-                        "目录中没有可识别的书籍（需要：直下图片 / 含图片的嵌套目录 / zip/cbz/pdf）"
+                        "目录中没有可识别的书籍（需要：直下图片 / 含图片的嵌套目录 / zip/cbz/rar/cbr/pdf）"
                             .into(),
                         None,
                     ));
@@ -769,7 +813,7 @@ pub(crate) fn import_blocking(
             out.push(import_outcome(
                 &path,
                 "failed",
-                "不支持的路径（需要文件夹或 .zip/.cbz）".into(),
+                "不支持的路径（需要文件夹或 .zip/.cbz/.rar/.cbr/.pdf）".into(),
                 None,
             ));
         }
@@ -1083,6 +1127,7 @@ fn relocate_book_impl(
     conn: &rusqlite::Connection,
     old_id: &str,
     new_path: &str,
+    display_title: Option<&str>,
 ) -> Result<db::BookRow, BackendError> {
     let dest = new_path.trim().to_string();
     if dest.is_empty() {
@@ -1099,6 +1144,9 @@ fn relocate_book_impl(
     }
     let old =
         db::get_book(conn, old_id)?.ok_or_else(|| BackendError::Msg("书籍不存在".to_string()))?;
+    let display_title = display_title
+        .map(str::to_string)
+        .unwrap_or_else(|| title_for(&path));
     // PDF-1：PDF 目标只做识别与身份迁移，不解析页数（PDF-1 无渲染器，页数记 0）。
     let (page_count, format) = if source::is_pdf_path(&path) {
         source::validate_pdf_document(&path)?;
@@ -1133,12 +1181,12 @@ fn relocate_book_impl(
             old_id,
             &new_id,
             &dest,
-            &title_for(&path),
+            &display_title,
             page_count,
             &format,
         );
     }
-    db::relocate_book(conn, old_id, &new_id, &dest, &title_for(&path), page_count)
+    db::relocate_book(conn, old_id, &new_id, &dest, &display_title, page_count)
 }
 
 /// 失效路径无损重定位：
@@ -1156,9 +1204,14 @@ pub async fn relocate_book(
     let cache_state = state.inner().clone();
     let old_id = book_id.clone();
     blocking(move || {
+        let converted_root = converted_root_for(&db_path);
+        let prepared =
+            crate::archive_convert::prepare_import_cbz(Path::new(&new_path), &converted_root)?;
+        let prepared_path = prepared.to_string_lossy().to_string();
+        let display_title = title_for(Path::new(&new_path));
         let conn = db::open(db_path)?;
         db::init_schema(&conn)?;
-        let row = relocate_book_impl(&conn, &old_id, &new_path)?;
+        let row = relocate_book_impl(&conn, &old_id, &prepared_path, Some(&display_title))?;
         // Cache deletion and missing-source metadata checks both touch the
         // filesystem; complete them before leaving the blocking pool.
         cache_state.remove_book_caches(&old_id);
@@ -3437,7 +3490,11 @@ fn safe_telegram_download_name(raw: &str) -> String {
         .take(120)
         .collect();
     let lower = cleaned.to_ascii_lowercase();
-    if !(lower.ends_with(".zip") || lower.ends_with(".cbz")) {
+    if !(lower.ends_with(".zip")
+        || lower.ends_with(".cbz")
+        || lower.ends_with(".rar")
+        || lower.ends_with(".cbr"))
+    {
         cleaned.push_str(".cbz");
     }
     if cleaned
@@ -3468,10 +3525,16 @@ pub async fn download_telegram_document(
         // Telegram CDN 直链经常没有扩展名，以用户点击的附件名为准。
         if !(lower_path.ends_with(".zip")
             || lower_path.ends_with(".cbz")
+            || lower_path.ends_with(".rar")
+            || lower_path.ends_with(".cbr")
             || lower_name.ends_with(".zip")
-            || lower_name.ends_with(".cbz"))
+            || lower_name.ends_with(".cbz")
+            || lower_name.ends_with(".rar")
+            || lower_name.ends_with(".cbr"))
         {
-            return Err(BackendError::Msg("仅支持公开的 .zip/.cbz 漫画附件".into()));
+            return Err(BackendError::Msg(
+                "仅支持公开的 .zip/.cbz/.rar/.cbr 漫画附件".into(),
+            ));
         }
         let headers =
             crate::state::effective_online_headers_for(&st, &s.online_headers, canonical.as_str());
@@ -3493,6 +3556,7 @@ pub async fn download_telegram_document(
             )));
         }
         let safe_name = safe_telegram_download_name(&filename);
+        let display_title = title_for(Path::new(&safe_name));
         let root = st
             .db_path()
             .parent()
@@ -3503,15 +3567,24 @@ pub async fn download_telegram_document(
         let path = root.join(format!("{}-{}", &digest[..12], safe_name));
         std::fs::write(&path, &resp.body)?;
         let db_path = st.db_path();
+        let converted_root = converted_root_for(&db_path);
+        let prepared = match crate::archive_convert::prepare_import_cbz(&path, &converted_root) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+        };
         let imported = {
             let conn = db::open(db_path)?;
             db::init_schema(&conn)?;
-            scan_single_book(&conn, &path)
+            scan_single_book_with_title(&conn, &prepared, Some(&display_title))
         };
         let book = match imported {
             Ok(book) => Ok(book),
             Err(e) => {
                 let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(&prepared);
                 Err(e)
             }
         }?;
@@ -4883,6 +4956,13 @@ mod tests {
     }
 
     #[test]
+    fn telegram_attachment_names_preserve_rar_and_cbr() {
+        assert_eq!(safe_telegram_download_name("book.cbr"), "book.cbr");
+        assert_eq!(safe_telegram_download_name("book.RAR"), "book.RAR");
+        assert_eq!(safe_telegram_download_name("book"), "book.cbz");
+    }
+
+    #[test]
     fn readonly_file_is_cleared_before_delete() {
         let dir = test_temp_dir("readonly");
         let file = dir.join("book.zip");
@@ -5793,7 +5873,7 @@ mod tests {
         let new_path = dir.join("改名后的漫画.cbz");
         std::fs::rename(&old_path, &new_path).unwrap();
 
-        let row = relocate_book_impl(&conn, &book.id, &new_path.to_string_lossy()).unwrap();
+        let row = relocate_book_impl(&conn, &book.id, &new_path.to_string_lossy(), None).unwrap();
         assert_eq!(row.path, new_path.to_string_lossy());
         assert_eq!(row.page_count, 20);
         assert_eq!(row.current_page, 15, "重定位后必须仍停在第 15 页");
@@ -5822,7 +5902,7 @@ mod tests {
         db::upsert_book(&conn, &old_id, &old_path, "旧", 1).unwrap();
 
         let new_path = new_dir.to_string_lossy().to_string();
-        let row = relocate_book_impl(&conn, &old_id, &new_path).unwrap();
+        let row = relocate_book_impl(&conn, &old_id, &new_path, None).unwrap();
         assert_eq!(row.id, db::book_id_for_path(&new_path));
         assert_eq!(row.path, new_path);
         assert_eq!(row.title, "new");
@@ -5835,15 +5915,20 @@ mod tests {
         let other_path = other_dir.to_string_lossy().to_string();
         let other_id = db::book_id_for_path(&other_path);
         db::upsert_book(&conn, &other_id, &other_path, "other", 1).unwrap();
-        let err = relocate_book_impl(&conn, &row.id, &other_path)
+        let err = relocate_book_impl(&conn, &row.id, &other_path, None)
             .unwrap_err()
             .to_string();
         assert_eq!(err, "目标路径已在书库中");
 
         // 目标不存在 → 明确报错。
-        let err = relocate_book_impl(&conn, &row.id, &dir.join("gone.cbz").to_string_lossy())
-            .unwrap_err()
-            .to_string();
+        let err = relocate_book_impl(
+            &conn,
+            &row.id,
+            &dir.join("gone.cbz").to_string_lossy(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("目标路径不存在"), "{err}");
 
         std::fs::remove_dir_all(&dir).ok();

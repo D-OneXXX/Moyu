@@ -887,8 +887,12 @@ fn message_document(block: &str) -> Option<TelegramDocument> {
     let name_lower = filename.to_ascii_lowercase();
     if !(url_lower.contains(".zip")
         || url_lower.contains(".cbz")
+        || url_lower.contains(".rar")
+        || url_lower.contains(".cbr")
         || name_lower.ends_with(".zip")
-        || name_lower.ends_with(".cbz"))
+        || name_lower.ends_with(".cbz")
+        || name_lower.ends_with(".rar")
+        || name_lower.ends_with(".cbr"))
     {
         return None;
     }
@@ -1115,6 +1119,16 @@ mod tests {
             message_document(&link("/file.cbz")).unwrap().url,
             "https://t.me/file.cbz"
         );
+    }
+
+    #[test]
+    fn document_accepts_rar_and_cbr_attachments() {
+        let link = |url: &str, name: &str| {
+            format!(r#"<a class="tgme_widget_message_document_wrap" href="{url}">{name}</a>"#)
+        };
+        assert!(message_document(&link("https://cdn.example/ch.cbr", "ch.cbr")).is_some());
+        assert!(message_document(&link("https://cdn.example/ch.rar", "ch.rar")).is_some());
+        assert!(message_document(&link("https://cdn.example/ch.7z", "ch.7z")).is_none());
     }
 
     #[test]

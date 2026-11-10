@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use chrono::TimeZone;
 use tauri::utils::config::WebviewUrl;
-use tauri::webview::{DownloadEvent, WebviewWindowBuilder};
+use tauri::webview::{DownloadEvent, PageLoadEvent, WebviewWindowBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
 use url::Url;
 
@@ -27,6 +27,250 @@ pub(crate) fn close_browser_window(app: &tauri::AppHandle) {
 const BROWSER_TITLE: &str = "Moyu 浏览器";
 const BROWSER_WIDTH: f64 = 1200.0;
 const BROWSER_HEIGHT: f64 = 820.0;
+const TOOLBAR_LOCALE_KEY: &str = "tray_locale";
+
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolbarLabels {
+    label: &'static str,
+    back: &'static str,
+    forward: &'static str,
+    reload: &'static str,
+    import_page: &'static str,
+    importing: &'static str,
+    inactive: &'static str,
+    empty: &'static str,
+    imported: &'static str,
+    failed: &'static str,
+}
+
+fn toolbar_labels(locale: &str) -> ToolbarLabels {
+    match locale.trim().to_ascii_lowercase().as_str() {
+        "zh-tw" => ToolbarLabels {
+            label: "Moyu 交接",
+            back: "後退",
+            forward: "前進",
+            reload: "重新整理",
+            import_page: "匯入目前頁",
+            importing: "匯入中…",
+            inactive: "尚未啟動交接",
+            empty: "目前視窗沒有已載入圖片",
+            imported: "已匯入 {n} 章",
+            failed: "匯入失敗",
+        },
+        "en" => ToolbarLabels {
+            label: "Moyu handoff",
+            back: "Back",
+            forward: "Forward",
+            reload: "Reload",
+            import_page: "Import current page",
+            importing: "Importing…",
+            inactive: "Handoff not started",
+            empty: "No loaded images in viewport",
+            imported: "Imported {n} chapter(s)",
+            failed: "Import failed",
+        },
+        "es" => ToolbarLabels {
+            label: "Moyu handoff",
+            back: "Atrás",
+            forward: "Adelante",
+            reload: "Recargar",
+            import_page: "Importar página actual",
+            importing: "Importando…",
+            inactive: "Handoff no iniciado",
+            empty: "No hay imágenes cargadas en la vista",
+            imported: "Importados {n} capítulo(s)",
+            failed: "Error al importar",
+        },
+        "ja" => ToolbarLabels {
+            label: "Moyu ハンドオフ",
+            back: "戻る",
+            forward: "進む",
+            reload: "再読み込み",
+            import_page: "現在のページを取込",
+            importing: "取込中…",
+            inactive: "ハンドオフ未開始",
+            empty: "表示中の読み込み済み画像がありません",
+            imported: "{n} 章を取込しました",
+            failed: "取込に失敗",
+        },
+        "ko" => ToolbarLabels {
+            label: "Moyu 핸드오프",
+            back: "뒤로",
+            forward: "앞으로",
+            reload: "새로고침",
+            import_page: "현재 페이지 가져오기",
+            importing: "가져오는 중…",
+            inactive: "핸드오프가 시작되지 않음",
+            empty: "뷰포트에 로드된 이미지가 없습니다",
+            imported: "{n}개 장을 가져왔습니다",
+            failed: "가져오기 실패",
+        },
+        _ => ToolbarLabels {
+            label: "Moyu 交接",
+            back: "后退",
+            forward: "前进",
+            reload: "刷新",
+            import_page: "导入当前页",
+            importing: "导入中…",
+            inactive: "尚未启动交接",
+            empty: "当前视口没有已加载图片",
+            imported: "已导入 {n} 章",
+            failed: "导入失败",
+        },
+    }
+}
+
+fn toolbar_locale(state: &AppState) -> String {
+    state
+        .db
+        .with(|conn| crate::db::get_setting(conn, TOOLBAR_LOCALE_KEY).map_err(|e| e.to_string()))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "zh-CN".into())
+}
+
+const TOOLBAR_TEMPLATE: &str = r##"
+(function () {
+  if (window.top !== window) return;
+  if (!/^https?:$/.test(location.protocol)) return;
+  var config = __CONFIG__;
+  var previous = document.getElementById('moyu-handoff-bar');
+  if (previous && previous.parentNode) previous.parentNode.removeChild(previous);
+  var collect = function () {
+    var pages = [];
+    var seen = new Set();
+    var viewportWidth = window.innerWidth || 0;
+    var viewportHeight = window.innerHeight || 0;
+    var images = document.querySelectorAll('img');
+    for (var index = 0; index < images.length; index += 1) {
+      var image = images[index];
+      if (!image || !image.complete || image.naturalWidth <= 0) continue;
+      // 与后端默认正文尺寸门槛对齐，排除视口内的 logo/头像/横幅/二维码。
+      if (image.naturalWidth < 320 || image.naturalHeight < 240) continue;
+      var rect = image.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+      if (rect.bottom < 0 || rect.right < 0 || rect.top > viewportHeight || rect.left > viewportWidth) continue;
+      var candidates = [
+        image.currentSrc,
+        image.getAttribute('src'),
+        image.getAttribute('data-src'),
+        image.getAttribute('data-original')
+      ];
+      for (var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+        var raw = candidates[candidateIndex];
+        if (!raw) continue;
+        try {
+          var url = new URL(raw, location.href);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+          if (!seen.has(url.href)) {
+            seen.add(url.href);
+            pages.push(url.href);
+          }
+          break;
+        } catch (_) {}
+      }
+    }
+    return pages;
+  };
+  var install = function () {
+    if (!document.documentElement || document.getElementById('moyu-handoff-bar')) return;
+    var bar = document.createElement('div');
+    bar.id = 'moyu-handoff-bar';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', config.labels.label);
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;gap:6px;padding:0 8px;box-sizing:border-box;background:rgba(11,17,30,0.94);color:#F8FAFC;font:12px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;border-bottom:1px solid rgba(56,168,248,0.75);direction:ltr;';
+    var brand = document.createElement('span');
+    brand.textContent = config.labels.label;
+    brand.style.cssText = 'font-weight:700;color:#38A8F8;white-space:nowrap;';
+    bar.appendChild(brand);
+    var makeButton = function (text, handler) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = text;
+      button.style.cssText = 'appearance:none;border:1px solid rgba(248,250,252,0.35);background:transparent;color:#F8FAFC;border-radius:999px;padding:2px 9px;font:inherit;cursor:pointer;white-space:nowrap;';
+      button.addEventListener('click', function (event) {
+        if (!event.isTrusted) return;
+        return handler(event);
+      });
+      return button;
+    };
+    bar.appendChild(makeButton(config.labels.back, function () { history.back(); }));
+    bar.appendChild(makeButton(config.labels.forward, function () { history.forward(); }));
+    bar.appendChild(makeButton(config.labels.reload, function () { location.reload(); }));
+    var status = document.createElement('span');
+    status.setAttribute('data-moyu-status', '1');
+    status.style.cssText = 'flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#CBD5E1;';
+    status.textContent = config.callbackUrl ? '' : config.labels.inactive;
+    bar.appendChild(status);
+    var importButton = makeButton(config.labels.importPage, async function () {
+      if (!config.callbackUrl) {
+        status.textContent = config.labels.inactive;
+        return;
+      }
+      var pages = collect();
+      if (!pages.length) {
+        status.textContent = config.labels.empty;
+        return;
+      }
+      status.textContent = config.labels.importing;
+      try {
+        var response = await fetch(config.callbackUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chapters: [{
+              url: location.href,
+              title: document.title || location.href,
+              pages: pages
+            }],
+            origin: location.origin,
+            userAgent: navigator.userAgent
+          })
+        });
+        if (!response.ok) {
+          status.textContent = config.labels.failed + ' (' + response.status + ')';
+          return;
+        }
+        var data = {};
+        try { data = await response.json(); } catch (_) {}
+        var count = data && Array.isArray(data.books) ? data.books.length : 1;
+        status.textContent = config.labels.imported.replace('{n}', String(count));
+      } catch (_) {
+        status.textContent = config.labels.failed;
+      }
+    });
+    importButton.style.borderColor = config.callbackUrl ? 'rgba(56,168,248,0.95)' : 'rgba(148,163,184,0.4)';
+    importButton.style.background = config.callbackUrl ? '#38A8F8' : 'transparent';
+    importButton.style.color = config.callbackUrl ? '#08111F' : '#94A3B8';
+    importButton.style.fontWeight = '700';
+    importButton.setAttribute('data-moyu-import', '1');
+    importButton.disabled = !config.callbackUrl;
+    bar.appendChild(importButton);
+    document.documentElement.appendChild(bar);
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', install, { once: true });
+  } else {
+    install();
+  }
+})();
+"##;
+
+fn build_toolbar_script(callback_url: &str, labels: &ToolbarLabels) -> String {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ToolbarConfig<'a> {
+        callback_url: &'a str,
+        labels: &'a ToolbarLabels,
+    }
+    let config = serde_json::to_string(&ToolbarConfig {
+        callback_url,
+        labels,
+    })
+    .unwrap_or_else(|_| "{\"callbackUrl\":\"\",\"labels\":{}}".into());
+    TOOLBAR_TEMPLATE.replace("__CONFIG__", &config)
+}
 
 /// 下载文件名长度上限（保留扩展名后按字符截断）。
 const MAX_DOWNLOAD_FILENAME_CHARS: usize = 120;
@@ -148,6 +392,7 @@ fn prepare_download_destination(downloads_dir: &Path, url: &Url, suggested: &Pat
 
 fn is_importable_download(path: &Path) -> bool {
     crate::source::is_archive_path(path)
+        || crate::archive_convert::is_convertible_archive_path(path)
 }
 
 fn simplify_path(path: PathBuf) -> PathBuf {
@@ -195,36 +440,35 @@ fn finish_download(app: AppHandle, path: PathBuf) {
     let within_downloads = downloads_dir()
         .ok()
         .is_some_and(|dir| is_within(&dir, &path));
-    let imported = if within_downloads && is_importable_download(&path) {
+    let (imported, display_path) = if within_downloads && is_importable_download(&path) {
         let db_path = app.state::<Arc<AppState>>().db_path();
-        match commands::import_local_archive(db_path, &path) {
-            Ok(book_id) => {
-                if book_id.is_some() {
-                    if let Err(e) = commands::set_file_readonly(&path) {
-                        crate::logging::log_error(
-                            "browser_import",
-                            &format!("设置下载文件只读失败：{e}"),
-                        );
-                    }
+        match commands::import_local_archive_prepared(db_path, &path) {
+            Ok(Some((book_id, prepared))) => {
+                if let Err(e) = commands::set_file_readonly(&prepared) {
+                    crate::logging::log_error(
+                        "browser_import",
+                        &format!("设置下载文件只读失败：{e}"),
+                    );
                 }
-                book_id
+                (Some(book_id), prepared)
             }
+            Ok(None) => (None, path),
             Err(e) => {
                 crate::logging::log_error("browser_import", &format!("导入下载失败：{e}"));
-                None
+                (None, path)
             }
         }
     } else {
-        None
+        (None, path)
     };
 
-    let name = path
+    let name = display_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("download")
         .to_string();
     let payload = BrowserDownloadEvent {
-        path: path.to_string_lossy().to_string(),
+        path: display_path.to_string_lossy().to_string(),
         name,
         imported: imported.is_some(),
         book_id: imported,
@@ -285,6 +529,12 @@ pub async fn open_browser_window(
         crate::features::FeatureId::Browser,
     )?;
     let url = validate_browser_url(&url)?;
+    let callback = state
+        .handoff_status()
+        .map(|status| status.callback_url)
+        .unwrap_or_default();
+    let labels = toolbar_labels(&toolbar_locale(&state));
+    let toolbar = build_toolbar_script(&callback, &labels);
     let downloads = commands::blocking(|| {
         downloads_dir().map_err(|error| crate::source::BackendError::Msg(error.to_string()))
     })
@@ -300,12 +550,27 @@ pub async fn open_browser_window(
     tauri::async_runtime::spawn_blocking(move || {
         let download_app = app.clone();
         let download_dir = downloads;
+        let load_app = app.clone();
         WebviewWindowBuilder::new(&app, BROWSER_LABEL, WebviewUrl::External(url))
             .title(BROWSER_TITLE)
             .inner_size(BROWSER_WIDTH, BROWSER_HEIGHT)
             // §4.3：辅助浏览器只服务当次人工验证，不持久化第三方 Cookie
             // 或站点存储；关闭窗口即丢弃，避免下次启动复用上一站凭据。
             .incognito(true)
+            // 顶部交接条只读 DOM 图片地址并经 127.0.0.1 handoff 回传；
+            // 不暴露 Tauri IPC，不读取 Cookie。
+            .initialization_script(toolbar)
+            .on_page_load(move |window, payload| {
+                if payload.event() == PageLoadEvent::Finished {
+                    let state = load_app.state::<Arc<AppState>>();
+                    let callback = state
+                        .handoff_status()
+                        .map(|status| status.callback_url)
+                        .unwrap_or_default();
+                    let labels = toolbar_labels(&toolbar_locale(&state));
+                    let _ = window.eval(build_toolbar_script(&callback, &labels));
+                }
+            })
             .on_download(move |_webview, event| {
                 handle_download_event(&download_app, &download_dir, event)
             })
@@ -316,6 +581,25 @@ pub async fn open_browser_window(
     })
     .await
     .map_err(|_| "浏览器窗口任务失败（blocking-task-failed）".to_string())?
+}
+
+/// Handoff 启停后刷新辅助浏览器顶部条（窗口不存在时静默成功）。
+#[tauri::command]
+pub async fn sync_browser_toolbar(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(BROWSER_LABEL) else {
+        return Ok(());
+    };
+    let callback = state
+        .handoff_status()
+        .map(|status| status.callback_url)
+        .unwrap_or_default();
+    let labels = toolbar_labels(&toolbar_locale(&state));
+    window
+        .eval(build_toolbar_script(&callback, &labels))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -396,17 +680,19 @@ pub async fn import_browser_download(
             return Ok(None);
         }
 
-        let book_id = commands::import_local_archive(db_path, &candidate)?;
-        if book_id.is_some() {
-            if let Err(error) = commands::set_file_readonly(&candidate) {
+        let imported = commands::import_local_archive_prepared(db_path, &candidate)?;
+        if let Some((book_id, prepared)) = imported {
+            if let Err(error) = commands::set_file_readonly(&prepared) {
                 // Paths must not enter logs; the operation remains best-effort.
                 crate::logging::log_error(
                     "browser_import",
                     &format!("设置下载文件只读失败：{error}"),
                 );
             }
+            Ok(Some(book_id))
+        } else {
+            Ok(None)
         }
-        Ok(book_id)
     })
     .await
 }
@@ -460,6 +746,31 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn toolbar_script_is_local_bridge_only() {
+        let labels = toolbar_labels("en");
+        let script = build_toolbar_script("http://127.0.0.1:18080/handoff?token=abcdef", &labels);
+        assert!(script.contains("http://127.0.0.1:18080/handoff?token=abcdef"));
+        assert!(script.contains("Import current page"));
+        assert!(script.contains("event.isTrusted"));
+        assert!(script.contains("image.naturalWidth"));
+        assert!(script.contains("getBoundingClientRect"));
+        assert!(!script.contains("document.cookie"));
+        assert!(!script.contains("__TAURI"));
+        assert!(!script.contains("ipc"));
+    }
+
+    #[test]
+    fn toolbar_labels_cover_all_six_locales() {
+        assert_eq!(toolbar_labels("zh-CN").back, "后退");
+        assert_eq!(toolbar_labels("zh-TW").back, "後退");
+        assert_eq!(toolbar_labels("en").back, "Back");
+        assert_eq!(toolbar_labels("es").back, "Atrás");
+        assert_eq!(toolbar_labels("ja").back, "戻る");
+        assert_eq!(toolbar_labels("ko").back, "뒤로");
+        assert_eq!(toolbar_labels("unknown").reload, "刷新");
+    }
 
     #[test]
     fn navigation_blocks_app_local_origins_and_non_http() {
@@ -588,8 +899,10 @@ mod tests {
     }
 
     #[test]
-    fn routes_only_zip_and_cbz_to_import() {
-        for name in ["a.zip", "a.cbz", "A.ZIP", "A.CBZ"] {
+    fn routes_zip_cbz_rar_and_cbr_to_import() {
+        for name in [
+            "a.zip", "a.cbz", "A.ZIP", "A.CBZ", "a.rar", "a.cbr", "A.RAR", "A.CBR",
+        ] {
             assert!(is_importable_download(Path::new(name)), "{name}");
         }
         for name in ["a.png", "a.jpg", "a.txt", "a"] {

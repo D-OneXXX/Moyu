@@ -19,6 +19,7 @@ export const E2E_SUITE_IDS = Object.freeze([
   "opds",
   "cache",
   "privacy",
+  "web-access",
   "gallery",
   "chaos",
   "architecture",

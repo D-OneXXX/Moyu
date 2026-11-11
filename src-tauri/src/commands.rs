@@ -1388,6 +1388,52 @@ fn assembled_page(
     })
 }
 
+/// 在线页真实解码尺寸回写（fresh render 专用）。
+///
+/// 在线书的尺寸来自 `get_webtoon_layout` 的 256 KiB 头部探测：带巨型
+/// EXIF/XMP/ICC 头的图片探测会失败并留下占位 `(0,0)`，前端只能吃兜底比例。
+/// 一旦该页**真正解码**（`get_page` / `get_webtoon_tile` 的非 L2 路径），
+/// 就把真实整页尺寸合并进 `meta_json`，并同步内存布局缓存，让后续 L2/切片
+/// 请求复用同一逻辑页尺寸。失败只记脱敏日志（书 ID 前缀 + 页码），阅读照旧。
+fn persist_decoded_page_dimensions(
+    state: &AppState,
+    book_id: &str,
+    index: u32,
+    width: u32,
+    height: u32,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let persisted = state.db.with(|conn| {
+        db::update_online_page_dimensions(conn, book_id, index, width, height)
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = persisted {
+        crate::logging::log_error(
+            "online-metadata-write",
+            &format!(
+                "book={} 第 {} 页：{}",
+                short_book_ref(book_id),
+                index + 1,
+                safe_error_text(&e)
+            ),
+        );
+    }
+    // 内存布局同步与落库成败无关：本次请求已经拿到真实尺寸，后续切片/L2
+    // 请求应当立刻用上，而不是等下次重新加载布局。
+    let mut layouts = state.webtoon_layouts.lock();
+    if let Some(entry) = layouts.get(book_id) {
+        if entry.get(index as usize).copied() != Some((width, height)) {
+            let mut dims = entry.as_ref().clone();
+            if let Some(slot) = dims.get_mut(index as usize) {
+                *slot = (width, height);
+                layouts.insert(book_id.to_string(), Arc::new(dims));
+            }
+        }
+    }
+}
+
 /// 三级缓存取页（v3 毫秒级路径）：
 /// L1 内存 LRU（命中 ~0.1ms）→ L2 磁盘成品 JPEG（~1ms）→ 全管线
 /// （常开句柄单页读 → Triangle 降采样 → JPEG 编码，典型 30-60ms），
@@ -1457,6 +1503,11 @@ pub async fn get_page(
         let raw = handle.read_raw(index as usize)?;
         let raw_bytes = raw.bytes.len();
         let page = pipeline::render_raw(&raw, max_width, max_height)?;
+        // 仅在线源的 fresh render 才有「真实整页尺寸」这一事实；L2 命中没有
+        // 源尺寸，不能拿来当权威值（见上面的兜底注释）。
+        if is_online {
+            persist_decoded_page_dimensions(&st, &book, index, page.orig_width, page.orig_height);
+        }
         st.cache_if_current(cache_epoch, || {
             st.render.put(&book, index, w, h, &page.bytes)
         });
@@ -1997,6 +2048,64 @@ pub async fn clear_temp_cache(state: State<'_, Arc<AppState>>) -> Result<ClearCa
     .await
 }
 
+/// 在线原图清理结果（Issue #338）：只统计在线原图目录，绝不包含渲染缓存。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearOnlineCacheResult {
+    pub bytes_freed: u64,
+    pub files: u64,
+    /// 实际删除了在线原图目录的书本数量（不是书 id 列表）。
+    pub books: u64,
+}
+
+/// 按需清理在线原图缓存（Issues #338）。
+///
+/// - `keep_unread=true`：保留未读完且 30 天内打开过的书，只清理已完成或
+///   超过 30 天未活动的在线书；
+/// - `keep_unread=false`：清理全部未删除在线书的原图，属于用户显式全量清理。
+///
+/// 候选书 id 在 `DbSlot` 锁内一次性取出，随后在 DB 锁外（blocking 线程）
+/// 删除缓存目录。只动了 `online_cache`，绝不触碰 render 缓存、`library.db`、
+/// 书库行与阅读进度。
+#[tauri::command]
+pub async fn clear_online_cache(
+    state: State<'_, Arc<AppState>>,
+    keep_unread: bool,
+) -> Result<ClearOnlineCacheResult, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let cutoff = (chrono::Local::now() - chrono::Duration::days(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        // 只在这里短暂持有数据库锁；删除目录在锁外执行。
+        let ids = st
+            .db
+            .with(|conn| db::online_cache_clear_candidates(conn, keep_unread, &cutoff).map_err(err))
+            .map_err(BackendError::Msg)?;
+        let mut bytes_freed = 0u64;
+        let mut files = 0u64;
+        let mut books = 0u64;
+        for id in &ids {
+            let (bytes, count) = st.online_cache.remove_book_with_stats(id);
+            if bytes > 0 || count > 0 {
+                books = books.saturating_add(1);
+            }
+            bytes_freed = bytes_freed.saturating_add(bytes);
+            files = files.saturating_add(count);
+        }
+        crate::logging::log_error(
+            "clear_online_cache",
+            &format!("已清理 {books} 本在线原图缓存，释放 {bytes_freed} 字节 / {files} 个文件"),
+        );
+        Ok(ClearOnlineCacheResult {
+            bytes_freed,
+            files,
+            books,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
     // ADR-036：SQLite 聚合同样移入 blocking 线程，避免占用 async 执行器。
@@ -2026,7 +2135,9 @@ pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard,
                 Ok(Dashboard {
                     total_books: counts.total_books,
                     reading: counts.reading,
+                    finished: counts.finished,
                     today_pages,
+                    total_pages_read: counts.total_pages_read,
                     heatmap,
                     series,
                 })
@@ -2212,12 +2323,12 @@ pub async fn get_webtoon_tile(
     }
     let st = state.inner().clone();
     let lookup_book_id = book_id.clone();
-    blocking(move || {
+    let is_online = blocking(move || {
         st.db
             .with(|conn| {
                 db::get_book(conn, &lookup_book_id)
                     .map_err(err)?
-                    .map(|_| ())
+                    .map(|b| b.source_type != "local")
                     .ok_or_else(|| "书籍不存在".into())
             })
             .map_err(BackendError::Msg)
@@ -2256,7 +2367,7 @@ pub async fn get_webtoon_tile(
         // 其它书/页的切片请求；锁内只做“双检 + 解码切片 + 落盘”。
         let handle = st.source_handle_for_book(&book)?;
         let raw = handle.read_raw(index as usize)?;
-        let _guard = st.tile_lock.lock();
+        let guard = st.tile_lock.lock();
         // 双检：等锁期间可能已被别的请求物化。
         if let Some(bytes) = st.render.get_tile(&book, index, tile, w) {
             return assembled_page(bytes, orig_dims.0, orig_dims.1);
@@ -2283,6 +2394,18 @@ pub async fn get_webtoon_tile(
         // 空 dataUrl，后续滚动命中将返回黑块。单次请求只在此编码 1 次。
         let mut requested = pages.into_iter().nth(tile as usize).expect("切片在界内");
         requested.data_url = requested.data_url_from_bytes();
+        // 整页物化完成后释放串行锁再写库：DB 写不能卡住下一张切片的解码。
+        drop(guard);
+        // fresh render 才有真实整页尺寸；L2 命中借的是布局缓存里的旧值。
+        if is_online {
+            persist_decoded_page_dimensions(
+                &st,
+                &book,
+                index,
+                requested.orig_width,
+                requested.orig_height,
+            );
+        }
         Ok(requested)
     })
     .await
@@ -3507,6 +3630,53 @@ fn safe_telegram_download_name(raw: &str) -> String {
     }
 }
 
+/// `foo.cbz` → `foo.cbz.part`：不经过字符串转换，保留任意合法文件名。
+fn telegram_part_path(target: &Path) -> PathBuf {
+    let mut raw = target.as_os_str().to_os_string();
+    raw.push(".part");
+    PathBuf::from(raw)
+}
+
+/// 下载完成后校验魔数，再把 `.part` 改名成最终路径。
+///
+/// Telegram CDN 可能返回登录页/错误页而不是附件，入库前必须嗅探内容：
+/// - ZIP / RAR → 接受（RAR 后续由 `prepare_import_cbz` 转码）；
+/// - 7z → 拒绝并给出稳定码 `archive-disguised-7z`；
+/// - 其它（HTML/图片/空文件）→ 拒绝并给出稳定码 `archive-not-zip`。
+///
+/// 任何失败都会删除 `.part`，绝不让半成品或伪装文件进入书库。
+fn finalize_downloaded_archive(part: &Path, target: &Path) -> Result<(), BackendError> {
+    use crate::archive_convert::{sniff_archive, ArchiveKind};
+    let outcome = (|| -> Result<(), BackendError> {
+        match sniff_archive(part)? {
+            ArchiveKind::Zip | ArchiveKind::Rar => {}
+            ArchiveKind::SevenZ => {
+                return Err(BackendError::Zip(
+                    "该文件实际是 7z 压缩包，请转换为标准无密码 ZIP/CBZ 后再导入（archive-disguised-7z）"
+                        .into(),
+                ));
+            }
+            ArchiveKind::Other => {
+                return Err(BackendError::Zip(
+                    "该文件不是有效的 ZIP/CBZ 压缩包，请转为标准无密码 ZIP/CBZ（archive-not-zip）"
+                        .into(),
+                ));
+            }
+        }
+        if target.exists() {
+            std::fs::remove_file(target)?;
+        }
+        std::fs::rename(part, target).map_err(|_| {
+            BackendError::Network("Telegram 附件落盘失败（online-fetch-failed）".into())
+        })?;
+        Ok(())
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(part);
+    }
+    outcome
+}
+
 #[tauri::command]
 pub async fn download_telegram_document(
     state: State<'_, Arc<AppState>>,
@@ -3543,18 +3713,6 @@ pub async fn download_telegram_document(
             &headers,
             st.assisted_sessions.clone(),
         )?;
-        let resp = http.get(
-            canonical.as_str(),
-            TELEGRAM_DOC_MAX_BYTES,
-            Some("https://t.me/"),
-            Some(canonical.as_str()),
-        )?;
-        if !(200..300).contains(&resp.status) {
-            return Err(BackendError::Network(format!(
-                "Telegram 附件 HTTP {}",
-                resp.status
-            )));
-        }
         let safe_name = safe_telegram_download_name(&filename);
         let display_title = title_for(Path::new(&safe_name));
         let root = st
@@ -3565,7 +3723,21 @@ pub async fn download_telegram_document(
         std::fs::create_dir_all(&root)?;
         let digest = hex::encode(Sha256::digest(canonical.as_str().as_bytes()));
         let path = root.join(format!("{}-{}", &digest[..12], safe_name));
-        std::fs::write(&path, &resp.body)?;
+        // 流式落盘到 `.part`：256 MiB 的附件不再整包驻留内存；
+        // 上次中断留下的 `.part` 先删除，`create_new` 保证只写全新文件。
+        let part = telegram_part_path(&path);
+        let _ = std::fs::remove_file(&part);
+        if let Err(error) = http.download_to(
+            canonical.as_str(),
+            TELEGRAM_DOC_MAX_BYTES,
+            Some("https://t.me/"),
+            Some(canonical.as_str()),
+            &part,
+        ) {
+            let _ = std::fs::remove_file(&part);
+            return Err(error.into());
+        }
+        finalize_downloaded_archive(&part, &path)?;
         let db_path = st.db_path();
         let converted_root = converted_root_for(&db_path);
         let prepared = match crate::archive_convert::prepare_import_cbz(&path, &converted_root) {
@@ -4960,6 +5132,69 @@ mod tests {
         assert_eq!(safe_telegram_download_name("book.cbr"), "book.cbr");
         assert_eq!(safe_telegram_download_name("book.RAR"), "book.RAR");
         assert_eq!(safe_telegram_download_name("book"), "book.cbz");
+    }
+
+    #[test]
+    fn telegram_part_path_appends_part_without_losing_extension() {
+        assert_eq!(
+            telegram_part_path(Path::new("lib/foo.cbz")),
+            PathBuf::from("lib/foo.cbz.part")
+        );
+        assert_eq!(
+            telegram_part_path(Path::new("foo")),
+            PathBuf::from("foo.part")
+        );
+    }
+
+    #[test]
+    fn telegram_finalize_accepts_zip_and_rar_and_replaces_stale_target() {
+        let dir = test_temp_dir("telegram-finalize-ok");
+        for (name, magic) in [
+            ("book.cbz", b"PK\x03\x04zip-payload".as_slice()),
+            ("book.cbr", b"Rar!\x1a\x07\x00rar-payload".as_slice()),
+        ] {
+            let target = dir.join(name);
+            let part = telegram_part_path(&target);
+            // 旧目标（上一次下载）必须被新附件替换。
+            std::fs::write(&target, b"stale").unwrap();
+            std::fs::write(&part, magic).unwrap();
+            finalize_downloaded_archive(&part, &target).unwrap();
+            assert!(!part.exists(), "{name}: .part 必须改名消失");
+            assert_eq!(std::fs::read(&target).unwrap(), magic, "{name}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn telegram_finalize_rejects_7z_and_junk_and_removes_part() {
+        let dir = test_temp_dir("telegram-finalize-reject");
+        let target = dir.join("book.cbz");
+        let part = telegram_part_path(&target);
+
+        // 7z 魔数（37 7A BC AF 27 1C）→ 稳定码 archive-disguised-7z。
+        std::fs::write(&part, [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00]).unwrap();
+        let error = finalize_downloaded_archive(&part, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("archive-disguised-7z"), "{error}");
+        assert!(!part.exists(), "7z 必须删除 .part");
+        assert!(!target.exists(), "7z 不得改名成目标文件");
+
+        // Telegram 错误页/登录页 → 稳定码 archive-not-zip。
+        std::fs::write(&part, b"<html>please login</html>").unwrap();
+        let error = finalize_downloaded_archive(&part, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("archive-not-zip"), "{error}");
+        assert!(!part.exists(), "伪装内容必须删除 .part");
+        assert!(!target.exists());
+
+        // 空文件同样拒绝，不留半成品。
+        std::fs::write(&part, b"").unwrap();
+        assert!(finalize_downloaded_archive(&part, &target).is_err());
+        assert!(!part.exists() && !target.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

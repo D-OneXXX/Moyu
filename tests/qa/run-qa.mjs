@@ -32,6 +32,7 @@ import { runOnlineSuite } from "./suites/online.mjs";
 import { runOpdsSuite } from "./suites/opds.mjs";
 import { runCacheSuite } from "./suites/cache.mjs";
 import { runPrivacySuite } from "./suites/privacy.mjs";
+import { runWebAccessSuite } from "./suites/web-access.mjs";
 import { runChaosSuite } from "./suites/chaos.mjs";
 import { runArchitectureSuite } from "./suites/architecture.mjs";
 import { runGallerySuite } from "./suites/gallery.mjs";
@@ -264,6 +265,11 @@ async function main() {
       { id: "opds", title: "OPDS 1.2 自建远程书库", run: runOpdsSuite },
       { id: "cache", title: "磁盘缓存上限与清理隔离", run: runCacheSuite },
       { id: "privacy", title: "隐私脱敏与版本展示", run: runPrivacySuite },
+      {
+        id: "web-access",
+        title: "局域网配对 UI：风险提示、倒计时、拒绝/取消与过期收敛",
+        run: runWebAccessSuite,
+      },
       { id: "gallery", title: "视觉验收快照与布局指标", run: runGallerySuite },
       {
         id: "architecture",

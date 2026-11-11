@@ -87,6 +87,37 @@ function pdfAssetsPlugin(): Plugin {
   };
 }
 
+/**
+ * QA-only seam for the Web Access pairing harness.
+ *
+ * The QA suite must exercise the real React panel and timers without replacing
+ * `__TAURI_INTERNALS__.invoke` (the static anti-mock guard forbids that, and
+ * Tauri makes the property non-configurable). Instead, only the dev server
+ * aliases the web-access API module to a control-plane fixture. The fixture
+ * delegates to the real invoke unless the suite installs
+ * `window.__QA_WEB_ACCESS__`, so other suites sharing this Vite instance are
+ * unaffected. Production builds never enable this plugin.
+ */
+function qaWebAccessFixturePlugin(): Plugin {
+  const fixture = fileURLToPath(
+    new URL("./tests/qa/lib/web-access-api-fixture.mjs", import.meta.url),
+  );
+  return {
+    name: "moyu:qa-web-access-fixture",
+    enforce: "pre",
+    apply: "serve",
+    resolveId(source, importer) {
+      if (process.env.MR_QA_WEB_ACCESS_FIXTURE !== "1") return null;
+      if (source !== "./api") return null;
+      const normalized = (importer ?? "").replace(/\\/g, "/");
+      if (!normalized.endsWith("/src/features/web-access/useWebAccess.ts")) {
+        return null;
+      }
+      return fixture;
+    },
+  };
+}
+
 function projectVersion(): string {
   const manifest = JSON.parse(
     readFileSync(new URL("./package.json", import.meta.url), "utf8"),
@@ -188,7 +219,12 @@ export default defineConfig(() => ({
     __BUILD_COMMIT__: JSON.stringify(gitCommit),
   },
   // Tailwind v4 走 Vite 插件；v3 页面用工具类，旧页面继续用 ui.css 的类。
-  plugins: [react(), tailwindcss(), pdfAssetsPlugin()],
+  plugins: [
+    qaWebAccessFixturePlugin(),
+    react(),
+    tailwindcss(),
+    pdfAssetsPlugin(),
+  ],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

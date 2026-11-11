@@ -44,8 +44,12 @@ browser WebView
 - Library metadata, progress, statistics, settings, and filter rules live in SQLite under
   Tauri’s `app_data_dir`.
 - Database connections use WAL, a busy timeout, foreign keys, and normal synchronous mode.
-- Related settings keys commit in one SQLite transaction. Cache/settings memory changes happen
-  only after commit; disabling an optional feature persists its gate before runtime cleanup.
+- Related settings keys commit in one immediate SQLite transaction. Cache/settings memory
+  changes happen only after commit; disabling an optional feature persists its gate before
+  runtime cleanup.
+- Dashboard totals are aggregate SQL: library size, in-progress, finished, and cumulative
+  pages read do not materialize `books` rows. Series counts ignore malformed `meta_json`
+  rows for grouping while still counting them as single books.
 - Missing setting keys use defaults, but SQL read failures and normalization failures propagate.
   Startup and backup recovery publish a database connection only after settings load and repair
   succeed; the settings repair batch commits atomically.
@@ -63,7 +67,13 @@ browser WebView
   and database writes to the blocking pool.
 - Schema versions move forward only; migrations and startup checks are part of the boot path.
 - Rendered pages and online images share a bounded disk cache under `app_cache_dir`. Cache
-  cleanup removes derived data only, never `library.db` or reading progress.
+  cleanup removes derived data only, never `library.db` or reading progress. Only rendered
+  output participates in automatic LRU; persistent online originals are shown separately in
+  Settings, with a selective cleanup for finished or 30-day-inactive online books.
+- Online page dimensions are first probed from a 256 KiB header. A fresh desktop decode writes
+  the real full-page width/height back to that page's `meta_json` (meta-only update, progress
+  and timestamps untouched); the webtoon view applies the corrected ratio with scroll-anchored
+  reflow so the visible center does not jump. Web read-only paths never write metadata.
 - Missing source files are marked and can be relocated. Relocation preserves progress,
   webtoon position, and reading statistics.
 
@@ -82,6 +92,13 @@ browser WebView
 - The reader offers single-page, double-page, RTL/LTR, and continuous webtoon layouts.
 - Very tall webtoon images are sliced into bounded tiles before rendering; the frontend
   stitches them in order. A failed tile has a visible failure state, not an empty gap.
+- Full-image fallback decodes (WebP, GIF, interlaced PNG, and oversized non-banded images)
+  are capped at two concurrent expansions by a process-wide gate; banded PNG rows and JPEG
+  IDCT paths bypass it.
+- Telegram archive attachments stream to a sibling `.part` file in 64 KiB chunks with a
+  256 MiB hard cap, then fsync, ZIP/RAR magic validation, and an atomic rename. The
+  attachment is never buffered whole in memory. Browser downloads are written directly by
+  the WebView, and OPDS archives use the existing streaming download path.
 - Progress writes update the book row and reading log in one transaction.
 
 ## Online reading and the browser
@@ -131,6 +148,12 @@ browser WebView
   critical-fix channel (deb/rpm/AppImage). System package installs are not replaced in place.
 - Update manifests and artifacts are verified with the configured Tauri updater key. The
   Windows installer is not Authenticode-signed; the updater signature is a separate control.
+- The updater plugin stays registered for Rust-side use, but the webview holds no updater
+  capability. The check and install steps are app-owned proxy commands
+  (`check_native_update` / `install_native_update`); both consult the `updates` feature
+  switch before touching the updater, so a console caller cannot bypass the switch. Install
+  replays the manifest returned by the check (`restore_update`), rejects a version that no
+  longer matches, and still requires the package signature to bind the announced version.
 
 ## Security boundaries
 
@@ -141,7 +164,11 @@ browser WebView
 - Online URL and redirect handling rejects loopback, private, link-local, and metadata
   addresses in release builds.
 - The repository’s static QA suite guards the capability surface, CSP profile, route fallbacks,
-  storage sanitization, and other long-lived invariants.
+  storage sanitization, and other long-lived invariants. The Web Access pairing UI is covered by
+  an automated DOM integration suite that drives the real panel with a Vite-only control-plane
+  module fixture; the Tauri IPC bridge is never replaced, so the static anti-mock guard and every
+  other suite keep using the real backend. Real phone/TLS pairing remains a separately authorized
+  L3 check and is never implied by the fixture run.
 
 ## Brand, icons, and skins
 

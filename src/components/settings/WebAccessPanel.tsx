@@ -152,7 +152,11 @@ function ClaimRow({
   );
   const expired = secondsLeft === 0;
   return (
-    <li className="rounded-xl border border-border bg-card/60 p-3">
+    <li
+      className="rounded-xl border border-border bg-card/60 p-3"
+      data-testid="web-access-claim-row"
+      data-claim-id={claim.claimId}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <Smartphone className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 break-words text-sm font-semibold">
@@ -161,7 +165,11 @@ function ClaimRow({
         <Badge variant="warning" className="whitespace-nowrap">
           {t("settings.webAccess.unverifiedDevice")}
         </Badge>
-        <Badge variant={expired ? "warning" : "muted"} className="whitespace-nowrap">
+        <Badge
+          variant={expired ? "warning" : "muted"}
+          className="whitespace-nowrap tabular-nums"
+          data-testid="web-access-claim-countdown"
+        >
           {expired
             ? t("settings.webAccess.claimExpired")
             : t("settings.webAccess.claimExpiresIn", { seconds: secondsLeft })}
@@ -192,6 +200,7 @@ function ClaimRow({
             claim.deviceName,
             t,
           )}`}
+          data-testid="web-access-claim-approve"
           disabled={busy !== null || expired}
           onClick={() => onApprove(claim)}
         >
@@ -211,6 +220,7 @@ function ClaimRow({
             claim.deviceName,
             t,
           )}`}
+          data-testid="web-access-claim-deny"
           disabled={busy !== null}
           onClick={() => onDeny(claim.claimId)}
         >
@@ -698,7 +708,8 @@ export default function WebAccessPanel() {
                 {pairingWindow && !isPlain ? (
                   <Badge
                     variant={pairingExpired ? "warning" : "success"}
-                    className="whitespace-nowrap"
+                    className="whitespace-nowrap tabular-nums"
+                    data-testid="web-access-pairing-countdown"
                   >
                     {pairingExpired
                       ? t("settings.webAccess.pairingExpired")

@@ -20,8 +20,10 @@
 
 1. **条漫默认开**：旧 `experimentalWebtoon` 字段从未真正接线；若直接按旧默认值
    `false` 生效，会让现有用户失去条漫。新总开关默认 `true`，保持当前实际体验。
-2. **应用更新是已知例外**：官方 Updater 的 `check/install` 由 Tauri 插件直接暴露，
-   运行时无法从 Rust 侧吊销。实现“入口隐藏 + 前端调用前守卫”，并在文档标注。
+2. **应用更新旁路已关闭**：官方 Updater 插件仍注册，但 WebView 不再持有
+   `updater:default`。检查/安装只能经 `check_native_update` / `install_native_update`
+   代理命令，二者先过 `FeatureId::Updates` 门卫；关闭时返回 `feature-disabled`，
+   控制台直连 `plugin:updater|*` 也会被 ACL 拒绝。
 3. **备份/诊断的恢复路径常开**：备份开关只关闭手动导出/导入；`get_db_health`、
    `recover_database_from_backup`、启动恢复门始终可用。诊断开关只关闭
    `diagnostics_export`；panic 记录、breadcrumb 与错误边界本地诊断保留。
@@ -36,7 +38,7 @@
 | `pdf` | PDF 阅读 | 开 | 已有 PDF 书仍显示；打开显示关闭态；PDF 字节/封面写入命令拒绝 |
 | `opds` | OPDS 远程书库 | 开 | 书库按钮与设置面板隐藏；`opds_*` 拒绝；配置保留 |
 | `webAccess` | 局域网访问 | 开 | 面板隐藏；监听停止、配对取消、CA 分发停止；控制面命令拒绝（stop/status 除外） |
-| `updates` | 应用更新 | 开 | 更新卡隐藏；检查/安装前过前端守卫；官方插件通道为已知例外 |
+| `updates` | 应用更新 | 开 | 更新卡隐藏；`check_native_update` / `install_native_update` 返回 `feature-disabled`；WebView 无 updater 插件权限 |
 | `backup` | 备份与恢复 | 开 | 手动导出/导入隐藏并拒绝；健康检查与启动恢复常开 |
 | `diagnostics` | 诊断与问题反馈 | 开 | 支持面板隐藏并拒绝 `diagnostics_export`；崩溃诊断与 breadcrumb 常开 |
 
@@ -140,7 +142,7 @@ pub(crate) fn ensure_feature(state: &AppState, feature: FeatureId) -> Result<(),
 | pdf | `get_pdf_chunk`、`put_pdf_thumbnail`；`get_thumbnail` 的 PDF 封面读取允许 |
 | opds | `opds_get_config`、`opds_set_config`、`opds_test_connection`、`opds_browse`、`opds_cover`、`opds_download_entry` |
 | webAccess | `web_access_start`、配对创建/批准/拒绝/取消、设备撤销、CA 分发 start/export；**`web_access_stop`、status/refresh 保持可用** |
-| updates | 前端 `checkNativeUpdate` / `installNativeUpdate` 调用 `assert_feature_enabled(Updates)`；插件通道本身不可吊销 |
+| updates | `check_native_update` / `install_native_update` 在接触 updater 之前调用 `FeatureId::Updates` 门卫；`capabilities/updater.json` 权限为空，页面无法直连插件 |
 | backup | `export_backup`、`import_backup`；`get_db_health`、`recover_database_from_backup`、`open_data_dir` 常开 |
 | diagnostics | `diagnostics_export`；`diagnostics_collect`、`diagnostics_record_*`、panic hook 常开 |
 

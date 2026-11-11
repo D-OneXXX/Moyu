@@ -52,7 +52,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
 import {
   Select,
@@ -212,6 +211,15 @@ function formatMb(bytes: number, locale: string): string {
   }).format(safe / 1048576)} MB`;
 }
 
+/** 占用条的刻度上限：至少一个预算，在线原图超出时按总量放大，避免溢出裁剪。 */
+function cacheBarScale(render: number, online: number, limit: number): number {
+  const total = Math.max(0, render) + Math.max(0, online);
+  return Math.max(1, limit, total);
+}
+
+/** 在线原图超过该阈值时给出非破坏性提示（2 GiB）。 */
+const ONLINE_CACHE_HINT_BYTES = 2048 * 1024 * 1024;
+
 /** 缓存占用百分比：非法值/零上限安全，结果限制在 0-100。 */
 function cachePercent(used: number, limit: number): number {
   if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return 0;
@@ -276,6 +284,7 @@ export default function SettingsPage() {
   const [sessionHeaders, setSessionHeaders] = useState(false);
   const [sessionActive, setSessionActive] = useState(false);
   const [clearingTemp, setClearingTemp] = useState(false);
+  const [clearingOnline, setClearingOnline] = useState(false);
   /** 代理来源：system = 跟随系统探测填入；manual = 手动输入。 */
   const [proxySource, setProxySource] = useState<"system" | "manual">(
     "manual",
@@ -660,6 +669,26 @@ export default function SettingsPage() {
     }
   };
 
+  /** 只清理在线原图；保留未读完且 30 天内打开过的书（keepUnread=true）。 */
+  const onClearOnline = async () => {
+    if (clearingOnline) return;
+    setClearingOnline(true);
+    try {
+      const result = await api.clearOnlineCache(true);
+      toast(
+        t("settings.toast.onlineCleared", {
+          books: formatNumber(result.books),
+          size: formatMb(result.bytesFreed, locale),
+        }),
+      );
+      await refreshMemory();
+    } catch (e) {
+      toastErr("clear_online_cache", e);
+    } finally {
+      setClearingOnline(false);
+    }
+  };
+
   /** 请求头存储模式：切换后立即重新落盘。 */
   const onSessionModeChange = (memoryOnly: boolean) => {
     sessionHeadersRef.current = memoryOnly;
@@ -690,6 +719,30 @@ export default function SettingsPage() {
   const diskCachePct = mem
     ? cachePercent(mem.renderCacheBytes, mem.diskCacheLimitBytes)
     : 0;
+  // 双色占用条按「预算 / 实际总量」较大者取刻度：在线原图远超预算时
+  // 两段仍按真实比例铺满整条，不溢出、不裁剪。
+  const cacheBarMax = mem
+    ? cacheBarScale(
+        mem.renderCacheBytes,
+        mem.onlineCacheBytes,
+        mem.diskCacheLimitBytes,
+      )
+    : 1;
+  const renderBarPct = mem
+    ? Math.min(100, (Math.max(0, mem.renderCacheBytes) / cacheBarMax) * 100)
+    : 0;
+  const onlineBarPct = mem
+    ? Math.min(
+        100 - renderBarPct,
+        (Math.max(0, mem.onlineCacheBytes) / cacheBarMax) * 100,
+      )
+    : 0;
+  const budgetMarkerPct = mem
+    ? Math.min(100, (mem.diskCacheLimitBytes / cacheBarMax) * 100)
+    : 100;
+  const onlineCacheLarge = Boolean(
+    mem && mem.onlineCacheBytes > ONLINE_CACHE_HINT_BYTES,
+  );
   const diskBudgetMb = Number.isFinite(form.diskCacheBudgetMb)
     ? Math.min(10240, Math.max(500, form.diskCacheBudgetMb))
     : 2048;
@@ -1354,18 +1407,72 @@ export default function SettingsPage() {
                       : t("settings.cache.diskEmpty")}
                   </span>
                 </div>
-                <Progress value={diskCachePct} />
+                <div
+                  className="relative flex h-2.5 w-full overflow-hidden rounded-full border border-border/60 bg-muted"
+                  role="img"
+                  aria-label={
+                    mem
+                      ? t("settings.cache.barAria", {
+                          render: formatMb(mem.renderCacheBytes, locale),
+                          online: formatMb(mem.onlineCacheBytes, locale),
+                        })
+                      : t("settings.cache.diskEmpty")
+                  }
+                  data-testid="disk-cache-bar"
+                >
+                  <span
+                    className="h-full bg-primary transition-[width]"
+                    style={{ width: `${renderBarPct}%` }}
+                    data-testid="disk-cache-render"
+                  />
+                  <span
+                    className="h-full transition-[width]"
+                    style={{
+                      width: `${onlineBarPct}%`,
+                      backgroundColor: "var(--sh-warning)",
+                    }}
+                    data-testid="disk-cache-online"
+                  />
+                  {mem && budgetMarkerPct < 100 ? (
+                    <span
+                      className="absolute inset-y-0 w-px bg-foreground/40"
+                      style={{ left: `${budgetMarkerPct}%` }}
+                      aria-hidden="true"
+                      data-testid="disk-cache-budget-marker"
+                    />
+                  ) : null}
+                </div>
                 {mem ? (
                   <div className="flex flex-wrap justify-between gap-2 text-[11px] tabular-nums text-muted-foreground">
-                    <span>
+                    <span className="inline-flex items-center gap-1">
+                      <span
+                        className="size-2 rounded-full bg-primary"
+                        aria-hidden="true"
+                      />
                       {t("settings.cache.diskRender")}：
                       {formatMb(mem.renderCacheBytes, locale)}
                     </span>
-                    <span>
+                    <span className="inline-flex items-center gap-1">
+                      <span
+                        className="size-2 rounded-full"
+                        style={{ backgroundColor: "var(--sh-warning)" }}
+                        aria-hidden="true"
+                      />
                       {t("settings.cache.diskOnline")}：
                       {formatMb(mem.onlineCacheBytes, locale)}
                     </span>
                   </div>
+                ) : null}
+                {onlineCacheLarge ? (
+                  <Badge
+                    variant="warning"
+                    className="max-w-full whitespace-normal text-left leading-4 tabular-nums"
+                    data-testid="online-cache-hint"
+                  >
+                    {t("settings.cache.onlineLarge", {
+                      size: formatMb(mem?.onlineCacheBytes ?? 0, locale),
+                    })}
+                  </Badge>
                 ) : null}
               </div>
 
@@ -1398,29 +1505,52 @@ export default function SettingsPage() {
                   <span>{formatNumber(500)} MB</span>
                   <span>{formatNumber(10240)} MB</span>
                 </div>
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="min-w-0 text-xs leading-5 text-muted-foreground">
                     {t("settings.cache.clearTempHint")}
                   </p>
-                  <Button
-                    type="button"
-                    variant="pill"
-                    size="pill-sm"
-                    className="shrink-0 whitespace-nowrap"
-                    data-testid="clear-temp-cache"
-                    onClick={() => void onClearTemp()}
-                    disabled={clearingTemp}
-                  >
-                    {clearingTemp ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      <Trash2 />
-                    )}
-                    {clearingTemp
-                      ? t("settings.cache.clearingTemp")
-                      : t("settings.cache.clearTemp")}
-                  </Button>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="pill"
+                      size="pill-sm"
+                      className="shrink-0 whitespace-nowrap"
+                      data-testid="clear-temp-cache"
+                      onClick={() => void onClearTemp()}
+                      disabled={clearingTemp}
+                    >
+                      {clearingTemp ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Trash2 />
+                      )}
+                      {clearingTemp
+                        ? t("settings.cache.clearingTemp")
+                        : t("settings.cache.clearTemp")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="pill"
+                      size="pill-sm"
+                      className="shrink-0 whitespace-nowrap"
+                      data-testid="clear-online-cache"
+                      onClick={() => void onClearOnline()}
+                      disabled={clearingOnline}
+                    >
+                      {clearingOnline ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Trash2 />
+                      )}
+                      {clearingOnline
+                        ? t("settings.cache.clearingOnline")
+                        : t("settings.cache.clearOnline")}
+                    </Button>
+                  </div>
                 </div>
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {t("settings.cache.clearOnlineHint")}
+                </p>
               </div>
             </SettingsSection>
 

@@ -55,6 +55,11 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "opds-cbr-multivolume", key: "error.opdsCbrMultivolume" },
   { code: "opds-io-failed", key: "error.opdsIoFailed" },
   { code: "update-unsupported-format", key: "error.updateUnsupportedFormat" },
+  { code: "update-disk-space-low", key: "updates.disk.full" },
+  // 官方更新代理命令（check_native_update / install_native_update）。
+  { code: "update-check-failed", key: "updates.native.errorCheck" },
+  { code: "update-install-failed", key: "updates.native.errorInstall" },
+  { code: "update-version-changed", key: "updates.native.versionChanged" },
   { code: "not-a-sha", key: "error.updateUnsupportedFormat" },
   { code: "not-decoded-by-import", key: "error.updateUnsupportedFormat" },
   { code: "non-utf8-path", key: "error.nonUtf8Path" },

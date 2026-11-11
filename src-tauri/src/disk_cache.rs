@@ -121,11 +121,22 @@ impl OnlinePageCache {
         true
     }
 
-    pub fn remove_book(&self, book_id: &str) -> u64 {
+    /// 单本书在线原图的 (字节数, 文件数)；只统计该书专属目录。
+    pub fn book_stats(&self, book_id: &str) -> (u64, u64) {
+        walk(&self.book_dir(book_id))
+    }
+
+    /// 删除单本书的在线原图，返回 (释放字节数, 删除文件数)。
+    /// 统计在删除前完成，与 `remove_book` 口径一致；删除只作用于该书目录。
+    pub fn remove_book_with_stats(&self, book_id: &str) -> (u64, u64) {
         let dir = self.book_dir(book_id);
-        let bytes = dir_bytes(&dir);
+        let stats = walk(&dir);
         let _ = fs::remove_dir_all(dir);
-        bytes
+        stats
+    }
+
+    pub fn remove_book(&self, book_id: &str) -> u64 {
+        self.remove_book_with_stats(book_id).0
     }
 
     pub fn clear_all(&self) -> u64 {
@@ -345,6 +356,38 @@ mod tests {
             .get("book-a", "http://x/1.png", "http://x/ch")
             .is_none());
         assert_eq!(cache.disk_bytes(), 0);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn book_stats_and_scoped_removal_leave_render_and_db_untouched() {
+        let root = temp_root("book-stats");
+        let db = root.join("library.db");
+        std::fs::write(&db, b"sqlite").unwrap();
+        let cache_root = root.join("cache");
+        let cache = OnlinePageCache::new(cache_root.join("online"));
+        let render = crate::render_cache::RenderCache::new(cache_root.join("render"));
+        let png = tiny_png();
+        assert!(cache.put("book-a", "http://x/1.png", "http://x/ch", "png", &png));
+        assert!(cache.put("book-a", "http://x/2.png", "http://x/ch", "png", &png));
+        assert!(cache.put("book-b", "http://x/1.png", "http://x/ch", "png", &png));
+        render.put("book-a", 0, 100, 100, &[3u8; 80]);
+
+        let (bytes, files) = cache.book_stats("book-a");
+        assert_eq!(files, 2, "只统计该书目录下的文件");
+        let (removed_bytes, removed_files) = cache.remove_book_with_stats("book-a");
+        assert_eq!((removed_bytes, removed_files), (bytes, files));
+        assert!(cache
+            .get("book-a", "http://x/1.png", "http://x/ch")
+            .is_none());
+        assert!(
+            cache
+                .get("book-b", "http://x/1.png", "http://x/ch")
+                .is_some(),
+            "其它书的在线原图不得被一并删除"
+        );
+        assert!(render.disk_bytes() > 0, "渲染缓存不得被在线清理波及");
+        assert!(db.exists(), "清理在线原图绝不能删除书库数据库");
         std::fs::remove_dir_all(root).ok();
     }
 

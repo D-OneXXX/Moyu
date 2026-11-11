@@ -1,9 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "updater",
-  "description": "Native updater for the main window only; the recovery and embedded browser windows never receive update capability. Restart uses the app-owned restart_app command (no process plugin permission).",
+  "description": "Deliberately grants no updater plugin permission: the official GitHub channel (endpoints + minisign key from tauri.conf.json plugins.updater) is only reachable through the app-owned check_native_update / install_native_update commands, which enforce the updates feature gate first. The plugin stays registered for Rust-side use. Restart uses the app-owned restart_app command (no process plugin permission). This file also binds the main window label.",
   "windows": ["main"],
-  "permissions": [
-    "updater:default"
-  ]
+  "permissions": []
 }

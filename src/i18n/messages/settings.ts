@@ -195,6 +195,14 @@ const zhCN = {
   "settings.cache.clearingTemp": "正在清空…",
   "settings.cache.clearTempHint":
     "清除内存页缓存、渲染成品与在线原图；封面会按需重建，书库和阅读进度不受影响。",
+  "settings.cache.barAria":
+    "磁盘占用分布：渲染缓存 {render}，在线原图 {online}",
+  "settings.cache.onlineLarge":
+    "在线原图占用 {size}，已超过 2 GB；可按需清理，不影响阅读进度。",
+  "settings.cache.clearOnline": "清理在线原图",
+  "settings.cache.clearingOnline": "正在清理在线原图…",
+  "settings.cache.clearOnlineHint":
+    "保留未读完且 30 天内打开过的书；书库、阅读进度与渲染缓存不受影响。",
   "settings.cache.manageTitle": "缓存管理与 LRU 配额",
   "settings.cache.manageDescription":
     "渲染缓存按 LRU 软上限（500 MB – 10 GB）清理；在线原图不自动淘汰，删除书籍或一键清空时移除。",
@@ -228,6 +236,8 @@ const zhCN = {
     "已清除 {count} 个封面缓存，重新进入书库将自动重建",
   "settings.toast.pagesCleared": "页面缓存已清空",
   "settings.toast.tempCleared": "已清空临时缓存，释放 {size}",
+  "settings.toast.onlineCleared":
+    "已清理 {books} 本在线原图缓存，释放 {size}",
   "settings.toast.saved": "设置已保存",
 
   "settings.backup.title": "本地备份与恢复",
@@ -610,6 +620,14 @@ const zhTW: SettingsMessages = {
   "settings.cache.clearingTemp": "正在清空…",
   "settings.cache.clearTempHint":
     "清除記憶體頁面快取、渲染成品與線上原圖；封面會按需重建，書庫與閱讀進度不受影響。",
+  "settings.cache.barAria":
+    "磁碟佔用分佈：渲染快取 {render}，線上原圖 {online}",
+  "settings.cache.onlineLarge":
+    "線上原圖佔用 {size}，已超過 2 GB；可視需要清理，不影響閱讀進度。",
+  "settings.cache.clearOnline": "清理線上原圖",
+  "settings.cache.clearingOnline": "正在清理線上原圖…",
+  "settings.cache.clearOnlineHint":
+    "保留未讀完且 30 天內開啟過的書；書庫、閱讀進度與渲染快取不受影響。",
   "settings.cache.manageTitle": "快取管理與 LRU 配額",
   "settings.cache.manageDescription":
     "渲染快取依 LRU 軟上限（500 MB – 10 GB）清理；線上原圖不會自動淘汰，刪除書籍或一鍵清空時移除。",
@@ -643,6 +661,8 @@ const zhTW: SettingsMessages = {
     "已清除 {count} 個封面快取，重新進入書庫將自動重建",
   "settings.toast.pagesCleared": "頁面快取已清空",
   "settings.toast.tempCleared": "已清空臨時快取，釋放 {size}",
+  "settings.toast.onlineCleared":
+    "已清理 {books} 本線上原圖快取，釋放 {size}",
   "settings.toast.saved": "設定已儲存",
 
   "settings.backup.title": "本機備份與還原",
@@ -1025,6 +1045,14 @@ const en: SettingsMessages = {
   "settings.cache.clearingTemp": "Clearing…",
   "settings.cache.clearTempHint":
     "Clears in-memory pages, rendered files and online originals; covers rebuild as needed, while the library and reading progress are unaffected.",
+  "settings.cache.barAria":
+    "Disk usage split: render cache {render}, online originals {online}",
+  "settings.cache.onlineLarge":
+    "Online originals use {size}, over 2 GB; clear them when needed without affecting reading progress.",
+  "settings.cache.clearOnline": "Clear online originals",
+  "settings.cache.clearingOnline": "Clearing online originals…",
+  "settings.cache.clearOnlineHint":
+    "Keeps books still in progress and opened within 30 days; the library, reading progress and render cache are untouched.",
   "settings.cache.manageTitle": "Cache & LRU quota",
   "settings.cache.manageDescription":
     "Render cache follows the soft LRU limit (500 MB – 10 GB); online originals are never evicted automatically and are removed when you delete a book or clear caches.",
@@ -1058,6 +1086,8 @@ const en: SettingsMessages = {
     "Cleared {count} cover thumbnails; they will rebuild when you reopen the library",
   "settings.toast.pagesCleared": "Page cache cleared",
   "settings.toast.tempCleared": "Temporary cache cleared, {size} freed",
+  "settings.toast.onlineCleared":
+    "Online originals cleared for {books} books, {size} freed",
   "settings.toast.saved": "Settings saved",
 
   "settings.backup.title": "Local backup & restore",
@@ -1456,6 +1486,14 @@ const es: SettingsMessages = {
   "settings.cache.clearingTemp": "Vaciando…",
   "settings.cache.clearTempHint":
     "Borra las páginas en memoria, los archivos renderizados y los originales en línea; las portadas se reconstruyen cuando haga falta y la biblioteca y el progreso no se ven afectados.",
+  "settings.cache.barAria":
+    "Uso de disco: caché de renderizado {render}, originales en línea {online}",
+  "settings.cache.onlineLarge":
+    "Los originales en línea ocupan {size}, más de 2 GB; puedes vaciarlos cuando quieras sin afectar al progreso de lectura.",
+  "settings.cache.clearOnline": "Vaciar originales en línea",
+  "settings.cache.clearingOnline": "Vaciando originales en línea…",
+  "settings.cache.clearOnlineHint":
+    "Conserva los libros en curso abiertos en los últimos 30 días; la biblioteca, el progreso y la caché de renderizado no se tocan.",
   "settings.cache.manageTitle": "Caché y cuota LRU",
   "settings.cache.manageDescription":
     "La caché de renderizado respeta el límite LRU blando (500 MB – 10 GB); las imágenes en línea no se eliminan automáticamente y solo se borran al eliminar un libro o vaciar la caché.",
@@ -1495,6 +1533,8 @@ const es: SettingsMessages = {
   "settings.toast.pagesCleared": "Caché de páginas vaciada",
   "settings.toast.tempCleared":
     "Caché temporal vaciada; se liberaron {size}",
+  "settings.toast.onlineCleared":
+    "Originales en línea de {books} libros vaciados; se liberaron {size}",
   "settings.toast.saved": "Ajustes guardados",
 
   "settings.backup.title": "Copia local y restauración",
@@ -1898,6 +1938,14 @@ const ja: SettingsMessages = {
   "settings.cache.clearingTemp": "削除中…",
   "settings.cache.clearTempHint":
     "メモリ上のページ、レンダリング済みファイル、オンライン原画を削除します。表紙は必要に応じて再生成され、ライブラリと読書進捗には影響しません。",
+  "settings.cache.barAria":
+    "ディスク使用量の内訳：レンダーキャッシュ {render}、オンライン原画 {online}",
+  "settings.cache.onlineLarge":
+    "オンライン原画が {size}（2 GB 超）を使用しています。必要に応じて削除でき、読書進捗には影響しません。",
+  "settings.cache.clearOnline": "オンライン原画を削除",
+  "settings.cache.clearingOnline": "オンライン原画を削除中…",
+  "settings.cache.clearOnlineHint":
+    "未読了かつ 30 日以内に開いた本は保持します。ライブラリ、読書進捗、レンダーキャッシュには影響しません。",
   "settings.cache.manageTitle": "キャッシュと LRU 上限",
   "settings.cache.manageDescription":
     "レンダーキャッシュは LRU 上限（500 MB ～ 10 GB）に従って整理されます。オンライン原画は自動削除されず、書籍の削除またはキャッシュの一括消去でのみ削除されます。",
@@ -1938,6 +1986,8 @@ const ja: SettingsMessages = {
   "settings.toast.pagesCleared": "ページキャッシュを空にしました",
   "settings.toast.tempCleared":
     "一時キャッシュを削除し、{size} を解放しました",
+  "settings.toast.onlineCleared":
+    "{books} 冊のオンライン原画キャッシュを削除し、{size} を解放しました",
   "settings.toast.saved": "設定を保存しました",
 
   "settings.backup.title": "ローカルバックアップと復元",
@@ -2337,6 +2387,14 @@ const ko: SettingsMessages = {
   "settings.cache.clearingTemp": "지우는 중…",
   "settings.cache.clearTempHint":
     "메모리 페이지, 렌더링된 파일, 온라인 원본을 지웁니다. 표지는 필요할 때 다시 생성되며 서재와 읽기 진행률에는 영향을 주지 않습니다.",
+  "settings.cache.barAria":
+    "디스크 사용량 구성: 렌더 캐시 {render}, 온라인 원본 {online}",
+  "settings.cache.onlineLarge":
+    "온라인 원본이 {size}(2 GB 초과)를 사용 중입니다. 필요할 때 정리할 수 있으며 읽기 진행률에는 영향이 없습니다.",
+  "settings.cache.clearOnline": "온라인 원본 정리",
+  "settings.cache.clearingOnline": "온라인 원본 정리 중…",
+  "settings.cache.clearOnlineHint":
+    "읽는 중이고 30일 이내에 연 책은 유지합니다. 서재, 읽기 진행률, 렌더 캐시는 건드리지 않습니다.",
   "settings.cache.manageTitle": "캐시 및 LRU 할당량",
   "settings.cache.manageDescription":
     "렌더 캐시는 LRU 상한(500 MB – 10 GB)에 따라 정리됩니다. 온라인 원본은 자동으로 삭제되지 않으며 책 삭제 또는 캐시 일괄 비우기로만 제거됩니다.",
@@ -2374,6 +2432,8 @@ const ko: SettingsMessages = {
   "settings.toast.pagesCleared": "페이지 캐시를 비웠습니다",
   "settings.toast.tempCleared":
     "임시 캐시를 지우고 {size}를 확보했습니다",
+  "settings.toast.onlineCleared":
+    "{books}권의 온라인 원본 캐시를 정리하고 {size}를 확보했습니다",
   "settings.toast.saved": "설정이 저장되었습니다",
 
   "settings.backup.title": "로컬 백업 및 복원",

@@ -4,6 +4,7 @@ import {
   FEATURE_REGISTRY,
   emitFeaturesChanged,
   isFeatureEnabled,
+  setLiveFeatureFlags,
   type FeatureFlags,
   type FeatureId,
 } from "@/features/features";
@@ -368,6 +369,8 @@ const EXP_WT_KEY = "mr-exp-wt";
 const EXP_ONLINE_KEY = "mr-exp-online";
 
 function applySettingsMirror(s: Settings) {
+  // 权威内存快照优先：即使 localStorage 不可用，业务组件也能读到最新门卫。
+  setLiveFeatureFlags(s.features);
   try {
     for (const feature of FEATURE_REGISTRY) {
       localStorage.setItem(

@@ -474,6 +474,24 @@ impl ImageSource for AnySource {
     }
 }
 
+/// 二级查看器的解包结果：真实图片 URL + 可选备用重载查询参数（如 `nl`）。
+#[derive(Debug, Clone)]
+struct ViewerTarget {
+    url: String,
+    reload: Option<(String, String)>,
+}
+
+/// 在真实图 URL 上合并备用重载参数；已存在同名参数时不重复追加。
+fn with_reload_param(target: &str, reload: &Option<(String, String)>) -> Option<String> {
+    let (name, value) = reload.as_ref()?;
+    let mut url = url::Url::parse(target).ok()?;
+    if url.query_pairs().any(|(key, _)| key == name.as_str()) {
+        return None;
+    }
+    url.query_pairs_mut().append_pair(name, value);
+    Some(url.to_string())
+}
+
 /// 在线图片源：页列表来自 meta_json；read_raw 按需下载单页。
 ///
 /// Telegram 等 CDN 直链带时效签名：遇到 403/404 时按页锚点静默刷新一次并
@@ -487,8 +505,8 @@ pub struct OnlineSource {
     referer: String,
     /// 在线原图磁盘 L2；按 book + URL + Referer 缓存，离线重读不再发请求。
     cache: Option<Arc<crate::disk_cache::OnlinePageCache>>,
-    /// viewer URL -> 已解析的真实图片 URL（仅内存，避免重复抓查看器 HTML）。
-    viewer_targets: parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    /// viewer URL -> 已解析的真实图片 URL 与可选备用重载参数（仅内存）。
+    viewer_targets: parking_lot::Mutex<std::collections::HashMap<String, ViewerTarget>>,
 }
 
 impl OnlineSource {
@@ -534,9 +552,12 @@ impl OnlineSource {
         page: &PageRef,
         index: usize,
         refresh: bool,
-    ) -> Result<String, BackendError> {
+    ) -> Result<ViewerTarget, BackendError> {
         if !page.viewer {
-            return Ok(page.url.clone());
+            return Ok(ViewerTarget {
+                url: page.url.clone(),
+                reload: None,
+            });
         }
         if !refresh {
             if let Some(target) = self.viewer_targets.lock().get(&page.url).cloned() {
@@ -571,10 +592,15 @@ impl OnlineSource {
             return Err(BackendError::Network(msg));
         }
         let target = crate::online::html::extract_viewer_image(&resp.body, &viewer_url)?;
+        let reload = crate::online::html::extract_viewer_reload_param(&resp.body);
+        let resolved = ViewerTarget {
+            url: target,
+            reload,
+        };
         self.viewer_targets
             .lock()
-            .insert(page.url.clone(), target.clone());
-        Ok(target)
+            .insert(page.url.clone(), resolved.clone());
+        Ok(resolved)
     }
 
     fn get_range_page(
@@ -611,17 +637,27 @@ impl OnlineSource {
         }
         let _guard = self.permits.acquire();
         let max_bytes = max_bytes.min(PAGE_MAX_BYTES as u64) as usize;
-        let mut target = self.resolve_viewer_target(&page, index, false)?;
-        let mut resp = self.get_range_page(&target, index, max_bytes)?;
-        if matches!(resp.status, 403 | 404) && page.viewer {
-            target = self.resolve_viewer_target(&page, index, true)?;
-            resp = self.get_range_page(&target, index, max_bytes)?;
+        let mut resolved = self.resolve_viewer_target(&page, index, false)?;
+        let mut resp = self.get_range_page(&resolved.url, index, max_bytes)?;
+        if matches!(resp.status, 403 | 404 | 509) {
+            if page.viewer {
+                resolved = self.resolve_viewer_target(&page, index, true)?;
+                resp = self.get_range_page(&resolved.url, index, max_bytes)?;
+            }
+            if matches!(resp.status, 403 | 404 | 509) {
+                if let Some(retry) = with_reload_param(&resolved.url, &resolved.reload) {
+                    resp = self.get_range_page(&retry, index, max_bytes)?;
+                }
+            }
         }
         if !(200..300).contains(&resp.status) {
             let msg = format!("第 {} 页头部 HTTP {}", index + 1, resp.status);
             crate::logging::log_error(
                 "online_page",
-                &format!("{msg}：{}", crate::online::redact_url_for_log(&target)),
+                &format!(
+                    "{msg}：{}",
+                    crate::online::redact_url_for_log(&resolved.url)
+                ),
             );
             return Err(BackendError::Network(msg));
         }
@@ -691,13 +727,13 @@ impl ImageSource for OnlineSource {
         }
         // 每本书独立的并发闸门：限制同时在途的页面下载数。
         let _guard = self.permits.acquire();
-        let mut target = self.resolve_viewer_target(&page, index, false)?;
-        let mut resp = self.get_page(&target, index)?;
-        // 二级查看器/Telegram CDN 直链过期：403/404 时按需重解包/重解析一次。
-        if matches!(resp.status, 403 | 404) {
+        let mut resolved = self.resolve_viewer_target(&page, index, false)?;
+        let mut resp = self.get_page(&resolved.url, index)?;
+        // 二级查看器/Telegram CDN 直链过期：403/404/509 时按需重解包/重解析一次。
+        if matches!(resp.status, 403 | 404 | 509) {
             if page.viewer {
-                target = self.resolve_viewer_target(&page, index, true)?;
-                resp = self.get_page(&target, index)?;
+                resolved = self.resolve_viewer_target(&page, index, true)?;
+                resp = self.get_page(&resolved.url, index)?;
             } else if let Some(anchor) = page.anchor.as_ref() {
                 match crate::online::telegram::refresh_page_url(&*self.http, anchor) {
                     Ok(Some(fresh)) => {
@@ -710,8 +746,8 @@ impl ImageSource for OnlineSource {
                                 );
                                 self.replace_page_url(index, fresh.clone());
                                 page.url = fresh.clone();
-                                target = fresh;
-                                resp = self.get_page(&target, index)?;
+                                resolved.url = fresh;
+                                resp = self.get_page(&resolved.url, index)?;
                             }
                         }
                     }
@@ -724,12 +760,21 @@ impl ImageSource for OnlineSource {
                     }
                 }
             }
+            // 查看器页面的备用节点重载参数（如 `nl`）只补试一次。
+            if matches!(resp.status, 403 | 404 | 509) {
+                if let Some(retry) = with_reload_param(&resolved.url, &resolved.reload) {
+                    resp = self.get_page(&retry, index)?;
+                }
+            }
         }
         if !(200..300).contains(&resp.status) {
             let msg = format!("第 {} 页 HTTP {}", index + 1, resp.status);
             crate::logging::log_error(
                 "online_page",
-                &format!("{msg}：{}", crate::online::redact_url_for_log(&target)),
+                &format!(
+                    "{msg}：{}",
+                    crate::online::redact_url_for_log(&resolved.url)
+                ),
             );
             return Err(BackendError::Network(msg));
         }
@@ -1329,6 +1374,80 @@ mod tests {
             "{calls:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn online_source_retries_viewer_image_with_nl_after_509() {
+        struct ReloadHttp {
+            calls: Mutex<Vec<String>>,
+        }
+        impl HttpTransport for ReloadHttp {
+            fn get(
+                &self,
+                url: &str,
+                _max_bytes: usize,
+                _referer: Option<&str>,
+                _header_scope: Option<&str>,
+            ) -> Result<HttpResponse, OnlineError> {
+                self.calls.lock().unwrap().push(url.to_string());
+                if url.contains("/s/hash/509-1") {
+                    return Ok(HttpResponse {
+                        status: 200,
+                        final_url: url.to_string(),
+                        content_type: Some("text/html".into()),
+                        body: br#"<html><body><script>var nl = "7788";</script><img id="img" src="https://cdn.example/real.png"></body></html>"#.to_vec(),
+                    });
+                }
+                if url.starts_with("https://cdn.example/real.png") {
+                    if url.contains("nl=7788") {
+                        return Ok(HttpResponse {
+                            status: 200,
+                            final_url: url.to_string(),
+                            content_type: Some("image/png".into()),
+                            body: tiny_png(),
+                        });
+                    }
+                    return Ok(HttpResponse {
+                        status: 509,
+                        final_url: url.to_string(),
+                        content_type: None,
+                        body: Vec::new(),
+                    });
+                }
+                Ok(HttpResponse {
+                    status: 200,
+                    final_url: url.to_string(),
+                    content_type: Some("image/png".into()),
+                    body: tiny_png(),
+                })
+            }
+        }
+        let http = Arc::new(ReloadHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-viewer".into(),
+            vec![PageRef {
+                url: "http://gallery.example/s/hash/509-1".into(),
+                viewer: true,
+                width: None,
+                height: None,
+                anchor: None,
+            }],
+            http.clone(),
+            1,
+            "http://gallery.example/g/509/token".into(),
+            None,
+        );
+        let raw = src.read_raw(0).unwrap();
+        assert!(raw.bytes.starts_with(b"\x89PNG"));
+        let calls = http.calls.lock().unwrap().clone();
+        assert!(
+            calls
+                .iter()
+                .any(|url| url == "https://cdn.example/real.png?nl=7788"),
+            "{calls:?}"
+        );
     }
 
     #[test]

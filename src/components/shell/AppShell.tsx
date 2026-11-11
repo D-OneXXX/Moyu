@@ -58,6 +58,7 @@ import TopBar from "./TopBar";
 import SkinCanvasFrame from "./SkinCanvasFrame";
 import ContentViewport from "./ContentViewport";
 import PrivacyDialog from "@/components/privacy/PrivacyDialog";
+import { FeatureDisabledPage } from "@/components/settings/DeveloperFeaturePanel";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useGlobalShortcuts } from "@/features/shortcuts/useGlobalShortcuts";
 import { useScrollRestoration } from "@/features/scroll/useScrollRestoration";
@@ -311,7 +312,13 @@ export default function AppShell() {
                   <Route
                     path="/browser"
                     element={
-                      features.browser ? <Browser /> : <Navigate to="/" replace />
+                      !settingsReady ? (
+                        <ShellRouteFallback />
+                      ) : features.browser ? (
+                        <Browser />
+                      ) : (
+                        <FeatureDisabledPage feature="browser" />
+                      )
                     }
                   />
                   <Route path="/settings" element={<SettingsPage />} />

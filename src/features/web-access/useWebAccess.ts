@@ -18,6 +18,7 @@ export type WebAccessAction =
   | "start"
   | "start-cancel"
   | "stop"
+  | "switch"
   | "pairing-start"
   | "pairing-cancel"
   | "approve"
@@ -217,6 +218,34 @@ export function useWebAccess() {
     void stop();
   }, [stop]);
 
+  /**
+   * Switch HTTP <-> HTTPS while running.
+   *
+   * The backend serializes start/stop under one operation lock, but the UI must
+   * still sequence them explicitly: an in-flight TLS listener is stopped (which
+   * revokes every paired session) before the new transport starts. Never fire
+   * start and stop concurrently.
+   */
+  const switchTransport = useCallback(
+    (ip: string, secure: boolean) =>
+      runAction("switch", null, async () => {
+        const stopped = await webAccessApi.stop();
+        if (!mountedRef.current) return;
+        setStatus(stopped);
+        clearPairing();
+        clearDevices();
+        const next = secure
+          ? await webAccessApi.start(ip)
+          : await webAccessApi.startPlain(ip);
+        if (!mountedRef.current) return;
+        setStatus(next);
+        clearPairing();
+        clearDevices();
+        if (next.transport === "http") await refreshPairing();
+      }),
+    [clearDevices, clearPairing, refreshPairing, runAction],
+  );
+
   const startPairing = useCallback(
     () =>
       runAction("pairing-start", null, async () => {
@@ -389,6 +418,7 @@ export function useWebAccess() {
     start,
     cancelStart,
     stop,
+    switchTransport,
     startPairing,
     cancelPairing,
     approve,

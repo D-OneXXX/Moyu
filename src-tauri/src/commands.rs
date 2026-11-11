@@ -418,7 +418,20 @@ fn title_for(path: &Path) -> String {
         Some((stem, ext))
             if ["zip", "cbz", "pdf", "rar", "cbr"].contains(&ext.to_ascii_lowercase().as_str()) =>
         {
-            stem.to_string()
+            // 目录扫描导入的是 `<stem>-converted.cbz`，展示标题仍应回到原书 stem。
+            let suffix = format!("-converted.{}", ext.to_ascii_lowercase());
+            let lower = name.to_ascii_lowercase();
+            let base_stem = stem.strip_suffix("-converted").unwrap_or(stem);
+            let has_source_sibling = path.parent().is_some_and(|parent| {
+                ["rar", "cbr"]
+                    .iter()
+                    .any(|source_ext| parent.join(format!("{base_stem}.{source_ext}")).is_file())
+            });
+            if lower.ends_with(&suffix) && has_source_sibling {
+                base_stem.to_string()
+            } else {
+                stem.to_string()
+            }
         }
         _ => name.to_string(),
     }
@@ -590,10 +603,13 @@ fn collect_book_paths(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         }
         if kid.is_dir() {
             collect_book_paths(&kid, depth + 1, out);
-        } else if source::is_archive_path(&kid)
-            || source::is_pdf_path(&kid)
-            || crate::archive_convert::is_convertible_archive_path(&kid)
-        {
+        } else if crate::archive_convert::is_convertible_archive_path(&kid) {
+            // 已转码的 RAR/CBR 只保留 `<stem>-converted.cbz` 一本书，
+            // 重扫绝不再次转码或生成 `-converted-1.cbz`。
+            if crate::archive_convert::existing_converted_sibling(&kid).is_none() {
+                out.push(kid);
+            }
+        } else if source::is_archive_path(&kid) || source::is_pdf_path(&kid) {
             out.push(kid);
         }
     }
@@ -5317,6 +5333,24 @@ mod tests {
             .unwrap();
         z.write_all(b"not-a-real-png").unwrap(); // 导入只数条目名，不解码
         z.finish().unwrap();
+    }
+
+    #[test]
+    fn rescan_skips_rar_when_converted_cbz_already_exists() {
+        let dir = test_temp_dir("rar-rescan-skip");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("story.rar"), b"Rar!\x1a\x07\x00stub").unwrap();
+        build_zip(&dir.join("story-converted.cbz"));
+
+        let mut out = Vec::new();
+        collect_book_paths(&dir, 0, &mut out);
+        assert_eq!(out.len(), 1, "只应保留转换产物：{out:?}");
+        assert_eq!(
+            out[0].file_name().and_then(|name| name.to_str()),
+            Some("story-converted.cbz")
+        );
+        assert_eq!(title_for(&out[0]), "story");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]

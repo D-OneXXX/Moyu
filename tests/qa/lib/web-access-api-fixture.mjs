@@ -71,6 +71,7 @@ export const webAccessApi = {
     withFixture(
       "web_access_start",
       (state) => {
+        state.lastStart = { command: "web_access_start", ip, port: port ?? 7443 };
         state.status = {
           ...state.status,
           phase: "enabled",
@@ -87,6 +88,11 @@ export const webAccessApi = {
     withFixture(
       "web_access_start_plain",
       (state) => {
+        state.lastStart = {
+          command: "web_access_start_plain",
+          ip,
+          port: port ?? 7443,
+        };
         state.status = {
           ...state.status,
           phase: "enabled",

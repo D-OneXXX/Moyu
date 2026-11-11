@@ -833,7 +833,12 @@ function bookCard(book) {
   }
 
   const label = readLabel(book);
-  if (book.missing) {
+  const pdfBook = book.format === "pdf";
+  if (pdfBook) {
+    poster.append(
+      el("span", { class: "badge badge-pdf", text: t("pdfDesktopOnly") }),
+    );
+  } else if (book.missing) {
     poster.append(el("span", { class: "badge badge-missing", text: t("missing") }));
   } else if (label && label !== t("readUnread")) {
     poster.append(
@@ -844,13 +849,22 @@ function bookCard(book) {
     );
   }
 
-  const progressText = label || t("readUnread");
+  const progressText = pdfBook ? t("pdfDesktopOnly") : label || t("readUnread");
   const card = el("button", {
-    class: "card",
+    class: "card" + (pdfBook ? " card-disabled" : ""),
     type: "button",
+    "aria-disabled": pdfBook ? "true" : undefined,
     "aria-label": `${book.title}, ${progressText}`,
   }, [poster, el("span", { class: "card-title", text: book.title })]);
-  card.addEventListener("click", () => void openBook(book));
+  card.addEventListener("click", () => {
+    if (pdfBook) {
+      // Mobile browsers cannot render PDF (the API answers 415); stop here
+      // instead of letting users land on a blank error screen.
+      toast(t("pdfDesktopHint"));
+      return;
+    }
+    void openBook(book);
+  });
   return card;
 }
 

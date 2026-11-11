@@ -22,6 +22,9 @@ use crate::source::BackendError;
 const MIN_VIEWERS: usize = 3;
 /// 索引分页抓取上限，避免异常站点制造无限请求。
 const MAX_INDEX_PAGES: usize = 50;
+/// 通用内联视图参数：绕过画廊前置提示页/内容门，同时保留 `?p=` 分页。
+const INLINE_VIEW_PARAM: &str = "nw";
+const INLINE_VIEW_VALUE: &str = "always";
 
 #[derive(Debug, Clone)]
 struct ViewerLink {
@@ -47,7 +50,25 @@ pub(crate) fn resolve_from_html(
     canonical_url: &Url,
 ) -> Result<Option<OnlineBookMeta>, BackendError> {
     let text = decode_html(body);
-    let Some(first) = detect_index(&text, base_url, MIN_VIEWERS, true) else {
+    let mut first = detect_index(&text, base_url, MIN_VIEWERS, true);
+    // 内容提示门会把画廊藏在内联视图之后：页面没有任何 <img> 时，
+    // 用 `?nw=always` 重取一次首屏（保留已有 `?p=` 等查询参数）。
+    if first.is_none() && !text.to_ascii_lowercase().contains("<img") {
+        let retry = with_inline_view(base_url);
+        if retry.as_str() != base_url.as_str() {
+            if let Ok(resp) = http.get(
+                retry.as_str(),
+                MANIFEST_MAX_BYTES,
+                Some(canonical_url.as_str()),
+                Some(canonical_url.as_str()),
+            ) {
+                if (200..300).contains(&resp.status) {
+                    first = detect_index(&decode_html(&resp.body), &retry, MIN_VIEWERS, true);
+                }
+            }
+        }
+    }
+    let Some(first) = first else {
         return Ok(None);
     };
     let GalleryIndex {
@@ -74,8 +95,9 @@ pub(crate) fn resolve_from_html(
             continue;
         }
         fetched += 1;
+        let fetch_url = with_inline_view(&page_url);
         let resp = http.get(
-            page_url.as_str(),
+            fetch_url.as_str(),
             MANIFEST_MAX_BYTES,
             Some(canonical_url.as_str()),
             Some(canonical_url.as_str()),
@@ -88,7 +110,7 @@ pub(crate) fn resolve_from_html(
         }
         let page_text = decode_html(&resp.body);
         // 后续索引页已由首屏确认画廊结构，只需提取 viewer 链接，不再要求 >=3 张。
-        if let Some(index) = detect_index(&page_text, &page_url, 1, false) {
+        if let Some(index) = detect_index(&page_text, &fetch_url, 1, false) {
             for viewer in index.viewers {
                 if seen_viewers.insert(viewer.url.to_string()) {
                     viewers.push(viewer);
@@ -233,6 +255,20 @@ fn page_query(url: &Url) -> Option<u32> {
         .and_then(|(_, value)| value.parse::<u32>().ok())
 }
 
+/// 合并通用内联视图参数；已有 `?p=` 等查询参数原样保留。
+fn with_inline_view(url: &Url) -> Url {
+    let mut next = url.clone();
+    if next
+        .query_pairs()
+        .any(|(name, _)| name == INLINE_VIEW_PARAM)
+    {
+        return next;
+    }
+    next.query_pairs_mut()
+        .append_pair(INLINE_VIEW_PARAM, INLINE_VIEW_VALUE);
+    next
+}
+
 /// 从 `/s/{hash}/{id}-{page}` 这类末段提取页码；纯 id 不算页码。
 fn trailing_page_number(url: &Url) -> Option<u32> {
     let segment = url.path_segments()?.rfind(|segment| !segment.is_empty())?;
@@ -334,12 +370,12 @@ mod tests {
         let base = Url::parse("http://gallery.example/g/100/token").unwrap();
         let http = MapHttp::new(vec![
             (
-                "http://gallery.example/g/100/token?p=1",
+                "http://gallery.example/g/100/token?p=1&nw=always",
                 200,
                 index_page(&[("/s/hash/100", 4), ("/s/hash/100", 5)], &[2]),
             ),
             (
-                "http://gallery.example/g/100/token?p=2",
+                "http://gallery.example/g/100/token?p=2&nw=always",
                 200,
                 index_page(&[("/s/hash/100", 6), ("/s/hash/100", 7)], &[]),
             ),
@@ -389,6 +425,38 @@ mod tests {
         assert!(resolve_from_html(&http, html.as_bytes(), &base, &base)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn gated_index_retries_with_inline_view_param() {
+        let base = Url::parse("http://gallery.example/g/9/token").unwrap();
+        let gate = br#"<html><body><div class="content-warning"><p>Content warning</p><button>Show content</button></div></body></html>"#;
+        let http = MapHttp::new(vec![(
+            "http://gallery.example/g/9/token?nw=always",
+            200,
+            index_page(&[("/s/hash/9", 1), ("/s/hash/9", 2), ("/s/hash/9", 3)], &[]),
+        )]);
+        let meta = resolve_from_html(&http, gate, &base, &base)
+            .unwrap()
+            .expect("门禁页应通过内联视图参数重取后识别");
+        assert_eq!(meta.page_count, 3);
+        assert!(
+            http.calls().iter().any(|url| url.contains("nw=always")),
+            "{:?}",
+            http.calls()
+        );
+    }
+
+    #[test]
+    fn pagination_keeps_existing_p_query_when_adding_inline_view() {
+        let base = Url::parse("http://gallery.example/g/10/token?p=2").unwrap();
+        let merged = with_inline_view(&base);
+        let query: Vec<(String, String)> = merged
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+        assert!(query.contains(&("p".into(), "2".into())), "{query:?}");
+        assert!(query.contains(&("nw".into(), "always".into())), "{query:?}");
     }
 
     #[test]

@@ -76,12 +76,23 @@
   padding: 60px 10px 96px;
 }
 .reader-cell.solo-one { flex: 1 1 0; }
-.reader-double { gap: 10px; padding-left: 16px; padding-right: 16px; }
+/* 双页零中缝：左右页分别贴住中缝，跨页大图可直接拼合。 */
+.reader-double { gap: 0; padding-left: 0; padding-right: 0; }
+.reader-double > .reader-cell { padding-left: 0; padding-right: 0; }
+.reader-double:not(.solo):not(.solo-center) > .reader-cell:first-child {
+  justify-content: flex-end;
+}
+.reader-double:not(.solo):not(.solo-center) > .reader-cell:last-child {
+  justify-content: flex-start;
+}
 .reader-double.solo { justify-content: flex-end; }
-.reader-double.solo .reader-cell { flex: 0 1 calc(50% - 6px); }
+.reader-double.solo .reader-cell {
+  flex: 0 1 calc(50%);
+  justify-content: flex-end;
+}
 /* 居中独占：LTR 封面单页 + 横向跨页大图（宽 > 高×1.1）独占一屏。 */
 .reader-double.solo-center { justify-content: center; }
-.reader-double.solo-center .reader-cell { flex: 1 1 100%; }
+.reader-double.solo-center .reader-cell { flex: 1 1 100%; justify-content: center; }
 
 .reader-img {
   max-width: 100%;

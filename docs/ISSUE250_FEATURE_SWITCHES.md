@@ -1,6 +1,8 @@
 # Issue #250 · 大功能总开关与后端功能门卫
 
 > 状态：设计确认（2026-11-08）。分支 `feat/250-feature-switches`。
+> **0.20.0 更新**：`online` 默认值改为 `true`，9 项功能开箱即用；用户仍可逐项关闭。
+> 下文中“在线直读默认关”的表述仅代表 0.19.x 历史决策。
 > 关联：[Issue #250](https://github.com/D-OneXXX/Moyu/issues/250)
 > 基线：`main` = `ff42dd6`。
 > 本文是实施规格；实现计划见本轮 SDD scratch，不随产品文档提交。
@@ -33,7 +35,7 @@
 | id | 中文名 | 默认 | 关闭后的主行为 |
 |---|---|---:|---|
 | `webtoon` | 条漫模式 | 开 | 阅读器不再提供条漫；按书条漫偏好回退；`get_webtoon_*` 拒绝 |
-| `online` | 在线直读 | 关（保持现状） | 在线入口/导入/交接隐藏；在线命令拒绝；停止 handoff 并清理辅助会话 |
+| `online` | 在线直读 | 开（0.20.0 起） | 在线入口/导入/交接隐藏；在线命令拒绝；停止 handoff 并清理辅助会话 |
 | `browser` | 内置浏览器 | 开 | 顶栏入口隐藏，`/browser` 重定向；`browser_*` 拒绝；已开窗关闭 |
 | `pdf` | PDF 阅读 | 开 | 已有 PDF 书仍显示；打开显示关闭态；PDF 字节/封面写入命令拒绝 |
 | `opds` | OPDS 远程书库 | 开 | 书库按钮与设置面板隐藏；`opds_*` 拒绝；配置保留 |
@@ -42,7 +44,7 @@
 | `backup` | 备份与恢复 | 开 | 手动导出/导入隐藏并拒绝；健康检查与启动恢复常开 |
 | `diagnostics` | 诊断与问题反馈 | 开 | 支持面板隐藏并拒绝 `diagnostics_export`；崩溃诊断与 breadcrumb 常开 |
 
-默认值选择原则：**不改变现有可用功能**。除在线直读外，全部默认开；在线直读保持实验性默认关。
+默认值选择原则：**不改变现有可用功能**。0.20.0 起 9 项全部默认开；关闭后的降级语义不变。
 
 ## 4. 数据模型与持久化
 
@@ -80,7 +82,7 @@ pub struct FeatureFlags {
 }
 ```
 
-- `FeatureFlags::default()`：`webtoon=true`、`online=false`、其余 `true`。
+- `FeatureFlags::default()`：9 项全部 `true`（0.20.0 起 `online=true`）。
 - `FeatureId::ALL`、`FeatureId::key()`、`FeatureId::label_zh()`、
   `FeatureId::get(&FeatureFlags)`、`FeatureId::set(&mut FeatureFlags, bool)` 作为唯一映射。
 - `Settings` 增加 `#[serde(default)] pub features: FeatureFlags`，删除
@@ -299,7 +301,7 @@ export const FEATURE_REGISTRY: readonly FeatureDefinition[] = [ ... ];
 
 - 不把书库、阅读器、设置改为可关闭。
 - 不新增第 6 个设置 tab。
-- 不改在线直读默认值（保持关）。
+- 0.20.0 起在线直读默认开；关闭后仍保持可恢复降级与后端门卫。
 - 不改官方 Updater 通道或发布流程。
 - 不做 L3 可见 GUI 自动化、不移动真实光标/抢焦点。
 - 不引入新依赖。

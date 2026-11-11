@@ -1029,6 +1029,17 @@ fn image_url(
 ///
 /// 优先 `id="img"` / `id="image"`；否则取声明面积最大的正文图；
 /// 都没有声明尺寸时退回第一张非 chrome 图，最后才用 `og:image`。
+/// 二级查看器页面内的备用重载查询参数（如 `nl=...`）。
+///
+/// 主图返回 403/404/509 时，`OnlineSource` 会重新解包 viewer，并把这个参数
+/// 合并回图片 URL 再试一次；只接受短 token，避免把整段脚本当成参数。
+pub(crate) fn extract_viewer_reload_param(body: &[u8]) -> Option<(String, String)> {
+    let text = decode_html(body);
+    let re = Regex::new(r#"(?i)(?:^|[^a-z0-9_])nl\s*[=:]\s*["']?([a-z0-9_-]{1,64})"#).ok()?;
+    let value = re.captures(&text)?.get(1)?.as_str().to_string();
+    Some(("nl".to_string(), value))
+}
+
 pub(crate) fn extract_viewer_image(
     body: &[u8],
     base_url: &url::Url,

@@ -122,13 +122,26 @@ export default function TopBar({
             </span>
           </button>
 
-          {!safeMode && browserEnabled && (
+          {!safeMode && (
             <NavLink
               to="/browser"
-              title={t("nav.browser")}
-              aria-label={t("nav.browser")}
+              title={
+                browserEnabled
+                  ? t("nav.browser")
+                  : `${t("nav.browser")} · ${t("common.disabled")}`
+              }
+              aria-label={
+                browserEnabled
+                  ? t("nav.browser")
+                  : `${t("nav.browser")} · ${t("common.disabled")}`
+              }
+              data-feature-disabled={browserEnabled ? undefined : "true"}
               className={({ isActive }) =>
-                cn(navItem, isActive ? navActive : navIdle)
+                cn(
+                  navItem,
+                  isActive ? navActive : navIdle,
+                  !browserEnabled && "opacity-60",
+                )
               }
             >
               <Globe2 className="size-4 shrink-0" />

@@ -83,13 +83,17 @@ import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
 import WebAccessSummaryCard from "@/components/settings/WebAccessSummaryCard";
 import WebAccessPanel from "@/components/settings/WebAccessPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
+import DeveloperFeaturePanel, {
+  FeatureDisabledNotice,
+} from "@/components/settings/DeveloperFeaturePanel";
 import ErrorState from "@/components/ErrorState";
-import { APP_VERSION, BUILD_COMMIT } from "@/lib/version";
+import ConfirmDialog from "@/components/ConfirmDialog";import { APP_VERSION, BUILD_COMMIT } from "@/lib/version";
 import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
 import {
   DEFAULT_FEATURE_FLAGS,
+  FEATURE_REGISTRY,
   type FeatureDefinition,
   type FeatureId,
   ONLINE_FEATURE,
@@ -279,6 +283,8 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [featureBusy, setFeatureBusy] = useState<FeatureId | null>(null);
+  const [resettingFeatures, setResettingFeatures] = useState(false);
+  const [confirmResetFeatures, setConfirmResetFeatures] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [detectingProxy, setDetectingProxy] = useState(false);
   const [sessionHeaders, setSessionHeaders] = useState(false);
@@ -552,8 +558,8 @@ export default function SettingsPage() {
   const toggleFeature = async (
     feature: FeatureDefinition,
     value: boolean,
-  ) => {
-    if (featureBusy !== null) return;
+  ): Promise<boolean> => {
+    if (featureBusy !== null) return false;
     const previous = formRef.current.features;
     setFeatureBusy(feature.id);
     applyForm((prev) => ({
@@ -573,16 +579,76 @@ export default function SettingsPage() {
           { feature: t(feature.titleKey) },
         ),
       );
+      return true;
     } catch (e) {
       applyForm((prev) => ({ ...prev, features: previous }));
       toastErr("set_feature_enabled", e);
+      return false;
     } finally {
       setFeatureBusy(null);
     }
   };
 
-  const onPickDir = async () => {
+  /** 启用某个被开发者门卫关闭的模块，并同步到当前设置表单。 */
+  const enableFeature = async (feature: FeatureId): Promise<boolean> => {
+    const definition = FEATURE_REGISTRY.find((item) => item.id === feature);
+    if (!definition) return false;
+    return toggleFeature(definition, true);
+  };
+
+  /**
+   * 恢复 9 项模块门卫的默认值。
+   *
+   * 仍然逐项走 `set_feature_enabled`（唯一写通道），最后用后端返回的权威
+   * Settings 刷新表单；不使用会保留旧 features 的 `set_settings`。
+   */
+  const resetFeatureGates = async () => {
+    setConfirmResetFeatures(false);
+    if (featureBusy !== null || resettingFeatures) return;
+    setResettingFeatures(true);
+    const failures: string[] = [];
+    let last: Settings | null = null;
     try {
+      for (const definition of FEATURE_REGISTRY) {
+        try {
+          last = await api.setFeatureEnabled(
+            definition.id,
+            definition.defaultEnabled,
+          );
+        } catch (error) {
+          failures.push(
+            `${t(definition.titleKey)}: ${localizeBackendError(error)}`,
+          );
+        }
+      }
+      if (last) {
+        const authoritative = last;
+        if (loadedRef.current) {
+          loadedRef.current = {
+            ...loadedRef.current,
+            features: authoritative.features,
+          };
+        }
+        applyForm((prev) => ({
+          ...prev,
+          features: authoritative.features,
+        }));
+      }
+      if (failures.length > 0) {
+        toast(
+          t("developer.resetPartial", { detail: failures.join("；") }),
+        );
+      } else {
+        toast(t("developer.resetDone"));
+      }
+      recordBreadcrumb("settingsChange");
+      window.dispatchEvent(new Event("mr-settings-updated"));
+    } finally {
+      setResettingFeatures(false);
+    }
+  };
+
+  const onPickDir = async () => {    try {
       const picked = await openDialog({
         directory: true,
         multiple: false,
@@ -1009,48 +1075,44 @@ export default function SettingsPage() {
                   </p>
                 </div>
               </Card>
-            ) : (
-              <>
-                {onlineFeature ? (
-                  <SettingsSection
-                    icon={Wifi}
-                    title={t("settings.online.urlTitle")}
-                    description={t("settings.online.urlDescription")}
-                    rows={
-                      <SettingRow
-                        title={t("settings.online.enableTitle")}
-                        description={t("settings.online.enableDescription")}
-                        badge={
-                          <Badge
-                            variant={
-                              form.features.online ? "success" : "muted"
-                            }
-                          >
-                            {form.features.online
-                              ? t("common.enabled")
-                              : t("common.disabled")}
-                          </Badge>
-                        }
-                      >
-                        <Switch
-                          checked={form.features.online}
-                          disabled={featureBusy !== null}
-                          data-testid="online-direct-switch"
-                          aria-label={t("settings.online.enableTitle")}
-                          onCheckedChange={(checked) =>
-                            void toggleFeature(onlineFeature, checked)
-                          }
-                        />
-                      </SettingRow>
+            ) : null}
+
+            <SettingsSection
+              icon={Wifi}
+              title={t("settings.online.urlTitle")}
+              description={t("settings.online.urlDescription")}
+              rows={
+                <SettingRow
+                  title={t("settings.online.enableTitle")}
+                  description={t("settings.online.enableDescription")}
+                  badge={
+                    <Badge
+                      variant={form.features.online ? "success" : "muted"}
+                    >
+                      {form.features.online
+                        ? t("common.enabled")
+                        : t("common.disabled")}
+                    </Badge>
+                  }
+                >
+                  <Switch
+                    checked={form.features.online}
+                    disabled={featureBusy !== null || safeMode}
+                    data-testid="online-direct-switch"
+                    aria-label={t("settings.online.enableTitle")}
+                    onCheckedChange={(checked) =>
+                      void toggleFeature(onlineFeature, checked)
                     }
                   />
-                ) : null}
+                </SettingRow>
+              }
+            />
 
-                <SettingsSection
-                  icon={KeyRound}
-                  title={t("settings.online.networkTitle")}
-                  description={t("settings.online.networkDescription")}
-                >
+            <SettingsSection
+              icon={KeyRound}
+              title={t("settings.online.networkTitle")}
+              description={t("settings.online.networkDescription")}
+            >
                   <div className="flex flex-wrap gap-1.5">
                     <Button
                       type="button"
@@ -1253,16 +1315,29 @@ export default function SettingsPage() {
                   </p>
                 </SettingsSection>
 
-                {onlineFeature ? <OnlineFilterPanel /> : null}
+            {form.features.online && !safeMode ? <OnlineFilterPanel /> : null}
 
-                {form.features.webAccess ? (
-                  <WebAccessSummaryCard>
-                    <WebAccessPanel />
-                    <CaDistributionPanel />
-                    {form.features.opds ? <OpdsPanel /> : null}
-                  </WebAccessSummaryCard>
-                ) : null}
-              </>
+            {form.features.webAccess ? (
+              <WebAccessSummaryCard>
+                <WebAccessPanel />
+                <div id="settings-ca-distribution">
+                  <CaDistributionPanel />
+                </div>
+              </WebAccessSummaryCard>
+            ) : (
+              <FeatureDisabledNotice
+                feature="webAccess"
+                onEnable={() => enableFeature("webAccess")}
+              />
+            )}
+
+            {form.features.opds ? (
+              <OpdsPanel />
+            ) : (
+              <FeatureDisabledNotice
+                feature="opds"
+                onEnable={() => enableFeature("opds")}
+              />
             )}
           </TabsContent>
 
@@ -1556,7 +1631,12 @@ export default function SettingsPage() {
 
             {form.features.backup ? (
               <DataBackupPanel onRestored={load} />
-            ) : null}
+            ) : (
+              <FeatureDisabledNotice
+                feature="backup"
+                onEnable={() => enableFeature("backup")}
+              />
+            )}
           </TabsContent>
 
           {/* ---------------------------------------------------------------- 隐私 */}
@@ -1628,7 +1708,36 @@ export default function SettingsPage() {
               </p>
             </SettingsSection>
 
-            {form.features.updates ? <UpdatesPanel /> : null}
+            <DeveloperFeaturePanel
+              features={form.features}
+              busy={featureBusy}
+              safeMode={safeMode}
+              resetting={resettingFeatures}
+              onToggle={(feature, value) => {
+                void toggleFeature(feature, value);
+              }}
+              onReset={() => setConfirmResetFeatures(true)}
+            />
+
+            {form.features.updates ? (
+              <UpdatesPanel />
+            ) : (
+              <FeatureDisabledNotice
+                feature="updates"
+                onEnable={() => enableFeature("updates")}
+              />
+            )}
+
+            {confirmResetFeatures ? (
+              <ConfirmDialog
+                title={t("developer.resetConfirmTitle")}
+                message={t("developer.resetConfirmMessage")}
+                confirmText={t("developer.reset")}
+                tone="primary"
+                onConfirm={() => void resetFeatureGates()}
+                onCancel={() => setConfirmResetFeatures(false)}
+              />
+            ) : null}
           </TabsContent>
         </Tabs>
       )}

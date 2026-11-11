@@ -61,7 +61,7 @@ const zhCN = {
   "settings.webAccess.quickToggle": "局域网访问",
   "settings.webAccess.quickToggleHint":
     "开启后在当前网络内提供书库浏览与阅读。",
-  "settings.webAccess.openAdvanced": "高级配置（CA / OPDS / 配对设备）",
+  "settings.webAccess.openAdvanced": "高级配置（CA / 配对设备）",
   "settings.webAccess.openAdvancedHint":
     "证书轮换、指纹核对、OPDS 凭据与设备管理",
 
@@ -130,7 +130,7 @@ const zhTW = {
   "settings.webAccess.quickToggle": "區域網路存取",
   "settings.webAccess.quickToggleHint":
     "開啟後在目前網路內提供書庫瀏覽與閱讀。",
-  "settings.webAccess.openAdvanced": "進階設定（CA / OPDS / 配對裝置）",
+  "settings.webAccess.openAdvanced": "進階設定（CA / 配對裝置）",
   "settings.webAccess.openAdvancedHint":
     "憑證輪替、指紋核對、OPDS 憑證與裝置管理",
 
@@ -203,7 +203,7 @@ const en = {
   "settings.webAccess.quickToggle": "LAN access",
   "settings.webAccess.quickToggleHint":
     "Serves this library to the current network while on.",
-  "settings.webAccess.openAdvanced": "Advanced (CA / OPDS / paired devices)",
+  "settings.webAccess.openAdvanced": "Advanced (CA / paired devices)",
   "settings.webAccess.openAdvancedHint":
     "Certificate rotation, fingerprint checks, OPDS credentials and devices",
 
@@ -276,7 +276,7 @@ const es = {
   "settings.webAccess.quickToggle": "Acceso por LAN",
   "settings.webAccess.quickToggleHint":
     "Mientras está activo, sirve la biblioteca a la red actual.",
-  "settings.webAccess.openAdvanced": "Avanzado (CA / OPDS / dispositivos)",
+  "settings.webAccess.openAdvanced": "Avanzado (CA / dispositivos)",
   "settings.webAccess.openAdvancedHint":
     "Rotación de certificados, huellas, credenciales OPDS y dispositivos",
 
@@ -349,7 +349,7 @@ const ja = {
   "settings.webAccess.quickToggle": "LAN アクセス",
   "settings.webAccess.quickToggleHint":
     "オンの間、現在のネットワークに書庫を公開します。",
-  "settings.webAccess.openAdvanced": "詳細設定（CA / OPDS / ペアリング端末）",
+  "settings.webAccess.openAdvanced": "詳細設定（CA / ペアリング端末）",
   "settings.webAccess.openAdvancedHint":
     "証明書の更新、指紋確認、OPDS 認証情報、端末管理",
 
@@ -422,7 +422,7 @@ const ko = {
   "settings.webAccess.quickToggle": "LAN 접속",
   "settings.webAccess.quickToggleHint":
     "켜면 현재 네트워크에 서재를 제공합니다.",
-  "settings.webAccess.openAdvanced": "고급 설정(CA / OPDS / 연결 기기)",
+  "settings.webAccess.openAdvanced": "고급 설정(CA / 연결 기기)",
   "settings.webAccess.openAdvancedHint":
     "인증서 교체, 지문 확인, OPDS 자격 증명, 기기 관리",
 

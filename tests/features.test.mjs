@@ -52,7 +52,7 @@ test("rust enum matches registry ids", () => {
 test("defaults match contract", () => {
   const expected = {
     webtoon: true,
-    online: false,
+    online: true,
     browser: true,
     pdf: true,
     opds: true,

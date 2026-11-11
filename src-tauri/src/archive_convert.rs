@@ -61,6 +61,19 @@ pub(crate) fn is_convertible_archive_path(path: &Path) -> bool {
     )
 }
 
+/// 同目录已存在的 `<stem>-converted.cbz`（且可读）时返回该路径。
+///
+/// 目录重扫只导入转换产物，不再对原 `.rar/.cbr` 重复转码；
+/// 显式导入原文件时 `prepare_import_cbz` 也会直接复用这个结果。
+pub(crate) fn existing_converted_sibling(src: &Path) -> Option<PathBuf> {
+    if !is_convertible_archive_path(src) {
+        return None;
+    }
+    let dir = src.parent()?;
+    let candidate = dir.join(format!("{}-converted.cbz", safe_stem(src)));
+    (candidate.is_file() && valid_cbz(&candidate)).then_some(candidate)
+}
+
 /// 准备一个可被本地书库读取的 `.cbz`。
 ///
 /// - 正常 ZIP/CBZ：原样返回；

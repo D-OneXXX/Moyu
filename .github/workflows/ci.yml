@@ -97,20 +97,36 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
           NEEDRESTART_MODE: a
         run: |
-          # GitHub-hosted ubuntu-22.04 的 azure 镜像偶发卡住；回退到官方 archive。
-          # 当前镜像把仓库配置放在 /etc/apt/apt-mirrors.txt（日志里的
-          # "Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist"），只改 sources.list
-          # 不会生效；两个文件都检查。
-          for mirror_file in /etc/apt/sources.list /etc/apt/apt-mirrors.txt; do
-            if [ -f "$mirror_file" ] && grep -q 'azure.archive.ubuntu.com' "$mirror_file"; then
-              sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "$mirror_file"
+          # GitHub-hosted ubuntu-22.04 的镜像偶发不可达。先尝试 HTTPS 官方源，
+          # 失败后回退 Azure 镜像；显式移除 mirrorlist，避免它覆盖 sources.list。
+          # ForceIPv4 规避 runner 上的 IPv6 黑洞。
+          sudo rm -f /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/ubuntu.sources
+          mirror_ok=0
+          for base in "https://archive.ubuntu.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu" "https://mirrors.edge.kernel.org/ubuntu"; do
+            sudo tee /etc/apt/sources.list >/dev/null <<EOF
+          deb $base jammy main restricted universe multiverse
+          deb $base jammy-updates main restricted universe multiverse
+          deb $base jammy-backports main restricted universe multiverse
+          deb $base jammy-security main restricted universe multiverse
+          EOF
+            if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update \
+              -o Acquire::Retries=2 \
+              -o Acquire::ForceIPv4=true \
+              -o Acquire::http::Timeout=20 \
+              -o Acquire::https::Timeout=20 >"$RUNNER_TEMP/apt-update.log" 2>&1 \
+              && ! grep -qE "^(E:|Err:|W: Failed to fetch)" "$RUNNER_TEMP/apt-update.log"; then
+              mirror_ok=1
+              break
             fi
+            echo "apt mirror unavailable: $base" >&2
+            tail -20 "$RUNNER_TEMP/apt-update.log" >&2 || true
           done
-          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30
+          if [ "$mirror_ok" -ne 1 ]; then
+            echo "no apt mirror reachable" >&2
+            exit 1
+          fi
           sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y \
+            -o Acquire::ForceIPv4=true \
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
             libwebkit2gtk-4.1-dev \

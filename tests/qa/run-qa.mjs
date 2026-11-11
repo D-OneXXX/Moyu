@@ -33,6 +33,7 @@ import { runOpdsSuite } from "./suites/opds.mjs";
 import { runCacheSuite } from "./suites/cache.mjs";
 import { runPrivacySuite } from "./suites/privacy.mjs";
 import { runWebAccessSuite } from "./suites/web-access.mjs";
+import { runFeatureGateSuite } from "./suites/feature-gate.mjs";
 import { runChaosSuite } from "./suites/chaos.mjs";
 import { runArchitectureSuite } from "./suites/architecture.mjs";
 import { runGallerySuite } from "./suites/gallery.mjs";
@@ -181,6 +182,17 @@ async function runOne(report, ctx, suite) {
       (id) => report.checks.some((check) => check.id === id && check.status === "pass"),
     )) {
       record(report, { id: "pdf:crashed", suite: "pdf", layer: "infrastructure", title: "PDF 完整套件运行至结尾且未中断", pass: true });
+    } else if (suite.id !== "pdf") {
+      // A suite that returns without throwing ran to completion. Recording the
+      // suite-level pass closes historical `<suite>:crashed` P0 findings instead
+      // of leaving them open forever when no individual check uses that id.
+      record(report, {
+        id: `${suite.id}:crashed`,
+        suite: suite.id,
+        layer: "infrastructure",
+        title: `${suite.title} 完整套件运行至结尾且未中断`,
+        pass: true,
+      });
     }
   } catch (error) {
     fail(report, {
@@ -269,6 +281,11 @@ async function main() {
         id: "web-access",
         title: "局域网配对 UI：风险提示、倒计时、拒绝/取消与过期收敛",
         run: runWebAccessSuite,
+      },
+      {
+        id: "feature-gate",
+        title: "开发者功能门卫：9 项总控、可恢复占位与默认值",
+        run: runFeatureGateSuite,
       },
       { id: "gallery", title: "视觉验收快照与布局指标", run: runGallerySuite },
       {

@@ -24,6 +24,44 @@ pub(crate) fn close_browser_window(app: &tauri::AppHandle) {
         let _ = window.close();
     }
 }
+
+/// 辅助浏览器使用独立 WebView Profile，让用户手动完成的授权自然保持。
+///
+/// 应用只提供目录，不读取、不解析、不导出其中的 Cookie；用户执行
+/// 「清除在线痕迹」时由 [`clear_browser_profile`] 整体删除。
+fn browser_profile_dir() -> Result<PathBuf, String> {
+    let dir = crate::data_dir()?.join("browser_profile");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建浏览器配置目录失败：{e}"))?;
+    Ok(dir)
+}
+
+/// 安全关闭辅助浏览器窗后彻底清空独立 Profile 目录。
+///
+/// 调用方必须先 [`close_browser_window`]；Windows WebView2 在窗口关闭后会
+/// 短暂持有 profile 文件句柄，采用有界重试。只在本次应用数据目录内删除，
+/// 绝不触碰主窗口数据或书库。
+pub(crate) fn clear_browser_profile() -> Result<(), String> {
+    let dir = crate::data_dir()?.join("browser_profile");
+    remove_profile_dir(&dir)
+}
+
+fn remove_profile_dir(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut last_error = String::new();
+    for attempt in 0..8u64 {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                last_error = error.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(120 * (attempt + 1)));
+            }
+        }
+    }
+    Err(format!("清空辅助浏览器配置失败：{last_error}"))
+}
 const BROWSER_TITLE: &str = "Moyu 浏览器";
 const BROWSER_WIDTH: f64 = 1200.0;
 const BROWSER_HEIGHT: f64 = 820.0;
@@ -675,12 +713,13 @@ pub async fn open_browser_window(
         let download_app = app.clone();
         let download_dir = downloads;
         let load_app = app.clone();
+        let profile_dir = browser_profile_dir()?;
         WebviewWindowBuilder::new(&app, BROWSER_LABEL, WebviewUrl::External(url))
             .title(BROWSER_TITLE)
             .inner_size(BROWSER_WIDTH, BROWSER_HEIGHT)
-            // §4.3：辅助浏览器只服务当次人工验证，不持久化第三方 Cookie
-            // 或站点存储；关闭窗口即丢弃，避免下次启动复用上一站凭据。
-            .incognito(true)
+            // §4.3：辅助浏览器使用独立、受控的 WebView Profile；登录态由
+            // 内核保存，应用不读取/导出 Cookie，清除在线痕迹时整体删除。
+            .data_directory(profile_dir)
             // 顶部交接条只读 DOM 图片地址并经 127.0.0.1 handoff 回传；
             // 不暴露 Tauri IPC，不读取 Cookie。
             .initialization_script(toolbar)
@@ -937,6 +976,27 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         dir
+    }
+
+    #[test]
+    fn clears_only_the_isolated_profile_directory() {
+        let dir = temp_dir("profile-clear");
+        let profile = dir.join("browser_profile");
+        std::fs::create_dir_all(profile.join("EBWebView").join("Default")).unwrap();
+        std::fs::write(
+            profile.join("EBWebView").join("Default").join("Cookies"),
+            b"x",
+        )
+        .unwrap();
+        let keep = dir.join("library.db");
+        std::fs::write(&keep, b"keep").unwrap();
+
+        remove_profile_dir(&profile).unwrap();
+        assert!(!profile.exists());
+        assert_eq!(std::fs::read(&keep).unwrap(), b"keep");
+        // 幂等：目录已不存在时同样成功。
+        remove_profile_dir(&profile).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

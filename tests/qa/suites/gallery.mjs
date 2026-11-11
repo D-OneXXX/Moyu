@@ -16,7 +16,8 @@ import { fail, ok } from "../lib/report.mjs";
  * through WebView2 CDP.
  */
 
-const VIEWPORT = { width: 1440, height: 900, deviceScaleFactor: 2 };
+const VIEWPORT_LIMIT = { width: 1440, height: 900, deviceScaleFactor: 2 };
+let VIEWPORT = { ...VIEWPORT_LIMIT };
 
 function outputDir(root) {
   return path.join(root, "tests", "qa", "reports", "visual-snapshots", "desktop");
@@ -96,6 +97,19 @@ export async function runGallerySuite(ctx, report) {
   fs.mkdirSync(dir, { recursive: true });
   const captures = [];
   const page = ctx.page;
+
+  // CDP viewport emulation larger than the real window makes the app look
+  // clipped to anyone watching the QA window (the right edge is outside the
+  // native client area). Cap the captured viewport to the actual window so the
+  // screenshot and the visible UI describe the same layout.
+  const native = await page
+    .eval("({ width: window.innerWidth, height: window.innerHeight })")
+    .catch(() => ({ width: VIEWPORT_LIMIT.width, height: VIEWPORT_LIMIT.height }));
+  VIEWPORT = {
+    ...VIEWPORT_LIMIT,
+    width: Math.max(320, Math.min(VIEWPORT_LIMIT.width, Number(native.width) || 0)),
+    height: Math.max(240, Math.min(VIEWPORT_LIMIT.height, Number(native.height) || 0)),
+  };
 
   // Mark one fixture as finished so the library shows the 100% badge.
   const finishedCandidate =
@@ -195,7 +209,7 @@ export async function runGallerySuite(ctx, report) {
     finishedEvidence,
     desktop: captures,
     note:
-      "桌面截图由 WebView2 CDP 在 1440×900 / DPR 2 下截取；移动端截图由 tests/qa/web-reader-headless.mjs 在 390×844 / DPR 2 下截取。",
+      "桌面截图按当前窗口 CSS 视口（不超过 1440×900）× DPR 2 截取，避免模拟视口大于真实窗口造成右侧裁切；移动端截图由 tests/qa/web-reader-headless.mjs 在 390×844 / DPR 2 下截取。",
   };
   fs.writeFileSync(
     path.join(dir, "manifest.json"),

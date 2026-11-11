@@ -102,7 +102,7 @@ jobs:
           # ForceIPv4 规避 runner 上的 IPv6 黑洞。
           sudo rm -f /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/ubuntu.sources
           mirror_ok=0
-          for base in "https://archive.ubuntu.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu"; do
+          for base in "https://archive.ubuntu.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu" "https://mirrors.edge.kernel.org/ubuntu"; do
             sudo tee /etc/apt/sources.list >/dev/null <<EOF
           deb $base jammy main restricted universe multiverse
           deb $base jammy-updates main restricted universe multiverse

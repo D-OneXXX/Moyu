@@ -4636,7 +4636,13 @@ export function checkAntiMockGuards(root, report) {
     const panel = read("src/components/settings/WebAccessPanel.tsx");
     const runtime = read("src-tauri/src/web_access/runtime.rs");
     const tray = read("src-tauri/src/tray.rs");
-    const technical = read("docs/TECHNICAL.md");
+    // Internal docs are intentionally gitignored (local-only). A clean CI
+    // checkout has no docs/TECHNICAL.md, so document assertions run only when
+    // the file exists; code wiring assertions always run.
+    const technicalPath = path.join(root, "docs/TECHNICAL.md");
+    const technical = fs.existsSync(technicalPath)
+      ? read("docs/TECHNICAL.md")
+      : null;
 
     if (!settings.includes("<DeveloperFeaturePanel")) {
       errors.push("设置页未挂载开发者功能总控面板");
@@ -4684,20 +4690,22 @@ export function checkAntiMockGuards(root, report) {
       "D1b 控制面与生产监听未开始",
       "尚未接入 `lib.rs`",
     ];
-    for (const phrase of stalePhrases) {
-      if (technical.includes(phrase)) {
-        errors.push(`TECHNICAL.md 仍含过期表述：${phrase}`);
+    if (technical) {
+      for (const phrase of stalePhrases) {
+        if (technical.includes(phrase)) {
+          errors.push(`TECHNICAL.md 仍含过期表述：${phrase}`);
+        }
       }
-    }
-    for (const required of [
-      "开发者功能总控",
-      "FeatureDisabledNotice",
-      "WebAccessProvider",
-      "web_access_start_plain",
-      "StopReason::SafeMode",
-    ]) {
-      if (!technical.includes(required)) {
-        errors.push(`TECHNICAL.md 缺少当前实现事实：${required}`);
+      for (const required of [
+        "开发者功能总控",
+        "FeatureDisabledNotice",
+        "WebAccessProvider",
+        "web_access_start_plain",
+        "StopReason::SafeMode",
+      ]) {
+        if (!technical.includes(required)) {
+          errors.push(`TECHNICAL.md 缺少当前实现事实：${required}`);
+        }
       }
     }
 

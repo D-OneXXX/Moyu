@@ -5,7 +5,7 @@
 //! data-src / data-original / data-lazy-src / data-srcset 懒加载真实地址，
 //! 然后把候选交给 [`crate::online::filter`] 做尺寸、序列与站点档案过滤。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
 
@@ -72,6 +72,7 @@ pub fn parse_gallery_with(
     let mut stack: Vec<OpenElement> = Vec::new();
     let mut candidates: Vec<CandidateImage> = Vec::new();
     let mut seen = HashSet::new();
+    let mut seen_identity: HashMap<String, usize> = HashMap::new();
     let mut pos = 0usize;
     while let Some((start, end)) = next_tag(&text, pos) {
         pos = end;
@@ -105,40 +106,66 @@ pub fn parse_gallery_with(
         // 主容器/正文语义节点重置 chrome：顶层布局状态类名
         // （header-fixed / nav-sticky 等）不得污染整棵正文子树。
         let main_container = is_main_container(&name, &class_id);
+        let self_main = is_main_content_selector(&name, &class_id);
+        let self_noise = is_noise_container(&class_id);
+        let main_content = parent.map(|el| el.main_content).unwrap_or(false) || self_main;
+        let noise = parent.map(|el| el.noise).unwrap_or(false) || self_noise;
         let self_chrome = !main_container && (is_chrome_tag(&name) || is_chrome_class(&class_id));
         let chrome = if main_container {
             false
         } else {
             parent.map(|el| el.chrome).unwrap_or(false) || self_chrome
         };
-        let container = if is_content_tag(&name) || is_content_class(&class_id) {
+        let container = if self_main || is_content_tag(&name) || is_content_class(&class_id) {
             Some(selector_hint(&name, &attrs))
         } else {
             parent.and_then(|el| el.container.clone())
         };
+        // 外层图片链接只对图片文件生效；页面链接不得抢占 img 自身地址。
+        let anchor_href = if name == "a" {
+            attr_value(&attrs, "href").and_then(|href| image_href(&href, &effective_base))
+        } else {
+            parent.and_then(|el| el.anchor_href.clone())
+        };
         if name == "img" {
-            if let Some(url) = image_url(&attrs, &effective_base) {
-                if seen.insert(url.clone()) {
-                    let (width, height) = image_dimensions(&attrs);
-                    let img_class = class_id.trim().to_string();
-                    let alt = attr_value(&attrs, "alt").map(|v| decode_entities(&v));
-                    candidates.push(CandidateImage {
-                        url,
-                        width,
-                        height,
-                        order: candidates.len(),
-                        in_chrome: chrome || is_chrome_class(&img_class),
-                        container: container.clone(),
-                        class_id: (!img_class.is_empty()).then_some(img_class),
-                        alt,
-                        source: CandidateSource::Html,
-                        anchor: None,
-                    });
-                    if candidates.len() > MAX_PAGES.saturating_mul(8) {
-                        return Err(BackendError::Msg(format!(
-                            "HTML 图片数超过上限 {MAX_PAGES}"
-                        )));
-                    }
+            if noise {
+                continue;
+            }
+            let anchor = stack.last().and_then(|el| el.anchor_href.as_deref());
+            if let Some(url) = image_url(&attrs, &effective_base, anchor) {
+                // width/height 只对实际选中的 `src` 可信；升级到 data-orig-file /
+                // 外层原图 / srcset 后，属性尺寸属于缩略图，不能再拿来判 small。
+                let (width, height) = image_dimensions(&attrs);
+                let src_url = attr_value(&attrs, "src")
+                    .and_then(|raw| image_href(&raw, &effective_base))
+                    .and_then(|joined| normalize_url(&joined).ok())
+                    .map(|normalized| normalized.to_string());
+                let dimensions_reliable = src_url.as_deref() == Some(url.as_str());
+                let (width, height) = if dimensions_reliable {
+                    (width, height)
+                } else {
+                    (None, None)
+                };
+                let img_class = class_id.trim().to_string();
+                let alt = attr_value(&attrs, "alt").map(|v| decode_entities(&v));
+                let candidate = CandidateImage {
+                    url,
+                    width,
+                    height,
+                    dom_index: candidates.len(),
+                    in_chrome: chrome || is_chrome_class(&img_class),
+                    container: container.clone(),
+                    class_id: (!img_class.is_empty()).then_some(img_class),
+                    alt,
+                    main_content,
+                    source: CandidateSource::Html,
+                    anchor: None,
+                };
+                push_dom_candidate(&mut candidates, &mut seen, &mut seen_identity, candidate);
+                if candidates.len() > MAX_PAGES.saturating_mul(8) {
+                    return Err(BackendError::Msg(format!(
+                        "HTML 图片数超过上限 {MAX_PAGES}"
+                    )));
                 }
             }
             // img 是 void 元素，不入栈。
@@ -149,6 +176,9 @@ pub fn parse_gallery_with(
                 name,
                 chrome,
                 container,
+                main_content,
+                noise,
+                anchor_href,
             });
         }
     }
@@ -161,6 +191,11 @@ pub fn parse_gallery_with(
     // SSR/内联数据回退：DOM 标签不足时，解析 __NEXT_DATA__ 与脚本内的有序图片直链。
     if candidates.len() < MIN_DOM_IMAGES_BEFORE_INLINE {
         extract_inline_images(&text, &effective_base, &mut candidates, &mut seen);
+    }
+    // 正文容器优先：只要锁定的正文子树产出了图片，就物理丢弃侧栏、页头、
+    // 页脚、榜单与相关推荐等正文外候选（不是仅标 chrome 后放行到 filtered）。
+    if candidates.iter().any(|candidate| candidate.main_content) {
+        candidates.retain(|candidate| candidate.main_content);
     }
     if candidates.is_empty() {
         return Err(BackendError::Msg(
@@ -218,6 +253,9 @@ struct OpenElement {
     name: String,
     chrome: bool,
     container: Option<String>,
+    main_content: bool,
+    noise: bool,
+    anchor_href: Option<String>,
 }
 
 fn is_void(name: &str) -> bool {
@@ -321,6 +359,94 @@ fn is_chrome_class(value: &str) -> bool {
 /// 主容器/正文语义节点：自身与后代忽略外层 chrome 继承。
 fn is_main_container(name: &str, class_id: &str) -> bool {
     matches!(name, "html" | "body" | "main" | "article") || is_content_class(class_id)
+}
+
+/// 明确锁定为正文的容器；只认章节/文章语义，避免把 `content-widget`
+/// 之类侧栏类名当成正文。
+fn is_main_content_selector(name: &str, class_id: &str) -> bool {
+    if matches!(name, "main" | "article") {
+        return true;
+    }
+    const TOKENS: &[&str] = &[
+        "entry-content",
+        "post-content",
+        "chapter-content",
+        "reading-content",
+        "tl_article_content",
+        "_tl_editor",
+        "wp-manga-chapter-img",
+        "manga-chapter-img",
+        "main-content",
+        "article-content",
+    ];
+    let lower = class_id.to_ascii_lowercase();
+    TOKENS.iter().any(|token| lower.contains(token))
+}
+
+/// Jetpack/YARPP/分享/评论等插件注入的尾部噪音容器：即使位于正文容器
+/// 内部也必须整棵子树剔除。
+fn is_noise_container(class_id: &str) -> bool {
+    const TOKENS: &[&str] = &[
+        "jp-relatedposts",
+        "yarpp-related",
+        "relatedposts",
+        "related-posts",
+        "sharedaddy",
+        "wp-block-latest-posts",
+        "post-navigation",
+        "comments-area",
+    ];
+    let lower = class_id.to_ascii_lowercase();
+    TOKENS.iter().any(|token| lower.contains(token))
+}
+
+/// 外层 `<a href>` 是否直接指向图片文件；页面链接不得抢占图片地址。
+fn image_href(raw: &str, base_url: &url::Url) -> Option<String> {
+    let raw = decode_entities(raw.trim());
+    if raw.is_empty()
+        || raw.starts_with("data:")
+        || raw.starts_with("blob:")
+        || raw.starts_with("javascript:")
+    {
+        return None;
+    }
+    let joined = base_url.join(&raw).ok()?;
+    let path = joined.path().to_ascii_lowercase();
+    let image_like = [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+        .iter()
+        .any(|extension| path.ends_with(extension));
+    image_like.then(|| joined.to_string())
+}
+
+/// 同一页的 WordPress 缩略图/原图身份：去掉 `-1024x1448` / `-scaled`
+/// 等派生后缀，只按 path 比较（轮换 CDN host 不拆页）。
+fn image_identity(raw: &str) -> String {
+    let Ok(url) = url::Url::parse(raw) else {
+        return raw.to_string();
+    };
+    let path = url.path().to_ascii_lowercase();
+    let (stem, extension) = match path.rsplit_once('.') {
+        Some((stem, extension)) => (stem, extension),
+        None => (path.as_str(), ""),
+    };
+    let stem = Regex::new(r"(?i)-(?:\d+x\d+|scaled|rotated)$")
+        .expect("derived image suffix regex")
+        .replace(stem, "");
+    if extension.is_empty() {
+        stem.into_owned()
+    } else {
+        format!("{stem}.{extension}")
+    }
+}
+
+fn has_derived_image_suffix(raw: &str) -> bool {
+    let path = url::Url::parse(raw)
+        .map(|url| url.path().to_ascii_lowercase())
+        .unwrap_or_else(|_| raw.to_ascii_lowercase());
+    let (stem, _) = path.rsplit_once('.').unwrap_or((path.as_str(), ""));
+    Regex::new(r"(?i)-(?:\d+x\d+|scaled|rotated)$")
+        .expect("derived image suffix regex")
+        .is_match(stem)
 }
 
 fn is_content_tag(name: &str) -> bool {
@@ -563,9 +689,11 @@ fn fallback_cluster(
     if main_count < MIN_CLUSTER_SIZE {
         return None;
     }
+    let mut ordered = candidates.to_vec();
+    ordered.sort_by_key(|candidate| candidate.dom_index);
     let mut pages = Vec::new();
     let mut selected = HashSet::new();
-    for candidate in candidates {
+    for candidate in &ordered {
         if path_template(&candidate.url).as_deref() != Some(main_template.as_str()) {
             continue;
         }
@@ -731,11 +859,12 @@ fn push_inline_candidate(url: String, out: &mut Vec<CandidateImage>, seen: &mut 
         url,
         width: None,
         height: None,
-        order: out.len(),
+        dom_index: out.len(),
         in_chrome: false,
         container: Some("inline-json".into()),
         class_id: None,
         alt: None,
+        main_content: false,
         source: CandidateSource::InlineJson,
         anchor: None,
     });
@@ -777,7 +906,7 @@ fn collect_source_candidates(
         if !has_srcset && !lower_kind.starts_with("image/") {
             continue;
         }
-        let Some(url) = image_url(&attrs, base_url) else {
+        let Some(url) = image_url(&attrs, base_url, None) else {
             continue;
         };
         picture_used = true;
@@ -792,11 +921,12 @@ fn collect_source_candidates(
             url,
             width,
             height,
-            order: out.len(),
+            dom_index: out.len(),
             in_chrome: false,
             container: None,
             class_id,
             alt: attr_value(&attrs, "alt"),
+            main_content: false,
             source: CandidateSource::Html,
             anchor: None,
         });
@@ -806,10 +936,49 @@ fn collect_source_candidates(
     }
 }
 
-fn image_url(attrs: &[(String, String)], base_url: &url::Url) -> Option<String> {
+/// 同节点多属性归一去重：缩略图先出现、原图后出现时，用原图替换；
+/// 原图先出现则丢弃后续缩略图。`dom_index` 保持首次出现的文档位置。
+fn push_dom_candidate(
+    out: &mut Vec<CandidateImage>,
+    seen: &mut HashSet<String>,
+    seen_identity: &mut HashMap<String, usize>,
+    candidate: CandidateImage,
+) {
+    let identity = image_identity(&candidate.url);
+    if let Some(&existing) = seen_identity.get(&identity) {
+        if has_derived_image_suffix(&out[existing].url) && !has_derived_image_suffix(&candidate.url)
+        {
+            let dom_index = out[existing].dom_index;
+            let main_content = out[existing].main_content || candidate.main_content;
+            let mut replacement = candidate;
+            replacement.dom_index = dom_index;
+            replacement.main_content = main_content;
+            seen.insert(replacement.url.clone());
+            out[existing] = replacement;
+        }
+        return;
+    }
+    if !seen.insert(candidate.url.clone()) {
+        return;
+    }
+    seen_identity.insert(identity, out.len());
+    out.push(candidate);
+}
+
+fn image_url(
+    attrs: &[(String, String)],
+    base_url: &url::Url,
+    anchor_href: Option<&str>,
+) -> Option<String> {
     let mut candidates = Vec::new();
-    // 懒加载属性按优先级排列；不同站点/库使用不同命名。
+    // WordPress/Jetpack 原图属性优先；外层图片链接再优先于它们。
+    if let Some(href) = anchor_href.and_then(|raw| image_href(raw, base_url)) {
+        candidates.push(href);
+    }
     for key in [
+        "data-orig-file",
+        "data-large-file",
+        "data-full-url",
         "data-src",
         "data-original",
         "data-original-src",
@@ -887,7 +1056,7 @@ pub(crate) fn extract_viewer_image(
         if is_chrome_class(&id) || is_chrome_class(&class_id) {
             continue;
         }
-        let Some(url) = image_url(&attrs, base_url) else {
+        let Some(url) = image_url(&attrs, base_url, None) else {
             continue;
         };
         if id.eq_ignore_ascii_case("img") || id.eq_ignore_ascii_case("image") {
@@ -930,7 +1099,7 @@ fn og_image(text: &str, base_url: &url::Url) -> Option<String> {
         if let Some(caps) = re.captures(text) {
             let raw = decode_entities(caps[1].trim());
             let attrs = vec![("src".to_string(), raw)];
-            if let Some(url) = image_url(&attrs, base_url) {
+            if let Some(url) = image_url(&attrs, base_url, None) {
                 return Some(url);
             }
         }
@@ -1012,13 +1181,24 @@ mod tests {
         let meta = gallery(&html);
         assert_eq!(meta.page_count, 30);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
-        assert!(stored.filtered.len() >= 5);
-        assert!(stored.filtered.iter().any(|p| p.reason.contains("chrome")));
+        // 正文主容器外的 header/nav/aside/footer 已被物理隔离，不再进入
+        // filtered；容器内的 qrcode/thumb 仍按尺寸/关键词规则剔除。
+        assert!(stored.filtered.len() >= 2, "{:?}", stored.filtered);
         assert!(stored.filtered.iter().any(|p| {
             p.reason.contains("small")
                 || p.reason.contains("banner")
                 || p.reason.contains("keyword")
         }));
+        assert!(
+            stored.filtered.iter().all(|p| {
+                !p.url.contains("logo")
+                    && !p.url.contains("ad.png")
+                    && !p.url.contains("avatar")
+                    && !p.url.contains("icon")
+            }),
+            "正文容器外噪音不应出现在 filtered：{:?}",
+            stored.filtered
+        );
         assert!(meta.filter_profile.is_some());
     }
 
@@ -1399,5 +1579,51 @@ mod tests {
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
         assert_eq!(stored.pages[0].url, "https://cdn.example/p/01.webp");
         assert_eq!(stored.pages[1].url, "https://cdn.example/p/02.webp");
+    }
+
+    #[test]
+    fn wordpress_entry_content_scopes_order_and_original_urls() {
+        let page = url::Url::parse("https://wp-comic.example.org/series-chapter-03/").unwrap();
+        let html = r#"<html><head><title>合成 WP 章节</title></head><body>
+            <header><img src="/assets/logo.png" width="128" height="128" alt="logo"></header>
+            <div class="entry-content">
+              <figure><img src="/uploads/cover.jpg" width="400" height="600" alt="cover"></figure>
+              <figure><img src="/uploads/pages/001-724x1024.jpg" srcset="/uploads/pages/001-724x1024.jpg 724w, /uploads/pages/001-1024x1448.jpg 1024w" data-orig-file="/uploads/pages/001-original.jpg" width="724" height="1024" alt="p1"></figure>
+              <a href="/uploads/pages/002-full.jpg"><img src="/uploads/pages/002-thumb-300x200.jpg" width="300" height="200" alt="p2"></a>
+              <figure><img src="/uploads/pages/003-1.jpg" data-orig-file="/uploads/pages/003-original.jpg" width="800" height="1200" alt="p3"></figure>
+              <figure><img src="/uploads/pages/004.jpg" width="800" height="1200" alt="p4"></figure>
+              <figure><img src="/uploads/credit.jpg" width="400" height="600" alt="credit"></figure>
+            </div>
+            <div class="jp-relatedposts">
+              <img src="/uploads/related-01.jpg" width="800" height="1200">
+              <img src="/uploads/related-02.jpg" width="800" height="1200">
+            </div>
+            <aside class="sidebar"><img src="/uploads/sidebar.jpg" width="800" height="1200"></aside>
+          </body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let urls: Vec<&str> = stored.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://wp-comic.example.org/uploads/cover.jpg",
+                "https://wp-comic.example.org/uploads/pages/001-original.jpg",
+                "https://wp-comic.example.org/uploads/pages/002-full.jpg",
+                "https://wp-comic.example.org/uploads/pages/003-original.jpg",
+                "https://wp-comic.example.org/uploads/pages/004.jpg",
+                "https://wp-comic.example.org/uploads/credit.jpg",
+            ],
+            "正文容器必须物理隔离侧栏/头部/相关推荐，并按 DOM 顺序保留原图"
+        );
+        assert_eq!(meta.page_count, 6);
+        assert!(
+            stored.filtered.iter().all(|page| {
+                !page.url.contains("related")
+                    && !page.url.contains("sidebar")
+                    && !page.url.contains("logo")
+            }),
+            "正文容器外的噪音不应进入 filtered：{:?}",
+            stored.filtered
+        );
     }
 }

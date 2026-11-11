@@ -241,6 +241,7 @@ fn respond_error(stream: &mut TcpStream, status: u16, message: &str) {
 struct HttpRequest {
     method: String,
     target: String,
+    content_type: Option<String>,
     body: Vec<u8>,
 }
 
@@ -301,6 +302,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
         .to_string();
 
     let mut content_length = None;
+    let mut content_type = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -313,6 +315,8 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
                     .parse::<usize>()
                     .map_err(|_| RequestError::bad("invalid content-length"))?,
             );
+        } else if name.eq_ignore_ascii_case("content-type") {
+            content_type = Some(value.to_string());
         } else if name.eq_ignore_ascii_case("transfer-encoding") && !value.is_empty() {
             return Err(RequestError::bad("chunked body unsupported"));
         }
@@ -354,6 +358,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
     Ok(HttpRequest {
         method,
         target,
+        content_type,
         body,
     })
 }
@@ -489,13 +494,23 @@ pub(crate) fn process_handoff_value(
     commands::ingest_resolved_batch(state, metas).map_err(HandoffError::from)
 }
 
-/// 解析交接请求体：JSON，或远程页面受 CSP `connect-src` 限制时
-/// 由隐藏 `<form enctype="text/plain">` 提交的 `payload=<json>` 载荷。
-fn parse_handoff_body(body: &[u8]) -> Option<serde_json::Value> {
-    let text = std::str::from_utf8(body).ok()?;
-    let text = text.trim();
-    let text = text.strip_prefix("payload=").unwrap_or(text).trim();
-    serde_json::from_str(text).ok()
+/// 同时接受 JSON fetch 与 CSP 回退的 form-urlencoded 表单。
+fn parse_handoff_payload(request: &HttpRequest) -> Result<serde_json::Value, RequestError> {
+    let content_type = request
+        .content_type
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if content_type.contains("application/x-www-form-urlencoded") {
+        let body = String::from_utf8_lossy(&request.body);
+        let payload = url::form_urlencoded::parse(body.as_bytes())
+            .find(|(name, _)| name == "payload")
+            .map(|(_, value)| value.into_owned())
+            .ok_or_else(|| RequestError::bad("missing payload"))?;
+        serde_json::from_str(&payload).map_err(|_| RequestError::bad("invalid payload JSON"))
+    } else {
+        serde_json::from_slice(&request.body).map_err(|_| RequestError::bad("invalid JSON"))
+    }
 }
 
 fn handle_connection(
@@ -536,10 +551,10 @@ fn handle_connection(
             let _ = respond(&mut stream, 204, "text/plain", b"");
         }
         "POST" => {
-            let value = match parse_handoff_body(&request.body) {
-                Some(value) => value,
-                None => {
-                    respond_error(&mut stream, 400, "invalid JSON");
+            let value = match parse_handoff_payload(&request) {
+                Ok(value) => value,
+                Err(error) => {
+                    respond_error(&mut stream, error.status, error.message);
                     return;
                 }
             };
@@ -798,16 +813,6 @@ mod tests {
         send_request(port, &request)
     }
 
-    /// 隐藏表单 `enctype="text/plain"` 的实际请求体：`payload=<json>\r\n`。
-    fn post_plain(port: u16, token: &str, body: &str) -> String {
-        let payload = format!("payload={body}\r\n");
-        let request = format!(
-            "POST /handoff?token={token} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-            payload.len()
-        );
-        send_request(port, &request)
-    }
-
     fn processor(
         st: Arc<AppState>,
         allow_session_headers: bool,
@@ -847,39 +852,6 @@ mod tests {
             assert!(script.contains(needle), "缺少 {needle}");
         }
         assert!(!script.contains("document.cookie"));
-    }
-
-    #[test]
-    fn plain_form_payload_imports_when_csp_blocks_fetch() {
-        let st = test_state();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let (port, handle) = spawn_server(
-            test_token(),
-            cancel.clone(),
-            || true,
-            processor(st.clone(), false),
-        );
-        let body =
-            r#"{"chapters":[{"url":"http://e/form","title":"Form","pages":["http://x/1.jpg"]}]}"#;
-        let response = post_plain(port, &test_token(), body);
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        let id = crate::db::book_id_for_path("http://e/form");
-        let stored = st
-            .db
-            .with(|conn| crate::db::get_book(conn, &id).map_err(|e| e.to_string()))
-            .unwrap();
-        assert!(stored.is_some(), "表单回退载荷应入库");
-        cancel.store(true, Ordering::SeqCst);
-        assert!(matches!(handle.join().unwrap(), HandoffOutcome::Stopped));
-    }
-
-    #[test]
-    fn parse_handoff_body_accepts_json_and_form_prefix() {
-        let json = br#"{"chapters":[]}"#;
-        assert!(parse_handoff_body(json).is_some());
-        let form = b"payload={\"chapters\":[]}\r\n";
-        assert!(parse_handoff_body(form).is_some());
-        assert!(parse_handoff_body(b"payload=not-json").is_none());
     }
 
     #[test]
@@ -1450,5 +1422,41 @@ mod tests {
             "停止 handoff 必须清空辅助会话"
         );
         assert!(st.assisted_session("https://gallery.example").is_none());
+    }
+
+    #[test]
+    fn form_urlencoded_payload_is_accepted() {
+        let called = Arc::new(AtomicUsize::new(0));
+        let called_in_server = called.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (port, handle) = spawn_server(
+            test_token(),
+            cancel.clone(),
+            || true,
+            move |value| {
+                called_in_server.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    value["chapters"][0]["pages"][0],
+                    "https://img.example/01.jpg"
+                );
+                Ok(Vec::new())
+            },
+        );
+        let payload = r#"{"chapters":[{"url":"https://example.com/g","title":"T","pages":["https://img.example/01.jpg"]}]}"#;
+        let body = format!(
+            "payload={}",
+            url::form_urlencoded::byte_serialize(payload.as_bytes()).collect::<String>()
+        );
+        let request = format!(
+            "POST /handoff?token={} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            test_token(),
+            body.len(),
+            body
+        );
+        let response = send_request(port, &request);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+        cancel.store(true, Ordering::SeqCst);
+        assert!(matches!(handle.join().unwrap(), HandoffOutcome::Stopped));
     }
 }

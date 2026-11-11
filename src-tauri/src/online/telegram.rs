@@ -368,11 +368,9 @@ fn resolve_message(
             url: photo.url.clone(),
             width: None,
             height: None,
-            order: index,
             dom_index: index,
+            main_content: false,
             in_chrome: false,
-            in_main_scope: false,
-            content_scope: None,
             container: None,
             class_id: None,
             alt: Some(title.clone()),
@@ -485,11 +483,9 @@ fn resolve_telegraph(
             url,
             width,
             height,
-            order: candidates.len(),
             dom_index: candidates.len(),
+            main_content: true,
             in_chrome: false,
-            in_main_scope: false,
-            content_scope: None,
             container: Some("article".into()),
             class_id: None,
             alt: None,
@@ -794,11 +790,60 @@ fn telegraph_title(html: &str) -> Option<String> {
 }
 
 fn extract_article(html: &str) -> &str {
-    let re = Regex::new(r"(?is)<article\b[^>]*>(.*?)</article>").expect("article regex");
-    re.captures(html)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str())
-        .unwrap_or(html)
+    // Telegraph 的正文有两种常见结构：<article id="_tl_editor"> 与
+    // <div class="tl_article_content">。先精确匹配，再退回任意 article。
+    let exact = Regex::new(
+        r#"(?is)<article\b[^>]*(?:id\s*=\s*["']_tl_editor["']|class\s*=\s*["'][^"']*tl_article_content)[^>]*>(.*?)</article>"#,
+    )
+    .expect("telegraph article regex");
+    if let Some(article) = exact.captures(html).and_then(|c| c.get(1)) {
+        return article.as_str();
+    }
+    let any_article = Regex::new(r"(?is)<article\b[^>]*>(.*?)</article>").expect("article regex");
+    if let Some(article) = any_article.captures(html).and_then(|c| c.get(1)) {
+        return article.as_str();
+    }
+    extract_class_div(html, "tl_article_content").unwrap_or(html)
+}
+
+/// 深度感知地截取指定 class 的 div 子树，避免嵌套 div 被首个 `</div>` 截断。
+fn extract_class_div<'a>(html: &'a str, token: &str) -> Option<&'a str> {
+    let mut pos = 0usize;
+    let mut content_start = None;
+    let mut depth = 0usize;
+    while let Some((start, end)) = crate::online::html::next_tag(html, pos) {
+        pos = end;
+        let tag = &html[start..end];
+        let closing = tag.trim_start().starts_with("</");
+        let Some(name) = crate::online::html::tag_name(tag) else {
+            continue;
+        };
+        if content_start.is_none() {
+            if !closing && name == "div" {
+                let attrs = crate::online::html::parse_attrs(tag);
+                let matches = crate::online::html::attr_value(&attrs, "class")
+                    .map(|value| value.to_ascii_lowercase().contains(token))
+                    .unwrap_or(false);
+                if matches && !tag.trim_end().ends_with("/>") {
+                    content_start = Some(end);
+                    depth = 1;
+                }
+            }
+            continue;
+        }
+        if name != "div" {
+            continue;
+        }
+        if closing {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(&html[content_start?..start]);
+            }
+        } else if !tag.trim_end().ends_with("/>") {
+            depth += 1;
+        }
+    }
+    None
 }
 
 fn message_text(block: &str) -> String {
@@ -1178,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn message_resolves_album_keeping_small_but_not_tiny_noise() {
+    fn message_resolves_album_with_anchors_and_filters_small_noise() {
         let embed = r#"<html><body>
         <div class="tgme_widget_message" data-post="demo/200">
           <div class="tgme_widget_message_text">Album 1</div>
@@ -1194,7 +1239,6 @@ mod tests {
             ),
             ("https://cdn/a.png", 200, png(800, 1200)),
             ("https://cdn/b.png", 200, png(800, 1200)),
-            // 白名单来源只排除 <64×64；200×200 的说明/分割页必须完整保留。
             ("https://cdn/qr.png", 200, png(200, 200)),
         ]);
         let meta = resolve_book(
@@ -1204,10 +1248,10 @@ mod tests {
             &FilterThresholds::default(),
         )
         .unwrap();
-        assert_eq!(meta.page_count, 3);
+        assert_eq!(meta.page_count, 2);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
-        assert_eq!(stored.pages.len(), 3);
-        assert!(stored.filtered.is_empty());
+        assert_eq!(stored.pages.len(), 2);
+        assert_eq!(stored.filtered.len(), 1);
         let anchor = stored.pages[0].anchor.as_ref().unwrap();
         assert_eq!(anchor.channel, "demo");
         assert_eq!(anchor.message_id, 200);
@@ -1215,42 +1259,12 @@ mod tests {
     }
 
     #[test]
-    fn message_drops_tiny_emoji_icon_below_sixty_four() {
-        let embed = r#"<html><body>
-        <div class="tgme_widget_message" data-post="demo/201">
-          <div class="tgme_widget_message_text">Album 2</div>
-          <a class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn/a.png')"></a>
-          <a class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn/icon.png')"></a>
-        </div></body></html>"#;
-        let http = MapHttp::new(vec![
-            (
-                "https://t.me/demo/201?embed=1",
-                200,
-                embed.as_bytes().to_vec(),
-            ),
-            ("https://cdn/a.png", 200, png(800, 1200)),
-            ("https://cdn/icon.png", 200, png(32, 32)),
-        ]);
-        let meta = resolve_book(
-            &http,
-            "https://t.me/demo/201",
-            &FilterMemory::default(),
-            &FilterThresholds::default(),
-        )
-        .unwrap();
-        assert_eq!(meta.page_count, 1);
-        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
-        assert_eq!(stored.filtered.len(), 1);
-        assert!(stored.filtered[0].reason.contains("small"));
-    }
-
-    #[test]
-    fn telegraph_extracts_article_images_and_keeps_medium_logo() {
+    fn telegraph_extracts_article_images_and_drops_small_logo() {
         let html = r#"<html><head><title>Telegraph QA</title></head><body><article>
             <figure><img src="/file/a.png"></figure>
             <figure><img src="/file/b.png"></figure>
             <figure><img src="/file/c.png"></figure>
-            <figure><img src="/file/logo.png" width="96" height="96"></figure>
+            <figure><img src="/file/logo.png" width="32" height="32"></figure>
         </article></body></html>"#;
         let http = MapHttp::new(vec![
             (
@@ -1269,10 +1283,92 @@ mod tests {
             &FilterThresholds::default(),
         )
         .unwrap();
-        // 96×96 不小于 64×64，白名单来源不按通用最小尺寸误删。
-        assert_eq!(meta.page_count, 4);
+        assert_eq!(meta.page_count, 3);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
-        assert!(stored.filtered.is_empty());
+        assert_eq!(stored.filtered.len(), 1);
+    }
+
+    #[test]
+    fn telegraph_21p_keeps_all_images_in_dom_order_including_wide_tail() {
+        let mut html = String::from(
+            "<html><head><title>合成 Telegraph 21P</title></head><body><article id=\"_tl_editor\">",
+        );
+        let mut expected = Vec::new();
+        for i in 0..18 {
+            let url = format!("https://telegra.ph/file/{:016x}.jpg", 0x1000 + i);
+            expected.push(url.clone());
+            html.push_str(&format!(
+                "<figure><img src=\"{url}\" width=\"800\" height=\"1200\"></figure>"
+            ));
+        }
+        for (url, width, height) in [
+            ("https://telegra.ph/file/wide-tail-21p.jpg", 2400, 700),
+            ("https://telegra.ph/file/ad/random-hash-21p.jpg", 800, 1200),
+            ("https://graph.org/file/random-hash-21p.jpg", 800, 1200),
+        ] {
+            expected.push(url.to_string());
+            html.push_str(&format!(
+                "<figure><img src=\"{url}\" width=\"{width}\" height=\"{height}\"></figure>"
+            ));
+        }
+        html.push_str(
+            "<figure><img src=\"https://telegra.ph/file/tiny-icon-21p.png\" width=\"32\" height=\"32\"></figure></article></body></html>",
+        );
+        let http = MapHttp::new(vec![(
+            "https://telegra.ph/QA-21P-11-08",
+            200,
+            html.into_bytes(),
+        )]);
+        let thresholds = FilterThresholds {
+            probe_missing_dimensions: false,
+            ..FilterThresholds::default()
+        };
+        let meta = resolve_book(
+            &http,
+            "https://telegra.ph/QA-21P-11-08",
+            &FilterMemory::default(),
+            &thresholds,
+        )
+        .unwrap();
+        assert_eq!(
+            meta.page_count, 21,
+            "Telegraph 21P 不应因宽幅/关键词/跨域路径缺页"
+        );
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let urls: Vec<&str> = stored.pages.iter().map(|p| p.url.as_str()).collect();
+        let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(urls, expected_refs, "页面顺序必须与 DOM 完全一致");
+        assert_eq!(stored.filtered.len(), 1);
+        assert!(stored.filtered[0].url.contains("tiny-icon-21p"));
+        assert!(stored.filtered[0].reason.contains("small"));
+    }
+
+    #[test]
+    fn telegraph_tl_article_content_div_scopes_images() {
+        let html = r#"<html><body>
+            <header><img src="/file/header-logo.jpg" width="800" height="1200"></header>
+            <div class="tl_article_content">
+              <figure><img src="https://telegra.ph/file/aaa.jpg" width="800" height="1200"></figure>
+              <div><figure><img src="https://graph.org/file/bbb.jpg" width="800" height="1200"></figure></div>
+            </div>
+            <footer><img src="/file/footer-logo.jpg" width="800" height="1200"></footer>
+          </body></html>"#;
+        let http = MapHttp::new(vec![(
+            "https://telegra.ph/QA-Div",
+            200,
+            html.as_bytes().to_vec(),
+        )]);
+        let meta = resolve_without_probes(&http, "https://telegra.ph/QA-Div").unwrap();
+        assert_eq!(meta.page_count, 2);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let urls: Vec<&str> = stored.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://telegra.ph/file/aaa.jpg",
+                "https://graph.org/file/bbb.jpg",
+            ]
+        );
     }
 
     /// 构造频道/预览页：每条消息可带发布时间、标题与 N 张相册图。

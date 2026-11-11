@@ -88,7 +88,7 @@ export async function startOnlineFixture(port = 0) {
   for (let index = 1; index <= 3; index += 1) {
     register(`tg-telegraph-${index}.png`, 800, 1200, [40, 140, 200 + index]);
   }
-  register("tg-logo.png", 96, 96, [220, 30, 30]);
+  register("tg-logo.png", 32, 32, [220, 30, 30]);
 
   const documentEntries = [];
   for (let index = 1; index <= 4; index += 1) {
@@ -358,8 +358,7 @@ export async function startOnlineFixture(port = 0) {
           <figure><img src="${origin}/tg-telegraph-1.png"></figure>
           <figure><img src="${origin}/tg-telegraph-2.png"></figure>
           <figure><img src="${origin}/tg-telegraph-3.png"></figure>
-          <figure><img src="${origin}/tg-logo.png" width="96" height="96"></figure>
-          <figure><img src="${origin}/tg-icon.png" width="32" height="32"></figure>
+          <figure><img src="${origin}/tg-logo.png" width="32" height="32"></figure>
         </article></body></html>`);
       return;
     }

@@ -24,6 +24,44 @@ pub(crate) fn close_browser_window(app: &tauri::AppHandle) {
         let _ = window.close();
     }
 }
+
+/// 辅助浏览器使用独立 WebView Profile，让用户手动完成的授权自然保持。
+///
+/// 应用只提供目录，不读取、不解析、不导出其中的 Cookie；用户执行
+/// 「清除在线痕迹」时由 [`clear_browser_profile`] 整体删除。
+fn browser_profile_dir() -> Result<PathBuf, String> {
+    let dir = crate::data_dir()?.join("browser_profile");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建浏览器配置目录失败：{e}"))?;
+    Ok(dir)
+}
+
+/// 安全关闭辅助浏览器窗后彻底清空独立 Profile 目录。
+///
+/// 调用方必须先 [`close_browser_window`]；Windows WebView2 在窗口关闭后会
+/// 短暂持有 profile 文件句柄，采用有界重试。只在本次应用数据目录内删除，
+/// 绝不触碰主窗口数据或书库。
+pub(crate) fn clear_browser_profile() -> Result<(), String> {
+    let dir = crate::data_dir()?.join("browser_profile");
+    remove_profile_dir(&dir)
+}
+
+fn remove_profile_dir(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut last_error = String::new();
+    for attempt in 0..8u64 {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                last_error = error.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(120 * (attempt + 1)));
+            }
+        }
+    }
+    Err(format!("清空辅助浏览器配置失败：{last_error}"))
+}
 const BROWSER_TITLE: &str = "Moyu 浏览器";
 const BROWSER_WIDTH: f64 = 1200.0;
 const BROWSER_HEIGHT: f64 = 820.0;
@@ -41,6 +79,7 @@ struct ToolbarLabels {
     inactive: &'static str,
     empty: &'static str,
     imported: &'static str,
+    submitted: &'static str,
     failed: &'static str,
 }
 
@@ -54,8 +93,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "匯入目前頁",
             importing: "匯入中…",
             inactive: "尚未啟動交接",
-            empty: "目前頁面沒有已載入圖片",
+            empty: "目前頁面沒有可匯入的正文圖片",
             imported: "已匯入 {n} 章",
+            submitted: "已提交，等待匯入",
             failed: "匯入失敗",
         },
         "en" => ToolbarLabels {
@@ -66,8 +106,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "Import current page",
             importing: "Importing…",
             inactive: "Handoff not started",
-            empty: "No loaded images on this page",
+            empty: "No content images found",
             imported: "Imported {n} chapter(s)",
+            submitted: "Submitted for import",
             failed: "Import failed",
         },
         "es" => ToolbarLabels {
@@ -78,8 +119,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "Importar página actual",
             importing: "Importando…",
             inactive: "Handoff no iniciado",
-            empty: "No hay imágenes cargadas en esta página",
+            empty: "No se encontraron imágenes de contenido",
             imported: "Importados {n} capítulo(s)",
+            submitted: "Enviado para importar",
             failed: "Error al importar",
         },
         "ja" => ToolbarLabels {
@@ -90,8 +132,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "現在のページを取込",
             importing: "取込中…",
             inactive: "ハンドオフ未開始",
-            empty: "このページに読み込み済み画像がありません",
+            empty: "取り込める本文画像がありません",
             imported: "{n} 章を取込しました",
+            submitted: "取込を送信しました",
             failed: "取込に失敗",
         },
         "ko" => ToolbarLabels {
@@ -102,8 +145,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "현재 페이지 가져오기",
             importing: "가져오는 중…",
             inactive: "핸드오프가 시작되지 않음",
-            empty: "이 페이지에 로드된 이미지가 없습니다",
+            empty: "가져올 본문 이미지가 없습니다",
             imported: "{n}개 장을 가져왔습니다",
+            submitted: "가져오기 요청을 보냈습니다",
             failed: "가져오기 실패",
         },
         _ => ToolbarLabels {
@@ -114,8 +158,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "导入当前页",
             importing: "导入中…",
             inactive: "尚未启动交接",
-            empty: "当前页面没有已加载图片",
+            empty: "当前页面没有可导入的正文图片",
             imported: "已导入 {n} 章",
+            submitted: "已提交，等待导入",
             failed: "导入失败",
         },
     }
@@ -135,116 +180,133 @@ const TOOLBAR_TEMPLATE: &str = r##"
   if (window.top !== window) return;
   if (!/^https?:$/.test(location.protocol)) return;
   var config = __CONFIG__;
-  if (typeof window.__moyuHandoffCleanup === 'function') {
-    try { window.__moyuHandoffCleanup(); } catch (_) {}
-  }
   var previous = document.getElementById('moyu-handoff-bar');
   if (previous && previous.parentNode) previous.parentNode.removeChild(previous);
-
-  // 通用 CMS 高清原图属性：具备这些属性的图片即使尚未解码也视为正文图。
-  var HD_ATTRS = ['data-orig-file', 'data-large-file', 'data-full-url', 'data-original', 'data-src'];
-  var collected = [];
-  var collectedKeys = new Set();
-
   var resolveUrl = function (raw) {
-    if (!raw) return '';
+    if (!raw) return null;
     try {
       var url = new URL(raw, location.href);
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
       return url.href;
-    } catch (_) { return ''; }
-  };
-
-  // 同名尺寸缩略图（-724x1024.jpg）与原图归一并去重。
-  var dedupeKey = function (href) {
-    try {
-      var url = new URL(href);
-      var segments = url.pathname.split('/');
-      var file = segments.pop() || '';
-      var dot = file.lastIndexOf('.');
-      var stem = dot > 0 ? file.slice(0, dot) : file;
-      var extension = dot > 0 ? file.slice(dot) : '';
-      stem = stem.replace(/-\d{1,5}x\d{1,5}$/, '');
-      segments.push(stem + extension);
-      url.pathname = segments.join('/');
-      return url.href;
-    } catch (_) { return href; }
-  };
-
-  var bestUrl = function (image) {
-    for (var index = 0; index < HD_ATTRS.length; index += 1) {
-      var direct = resolveUrl(image.getAttribute(HD_ATTRS[index]));
-      if (direct) return direct;
+    } catch (_) {
+      return null;
     }
-    return resolveUrl(image.currentSrc)
-      || resolveUrl(image.getAttribute('src'))
-      || resolveUrl(image.getAttribute('data-src'));
   };
-
-  var register = function (url) {
-    var key = dedupeKey(url);
-    if (collectedKeys.has(key)) return;
-    collectedKeys.add(key);
-    collected.push(url);
+  var derivedSuffix = function (href) {
+    try {
+      var path = new URL(href).pathname.toLowerCase();
+      var dot = path.lastIndexOf('.');
+      var stem = dot >= 0 ? path.slice(0, dot) : path;
+      return /-(?:\d+x\d+|scaled|rotated)$/i.test(stem);
+    } catch (_) {
+      return false;
+    }
   };
-
-  // 整页累积：DOM 顺序扫描所有已加载大图或带高清属性的正文图，
-  // 不再限制当前视口；滚动到位的懒加载图片会随观察器追加。
-  var scan = function () {
-    if (!document.documentElement) return collected.slice();
+  var imageIdentity = function (href) {
+    try {
+      var path = new URL(href).pathname.toLowerCase();
+      var dot = path.lastIndexOf('.');
+      var stem = dot >= 0 ? path.slice(0, dot) : path;
+      var extension = dot >= 0 ? path.slice(dot) : '';
+      return stem.replace(/-(?:\d+x\d+|scaled|rotated)$/i, '') + extension;
+    } catch (_) {
+      return href;
+    }
+  };
+  var bestSrcset = function (value) {
+    var best = null;
+    var bestScore = -1;
+    var parts = String(value || '').split(',');
+    for (var index = 0; index < parts.length; index += 1) {
+      var bits = parts[index].trim().split(/\s+/);
+      if (!bits[0]) continue;
+      var score = 0;
+      if (bits[1]) {
+        var numeric = parseFloat(bits[1]);
+        if (!isNaN(numeric)) score = numeric;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = bits[0];
+      }
+    }
+    return best;
+  };
+  var collect = function () {
+    var pages = [];
+    var seenIdentity = {};
+    var add = function (href) {
+      if (!href) return;
+      var identity = imageIdentity(href);
+      if (Object.prototype.hasOwnProperty.call(seenIdentity, identity)) {
+        var existing = seenIdentity[identity];
+        // 缩略图先出现、原图后出现时用原图替换；原图先出现则保留。
+        if (derivedSuffix(pages[existing]) && !derivedSuffix(href)) {
+          pages[existing] = href;
+        }
+        return;
+      }
+      seenIdentity[identity] = pages.length;
+      pages.push(href);
+    };
+    var choose = function (image) {
+      var anchor = null;
+      try {
+        anchor = image.closest ? image.closest('a[href]') : null;
+      } catch (_) {}
+      if (anchor && anchor.getAttribute) {
+        var anchorHref = resolveUrl(anchor.getAttribute('href'));
+        if (
+          anchorHref &&
+          /\.(?:jpe?g|png|gif|webp)$/i.test(new URL(anchorHref).pathname)
+        ) {
+          return anchorHref;
+        }
+      }
+      var attrs = [
+        'data-orig-file',
+        'data-large-file',
+        'data-full-url',
+        'data-src',
+        'data-original',
+        'data-lazy-src',
+        'srcset',
+        'data-srcset',
+        'src'
+      ];
+      for (var index = 0; index < attrs.length; index += 1) {
+        var raw = image.getAttribute ? image.getAttribute(attrs[index]) : null;
+        if (!raw) continue;
+        if (attrs[index] === 'srcset' || attrs[index] === 'data-srcset') {
+          raw = bestSrcset(raw);
+        }
+        var href = resolveUrl(raw);
+        if (href) return href;
+      }
+      return resolveUrl(image.currentSrc || image.src || '');
+    };
     var images = document.querySelectorAll('img');
     for (var index = 0; index < images.length; index += 1) {
       var image = images[index];
       if (!image) continue;
-      var hasHd = false;
-      for (var attr = 0; attr < HD_ATTRS.length; attr += 1) {
-        if (image.getAttribute(HD_ATTRS[attr])) {
-          hasHd = true;
-          break;
-        }
+      var blocked = false;
+      try {
+        blocked = !!image.closest(
+          'header,footer,nav,aside,.jp-relatedposts,.yarpp-related,.sharedaddy,.wp-block-latest-posts,.post-navigation,.comments-area'
+        );
+      } catch (_) {}
+      if (blocked) continue;
+      var rawWidth = Number(image.naturalWidth) || 0;
+      var rawHeight = Number(image.naturalHeight) || 0;
+      if (rawWidth > 0 && rawHeight > 0 && rawWidth < 64 && rawHeight < 64) {
+        continue;
       }
-      if (!hasHd && !(image.complete && image.naturalWidth >= 280)) continue;
-      var url = bestUrl(image);
-      if (url) register(url);
+      add(choose(image));
     }
-    return collected.slice();
+    return pages;
   };
-
-  var scheduled = false;
-  var schedule = function () {
-    if (scheduled) return;
-    scheduled = true;
-    var run = function () { scheduled = false; scan(); };
-    if (window.requestAnimationFrame) {
-      window.requestAnimationFrame(run);
-    } else {
-      window.setTimeout(run, 180);
-    }
-  };
-
   var install = function () {
     if (!document.documentElement || document.getElementById('moyu-handoff-bar')) return;
-    var observer = null;
-    if (window.MutationObserver) {
-      observer = new MutationObserver(schedule);
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['src', 'srcset', 'data-src', 'data-srcset', 'data-original', 'data-orig-file', 'data-large-file', 'data-full-url']
-      });
-    }
-    window.addEventListener('scroll', schedule, { passive: true, capture: true });
-    document.addEventListener('load', schedule, true);
-    window.__moyuHandoffCleanup = function () {
-      if (observer) observer.disconnect();
-      window.removeEventListener('scroll', schedule, true);
-      document.removeEventListener('load', schedule, true);
-      var current = document.getElementById('moyu-handoff-bar');
-      if (current && current.parentNode) current.parentNode.removeChild(current);
-    };
-    scan();
-
     var bar = document.createElement('div');
     bar.id = 'moyu-handoff-bar';
     bar.setAttribute('role', 'toolbar');
@@ -273,53 +335,18 @@ const TOOLBAR_TEMPLATE: &str = r##"
     status.style.cssText = 'flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#CBD5E1;';
     status.textContent = config.callbackUrl ? '' : config.labels.inactive;
     bar.appendChild(status);
-
-    // 远程站点的 CSP connect-src 可能拦截 fetch。表单 text/plain 提交不经过
-    // CORS，且不受 connect-src 约束，作为受控回退通道。
-    var submitViaForm = function (payload) {
-      var frameName = 'moyu-handoff-sink';
-      var frame = document.getElementsByName(frameName)[0];
-      if (!frame) {
-        frame = document.createElement('iframe');
-        frame.name = frameName;
-        frame.style.display = 'none';
-        frame.setAttribute('aria-hidden', 'true');
-        document.documentElement.appendChild(frame);
-      }
-      var form = document.createElement('form');
-      form.method = 'POST';
-      form.action = config.callbackUrl;
-      form.target = frameName;
-      form.enctype = 'text/plain';
-      form.acceptCharset = 'UTF-8';
-      form.style.display = 'none';
-      var field = document.createElement('input');
-      field.type = 'hidden';
-      field.name = 'payload';
-      field.value = payload;
-      form.appendChild(field);
-      document.documentElement.appendChild(form);
-      try {
-        form.submit();
-      } finally {
-        window.setTimeout(function () {
-          if (form.parentNode) form.parentNode.removeChild(form);
-        }, 0);
-      }
-    };
-
     var importButton = makeButton(config.labels.importPage, async function () {
       if (!config.callbackUrl) {
         status.textContent = config.labels.inactive;
         return;
       }
-      var pages = scan();
+      var pages = collect();
       if (!pages.length) {
         status.textContent = config.labels.empty;
         return;
       }
       status.textContent = config.labels.importing;
-      var payload = JSON.stringify({
+      var payload = {
         chapters: [{
           url: location.href,
           title: document.title || location.href,
@@ -327,34 +354,53 @@ const TOOLBAR_TEMPLATE: &str = r##"
         }],
         origin: location.origin,
         userAgent: navigator.userAgent
-      });
-      var response = null;
-      try {
-        response = await fetch(config.callbackUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload
-        });
-      } catch (_) {
-        response = null;
-      }
-      if (!response) {
+      };
+      var submitFallback = function () {
         try {
-          submitViaForm(payload);
-          status.textContent = config.labels.imported.replace('{n}', '1');
+          var frameName = 'moyu-handoff-sink-' + Date.now();
+          var frame = document.createElement('iframe');
+          frame.name = frameName;
+          frame.style.display = 'none';
+          document.documentElement.appendChild(frame);
+          var form = document.createElement('form');
+          form.method = 'POST';
+          form.action = config.callbackUrl;
+          form.target = frameName;
+          form.style.display = 'none';
+          var input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'payload';
+          input.value = JSON.stringify(payload);
+          form.appendChild(input);
+          document.documentElement.appendChild(form);
+          form.submit();
+          // 表单提交不受页面 connect-src 限制；服务端仍校验一次性 token。
+          setTimeout(function () {
+            if (form.parentNode) form.parentNode.removeChild(form);
+            if (frame.parentNode) frame.parentNode.removeChild(frame);
+          }, 1000);
+          status.textContent = config.labels.submitted;
         } catch (_) {
           status.textContent = config.labels.failed;
         }
-        return;
+      };
+      try {
+        var response = await fetch(config.callbackUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          status.textContent = config.labels.failed + ' (' + response.status + ')';
+          return;
+        }
+        var data = {};
+        try { data = await response.json(); } catch (_) {}
+        var count = data && Array.isArray(data.books) ? data.books.length : 1;
+        status.textContent = config.labels.imported.replace('{n}', String(count));
+      } catch (_) {
+        submitFallback();
       }
-      if (!response.ok) {
-        status.textContent = config.labels.failed + ' (' + response.status + ')';
-        return;
-      }
-      var data = {};
-      try { data = await response.json(); } catch (_) {}
-      var count = data && Array.isArray(data.books) ? data.books.length : 1;
-      status.textContent = config.labels.imported.replace('{n}', String(count));
     });
     importButton.style.borderColor = config.callbackUrl ? 'rgba(56,168,248,0.95)' : 'rgba(148,163,184,0.4)';
     importButton.style.background = config.callbackUrl ? '#38A8F8' : 'transparent';
@@ -542,43 +588,6 @@ fn downloads_dir() -> Result<PathBuf, String> {
     normalize_existing_path(&dir).map_err(|e| format!("定位下载目录失败：{e}"))
 }
 
-/// 辅助浏览器独立 WebView 用户数据目录（登录态由 WebView 自身保存）。
-///
-/// 应用不读取、不解析、不导出 Cookie；清理走「设置 → 隐私与安全 → 清除在线痕迹」。
-fn browser_profile_dir() -> Result<PathBuf, String> {
-    let dir = crate::data_dir()?.join("browser_profile");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建浏览器配置目录失败：{e}"))?;
-    Ok(dir)
-}
-
-/// 安全关闭辅助浏览器窗后彻底清空独立 Profile 目录。
-///
-/// 调用方必须先 [`close_browser_window`]；Windows WebView2 在窗口关闭后会
-/// 短暂持有 profile 文件句柄，采用有界重试。只在本次应用数据目录内删除，
-/// 绝不触碰主窗口数据或书库。
-pub(crate) fn clear_browser_profile() -> Result<(), String> {
-    let dir = crate::data_dir()?.join("browser_profile");
-    remove_profile_dir(&dir)
-}
-
-fn remove_profile_dir(dir: &Path) -> Result<(), String> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    let mut last_error = String::new();
-    for attempt in 0..8u64 {
-        match std::fs::remove_dir_all(dir) {
-            Ok(()) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                last_error = error.to_string();
-                std::thread::sleep(std::time::Duration::from_millis(120 * (attempt + 1)));
-            }
-        }
-    }
-    Err(format!("清空辅助浏览器配置失败：{last_error}"))
-}
-
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowserDownloadEvent {
@@ -708,9 +717,8 @@ pub async fn open_browser_window(
         WebviewWindowBuilder::new(&app, BROWSER_LABEL, WebviewUrl::External(url))
             .title(BROWSER_TITLE)
             .inner_size(BROWSER_WIDTH, BROWSER_HEIGHT)
-            // §4.3 更新（#349）：辅助浏览器是标准 Web 窗口，使用 app_data_dir
-            // 下的独立 WebView Profile 保持用户授权后的登录态。应用侧不读取、
-            // 不解析、不导出 document.cookie；清除在线痕迹会关闭窗口并删除该目录。
+            // §4.3：辅助浏览器使用独立、受控的 WebView Profile；登录态由
+            // 内核保存，应用不读取/导出 Cookie，清除在线痕迹时整体删除。
             .data_directory(profile_dir)
             // 顶部交接条只读 DOM 图片地址并经 127.0.0.1 handoff 回传；
             // 不暴露 Tauri IPC，不读取 Cookie。
@@ -910,15 +918,12 @@ mod tests {
         assert!(script.contains("Import current page"));
         assert!(script.contains("event.isTrusted"));
         assert!(script.contains("image.naturalWidth"));
-        // 整页累积收集：不再按视口裁剪。
-        assert!(!script.contains("getBoundingClientRect"));
-        assert!(!script.contains("innerWidth"));
-        assert!(script.contains("MutationObserver"));
+        assert!(script.contains("querySelectorAll('img')"));
         assert!(script.contains("data-orig-file"));
-        assert!(script.contains("data-large-file"));
-        // 远程 CSP connect-src 拦截 fetch 时的表单回退通道。
-        assert!(script.contains("enctype = 'text/plain'"));
-        assert!(script.contains("form.submit()"));
+        assert!(script.contains("submitFallback"));
+        assert!(script.contains("input.name = 'payload'"));
+        assert!(!script.contains("getBoundingClientRect"));
+        assert!(!script.contains("innerHeight"));
         assert!(!script.contains("document.cookie"));
         assert!(!script.contains("__TAURI"));
         assert!(!script.contains("ipc"));

@@ -107,22 +107,17 @@ pub struct CandidateImage {
     pub url: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    pub order: usize,
-    /// 图片在原文档中出现的递增序号；最终页列表必须按此升序输出，
-    /// 不得因 HashMap 分桶或异步探测完成先后打乱阅读页序。
+    /// 原始文档中的单调序号；过滤/探测/聚类不得改变最终输出顺序。
     pub dom_index: usize,
     /// 位于 header/footer/nav/aside/评论区/推荐位等站点 chrome 内。
     pub in_chrome: bool,
-    /// 位于显式正文容器（`article` / `main` / `.entry-content` 等）内。
-    /// 用于容器首尾“异名页”（cover.jpg / credit.jpg / xxx-1.jpg）的孤立模板豁免。
-    pub in_main_scope: bool,
-    /// 显式正文容器的创建序号；同一次 HTML 扫描内唯一，用于选出主容器。
-    pub content_scope: Option<usize>,
     /// 最近的正文容器提示（selector 或 class/id），用于站点档案学习。
     pub container: Option<String>,
     /// 图片自身的 class/id 拼接，供负面词与用户规则使用。
     pub class_id: Option<String>,
     pub alt: Option<String>,
+    /// 候选来自已锁定的正文主容器 / Telegraph 文章正文。
+    pub main_content: bool,
     /// 候选来源：用于站点档案学习与诊断，部分入口不读取。
     #[allow(dead_code)]
     pub source: CandidateSource,
@@ -131,23 +126,40 @@ pub struct CandidateImage {
 
 impl CandidateImage {
     #[allow(dead_code)]
-    pub fn new(url: impl Into<String>, order: usize) -> Self {
+    pub fn new(url: impl Into<String>, dom_index: usize) -> Self {
         Self {
             url: url.into(),
             width: None,
             height: None,
-            order,
-            dom_index: order,
+            dom_index,
             in_chrome: false,
-            in_main_scope: false,
-            content_scope: None,
             container: None,
             class_id: None,
             alt: None,
+            main_content: false,
             source: CandidateSource::Json,
             anchor: None,
         }
     }
+}
+
+/// 正文主容器提示：只认明确的章节/正文选择器，避免把 `content-widget`
+/// 之类侧栏类名误判为正文。解析器会把该提示写入 `container`。
+pub(crate) fn is_main_content_hint(hint: &str) -> bool {
+    const TOKENS: &[&str] = &[
+        "entry-content",
+        "post-content",
+        "chapter-content",
+        "reading-content",
+        "tl_article_content",
+        "_tl_editor",
+        "wp-manga-chapter-img",
+        "manga-chapter-img",
+        "main-content",
+        "article-content",
+    ];
+    let lower = hint.to_ascii_lowercase();
+    TOKENS.iter().any(|token| lower.contains(token))
 }
 
 /// 被过滤的页面；保留在 meta_json 供“已过滤杂图抽屉”展示与恢复。
@@ -459,21 +471,6 @@ fn rule_is_allow(rule: &FilterRule) -> bool {
     rule.action == FilterAction::Allow
 }
 
-/// 容器首尾“异名页”特征：文件名不含数字（cover / credit）或以 `-1` 结尾。
-fn edge_filename_lacks_sequence(raw: &str) -> bool {
-    let Ok(url) = url::Url::parse(raw) else {
-        return false;
-    };
-    let Some(segment) = url
-        .path_segments()
-        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
-    else {
-        return false;
-    };
-    let stem = segment.split('.').next().unwrap_or(segment);
-    !stem.chars().any(|ch| ch.is_ascii_digit()) || stem.ends_with("-1")
-}
-
 fn pre_probe_rule_match(rule: &FilterRule, candidate: &CandidateImage) -> bool {
     matches!(
         rule.pattern,
@@ -486,7 +483,6 @@ fn pre_probe_rule_match(rule: &FilterRule, candidate: &CandidateImage) -> bool {
 
 struct ScoredCandidate {
     candidate: CandidateImage,
-    dom_index: usize,
     container: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
@@ -498,11 +494,14 @@ struct ScoredCandidate {
 
 /// 多阶段提纯：规则 → URL/属性 → 尺寸/宽高比 → 中位宽度 → 序列聚类 → 站点档案。
 pub fn filter_candidates(
-    candidates: Vec<CandidateImage>,
+    mut candidates: Vec<CandidateImage>,
     memory: &FilterMemory,
     thresholds: &FilterThresholds,
     probe: &mut dyn FnMut(&CandidateImage) -> Option<ProbeInfo>,
 ) -> FilterOutcome {
+    // DOM 序号是唯一权威顺序：入口先排序，后续探测/聚类/HashMap 均不得
+    // 改变最终 pages 与 filtered 的先后。
+    candidates.sort_by_key(|candidate| candidate.dom_index);
     let input_count = candidates.len();
     let host = if memory.host.is_empty() {
         candidates
@@ -525,8 +524,14 @@ pub fn filter_candidates(
         .map(|(template, _)| *template);
     let main_host = candidates
         .iter()
-        .find(|c| path_templates.get(c.order).and_then(|t| t.as_deref()) == main_path)
-        .map(|c| url_host(&c.url))
+        .enumerate()
+        .find(|(index, _)| {
+            path_templates
+                .get(*index)
+                .and_then(|template| template.as_deref())
+                == main_path
+        })
+        .map(|(_, candidate)| url_host(&candidate.url))
         .unwrap_or_default();
     let max_aspect = memory
         .profile
@@ -541,21 +546,15 @@ pub fn filter_candidates(
         .width_max
         .or_else(|| memory.profile.as_ref().and_then(|p| p.width_max));
 
-    // 显式正文容器内的候选位置：用于豁免容器首尾“异名页”的孤立模板判定。
-    let core_positions: Vec<usize> = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, candidate)| candidate.in_main_scope)
-        .map(|(position, _)| position)
-        .collect();
-    let core_count = core_positions.len();
-    let core_first = core_positions.first().copied();
-    let core_last = core_positions.last().copied();
-
     let mut probed = 0usize;
     let mut scored: Vec<ScoredCandidate> = Vec::with_capacity(input_count);
-    for (position, candidate) in candidates.into_iter().enumerate() {
-        let trusted = candidate.source.is_trusted();
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let telegraph = candidate.source == CandidateSource::Telegraph;
+        let main_content = candidate.main_content
+            || candidate
+                .container
+                .as_deref()
+                .is_some_and(is_main_content_hint);
         let mut score = 1.0f32;
         let mut reason: Option<String> = None;
         let mut allow = memory
@@ -616,9 +615,7 @@ pub fn filter_candidates(
 
         if !allow {
             let lower = redacted_url(&candidate.url).to_ascii_lowercase();
-            // 白名单来源（用户明确打开的消息/文章）不按站点 chrome、URL 关键词、
-            // 宽高比与通用最小尺寸做二次猜测；只排除 <64×64 的极小表情/图标。
-            if candidate.in_chrome && !trusted {
+            if candidate.in_chrome {
                 score -= 1.0;
                 reason.get_or_insert_with(|| "chrome".into());
             }
@@ -626,21 +623,23 @@ pub fn filter_candidates(
                 score -= 1.0;
                 reason.get_or_insert_with(|| "data".into());
             }
-            if !trusted {
+            if telegraph {
+                // Telegraph 正文只保留“极端小图标”这一条尺寸防线；
+                // 宽幅尾页、随机 hash、跨域图床与关键词碰撞都不得误杀。
+                if let (Some(w), Some(h)) = (width, height) {
+                    if w < 64 && h < 64 {
+                        score -= 1.0;
+                        reason.get_or_insert_with(|| "small".into());
+                    }
+                }
+            } else {
                 if let Some(word) = negative_hit(&candidate) {
                     score -= 0.85;
                     if reason.is_none() {
                         reason = Some(format!("keyword:{word}"));
                     }
                 }
-            }
-            if let (Some(w), Some(h)) = (width, height) {
-                if trusted {
-                    if w < 64 || h < 64 {
-                        score -= 1.0;
-                        reason.get_or_insert_with(|| "small".into());
-                    }
-                } else {
+                if let (Some(w), Some(h)) = (width, height) {
                     if w < thresholds.min_width || h < thresholds.min_height {
                         score -= 1.0;
                         reason.get_or_insert_with(|| "small".into());
@@ -649,38 +648,36 @@ pub fn filter_candidates(
                         score -= 0.9;
                         reason.get_or_insert_with(|| "banner".into());
                     }
-                    if let (Some(low), Some(high)) = (learned_width_min, learned_width_max) {
-                        if (w < low || w > high) && aspect_ratio(w, h) <= 1.5 {
-                            score -= 0.3;
-                            reason.get_or_insert_with(|| "profile".into());
+                    // 主容器内的封面/尾页不参与站点档案宽度的二次猜测；
+                    // 但 qrcode/thumb 等小图仍按通用尺寸规则剔除。
+                    if !main_content {
+                        if let (Some(low), Some(high)) = (learned_width_min, learned_width_max) {
+                            if (w < low || w > high) && aspect_ratio(w, h) <= 1.5 {
+                                score -= 0.3;
+                                reason.get_or_insert_with(|| "profile".into());
+                            }
                         }
                     }
                 }
-            }
-            if let Some(template) = path_templates
-                .get(candidate.order)
-                .and_then(|t| t.as_deref())
-            {
-                let count = path_counts.get(template).copied().unwrap_or(0);
-                // 正文容器内连续 >=4 张时，首尾单张 `cover.jpg` / `credit.jpg`
-                // 或 `xxx-1.jpg` 是章节自带页，不因文件名缺少数字被判孤立。
-                let protected_edge = core_count >= 4
-                    && candidate.in_main_scope
-                    && (Some(position) == core_first || Some(position) == core_last)
-                    && edge_filename_lacks_sequence(&candidate.url);
-                if !protected_edge && main_path != Some(template) && count <= 1 && input_count >= 4
-                {
-                    score -= 0.4;
-                    if url_host(&candidate.url) != main_host {
-                        score -= 0.2;
+                if !main_content {
+                    if let Some(template) = path_templates
+                        .get(index)
+                        .and_then(|template| template.as_deref())
+                    {
+                        let count = path_counts.get(template).copied().unwrap_or(0);
+                        if main_path != Some(template) && count <= 1 && input_count >= 4 {
+                            score -= 0.4;
+                            if url_host(&candidate.url) != main_host {
+                                score -= 0.2;
+                            }
+                            reason.get_or_insert_with(|| "isolated".into());
+                        }
                     }
-                    reason.get_or_insert_with(|| "isolated".into());
                 }
             }
         }
 
         scored.push(ScoredCandidate {
-            dom_index: candidate.dom_index,
             container: candidate.container.clone(),
             candidate,
             width,
@@ -698,7 +695,15 @@ pub fn filter_candidates(
         let median_f = median as f32;
         let scored_len = scored.len();
         for (index, item) in scored.iter_mut().enumerate() {
-            if item.allow || item.candidate.source.is_trusted() {
+            if item.allow
+                || item.candidate.main_content
+                || item
+                    .candidate
+                    .container
+                    .as_deref()
+                    .is_some_and(is_main_content_hint)
+                || item.candidate.source.is_trusted()
+            {
                 continue;
             }
             let (Some(width), Some(height)) = (item.width, item.height) else {
@@ -723,7 +728,10 @@ pub fn filter_candidates(
     // 这里保留 URL/DOM/尺寸规则的完整匹配，哈希规则由用户标记时写入，
     // 并在下一次解析的 URL 模板/尺寸规则中立即生效。
 
-    let mut kept: Vec<(usize, PageRef)> = Vec::new();
+    // 中位宽度阶段只改分数；输出前再次按 DOM 序号锁定顺序，
+    // 防止任何探测/聚类阶段改变页面次序。
+    scored.sort_by_key(|item| item.candidate.dom_index);
+    let mut pages = Vec::new();
     let mut blocked = Vec::new();
     let mut kept_containers = Vec::new();
     for item in scored {
@@ -731,16 +739,13 @@ pub fn filter_candidates(
             if let Some(container) = item.container.clone() {
                 kept_containers.push(container);
             }
-            kept.push((
-                item.dom_index,
-                PageRef {
-                    url: item.candidate.url,
-                    viewer: false,
-                    width: item.width,
-                    height: item.height,
-                    anchor: item.candidate.anchor,
-                },
-            ));
+            pages.push(PageRef {
+                url: item.candidate.url,
+                viewer: false,
+                width: item.width,
+                height: item.height,
+                anchor: item.candidate.anchor,
+            });
         } else {
             blocked.push(FilteredPage {
                 url: item.candidate.url,
@@ -754,10 +759,6 @@ pub fn filter_candidates(
             });
         }
     }
-    // 全链路文档原序锁定：HashMap 分桶、站点档案与探测完成先后都不得改变页序。
-    kept.sort_by_key(|(dom_index, _)| *dom_index);
-    blocked.sort_by_key(|page| page.order);
-    let pages: Vec<PageRef> = kept.into_iter().map(|(_, page)| page).collect();
 
     let kept_ratio = if input_count == 0 {
         0.0
@@ -1169,91 +1170,6 @@ mod tests {
     }
 
     #[test]
-    fn pages_are_sorted_by_dom_index_not_discovery_order() {
-        let mut later = candidate("https://site.example/pages/001.jpg", 800, 1200, 0);
-        later.dom_index = 9;
-        let mut earlier = candidate("https://site.example/pages/002.jpg", 800, 1200, 1);
-        earlier.dom_index = 1;
-        let mut middle = candidate("https://site.example/pages/003.jpg", 800, 1200, 2);
-        middle.dom_index = 5;
-        let outcome = run(vec![later, earlier, middle], &FilterMemory::default());
-        let urls: Vec<&str> = outcome.pages.iter().map(|page| page.url.as_str()).collect();
-        assert_eq!(
-            urls,
-            vec![
-                "https://site.example/pages/002.jpg",
-                "https://site.example/pages/003.jpg",
-                "https://site.example/pages/001.jpg",
-            ]
-        );
-    }
-
-    #[test]
-    fn trusted_sources_keep_wide_keyword_and_medium_images() {
-        let make = |source: CandidateSource| {
-            let mut banner = candidate("https://cdn.example/ad-nav-banner.png", 3000, 300, 0);
-            banner.source = source;
-            let mut keyword = candidate("https://cdn.example/related/ad.jpg", 800, 1200, 1);
-            keyword.source = source;
-            let mut medium = candidate("https://cdn.example/medium.png", 100, 100, 2);
-            medium.source = source;
-            let mut tiny = candidate("https://cdn.example/emoji.png", 63, 100, 3);
-            tiny.source = source;
-            vec![banner, keyword, medium, tiny]
-        };
-        let trusted = run(make(CandidateSource::Telegram), &FilterMemory::default());
-        assert_eq!(trusted.pages.len(), 3, "{:?}", trusted.blocked);
-        assert_eq!(trusted.blocked.len(), 1);
-        assert!(trusted.blocked[0].reason.contains("small"));
-
-        let generic = run(make(CandidateSource::Json), &FilterMemory::default());
-        assert!(generic.pages.len() < trusted.pages.len());
-    }
-
-    #[test]
-    fn content_core_edges_exempt_unnamed_cover_and_minus_one_credit() {
-        let mut cover = candidate("https://site.example/cover.jpg", 2000, 2000, 0);
-        cover.in_main_scope = true;
-        let mut pages: Vec<CandidateImage> = (1..=4)
-            .map(|index| {
-                let mut item = candidate(
-                    &format!("https://site.example/pages/{index:03}.jpg"),
-                    800,
-                    1200,
-                    index,
-                );
-                item.in_main_scope = true;
-                item
-            })
-            .collect();
-        let mut credit = candidate("https://site.example/credit-1.jpg", 2200, 2000, 5);
-        credit.in_main_scope = true;
-        let mut all = vec![cover.clone()];
-        all.append(&mut pages);
-        all.push(credit.clone());
-
-        let outcome = run(all, &FilterMemory::default());
-        assert_eq!(outcome.pages.len(), 6, "{:?}", outcome.blocked);
-        assert!(outcome.blocked.is_empty());
-
-        // 不在正文容器内时，首尾异名页仍会叠加中位偏差被判为非正文。
-        cover.in_main_scope = false;
-        credit.in_main_scope = false;
-        let mut all = vec![cover];
-        all.extend((1..=4).map(|index| {
-            candidate(
-                &format!("https://site.example/pages/{index:03}.jpg"),
-                800,
-                1200,
-                index,
-            )
-        }));
-        all.push(credit);
-        let outcome = run(all, &FilterMemory::default());
-        assert_eq!(outcome.pages.len(), 4, "{:?}", outcome.blocked);
-    }
-
-    #[test]
     fn size_and_url_rules_match() {
         let mut candidate = CandidateImage::new("https://x/ch01/001.jpg", 0);
         candidate.width = Some(728);
@@ -1287,5 +1203,136 @@ mod tests {
             ..size
         };
         assert!(rule_matches(&dom, &candidate, None));
+    }
+
+    #[test]
+    fn pages_and_blocked_follow_dom_index_when_input_is_shuffled() {
+        let page = |name: &str, dom: usize| {
+            candidate(
+                &format!("https://site.example/pages/{name}.jpg"),
+                800,
+                1200,
+                dom,
+            )
+        };
+        let banner = |name: &str, dom: usize| {
+            candidate(
+                &format!("https://site.example/extras/{name}.png"),
+                728,
+                90,
+                dom,
+            )
+        };
+        let outcome = run(
+            vec![
+                page("003", 2),
+                banner("late", 5),
+                page("001", 0),
+                page("002", 1),
+                banner("early", 4),
+            ],
+            &FilterMemory::default(),
+        );
+        let urls: Vec<&str> = outcome.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://site.example/pages/001.jpg",
+                "https://site.example/pages/002.jpg",
+                "https://site.example/pages/003.jpg",
+            ],
+            "pages 必须按 dom_index 而非输入/探测顺序输出"
+        );
+        let blocked: Vec<usize> = outcome.blocked.iter().map(|p| p.order).collect();
+        assert_eq!(blocked, vec![4, 5], "filtered 列表也必须按 dom_index 排序");
+    }
+
+    #[test]
+    fn main_content_keeps_cover_credit_and_rename_suffixes() {
+        let add = |url: &str, width: u32, height: u32, dom: usize| {
+            let mut item = candidate(url, width, height, dom);
+            item.container = Some("div.entry-content".into());
+            item.source = CandidateSource::Html;
+            item
+        };
+        let candidates = vec![
+            add("https://wp.example/uploads/cover.jpg", 400, 600, 0),
+            add(
+                "https://wp.example/uploads/pages/001-724x1024.jpg",
+                800,
+                1200,
+                1,
+            ),
+            add("https://wp.example/uploads/pages/002-1.jpg", 800, 1200, 2),
+            add("https://wp.example/uploads/pages/003.jpg", 800, 1200, 3),
+            add("https://wp.example/uploads/pages/004.jpg", 800, 1200, 4),
+            add("https://wp.example/uploads/credit.jpg", 400, 600, 5),
+        ];
+        let outcome = run(candidates, &FilterMemory::default());
+        assert_eq!(
+            outcome.pages.len(),
+            6,
+            "正文主容器内的封面/尾页/重命名页不得被 isolated/median 剔除：{:?}",
+            outcome.blocked
+        );
+        assert!(outcome.blocked.is_empty());
+        let urls: Vec<&str> = outcome.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://wp.example/uploads/cover.jpg",
+                "https://wp.example/uploads/pages/001-724x1024.jpg",
+                "https://wp.example/uploads/pages/002-1.jpg",
+                "https://wp.example/uploads/pages/003.jpg",
+                "https://wp.example/uploads/pages/004.jpg",
+                "https://wp.example/uploads/credit.jpg",
+            ]
+        );
+    }
+
+    #[test]
+    fn telegraph_trusted_content_keeps_wide_keyword_and_isolated_pages() {
+        let mut candidates = Vec::new();
+        for i in 0..18 {
+            let mut item = candidate(
+                &format!("https://telegra.ph/file/{:016x}.jpg", 0x1000 + i),
+                800,
+                1200,
+                i,
+            );
+            item.source = CandidateSource::Telegraph;
+            candidates.push(item);
+        }
+        let mut wide = candidate("https://telegra.ph/file/wide-tail.jpg", 2400, 700, 18);
+        wide.source = CandidateSource::Telegraph;
+        let wide_url = wide.url.clone();
+        candidates.push(wide);
+        let mut keyword = candidate("https://telegra.ph/file/ad/random-hash.jpg", 800, 1200, 19);
+        keyword.source = CandidateSource::Telegraph;
+        let keyword_url = keyword.url.clone();
+        candidates.push(keyword);
+        let mut isolated = candidate("https://graph.org/file/random-hash.jpg", 800, 1200, 20);
+        isolated.source = CandidateSource::Telegraph;
+        let isolated_url = isolated.url.clone();
+        candidates.push(isolated);
+        let mut icon = candidate("https://telegra.ph/file/tiny-icon.png", 32, 32, 21);
+        icon.source = CandidateSource::Telegraph;
+        let icon_url = icon.url.clone();
+        candidates.push(icon);
+
+        let outcome = run(candidates, &FilterMemory::default());
+        assert_eq!(
+            outcome.pages.len(),
+            21,
+            "Telegraph 21P 不得因宽幅/关键词/跨域路径丢页：{:?}",
+            outcome.blocked
+        );
+        assert_eq!(outcome.blocked.len(), 1);
+        assert_eq!(outcome.blocked[0].url, icon_url);
+        assert!(outcome.blocked[0].reason.contains("small"));
+        let urls: Vec<&str> = outcome.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(urls[18], wide_url);
+        assert_eq!(urls[19], keyword_url);
+        assert_eq!(urls[20], isolated_url);
     }
 }

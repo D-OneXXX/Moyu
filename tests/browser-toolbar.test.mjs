@@ -1,5 +1,5 @@
 // L2 headless fixture：执行 browser.rs 注入的顶部交接条脚本。
-// 只验证 DOM 收集、用户手势门与 handoff POST 载荷；不启动 Tauri GUI。
+// 只验证整页 DOM 收集、URL 优先级、用户手势门与 handoff 载荷；不启动 Tauri GUI。
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -8,10 +8,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 function loadToolbarScript() {
-  const source = readFileSync(
-    resolve("src-tauri/src/browser.rs"),
-    "utf8",
-  );
+  const source = readFileSync(resolve("src-tauri/src/browser.rs"), "utf8");
   const match = source.match(
     /const TOOLBAR_TEMPLATE: &str = r##"([\s\S]*?)"##;/,
   );
@@ -26,19 +23,25 @@ function loadToolbarScript() {
       importPage: "Import current page",
       importing: "Importing…",
       inactive: "Handoff not started",
-      empty: "No loaded images on this page",
+      empty: "No content images found",
       imported: "Imported {n} chapter(s)",
+      submitted: "Submitted for import",
       failed: "Import failed",
     },
   };
   return match[1].replace("__CONFIG__", JSON.stringify(config));
 }
 
-function makeElement(tag, byId, submitted) {
+function makeElement(tag, byId) {
   const element = {
     tagName: tag,
     id: "",
     type: "",
+    name: "",
+    value: "",
+    method: "",
+    action: "",
+    target: "",
     textContent: "",
     style: {},
     attributes: {},
@@ -67,9 +70,6 @@ function makeElement(tag, byId, submitted) {
     addEventListener(type, handler) {
       (this.listeners[type] ??= []).push(handler);
     },
-    submit() {
-      submitted.push(this);
-    },
   };
   const register = (node) => {
     if (node.id) byId.set(node.id, node);
@@ -82,40 +82,112 @@ function makeElement(tag, byId, submitted) {
   return element;
 }
 
-function makeImage(url, naturalWidth = 800, naturalHeight = 600, attrs = {}) {
+function makeImage(
+  url,
+  {
+    attrs = {},
+    currentSrc = url,
+    naturalWidth = 800,
+    naturalHeight = 600,
+    chrome = false,
+    noise = false,
+    anchor = null,
+  } = {},
+) {
   return {
-    complete: naturalWidth > 0,
+    complete: true,
     naturalWidth,
     naturalHeight,
-    currentSrc: url,
-    getAttribute: (name) =>
-      Object.hasOwn(attrs, name) ? attrs[name] : name === "src" ? url : null,
+    currentSrc,
+    getAttribute(name) {
+      if (Object.hasOwn(attrs, name)) return attrs[name];
+      return name === "src" ? url : null;
+    },
+    closest(selector) {
+      if (selector.includes("a[href]")) return anchor;
+      if (chrome && selector.includes("header")) return { tagName: "HEADER" };
+      if (noise && selector.includes("jp-relatedposts")) {
+        return { tagName: "DIV" };
+      }
+      return null;
+    },
   };
 }
 
-function runToolbar(script, options = {}) {
-  const byId = new Map();
-  const submitted = [];
-  const documentElement = makeElement("html", byId, submitted);
-  const images = options.images ?? [
-    makeImage("https://cdn.example/loaded.jpg"),
-    makeImage("https://cdn.example/logo.png", 128, 128),
-    // 视口外但已加载：整页收集必须纳入。
-    makeImage("https://cdn.example/offscreen.jpg"),
-    // 具备高清原图属性：未解码也纳入，并按尺寸后缀归一到原图。
-    makeImage("https://cdn.example/thumb-724x1024.jpg", 0, 0, {
-      "data-orig-file": "https://cdn.example/orig.jpg",
+function wpImages() {
+  const anchor = (href) => ({
+    getAttribute: (name) => (name === "href" ? href : null),
+  });
+  return [
+    makeImage("https://wp.example/uploads/cover.jpg", {
+      attrs: { width: "400", height: "600" },
+      naturalWidth: 400,
+      naturalHeight: 600,
     }),
-    // 极小图标：既无高清属性也未达到 280px。
-    makeImage("https://cdn.example/icon.png", 32, 32),
+    makeImage("https://wp.example/uploads/pages/001-724x1024.jpg", {
+      attrs: {
+        "data-orig-file": "https://wp.example/uploads/pages/001-original.jpg",
+        srcset:
+          "https://wp.example/uploads/pages/001-724x1024.jpg 724w, https://wp.example/uploads/pages/001-original.jpg 1024w",
+        width: "724",
+        height: "1024",
+      },
+      naturalWidth: 724,
+      naturalHeight: 1024,
+    }),
+    makeImage("https://wp.example/uploads/pages/002-thumb-300x200.jpg", {
+      anchor: anchor("https://wp.example/pages/002-full.jpg"),
+      attrs: { width: "300", height: "200" },
+      naturalWidth: 300,
+      naturalHeight: 200,
+    }),
+    makeImage("https://wp.example/uploads/pages/003.jpg", {
+      attrs: { width: "800", height: "1200" },
+    }),
+    // 同一页的缩略图后出现：身份去重必须保留前面的原图。
+    makeImage("https://wp.example/uploads/pages/003-724x1024.jpg", {
+      attrs: { width: "724", height: "1024" },
+      naturalWidth: 724,
+      naturalHeight: 1024,
+    }),
+    makeImage("https://wp.example/uploads/logo.png", {
+      chrome: true,
+      naturalWidth: 128,
+      naturalHeight: 128,
+      attrs: { width: "128", height: "128" },
+    }),
+    makeImage("https://wp.example/uploads/related-01.jpg", {
+      noise: true,
+      attrs: { width: "800", height: "1200" },
+    }),
+    makeImage("https://wp.example/uploads/icon.png", {
+      naturalWidth: 32,
+      naturalHeight: 32,
+      attrs: { width: "32", height: "32" },
+    }),
   ];
+}
+
+function runToolbar(script, { images = [], fetchImpl } = {}) {
+  const byId = new Map();
+  const documentElement = makeElement("html", byId);
+  const forms = [];
   const document = {
     readyState: "complete",
-    title: "QA Page",
+    title: "QA WP Gallery",
     documentElement,
-    createElement: (tag) => makeElement(tag, byId, submitted),
+    body: documentElement,
+    createElement: (tag) => {
+      const element = makeElement(tag, byId);
+      if (tag === "form") {
+        forms.push(element);
+        element.submit = () => {
+          element.submitted = true;
+        };
+      }
+      return element;
+    },
     getElementById: (id) => byId.get(id) ?? null,
-    getElementsByName: () => [],
     querySelectorAll: (selector) => (selector === "img" ? images : []),
     addEventListener: () => {},
   };
@@ -124,8 +196,8 @@ function runToolbar(script, options = {}) {
     document,
     location: {
       protocol: "https:",
-      href: "https://site.example/ch/1",
-      origin: "https://site.example",
+      href: "https://wp.example/series-chapter-03/",
+      origin: "https://wp.example",
       reload: () => {},
     },
     history: {
@@ -139,23 +211,21 @@ function runToolbar(script, options = {}) {
       forwardCalls: 0,
     },
     navigator: { userAgent: "MoyuTestUA" },
-    innerWidth: 1000,
-    innerHeight: 800,
-    fetch: options.fetch ?? (async (url, request) => {
-      calls.push({ url, options: request });
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ books: [{ id: "b1", title: "QA" }] }),
-      };
-    }),
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    setTimeout: (handler) => handler(),
+    fetch:
+      fetchImpl ??
+      (async (url, options) => {
+        calls.push({ url, options });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ books: [{ id: "b1", title: "QA" }] }),
+        };
+      }),
     URL,
     Set,
     Promise,
     console,
+    setTimeout: () => {},
   };
   sandbox.window = sandbox;
   sandbox.top = sandbox;
@@ -175,14 +245,23 @@ function runToolbar(script, options = {}) {
     importButton,
     status,
     calls,
+    forms,
     sandbox,
-    submitted,
     history: sandbox.history,
   };
 }
 
-test("toolbar collects the whole loaded document in order and posts handoff payload", async () => {
-  const { importButton, status, calls } = runToolbar(loadToolbarScript());
+const EXPECTED_PAGES = [
+  "https://wp.example/uploads/cover.jpg",
+  "https://wp.example/uploads/pages/001-original.jpg",
+  "https://wp.example/pages/002-full.jpg",
+  "https://wp.example/uploads/pages/003.jpg",
+];
+
+test("toolbar collects full-document content images in DOM order", async () => {
+  const { importButton, status, calls } = runToolbar(loadToolbarScript(), {
+    images: wpImages(),
+  });
   const click = importButton.listeners.click[0];
   await click({ isTrusted: true });
   assert.equal(calls.length, 1);
@@ -191,44 +270,42 @@ test("toolbar collects the whole loaded document in order and posts handoff payl
     "http://127.0.0.1:18080/handoff?token=test-token",
   );
   const payload = JSON.parse(calls[0].options.body);
-  assert.deepEqual(payload.chapters[0].pages, [
-    "https://cdn.example/loaded.jpg",
-    "https://cdn.example/offscreen.jpg",
-    "https://cdn.example/orig.jpg",
-  ]);
-  assert.equal(payload.chapters[0].url, "https://site.example/ch/1");
-  assert.equal(payload.origin, "https://site.example");
+  assert.deepEqual(payload.chapters[0].pages, EXPECTED_PAGES);
+  assert.equal(payload.chapters[0].url, "https://wp.example/series-chapter-03/");
+  assert.equal(payload.origin, "https://wp.example");
   assert.equal(payload.userAgent, "MoyuTestUA");
   assert.equal(status.textContent, "Imported 1 chapter(s)");
 });
 
-test("toolbar falls back to a text/plain form when CSP blocks fetch", async () => {
-  const { importButton, status, submitted } = runToolbar(loadToolbarScript(), {
-    fetch: async () => {
-      throw new TypeError("blocked by connect-src");
+test("toolbar falls back to hidden form POST when fetch is CSP-blocked", async () => {
+  const { importButton, status, calls, forms } = runToolbar(
+    loadToolbarScript(),
+    {
+      images: wpImages(),
+      fetchImpl: () => {
+        throw new TypeError("blocked by CSP connect-src");
+      },
     },
-  });
-  await importButton.listeners.click[0]({ isTrusted: true });
-  assert.equal(submitted.length, 1);
-  const form = submitted[0];
-  assert.equal(
-    form.action,
-    "http://127.0.0.1:18080/handoff?token=test-token",
   );
-  assert.equal(form.method, "POST");
-  assert.equal(form.enctype, "text/plain");
-  const field = form.children[0];
-  const payload = JSON.parse(field.value);
-  assert.deepEqual(payload.chapters[0].pages, [
-    "https://cdn.example/loaded.jpg",
-    "https://cdn.example/offscreen.jpg",
-    "https://cdn.example/orig.jpg",
-  ]);
-  assert.equal(status.textContent, "Imported 1 chapter(s)");
+  const click = importButton.listeners.click[0];
+  await click({ isTrusted: true });
+  assert.equal(calls.length, 0);
+  assert.equal(forms.length, 1);
+  const form = forms[0];
+  assert.equal(String(form.method).toUpperCase(), "POST");
+  assert.equal(form.action, "http://127.0.0.1:18080/handoff?token=test-token");
+  const payloadInput = form.children.find((child) => child.name === "payload");
+  assert.ok(payloadInput, "回退表单必须带 payload 隐藏字段");
+  const payload = JSON.parse(payloadInput.value);
+  assert.deepEqual(payload.chapters[0].pages, EXPECTED_PAGES);
+  assert.equal(form.submitted, true);
+  assert.equal(status.textContent, "Submitted for import");
 });
 
 test("toolbar ignores synthetic clicks and navigation controls remain user-gated", async () => {
-  const { bar, importButton, calls, history } = runToolbar(loadToolbarScript());
+  const { bar, importButton, calls, history } = runToolbar(loadToolbarScript(), {
+    images: wpImages(),
+  });
   const click = importButton.listeners.click[0];
   await click({ isTrusted: false });
   assert.equal(calls.length, 0);
@@ -238,8 +315,13 @@ test("toolbar ignores synthetic clicks and navigation controls remain user-gated
   assert.equal(history.backCalls, 1);
 });
 
-test("toolbar source never reads cookies or Tauri IPC", () => {
+test("toolbar source never reads cookies or Tauri IPC and never uses viewport gating", () => {
   const script = loadToolbarScript();
   assert.ok(!script.includes("document.cookie"));
   assert.ok(!script.includes("__TAURI"));
+  assert.ok(!script.includes("getBoundingClientRect"));
+  assert.ok(!script.includes("innerHeight"));
+  assert.ok(script.includes("querySelectorAll('img')"));
+  assert.ok(script.includes("data-orig-file"));
+  assert.ok(script.includes("payload"));
 });

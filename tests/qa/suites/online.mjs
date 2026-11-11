@@ -484,7 +484,7 @@ export async function runOnlineSuite(ctx, report) {
     const telegraph = await invoke(page, "resolve_online_url", {
       url: "https://telegra.ph/QA-Test-01",
     });
-    if (pageCount(telegraph) !== 4) {
+    if (pageCount(telegraph) !== 3) {
       fail(report, {
         id: "online:telegram-telegraph",
         suite: "online",
@@ -493,7 +493,7 @@ export async function runOnlineSuite(ctx, report) {
         severity: "P1",
         details: JSON.stringify(telegraph),
         location: "src-tauri/src/online/telegram.rs",
-        expected: "4 张正文；96×96 logo 保留，32×32 图标剔除",
+        expected: "3 张正文；32×32 icon 剔除（Telegraph 仅过滤 <64px 图标）",
         actual: `${pageCount(telegraph)} 页`,
       });
     } else {

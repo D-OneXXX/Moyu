@@ -93,8 +93,37 @@ jobs:
 
       - name: Install WebKitGTK build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          # GitHub-hosted runner 的 Ubuntu 镜像 DNS 偶发不可用；官方源失败后
+          # 回退 Azure 与 kernel.org，并强制 IPv4、移除 mirrorlist 覆盖。
+          sudo rm -f /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/ubuntu.sources
+          mirror_ok=0
+          for base in "https://archive.ubuntu.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu" "https://mirrors.edge.kernel.org/ubuntu"; do
+            sudo tee /etc/apt/sources.list >/dev/null <<EOF
+          deb $base jammy main restricted universe multiverse
+          deb $base jammy-updates main restricted universe multiverse
+          deb $base jammy-backports main restricted universe multiverse
+          deb $base jammy-security main restricted universe multiverse
+          EOF
+            if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update \
+              -o Acquire::Retries=2 \
+              -o Acquire::ForceIPv4=true \
+              -o Acquire::http::Timeout=20 \
+              -o Acquire::https::Timeout=20 >"$RUNNER_TEMP/apt-update.log" 2>&1 \
+              && ! grep -qE "^(E:|Err:|W: Failed to fetch)" "$RUNNER_TEMP/apt-update.log"; then
+              mirror_ok=1
+              break
+            fi
+            echo "apt mirror unavailable: $base" >&2
+            tail -20 "$RUNNER_TEMP/apt-update.log" >&2 || true
+          done
+          if [ "$mirror_ok" -ne 1 ]; then
+            echo "no apt mirror reachable" >&2
+            exit 1
+          fi
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y \
+            -o Acquire::ForceIPv4=true \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libfuse2

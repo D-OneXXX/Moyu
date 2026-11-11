@@ -5681,6 +5681,25 @@ mod tests {
     }
 
     #[test]
+    fn apply_resolved_meta_allows_page_count_growth() {
+        let st = online_state();
+        let old = online_meta("https://example.com/gallery/6", "旧", "h1", pages(3));
+        let (row, _) = apply_resolved_meta(&st, &old).expect("首次入库");
+        let id = row.id;
+        st.db
+            .with(|conn| db::set_progress(conn, &id, 1, None).map_err(|e| e.to_string()))
+            .expect("写入进度");
+
+        // 再次点击「导入当前页」拿到更多正文页时必须允许覆盖，而不是
+        // 因为旧视口少抓了几页就报 online-page-count-drop。
+        let longer = online_meta("https://example.com/gallery/6", "新", "h2", pages(7));
+        let (row, changed) = apply_resolved_meta(&st, &longer).expect("页数增长应允许覆盖");
+        assert!(changed);
+        assert_eq!(row.page_count, 7);
+        assert_eq!(row.current_page, 1, "页数增长时保留阅读进度");
+    }
+
+    #[test]
     fn apply_resolved_meta_rejects_empty_manifest() {
         let st = online_state();
         let meta = online_meta("https://example.com/gallery/5", "空", "h0", Vec::new());

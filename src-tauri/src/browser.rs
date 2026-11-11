@@ -41,6 +41,7 @@ struct ToolbarLabels {
     inactive: &'static str,
     empty: &'static str,
     imported: &'static str,
+    submitted: &'static str,
     failed: &'static str,
 }
 
@@ -54,8 +55,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "匯入目前頁",
             importing: "匯入中…",
             inactive: "尚未啟動交接",
-            empty: "目前視窗沒有已載入圖片",
+            empty: "目前頁面沒有可匯入的正文圖片",
             imported: "已匯入 {n} 章",
+            submitted: "已提交，等待匯入",
             failed: "匯入失敗",
         },
         "en" => ToolbarLabels {
@@ -66,8 +68,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "Import current page",
             importing: "Importing…",
             inactive: "Handoff not started",
-            empty: "No loaded images in viewport",
+            empty: "No content images found",
             imported: "Imported {n} chapter(s)",
+            submitted: "Submitted for import",
             failed: "Import failed",
         },
         "es" => ToolbarLabels {
@@ -78,8 +81,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "Importar página actual",
             importing: "Importando…",
             inactive: "Handoff no iniciado",
-            empty: "No hay imágenes cargadas en la vista",
+            empty: "No se encontraron imágenes de contenido",
             imported: "Importados {n} capítulo(s)",
+            submitted: "Enviado para importar",
             failed: "Error al importar",
         },
         "ja" => ToolbarLabels {
@@ -90,8 +94,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "現在のページを取込",
             importing: "取込中…",
             inactive: "ハンドオフ未開始",
-            empty: "表示中の読み込み済み画像がありません",
+            empty: "取り込める本文画像がありません",
             imported: "{n} 章を取込しました",
+            submitted: "取込を送信しました",
             failed: "取込に失敗",
         },
         "ko" => ToolbarLabels {
@@ -102,8 +107,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "현재 페이지 가져오기",
             importing: "가져오는 중…",
             inactive: "핸드오프가 시작되지 않음",
-            empty: "뷰포트에 로드된 이미지가 없습니다",
+            empty: "가져올 본문 이미지가 없습니다",
             imported: "{n}개 장을 가져왔습니다",
+            submitted: "가져오기 요청을 보냈습니다",
             failed: "가져오기 실패",
         },
         _ => ToolbarLabels {
@@ -114,8 +120,9 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "导入当前页",
             importing: "导入中…",
             inactive: "尚未启动交接",
-            empty: "当前视口没有已加载图片",
+            empty: "当前页面没有可导入的正文图片",
             imported: "已导入 {n} 章",
+            submitted: "已提交，等待导入",
             failed: "导入失败",
         },
     }
@@ -137,39 +144,126 @@ const TOOLBAR_TEMPLATE: &str = r##"
   var config = __CONFIG__;
   var previous = document.getElementById('moyu-handoff-bar');
   if (previous && previous.parentNode) previous.parentNode.removeChild(previous);
+  var resolveUrl = function (raw) {
+    if (!raw) return null;
+    try {
+      var url = new URL(raw, location.href);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+      return url.href;
+    } catch (_) {
+      return null;
+    }
+  };
+  var derivedSuffix = function (href) {
+    try {
+      var path = new URL(href).pathname.toLowerCase();
+      var dot = path.lastIndexOf('.');
+      var stem = dot >= 0 ? path.slice(0, dot) : path;
+      return /-(?:\d+x\d+|scaled|rotated)$/i.test(stem);
+    } catch (_) {
+      return false;
+    }
+  };
+  var imageIdentity = function (href) {
+    try {
+      var path = new URL(href).pathname.toLowerCase();
+      var dot = path.lastIndexOf('.');
+      var stem = dot >= 0 ? path.slice(0, dot) : path;
+      var extension = dot >= 0 ? path.slice(dot) : '';
+      return stem.replace(/-(?:\d+x\d+|scaled|rotated)$/i, '') + extension;
+    } catch (_) {
+      return href;
+    }
+  };
+  var bestSrcset = function (value) {
+    var best = null;
+    var bestScore = -1;
+    var parts = String(value || '').split(',');
+    for (var index = 0; index < parts.length; index += 1) {
+      var bits = parts[index].trim().split(/\s+/);
+      if (!bits[0]) continue;
+      var score = 0;
+      if (bits[1]) {
+        var numeric = parseFloat(bits[1]);
+        if (!isNaN(numeric)) score = numeric;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = bits[0];
+      }
+    }
+    return best;
+  };
   var collect = function () {
     var pages = [];
-    var seen = new Set();
-    var viewportWidth = window.innerWidth || 0;
-    var viewportHeight = window.innerHeight || 0;
+    var seenIdentity = {};
+    var add = function (href) {
+      if (!href) return;
+      var identity = imageIdentity(href);
+      if (Object.prototype.hasOwnProperty.call(seenIdentity, identity)) {
+        var existing = seenIdentity[identity];
+        // 缩略图先出现、原图后出现时用原图替换；原图先出现则保留。
+        if (derivedSuffix(pages[existing]) && !derivedSuffix(href)) {
+          pages[existing] = href;
+        }
+        return;
+      }
+      seenIdentity[identity] = pages.length;
+      pages.push(href);
+    };
+    var choose = function (image) {
+      var anchor = null;
+      try {
+        anchor = image.closest ? image.closest('a[href]') : null;
+      } catch (_) {}
+      if (anchor && anchor.getAttribute) {
+        var anchorHref = resolveUrl(anchor.getAttribute('href'));
+        if (
+          anchorHref &&
+          /\.(?:jpe?g|png|gif|webp)$/i.test(new URL(anchorHref).pathname)
+        ) {
+          return anchorHref;
+        }
+      }
+      var attrs = [
+        'data-orig-file',
+        'data-large-file',
+        'data-full-url',
+        'data-src',
+        'data-original',
+        'data-lazy-src',
+        'srcset',
+        'data-srcset',
+        'src'
+      ];
+      for (var index = 0; index < attrs.length; index += 1) {
+        var raw = image.getAttribute ? image.getAttribute(attrs[index]) : null;
+        if (!raw) continue;
+        if (attrs[index] === 'srcset' || attrs[index] === 'data-srcset') {
+          raw = bestSrcset(raw);
+        }
+        var href = resolveUrl(raw);
+        if (href) return href;
+      }
+      return resolveUrl(image.currentSrc || image.src || '');
+    };
     var images = document.querySelectorAll('img');
     for (var index = 0; index < images.length; index += 1) {
       var image = images[index];
-      if (!image || !image.complete || image.naturalWidth <= 0) continue;
-      // 与后端默认正文尺寸门槛对齐，排除视口内的 logo/头像/横幅/二维码。
-      if (image.naturalWidth < 320 || image.naturalHeight < 240) continue;
-      var rect = image.getBoundingClientRect();
-      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
-      if (rect.bottom < 0 || rect.right < 0 || rect.top > viewportHeight || rect.left > viewportWidth) continue;
-      var candidates = [
-        image.currentSrc,
-        image.getAttribute('src'),
-        image.getAttribute('data-src'),
-        image.getAttribute('data-original')
-      ];
-      for (var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
-        var raw = candidates[candidateIndex];
-        if (!raw) continue;
-        try {
-          var url = new URL(raw, location.href);
-          if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
-          if (!seen.has(url.href)) {
-            seen.add(url.href);
-            pages.push(url.href);
-          }
-          break;
-        } catch (_) {}
+      if (!image) continue;
+      var blocked = false;
+      try {
+        blocked = !!image.closest(
+          'header,footer,nav,aside,.jp-relatedposts,.yarpp-related,.sharedaddy,.wp-block-latest-posts,.post-navigation,.comments-area'
+        );
+      } catch (_) {}
+      if (blocked) continue;
+      var rawWidth = Number(image.naturalWidth) || 0;
+      var rawHeight = Number(image.naturalHeight) || 0;
+      if (rawWidth > 0 && rawHeight > 0 && rawWidth < 64 && rawHeight < 64) {
+        continue;
       }
+      add(choose(image));
     }
     return pages;
   };
@@ -214,19 +308,49 @@ const TOOLBAR_TEMPLATE: &str = r##"
         return;
       }
       status.textContent = config.labels.importing;
+      var payload = {
+        chapters: [{
+          url: location.href,
+          title: document.title || location.href,
+          pages: pages
+        }],
+        origin: location.origin,
+        userAgent: navigator.userAgent
+      };
+      var submitFallback = function () {
+        try {
+          var frameName = 'moyu-handoff-sink-' + Date.now();
+          var frame = document.createElement('iframe');
+          frame.name = frameName;
+          frame.style.display = 'none';
+          document.documentElement.appendChild(frame);
+          var form = document.createElement('form');
+          form.method = 'POST';
+          form.action = config.callbackUrl;
+          form.target = frameName;
+          form.style.display = 'none';
+          var input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'payload';
+          input.value = JSON.stringify(payload);
+          form.appendChild(input);
+          document.documentElement.appendChild(form);
+          form.submit();
+          // 表单提交不受页面 connect-src 限制；服务端仍校验一次性 token。
+          setTimeout(function () {
+            if (form.parentNode) form.parentNode.removeChild(form);
+            if (frame.parentNode) frame.parentNode.removeChild(frame);
+          }, 1000);
+          status.textContent = config.labels.submitted;
+        } catch (_) {
+          status.textContent = config.labels.failed;
+        }
+      };
       try {
         var response = await fetch(config.callbackUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chapters: [{
-              url: location.href,
-              title: document.title || location.href,
-              pages: pages
-            }],
-            origin: location.origin,
-            userAgent: navigator.userAgent
-          })
+          body: JSON.stringify(payload)
         });
         if (!response.ok) {
           status.textContent = config.labels.failed + ' (' + response.status + ')';
@@ -237,7 +361,7 @@ const TOOLBAR_TEMPLATE: &str = r##"
         var count = data && Array.isArray(data.books) ? data.books.length : 1;
         status.textContent = config.labels.imported.replace('{n}', String(count));
       } catch (_) {
-        status.textContent = config.labels.failed;
+        submitFallback();
       }
     });
     importButton.style.borderColor = config.callbackUrl ? 'rgba(56,168,248,0.95)' : 'rgba(148,163,184,0.4)';
@@ -755,7 +879,12 @@ mod tests {
         assert!(script.contains("Import current page"));
         assert!(script.contains("event.isTrusted"));
         assert!(script.contains("image.naturalWidth"));
-        assert!(script.contains("getBoundingClientRect"));
+        assert!(script.contains("querySelectorAll('img')"));
+        assert!(script.contains("data-orig-file"));
+        assert!(script.contains("submitFallback"));
+        assert!(script.contains("input.name = 'payload'"));
+        assert!(!script.contains("getBoundingClientRect"));
+        assert!(!script.contains("innerHeight"));
         assert!(!script.contains("document.cookie"));
         assert!(!script.contains("__TAURI"));
         assert!(!script.contains("ipc"));

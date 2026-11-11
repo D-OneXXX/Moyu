@@ -493,7 +493,7 @@ export async function runOnlineSuite(ctx, report) {
         severity: "P1",
         details: JSON.stringify(telegraph),
         location: "src-tauri/src/online/telegram.rs",
-        expected: "3 张正文；96×96 logo 剔除",
+        expected: "3 张正文；32×32 icon 剔除（Telegraph 仅过滤 <64px 图标）",
         actual: `${pageCount(telegraph)} 页`,
       });
     } else {

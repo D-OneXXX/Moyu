@@ -22,6 +22,7 @@ import {
   PDF_COVER_EDGE,
   SCHEMA_VERSION,
   buildLegacyBackup,
+  coverCacheState,
   jpegDimensions,
   makePdfChecks,
   readZipEntries,
@@ -504,4 +505,32 @@ test("jpegDimensions：合法最小 JPEG 头可解析，非 JPEG 返回 null", (
   ]);
   assert.deepEqual(jpegDimensions(jpeg), { width: 32, height: 16 });
   assert.equal(jpegDimensions(Buffer.from([0x89, 0x50, 0x4e, 0x47])), null);
+});
+
+test("coverCacheState 读取独立封面命名空间 covers/cover@512x512.bin", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-pdf-cover-"));
+  try {
+    const jpeg = Buffer.from([
+      0xff, 0xd8,
+      0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01,
+      0x00, 0x00,
+      0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x20, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01,
+      0x03, 0x11, 0x01,
+    ]);
+    const file = path.join(
+      dir,
+      "book",
+      "covers",
+      `cover@${PDF_COVER_EDGE}x${PDF_COVER_EDGE}.bin`,
+    );
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, jpeg);
+    const state = coverCacheState(dir, "book");
+    assert.deepEqual(state.problems, []);
+    assert.equal(state.width, 32);
+    assert.equal(state.height, 16);
+    assert.ok(state.sha256);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

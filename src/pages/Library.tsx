@@ -30,6 +30,7 @@ import { sourceDisplay } from "@/lib/sourceDisplay";
 import { LIBRARY_REFRESH_EVENT } from "@/lib/events";
 import { libraryWindow } from "@/lib/libraryWindow";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import BookCard from "@/components/BookCard";
 import BookDetailSheet from "@/components/BookDetailSheet";
 import ContextMenu from "@/components/ContextMenu";
@@ -803,7 +804,7 @@ export default function LibraryPage() {
               <Plus />
               {t("library.addBooks")}
             </Button>
-            {!safeMode && opdsEnabled ? (
+            {!safeMode ? (
               <Button
                 variant="pill"
                 size="pill"
@@ -813,6 +814,11 @@ export default function LibraryPage() {
               >
                 <Cloud />
                 {t("opds.libraryButton")}
+                {!opdsEnabled ? (
+                  <Badge variant="muted" className="ml-1 whitespace-nowrap">
+                    {t("common.disabled")}
+                  </Badge>
+                ) : null}
               </Button>
             ) : null}
             <Button
@@ -1083,7 +1089,7 @@ export default function LibraryPage() {
       />
 
       <OpdsBrowserDialog
-        open={opdsEnabled && opdsOpen}
+        open={opdsOpen}
         onOpenChange={setOpdsOpen}
         onOpenBook={(book) => openReader(book.id)}
         onGoSettings={() => nav("/settings?tab=network")}

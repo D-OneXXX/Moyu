@@ -47,7 +47,7 @@ export default function ConfirmDialog({
       <DialogContent
         showCloseButton={false}
         role="alertdialog"
-        className="max-w-[calc(100%-2rem)] gap-0 overflow-hidden rounded-2xl border border-border bg-card p-0 text-card-foreground shadow-hard sm:max-w-md"
+        className="max-h-[calc(100vh-2rem)] max-w-[calc(100%-2rem)] gap-0 overflow-y-auto overflow-x-hidden rounded-2xl border border-border bg-card p-0 text-card-foreground shadow-hard sm:max-w-md"
       >
         <DialogHeader className="gap-3 px-6 pb-4 pt-6">
           <span

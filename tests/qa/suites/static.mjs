@@ -4625,4 +4625,117 @@ export function checkAntiMockGuards(root, report) {
       fix: "确认 D2/D3 文件存在且命名稳定",
     });
   }
+
+  try {
+    const errors = [];
+    const read = (relative) =>
+      fs.readFileSync(path.join(root, relative), "utf8").replace(/\r\n/g, "\n");
+    const settings = read("src/pages/Settings.tsx");
+    const developer = read("src/components/settings/DeveloperFeaturePanel.tsx");
+    const summary = read("src/components/settings/WebAccessSummaryCard.tsx");
+    const panel = read("src/components/settings/WebAccessPanel.tsx");
+    const runtime = read("src-tauri/src/web_access/runtime.rs");
+    const tray = read("src-tauri/src/tray.rs");
+    const technical = read("docs/TECHNICAL.md");
+
+    if (!settings.includes("<DeveloperFeaturePanel")) {
+      errors.push("设置页未挂载开发者功能总控面板");
+    }
+    if (!/api\.setFeatureEnabled\s*\(/.test(settings)) {
+      errors.push("开发者功能开关未走 set_feature_enabled 唯一写通道");
+    }
+    if (!settings.includes("FEATURE_REGISTRY") || !settings.includes("resetFeatureGates")) {
+      errors.push("恢复默认模块配置未遍历 FEATURE_REGISTRY 或缺少实现");
+    }
+    if (/setSettings\s*\(\s*\{[^}]*features/s.test(developer)) {
+      errors.push("开发者面板试图用 set_settings 修改 features");
+    }
+    for (const feature of ["webAccess", "opds", "backup", "updates"]) {
+      if (!settings.includes(`feature="${feature}"`)) {
+        errors.push(`设置页缺少 ${feature} 功能禁用占位`);
+      }
+    }
+    if (!settings.includes('feature="diagnostics"') && !read("src/components/settings/PrivacyPanel.tsx").includes('feature="diagnostics"')) {
+      errors.push("诊断面板缺少功能禁用占位");
+    }
+    const summaryClose = settings.indexOf("</WebAccessSummaryCard>");
+    const opdsMount = settings.indexOf("<OpdsPanel");
+    if (summaryClose !== -1 && opdsMount !== -1 && opdsMount < summaryClose) {
+      errors.push("OPDS 面板仍被嵌套在 Web Access 门卫/摘要卡内");
+    }
+    if (!summary.includes("WebAccessProvider")) {
+      errors.push("Web Access 摘要未提供单一共享控制器");
+    }
+    if (!panel.includes("useWebAccessController") || panel.includes("useWebAccess()")) {
+      errors.push("Web Access 高级面板未复用共享控制器");
+    }
+    if (!/StopReason::Stopped \| StopReason::SafeMode/.test(runtime)) {
+      errors.push("安全模式停止 Web Access 时未广播状态事件");
+    }
+    if (!/runtime\.start\(|start_plain\(/.test(tray) || !/runtime\.stop\(/.test(tray)) {
+      errors.push("托盘菜单未接线 Web Access 启停");
+    }
+    const stalePhrases = [
+      "本切片只交付",
+      "不注册任何 Tauri 命令",
+      "当前没有系统托盘",
+      "本地分支待合并",
+      "G2 仍为 library/test-only",
+      "D1b 控制面与生产监听未开始",
+      "尚未接入 `lib.rs`",
+    ];
+    for (const phrase of stalePhrases) {
+      if (technical.includes(phrase)) {
+        errors.push(`TECHNICAL.md 仍含过期表述：${phrase}`);
+      }
+    }
+    for (const required of [
+      "开发者功能总控",
+      "FeatureDisabledNotice",
+      "WebAccessProvider",
+      "web_access_start_plain",
+      "StopReason::SafeMode",
+    ]) {
+      if (!technical.includes(required)) {
+        errors.push(`TECHNICAL.md 缺少当前实现事实：${required}`);
+      }
+    }
+
+    if (errors.length) {
+      fail(report, {
+        id: "static:feature-gate-and-doc-sync",
+        suite: "static",
+        layer: "static",
+        title: "开发者门卫、可恢复占位、共享 Web Access 状态与文档同步",
+        severity: "P1",
+        details: errors.join(" | "),
+        location:
+          "src/pages/Settings.tsx + src/components/settings/DeveloperFeaturePanel.tsx + src/features/web-access + docs/TECHNICAL.md",
+        expected:
+          "9 项门卫经 set_feature_enabled 写入；业务入口降级为 FeatureDisabledNotice；OPDS 不再嵌套在 Web Access 内；摘要与高级面板共享控制器；安全模式停止广播；TECHNICAL.md 无过期表述",
+        actual: errors.join(" | "),
+        rootCause: "功能门卫与远程书库设置再次交叉耦合，或文档回退到历史状态",
+        fix: "恢复开发者总控/占位/共享控制器接线，并就地更新 TECHNICAL.md",
+      });
+    } else {
+      ok(report, {
+        id: "static:feature-gate-and-doc-sync",
+        suite: "static",
+        layer: "static",
+        title: "开发者门卫、可恢复占位、共享 Web Access 状态与文档同步",
+      });
+    }
+  } catch (error) {
+    fail(report, {
+      id: "static:feature-gate-and-doc-sync",
+      suite: "static",
+      layer: "static",
+      title: "开发者门卫与文档同步静态检查",
+      severity: "P1",
+      details: error.message,
+      location: "src/pages/Settings.tsx + docs/TECHNICAL.md",
+      rootCause: "静态守卫无法读取设置页或技术文档",
+      fix: "确认相关文件存在且命名稳定",
+    });
+  }
 }

@@ -31,6 +31,8 @@ import { platformKind } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { recordBreadcrumb } from "@/features/resilience";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
+import { useFeatureEnabled } from "@/features/features";
+import { FeatureDisabledNotice } from "@/components/settings/DeveloperFeaturePanel";
 import { enterSafeMode } from "@/features/safeMode/api";
 import {
   privacyApi,
@@ -227,6 +229,7 @@ function PathCapsule({ path }: { path: string }) {
  */
 export default function PrivacyPanel() {
   const { t, locale, formatDateTime } = useI18n();
+  const diagnosticsEnabled = useFeatureEnabled("diagnostics");
   const {
     active: safeModeActive,
     refresh: refreshSafeMode,
@@ -729,7 +732,11 @@ export default function PrivacyPanel() {
           <h3 className="text-sm font-medium">
             {t("privacy.detail.exportTitle")}
           </h3>
-          <DiagnosticPanel />
+          {diagnosticsEnabled ? (
+            <DiagnosticPanel />
+          ) : (
+            <FeatureDisabledNotice feature="diagnostics" />
+          )}
         </section>
 
         <section className="space-y-3">

@@ -33,6 +33,7 @@ import { runOpdsSuite } from "./suites/opds.mjs";
 import { runCacheSuite } from "./suites/cache.mjs";
 import { runPrivacySuite } from "./suites/privacy.mjs";
 import { runWebAccessSuite } from "./suites/web-access.mjs";
+import { runFeatureGateSuite } from "./suites/feature-gate.mjs";
 import { runChaosSuite } from "./suites/chaos.mjs";
 import { runArchitectureSuite } from "./suites/architecture.mjs";
 import { runGallerySuite } from "./suites/gallery.mjs";
@@ -269,6 +270,11 @@ async function main() {
         id: "web-access",
         title: "局域网配对 UI：风险提示、倒计时、拒绝/取消与过期收敛",
         run: runWebAccessSuite,
+      },
+      {
+        id: "feature-gate",
+        title: "开发者功能门卫：9 项总控、可恢复占位与默认值",
+        run: runFeatureGateSuite,
       },
       { id: "gallery", title: "视觉验收快照与布局指标", run: runGallerySuite },
       {

@@ -770,16 +770,35 @@ export default function BrowserPage() {
                 {t("browser.gateBody")}
               </p>
             </div>
-            <Button
-              type="button"
-              variant="pill"
-              size="pill-sm"
-              className="self-start whitespace-nowrap sm:self-auto"
-              onClick={() => nav("/settings")}
-            >
-              <Settings2 className="size-3.5" aria-hidden />
-              {t("browser.goSettings")}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+              <Button
+                type="button"
+                variant="pill-primary"
+                size="pill-sm"
+                className="whitespace-nowrap"
+                data-testid="browser-gate-enable"
+                onClick={() => {
+                  void (async () => {
+                    const ok = await enableOnlineDirect();
+                    if (!ok) return;
+                    setOnlineOn(true);
+                    if (url.trim()) void directRead();
+                  })();
+                }}
+              >
+                {t("common.enableNow")}
+              </Button>
+              <Button
+                type="button"
+                variant="pill"
+                size="pill-sm"
+                className="whitespace-nowrap"
+                onClick={() => nav("/settings?tab=network")}
+              >
+                <Settings2 className="size-3.5" aria-hidden />
+                {t("browser.goSettings")}
+              </Button>
+            </div>
           </div>
         )}
 

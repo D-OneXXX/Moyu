@@ -52,9 +52,15 @@ const SETUP_FIXTURE = `(() => {
       },
       claims: [claim()],
     },
-    addresses: [{ ip: "192.168.1.10", interface: "Ethernet" }],
+    addresses: [
+      // Virtual adapters are listed first on purpose: the automatic default
+      // must still prefer the physical Ethernet address (Issue #337).
+      { ip: "172.17.0.1", interface: "Docker Desktop" },
+      { ip: "192.168.1.10", interface: "Ethernet" },
+    ],
     devices: [],
     calls: [],
+    lastStart: null,
     approved: null,
     denied: null,
   };
@@ -425,6 +431,100 @@ export async function runWebAccessSuite(ctx, report) {
       title: "启动中取消会调用后端 stop，不留半绑定监听",
       details: "Cancel start -> web_access_stop",
     });
+
+    // Shared controller + preferred LAN address: the summary quick toggle must
+    // start plain HTTP on the physical NIC (not the first Docker adapter), and
+    // a stop performed inside the advanced dialog must immediately flip the
+    // summary badge — proving both surfaces share one runtime snapshot.
+    await page.key("Escape");
+    await page.waitFor(
+      "!document.querySelector('[data-testid=\"settings-web-access\"]')",
+      { timeout: 8000, label: "advanced dialog closed" },
+    );
+    await page.eval(`(() => {
+      document.querySelector('[data-testid="web-access-quick-toggle"]')?.click();
+      return true;
+    })()`);
+    await page.waitFor(
+      `window.__QA_WEB_ACCESS__.lastStart?.command === "web_access_start_plain"`,
+      { timeout: 10000, label: "quick toggle starts plain" },
+    );
+    const quickStart = await page.eval(`(() => ({
+      lastStart: window.__QA_WEB_ACCESS__.lastStart,
+      phase: document.querySelector('[data-testid="web-access-summary-phase"]')?.textContent || "",
+    }))()`);
+    const preferredStart =
+      quickStart.lastStart?.ip === "192.168.1.10" &&
+      quickStart.lastStart?.command === "web_access_start_plain" &&
+      /Enabled/i.test(quickStart.phase);
+    if (!preferredStart) {
+      failCheck(
+        report,
+        "web-access:preferred-ip",
+        "快速开启未选中物理网卡或未走普通 HTTP 模式",
+        JSON.stringify(quickStart),
+        "web_access_start_plain(192.168.1.10) 且摘要显示 Enabled",
+        JSON.stringify(quickStart),
+        "使用 pickPreferredLanAddress 过滤 Docker/WSL 等虚拟网卡后启动",
+      );
+    } else {
+      ok(report, {
+        id: "web-access:preferred-ip",
+        suite: "web-access",
+        layer: "integration",
+        title: "未手选 IP 时优先使用物理网卡并走普通 HTTP",
+        details: JSON.stringify(quickStart.lastStart),
+      });
+    }
+
+    await page.eval(
+      `document.querySelector('[data-testid="web-access-advanced"]')?.click(); true`,
+    );
+    await page.waitFor(
+      "!!document.querySelector('[data-testid=\"settings-web-access\"]')",
+      { timeout: 10000, label: "advanced panel reopened" },
+    );
+    await page.eval(
+      `document.querySelector('[data-testid="web-access-stop"]')?.click(); true`,
+    );
+    await page.waitFor("!!document.querySelector('[role=\"alertdialog\"]')", {
+      timeout: 8000,
+      label: "stop confirmation",
+    });
+    await page.eval(`(() => {
+      const dialog = document.querySelector('[role="alertdialog"]');
+      const buttons = dialog ? [...dialog.querySelectorAll("button")] : [];
+      const confirm = buttons.find((button) => /Stop service/i.test(button.textContent || ""));
+      confirm?.click();
+      return !!confirm;
+    })()`);
+    await page.waitFor(
+      `window.__QA_WEB_ACCESS__.status.phase === "disabled"`,
+      { timeout: 10000, label: "advanced stop applied" },
+    );
+    const syncedStop = await page.eval(`(() => ({
+      phase: document.querySelector('[data-testid="web-access-summary-phase"]')?.textContent || "",
+      fixture: window.__QA_WEB_ACCESS__.status.phase,
+    }))()`);
+    if (syncedStop.fixture !== "disabled" || !/Disabled/i.test(syncedStop.phase)) {
+      failCheck(
+        report,
+        "web-access:shared-state-sync",
+        "高级面板停止后摘要卡状态未同步",
+        JSON.stringify(syncedStop),
+        "两个面板共享同一控制器，摘要立即显示 Disabled",
+        JSON.stringify(syncedStop),
+        "由 WebAccessProvider 提供单一 useWebAccess 控制器，禁止各面板各自开流",
+      );
+    } else {
+      ok(report, {
+        id: "web-access:shared-state-sync",
+        suite: "web-access",
+        layer: "integration",
+        title: "摘要卡与高级面板共享启停状态（停止即时同步）",
+        details: JSON.stringify(syncedStop),
+      });
+    }
   } finally {
     await ctx.page
       .eval(`(() => {

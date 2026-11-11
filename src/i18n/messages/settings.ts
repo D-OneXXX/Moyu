@@ -416,6 +416,18 @@ const zhCN = {
   "settings.webAccess.securityNote":
     "设备名由手机自行上报，可能被修改；本项目没有 SAS 或密码学绑定，桌面端的人工批准是唯一授权。请不要因为设备出现在列表里就认为它已通过验证。",
 
+  "settings.webAccess.transport": "传输模式",
+  "settings.webAccess.transportHttp": "HTTP（不加密）",
+  "settings.webAccess.transportHttps": "HTTPS（本地 CA）",
+  "settings.webAccess.currentTransport": "当前运行模式：{mode}",
+  "settings.webAccess.switchTransport": "切换模式",
+  "settings.webAccess.switchConfirmTitle": "切换局域网传输模式？",
+  "settings.webAccess.switchConfirmMessage":
+    "将先停止当前服务并撤销所有已配对设备会话，再以 {mode} 重新启动监听。设备需要重新连接。",
+  "settings.webAccess.switching": "正在切换…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS 需要本地 CA。请先在下方「根 CA 与设备信任」中初始化根证书。",
+  "settings.webAccess.caOpen": "前往初始化根证书",
   "settings.autoSaved": "已自动保存",
   "settings.autoSaving": "正在保存…",
   "settings.autoSaveFailed": "保存失败",
@@ -841,6 +853,18 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.securityNote":
     "裝置名稱由手機自行回報，可能被修改；本專案沒有 SAS 或密碼學綁定，桌面端的人工批准是唯一授權。請不要因為裝置出現在清單裡就認為它已通過驗證。",
 
+  "settings.webAccess.transport": "傳輸模式",
+  "settings.webAccess.transportHttp": "HTTP（不加密）",
+  "settings.webAccess.transportHttps": "HTTPS（本機 CA）",
+  "settings.webAccess.currentTransport": "目前執行模式：{mode}",
+  "settings.webAccess.switchTransport": "切換模式",
+  "settings.webAccess.switchConfirmTitle": "切換區域網路傳輸模式？",
+  "settings.webAccess.switchConfirmMessage":
+    "將先停止目前服務並撤銷所有已配對裝置工作階段，再以 {mode} 重新啟動監聽。裝置需要重新連線。",
+  "settings.webAccess.switching": "正在切換…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS 需要本機 CA。請先在下方「根 CA 與裝置信任」中初始化根憑證。",
+  "settings.webAccess.caOpen": "前往初始化根憑證",
   "settings.autoSaved": "已自動儲存",
   "settings.autoSaving": "正在儲存…",
   "settings.autoSaveFailed": "儲存失敗",
@@ -1279,6 +1303,18 @@ const en: SettingsMessages = {
   "settings.webAccess.securityNote":
     "Device names are self-reported by the phone and can change. This project has no SAS or cryptographic binding; manual approval on this desktop is the only authorization. Do not treat a device as verified just because it appears in this list.",
 
+  "settings.webAccess.transport": "Transport",
+  "settings.webAccess.transportHttp": "HTTP (unencrypted)",
+  "settings.webAccess.transportHttps": "HTTPS (local CA)",
+  "settings.webAccess.currentTransport": "Running mode: {mode}",
+  "settings.webAccess.switchTransport": "Switch mode",
+  "settings.webAccess.switchConfirmTitle": "Switch the LAN transport mode?",
+  "settings.webAccess.switchConfirmMessage":
+    "The running service will stop first, every paired device session will be revoked, and the listener will restart with {mode}. Devices must reconnect.",
+  "settings.webAccess.switching": "Switching…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS needs a local CA. Initialize the root certificate under Root CA & device trust below first.",
+  "settings.webAccess.caOpen": "Initialize the root certificate",
   "settings.autoSaved": "Auto-saved",
   "settings.autoSaving": "Saving…",
   "settings.autoSaveFailed": "Save failed",
@@ -1732,6 +1768,18 @@ const es: SettingsMessages = {
   "settings.webAccess.securityNote":
     "El nombre del dispositivo lo declara el teléfono y puede cambiarse; este proyecto no tiene SAS ni vínculo criptográfico, y la aprobación manual en el escritorio es la única autorización. No consideres un dispositivo verificado solo porque aparezca en la lista.",
 
+  "settings.webAccess.transport": "Transporte",
+  "settings.webAccess.transportHttp": "HTTP (sin cifrar)",
+  "settings.webAccess.transportHttps": "HTTPS (CA local)",
+  "settings.webAccess.currentTransport": "Modo en ejecución: {mode}",
+  "settings.webAccess.switchTransport": "Cambiar modo",
+  "settings.webAccess.switchConfirmTitle": "¿Cambiar el modo de transporte LAN?",
+  "settings.webAccess.switchConfirmMessage":
+    "El servicio en ejecución se detendrá primero, se revocarán todas las sesiones emparejadas y el listener se reiniciará con {mode}. Los dispositivos deberán volver a conectarse.",
+  "settings.webAccess.switching": "Cambiando…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS requiere una CA local. Inicializa primero el certificado raíz en «CA raíz y confianza de dispositivos».",
+  "settings.webAccess.caOpen": "Inicializar el certificado raíz",
   "settings.autoSaved": "Guardado automáticamente",
   "settings.autoSaving": "Guardando…",
   "settings.autoSaveFailed": "Error al guardar",
@@ -2182,6 +2230,18 @@ const ja: SettingsMessages = {
   "settings.webAccess.securityNote":
     "端末名はスマートフォンの自己申告であり、変更される可能性があります。本プロジェクトには SAS や暗号学的な紐付けはなく、デスクトップ側での手動承認だけが認可です。一覧に表示されているだけで検証済みとみなさないでください。",
 
+  "settings.webAccess.transport": "転送モード",
+  "settings.webAccess.transportHttp": "HTTP（暗号化なし）",
+  "settings.webAccess.transportHttps": "HTTPS（ローカル CA）",
+  "settings.webAccess.currentTransport": "現在の実行モード：{mode}",
+  "settings.webAccess.switchTransport": "モードを切り替え",
+  "settings.webAccess.switchConfirmTitle": "LAN 転送モードを切り替えますか？",
+  "settings.webAccess.switchConfirmMessage":
+    "実行中のサービスを先に停止し、ペアリング済みの全端末セッションを取り消してから、{mode} で待受を再起動します。端末は再接続が必要です。",
+  "settings.webAccess.switching": "切り替え中…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS にはローカル CA が必要です。下の「ルート CA と端末の信頼」でルート証明書を初期化してください。",
+  "settings.webAccess.caOpen": "ルート証明書を初期化する",
   "settings.autoSaved": "自動保存しました",
   "settings.autoSaving": "保存中…",
   "settings.autoSaveFailed": "保存に失敗",
@@ -2624,6 +2684,18 @@ const ko: SettingsMessages = {
   "settings.webAccess.securityNote":
     "기기 이름은 휴대폰이 스스로 신고한 값이라 바뀔 수 있습니다. 이 프로젝트에는 SAS나 암호학적 바인딩이 없으며 데스크톱에서의 수동 승인만이 유일한 인가입니다. 목록에 보인다는 이유만으로 검증된 기기로 간주하지 마세요.",
 
+  "settings.webAccess.transport": "전송 모드",
+  "settings.webAccess.transportHttp": "HTTP(암호화 없음)",
+  "settings.webAccess.transportHttps": "HTTPS(로컬 CA)",
+  "settings.webAccess.currentTransport": "현재 실행 모드: {mode}",
+  "settings.webAccess.switchTransport": "모드 전환",
+  "settings.webAccess.switchConfirmTitle": "LAN 전송 모드를 전환할까요?",
+  "settings.webAccess.switchConfirmMessage":
+    "실행 중인 서비스를 먼저 중지하고 페어링된 모든 기기 세션을 취소한 뒤 {mode}(으)로 수신을 다시 시작합니다. 기기는 다시 연결해야 합니다.",
+  "settings.webAccess.switching": "전환 중…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS에는 로컬 CA가 필요합니다. 아래 '루트 CA 및 기기 신뢰'에서 루트 인증서를 먼저 초기화하세요.",
+  "settings.webAccess.caOpen": "루트 인증서 초기화",
   "settings.autoSaved": "자동 저장됨",
   "settings.autoSaving": "저장 중…",
   "settings.autoSaveFailed": "저장 실패",

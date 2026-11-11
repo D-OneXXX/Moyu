@@ -76,7 +76,7 @@ export function SettingsDialog({
             <span className="sr-only">{t("common.close")}</span>
           </DialogClose>
         </div>
-        <div className="min-h-0 overflow-y-auto overscroll-contain px-5 py-4 [scrollbar-gutter:stable]">
+        <div className="max-h-[75vh] min-h-0 overflow-y-auto overscroll-contain px-5 py-4 [scrollbar-gutter:stable]">
           <SettingsSurfaceProvider value="dialog">
             <div className="space-y-5">{children}</div>
           </SettingsSurfaceProvider>

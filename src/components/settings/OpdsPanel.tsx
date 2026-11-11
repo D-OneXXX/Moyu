@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Cloud, Eraser, Loader2, Server, Wifi } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import {
+  Check,
+  Cloud,
+  Eraser,
+  FolderSearch,
+  Loader2,
+  Server,
+  ShieldAlert,
+  Wifi,
+} from "lucide-react";
 import {
   api,
   type OnlineProbe,
@@ -8,6 +18,7 @@ import {
 import { useI18n } from "@/i18n";
 import { localizeBackendError } from "@/features/errors/localize";
 import { recordBreadcrumb } from "@/features/resilience";
+import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { toastErr } from "@/components/Toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/SettingsSection";
+import OpdsBrowserDialog from "@/components/library/OpdsBrowserDialog";
 import { cn } from "@/lib/utils";
 
 /**
@@ -24,6 +36,8 @@ import { cn } from "@/lib/utils";
  */
 export default function OpdsPanel() {
   const { t, formatNumber } = useI18n();
+  const nav = useNavigate();
+  const { active: safeMode } = useSafeMode();
   const [config, setConfig] = useState<OpdsConfigView | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [url, setUrl] = useState("");
@@ -35,10 +49,19 @@ export default function OpdsPanel() {
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
   const [probe, setProbe] = useState<OnlineProbe | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const stateRef = useRef({
+  type OpdsFields = {
+    enabled: boolean;
+    url: string;
+    username: string;
+    password: string;
+    clearUsername: boolean;
+    clearPassword: boolean;
+  };
+  const stateRef = useRef<OpdsFields>({
     enabled,
     url,
     username,
@@ -48,6 +71,11 @@ export default function OpdsPanel() {
   });
   const debounceRef = useRef<number | null>(null);
   const flashRef = useRef<number | null>(null);
+
+  /** 同步更新镜像：开关/清除按钮必须在 commit 前立刻写入，不能等 effect。 */
+  const syncFields = useCallback((patch: Partial<OpdsFields>) => {
+    stateRef.current = { ...stateRef.current, ...patch };
+  }, []);
 
   useEffect(() => {
     stateRef.current = {
@@ -102,6 +130,14 @@ export default function OpdsPanel() {
       setClearUsername(false);
       setPassword("");
       setClearPassword(false);
+      stateRef.current = {
+        enabled: saved.enabled,
+        url: saved.url,
+        username: "",
+        password: "",
+        clearUsername: false,
+        clearPassword: false,
+      };
       recordBreadcrumb("settingsChange");
       setSavedFlash(true);
       if (flashRef.current) window.clearTimeout(flashRef.current);
@@ -116,6 +152,7 @@ export default function OpdsPanel() {
 
   const onUrlChange = (value: string) => {
     setUrl(value);
+    syncFields({ url: value });
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => void commit(), 400);
   };
@@ -158,16 +195,17 @@ export default function OpdsPanel() {
   }
 
   return (
-    <SettingsSection
-      icon={Server}
-      title={t("opds.settings.title")}
-      description={t("opds.settings.description")}
-      action={
-        <Badge variant="outline" className="shrink-0 whitespace-nowrap">
-          OPDS 1.2
-        </Badge>
-      }
-    >
+    <>
+      <SettingsSection
+        icon={Server}
+        title={t("opds.settings.title")}
+        description={t("opds.settings.description")}
+        action={
+          <Badge variant="outline" className="shrink-0 whitespace-nowrap">
+            OPDS 1.2
+          </Badge>
+        }
+      >
       <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border/60 bg-card/40 p-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -179,15 +217,32 @@ export default function OpdsPanel() {
                 {t("opds.settings.passwordSaved")}
               </Badge>
             ) : null}
+            {safeMode ? (
+              <Badge variant="warning" className="shrink-0">
+                <ShieldAlert className="size-3" aria-hidden />
+                {t("safeMode.badgeActive")}
+              </Badge>
+            ) : null}
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {t("opds.settings.enableDescription")}
           </p>
+          {safeMode ? (
+            <p
+              role="status"
+              className="mt-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning"
+            >
+              {t("featureGate.safeMode", {
+                feature: t("opds.settings.title"),
+              })}
+            </p>
+          ) : null}
         </div>
         <Switch
           checked={enabled}
           onCheckedChange={(next) => {
             setEnabled(next);
+            syncFields({ enabled: next });
             void commit();
           }}
           aria-label={t("opds.settings.enableTitle")}
@@ -224,8 +279,10 @@ export default function OpdsPanel() {
               id="opds-username"
               value={username}
               onChange={(event) => {
-                setUsername(event.currentTarget.value);
-                if (event.currentTarget.value.length > 0) setClearUsername(false);
+                const next = event.currentTarget.value;
+                setUsername(next);
+                syncFields({ username: next, clearUsername: false });
+                if (next.length > 0) setClearUsername(false);
               }}
               onBlur={() => {
                 if (username.length > 0 || clearUsername) void commit();
@@ -244,6 +301,7 @@ export default function OpdsPanel() {
               onClick={() => {
                 setUsername("");
                 setClearUsername(true);
+                syncFields({ username: "", clearUsername: true });
                 void commit();
               }}
               disabled={!config?.hasUsername && !clearUsername}
@@ -272,8 +330,10 @@ export default function OpdsPanel() {
               type="password"
               value={password}
               onChange={(event) => {
-                setPassword(event.currentTarget.value);
-                if (event.currentTarget.value.length > 0) setClearPassword(false);
+                const next = event.currentTarget.value;
+                setPassword(next);
+                syncFields({ password: next, clearPassword: false });
+                if (next.length > 0) setClearPassword(false);
               }}
               onBlur={() => {
                 if (password.length > 0 || clearPassword) void commit();
@@ -291,6 +351,7 @@ export default function OpdsPanel() {
               onClick={() => {
                 setPassword("");
                 setClearPassword(true);
+                syncFields({ password: "", clearPassword: true });
                 void commit();
               }}
               disabled={!config?.hasPassword && !clearPassword}
@@ -316,10 +377,28 @@ export default function OpdsPanel() {
 
       <div className="flex flex-wrap items-center gap-2">
         <Button
+          variant="pill-primary"
+          size="pill"
+          onClick={() => setBrowseOpen(true)}
+          disabled={
+            !enabled ||
+            url.trim().length === 0 ||
+            safeMode ||
+            saving ||
+            testing
+          }
+          data-testid="opds-browse"
+        >
+          <FolderSearch className="size-4" aria-hidden />
+          {t("opds.settings.browse")}
+        </Button>
+        <Button
           variant="pill"
           size="pill"
           onClick={() => void onTest()}
-          disabled={saving || testing || !enabled || url.trim().length === 0}
+          disabled={
+            saving || testing || !enabled || url.trim().length === 0 || safeMode
+          }
           data-testid="opds-test"
         >
           {testing ? (
@@ -375,6 +454,16 @@ export default function OpdsPanel() {
           {t("opds.settings.backupNote")}
         </p>
       </div>
-    </SettingsSection>
+      </SettingsSection>
+      <OpdsBrowserDialog
+        open={browseOpen}
+        onOpenChange={setBrowseOpen}
+        onOpenBook={(book) => {
+          setBrowseOpen(false);
+          nav(`/reader/${encodeURIComponent(book.id)}`);
+        }}
+        onGoSettings={() => setBrowseOpen(false)}
+      />
+    </>
   );
 }

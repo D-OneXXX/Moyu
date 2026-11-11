@@ -359,6 +359,7 @@ export async function startOnlineFixture(port = 0) {
           <figure><img src="${origin}/tg-telegraph-2.png"></figure>
           <figure><img src="${origin}/tg-telegraph-3.png"></figure>
           <figure><img src="${origin}/tg-logo.png" width="96" height="96"></figure>
+          <figure><img src="${origin}/tg-icon.png" width="32" height="32"></figure>
         </article></body></html>`);
       return;
     }

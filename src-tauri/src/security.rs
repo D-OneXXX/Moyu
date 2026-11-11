@@ -133,6 +133,8 @@ pub struct ClearTracesResult {
     pub webviews_cleared: u32,
     pub bytes_freed: u64,
     pub session_headers_cleared: bool,
+    /// 辅助浏览器独立 Profile 已关闭并清空。
+    pub browser_profile_cleared: bool,
     pub timestamp: String,
 }
 
@@ -226,6 +228,12 @@ pub async fn clear_online_traces(
     if webviews_cleared == 0 && !windows.is_empty() {
         return Err("无法清除 WebView 浏览数据".to_string());
     }
+    // 清空浏览数据后关闭受控浏览器窗，再删除独立 Profile 目录。
+    crate::browser::close_browser_window(&app);
+    tokio::task::spawn_blocking(crate::browser::clear_browser_profile)
+        .await
+        .map_err(|_| "无法清理辅助浏览器配置（browser-profile-clear-failed）".to_string())?
+        .map_err(|error| format!("{error}（browser-profile-clear-failed）"))?;
 
     let after_state = state.inner().clone();
     let after = tokio::task::spawn_blocking(move || cache_totals(&after_state))
@@ -240,6 +248,7 @@ pub async fn clear_online_traces(
         webviews_cleared,
         bytes_freed,
         session_headers_cleared: true,
+        browser_profile_cleared: true,
         timestamp: chrono::Local::now().to_rfc3339(),
     })
 }

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AppWindow,
   ArrowRight,
@@ -205,6 +205,7 @@ function CopyField({
 
 export default function BrowserPage() {
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
   const { t } = useI18n();
   const { active: safeMode } = useSafeMode();
   const { status: handoff } = useOnlineHandoffState();
@@ -261,13 +262,14 @@ export default function BrowserPage() {
     }
   }, []);
 
-  const resolveTarget = useCallback((): string | null => {
-    if (!url.trim()) {
+  const resolveTarget = useCallback((input?: string): string | null => {
+    const value = (input ?? url).trim();
+    if (!value) {
       setNotice({ key: "browser.emptyUrl", fallback: false });
       return null;
     }
-    if (/^tg:\/\//i.test(url.trim())) return url.trim();
-    const target = normalizeUrl(url);
+    if (/^tg:\/\//i.test(value)) return value;
+    const target = normalizeUrl(value);
     if (!target) {
       setNotice({ key: "browser.invalidUrl", fallback: false });
       return null;
@@ -275,9 +277,9 @@ export default function BrowserPage() {
     return target;
   }, [url]);
 
-  const directRead = useCallback(async () => {
+  const directRead = useCallback(async (input?: string) => {
     if (busy !== null) return;
-    const target = resolveTarget();
+    const target = resolveTarget(input);
     if (!target) return;
     // 读实时镜像而不是渲染期快照：用户刚「立即开启」后重试必须立刻放行。
     if (!isOnlineEnabled()) {
@@ -357,6 +359,17 @@ export default function BrowserPage() {
       setBusy(null);
     }
   }, [busy, nav, onlineOn, remember, resolveTarget]);
+
+  // 书库粘贴 / 外部直达：`/browser?url=...` 首次进入时自动解析一次。
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (safeMode) return;
+    const raw = searchParams.get("url");
+    if (!raw || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    setUrl(raw);
+    void directRead(raw);
+  }, [directRead, safeMode, searchParams]);
 
   const importTelegramChapter = useCallback(
     async (chapter: TelegramChapter) => {

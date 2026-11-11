@@ -47,6 +47,9 @@ src-tauri/tauri.community.json
 # TypeScript 增量构建缓存（由 tsc 生成，可随时重建）
 *.tsbuildinfo
 
+# Local build artifacts (debug binaries are rebuilt, never published)
+/MangaReader-*-debug-*.exe
+
 # QA generated data (fixtures, screenshots, isolated profiles, reports are rebuilt per run)
 tests/qa/artifacts/
 tests/qa/fixtures/
@@ -61,6 +64,8 @@ tests/qa/qa-knowledge-base.json
 /docs/PROJECT_STATE.md
 /docs/TECHNICAL.md
 /docs/TESTING.md
+/docs/NON_INTRUSIVE_ENGINEERING.md
+/docs/RELEASE_NOTES_*.md
 /docs/dev/
 
 # Local agent workspace (session memory and notes, kept locally, never published)

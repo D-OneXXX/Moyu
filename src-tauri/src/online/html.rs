@@ -73,6 +73,7 @@ pub fn parse_gallery_with(
     let mut candidates: Vec<CandidateImage> = Vec::new();
     let mut seen = HashSet::new();
     let mut pos = 0usize;
+    let mut scope_seq = 0usize;
     while let Some((start, end)) = next_tag(&text, pos) {
         pos = end;
         let tag = &text[start..end];
@@ -106,7 +107,11 @@ pub fn parse_gallery_with(
         // （header-fixed / nav-sticky 等）不得污染整棵正文子树。
         let main_container = is_main_container(&name, &class_id);
         let self_chrome = !main_container && (is_chrome_tag(&name) || is_chrome_class(&class_id));
-        let chrome = if main_container {
+        // 推荐/分享/评论插件块即使位于正文容器内也必须显式隔离。
+        let excluded_block = is_excluded_block(&class_id);
+        let chrome = if excluded_block {
+            true
+        } else if main_container {
             false
         } else {
             parent.map(|el| el.chrome).unwrap_or(false) || self_chrome
@@ -116,9 +121,28 @@ pub fn parse_gallery_with(
         } else {
             parent.and_then(|el| el.container.clone())
         };
+        // 显式正文容器：图片采集优先收敛到容器内部；推荐/分享块不算正文边缘。
+        let explicit_scope = is_explicit_content_container(&name, &class_id);
+        let content_scope = if excluded_block {
+            None
+        } else if explicit_scope {
+            scope_seq += 1;
+            Some(scope_seq)
+        } else {
+            parent.and_then(|el| el.content_scope)
+        };
+        let in_main_scope = content_scope.is_some();
+        // <a href="...jpg"> 包裹缩略图时优先使用外层高清链接。
+        let image_href = if name == "a" {
+            attr_value(&attrs, "href").and_then(|raw| image_link_url(&raw, &effective_base))
+        } else {
+            None
+        };
         if name == "img" {
-            if let Some(url) = image_url(&attrs, &effective_base) {
-                if seen.insert(url.clone()) {
+            let anchor_href = stack.iter().rev().find_map(|el| el.image_href.as_deref());
+            if let Some(url) = image_url_with_anchor(&attrs, &effective_base, anchor_href) {
+                let key = image_dedupe_key(&url);
+                if seen.insert(key) {
                     let (width, height) = image_dimensions(&attrs);
                     let img_class = class_id.trim().to_string();
                     let alt = attr_value(&attrs, "alt").map(|v| decode_entities(&v));
@@ -127,7 +151,10 @@ pub fn parse_gallery_with(
                         width,
                         height,
                         order: candidates.len(),
+                        dom_index: candidates.len(),
                         in_chrome: chrome || is_chrome_class(&img_class),
+                        in_main_scope,
+                        content_scope,
                         container: container.clone(),
                         class_id: (!img_class.is_empty()).then_some(img_class),
                         alt,
@@ -149,6 +176,8 @@ pub fn parse_gallery_with(
                 name,
                 chrome,
                 container,
+                content_scope,
+                image_href,
             });
         }
     }
@@ -162,6 +191,7 @@ pub fn parse_gallery_with(
     if candidates.len() < MIN_DOM_IMAGES_BEFORE_INLINE {
         extract_inline_images(&text, &effective_base, &mut candidates, &mut seen);
     }
+    apply_main_scope(&mut candidates);
     if candidates.is_empty() {
         return Err(BackendError::Msg(
             "未找到可读图片；分页查看器或依赖 JS 的页面不在支持范围".into(),
@@ -218,6 +248,10 @@ struct OpenElement {
     name: String,
     chrome: bool,
     container: Option<String>,
+    /// 显式正文容器序号；同一容器内的候选共享同一个值。
+    content_scope: Option<usize>,
+    /// 最近的外层 `<a href>` 若直接指向图片，记录其绝对地址。
+    image_href: Option<String>,
 }
 
 fn is_void(name: &str) -> bool {
@@ -333,6 +367,149 @@ fn is_content_class(value: &str) -> bool {
     ];
     let lower = value.to_ascii_lowercase();
     WORDS.iter().any(|word| lower.contains(word))
+}
+
+/// 语义正文容器：存在时图片采集范围优先收敛到容器内部。
+fn is_explicit_content_container(name: &str, class_id: &str) -> bool {
+    if matches!(name, "article" | "main") {
+        return true;
+    }
+    const WORDS: &[&str] = &[
+        "entry-content",
+        "post-content",
+        "reading-content",
+        "chapter-content",
+        "tl_article_content",
+        "_tl_editor",
+    ];
+    let lower = class_id.to_ascii_lowercase();
+    WORDS.iter().any(|word| lower.contains(word))
+}
+
+/// 容器末尾常见的推荐/分享/评论插件块：即使位于正文容器内也必须排除。
+fn is_excluded_block(class_id: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "jp-relatedposts",
+        "yarpp-related",
+        "sharedaddy",
+        "related-posts",
+        "comments-area",
+    ];
+    let lower = class_id.to_ascii_lowercase();
+    WORDS.iter().any(|word| lower.contains(word))
+}
+
+/// 正文容器收敛：存在显式容器时仅保留容器内候选。
+///
+/// 安全阀：容器内候选 < 4 且整页候选 >= 8，或容器内候选不足整页一半时，
+/// 保留全量候选，避免误判的侧栏容器把真正的正文裁成少量页。收敛后重新编号
+/// `order`，但 `dom_index` 永远保持原文档序号。
+fn apply_main_scope(candidates: &mut Vec<CandidateImage>) {
+    let scoped = candidates
+        .iter()
+        .filter(|candidate| candidate.in_main_scope)
+        .count();
+    if scoped == 0 {
+        return;
+    }
+    if (scoped < MIN_DOM_IMAGES_BEFORE_INLINE && candidates.len() >= 8)
+        || scoped.saturating_mul(2) < candidates.len()
+    {
+        for candidate in candidates.iter_mut() {
+            candidate.in_main_scope = false;
+        }
+        return;
+    }
+    // 页面可能同时存在多个语义容器（正文 article + 页尾 post-content 卡片）；
+    // 按容器序号选出候选最多的那一组，而不是把多个容器并集当正文。
+    let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.in_main_scope)
+    {
+        if let Some(scope) = candidate.content_scope {
+            *counts.entry(scope).or_insert(0) += 1;
+        }
+    }
+    let dominant = counts
+        .into_iter()
+        .max_by(|(a_scope, a_count), (b_scope, b_count)| {
+            a_count.cmp(b_count).then_with(|| b_scope.cmp(a_scope))
+        })
+        .map(|(scope, _)| scope);
+    candidates.retain(|candidate| {
+        candidate.in_main_scope
+            && dominant.is_none_or(|scope| candidate.content_scope == Some(scope))
+    });
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        candidate.order = index;
+    }
+}
+
+/// 图片 URL 归一去重键：把 WordPress 等 CMS 的尺寸缩略图后缀
+/// （`-724x1024.jpg`）折叠到原图，避免同一页缩略图与原图双份导入。
+fn image_dedupe_key(raw: &str) -> String {
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return raw.to_string();
+    };
+    let path = url.path().to_string();
+    let (dir, file) = match path.rsplit_once('/') {
+        Some((dir, file)) => (dir, file),
+        None => ("", path.as_str()),
+    };
+    let (stem, extension) = match file.rsplit_once('.') {
+        Some((stem, extension)) => (stem, extension),
+        None => (file, ""),
+    };
+    let stem = strip_size_suffix(stem);
+    let rebuilt = if extension.is_empty() {
+        format!("{dir}/{stem}")
+    } else {
+        format!("{dir}/{stem}.{extension}")
+    };
+    url.set_path(&rebuilt);
+    url.to_string()
+}
+
+fn strip_size_suffix(stem: &str) -> &str {
+    let Some((head, tail)) = stem.rsplit_once('-') else {
+        return stem;
+    };
+    let Some((width, height)) = tail.split_once('x') else {
+        return stem;
+    };
+    let numeric = |value: &str| {
+        (1..=5).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    if numeric(width) && numeric(height) && !head.is_empty() {
+        head
+    } else {
+        stem
+    }
+}
+
+fn image_like_path(path: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"];
+    let lower = path.to_ascii_lowercase();
+    EXTENSIONS
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+}
+
+/// 外层 `<a href>` 只有直接指向图片扩展名时才作为高清原图候选。
+fn image_link_url(raw: &str, base_url: &url::Url) -> Option<String> {
+    let raw = decode_entities(raw.trim());
+    if raw.is_empty() {
+        return None;
+    }
+    let lower = raw.to_ascii_lowercase();
+    if lower.starts_with("data:") || lower.starts_with("blob:") || lower.starts_with("javascript:")
+    {
+        return None;
+    }
+    let joined = base_url.join(&raw).ok()?;
+    let normalized = normalize_url(joined.as_str()).ok()?;
+    image_like_path(normalized.path()).then(|| normalized.to_string())
 }
 
 fn selector_hint(name: &str, attrs: &[(String, String)]) -> String {
@@ -563,7 +740,7 @@ fn fallback_cluster(
     if main_count < MIN_CLUSTER_SIZE {
         return None;
     }
-    let mut pages = Vec::new();
+    let mut pages: Vec<(usize, PageRef)> = Vec::new();
     let mut selected = HashSet::new();
     for candidate in candidates {
         if path_template(&candidate.url).as_deref() != Some(main_template.as_str()) {
@@ -573,17 +750,23 @@ fn fallback_cluster(
             break;
         }
         selected.insert(candidate.url.clone());
-        pages.push(PageRef {
-            url: candidate.url.clone(),
-            width: candidate.width,
-            height: candidate.height,
-            anchor: candidate.anchor.clone(),
-            viewer: false,
-        });
+        pages.push((
+            candidate.dom_index,
+            PageRef {
+                url: candidate.url.clone(),
+                width: candidate.width,
+                height: candidate.height,
+                anchor: candidate.anchor.clone(),
+                viewer: false,
+            },
+        ));
     }
     if pages.len() < MIN_CLUSTER_SIZE {
         return None;
     }
+    // 回退召回同样必须回到文档原序。
+    pages.sort_by_key(|(dom_index, _)| *dom_index);
+    let pages: Vec<PageRef> = pages.into_iter().map(|(_, page)| page).collect();
     let blocked = outcome
         .blocked
         .iter()
@@ -689,7 +872,7 @@ fn collect_script_image_literals(
     seen: &mut HashSet<String>,
 ) {
     let re = Regex::new(
-        r#"(?i)(?:https?:)?//[^\s"'<>\\)]+?\.(?:jpe?g|png|gif|webp)(?:\?[^\s"'<>\\)]*)?"#,
+        r#"(?i)(?:https?:)?//[^\s"'<>\\)]+?\.(?:jpe?g|png|gif|webp|avif)(?:\?[^\s"'<>\\)]*)?"#,
     )
     .expect("inline image regex");
     for hit in re.find_iter(text) {
@@ -716,15 +899,11 @@ fn inline_image_url(raw: &str, base_url: &url::Url) -> Option<String> {
     };
     let joined = base_url.join(&raw).ok()?;
     let normalized = normalize_url(joined.as_str()).ok()?;
-    let path = normalized.path().to_ascii_lowercase();
-    let image_like = [".jpg", ".jpeg", ".png", ".gif", ".webp"]
-        .iter()
-        .any(|extension| path.ends_with(extension));
-    image_like.then(|| normalized.to_string())
+    image_like_path(normalized.path()).then(|| normalized.to_string())
 }
 
 fn push_inline_candidate(url: String, out: &mut Vec<CandidateImage>, seen: &mut HashSet<String>) {
-    if out.len() > MAX_PAGES.saturating_mul(8) || !seen.insert(url.clone()) {
+    if out.len() > MAX_PAGES.saturating_mul(8) || !seen.insert(image_dedupe_key(&url)) {
         return;
     }
     out.push(CandidateImage {
@@ -732,7 +911,10 @@ fn push_inline_candidate(url: String, out: &mut Vec<CandidateImage>, seen: &mut 
         width: None,
         height: None,
         order: out.len(),
+        dom_index: out.len(),
         in_chrome: false,
+        in_main_scope: false,
+        content_scope: None,
         container: Some("inline-json".into()),
         class_id: None,
         alt: None,
@@ -781,7 +963,7 @@ fn collect_source_candidates(
             continue;
         };
         picture_used = true;
-        if !seen.insert(url.clone()) {
+        if !seen.insert(image_dedupe_key(&url)) {
             continue;
         }
         let (width, height) = image_dimensions(&attrs);
@@ -793,7 +975,10 @@ fn collect_source_candidates(
             width,
             height,
             order: out.len(),
+            dom_index: out.len(),
             in_chrome: false,
+            in_main_scope: false,
+            content_scope: None,
             container: None,
             class_id,
             alt: attr_value(&attrs, "alt"),
@@ -807,9 +992,24 @@ fn collect_source_candidates(
 }
 
 fn image_url(attrs: &[(String, String)], base_url: &url::Url) -> Option<String> {
+    image_url_with_anchor(attrs, base_url, None)
+}
+
+fn image_url_with_anchor(
+    attrs: &[(String, String)],
+    base_url: &url::Url,
+    anchor_href: Option<&str>,
+) -> Option<String> {
     let mut candidates = Vec::new();
-    // 懒加载属性按优先级排列；不同站点/库使用不同命名。
+    if let Some(anchor) = anchor_href {
+        candidates.push(anchor.to_string());
+    }
+    // 通用 CMS 高清原图属性优先：WordPress 等站点把原图放在这些字段，
+    // `src` 往往只是带尺寸后缀的缩略图。
     for key in [
+        "data-orig-file",
+        "data-large-file",
+        "data-full-url",
         "data-src",
         "data-original",
         "data-original-src",
@@ -918,6 +1118,17 @@ pub(crate) fn extract_viewer_image(
     })
 }
 
+/// 从查看器页面提取备用节点重载参数（如 `nl`）。
+///
+/// 部分二级画廊在真实图 403/404/509 后要求把 viewer HTML 内的节点标识
+/// 拼进图片 URL 再试一次；只读取页面公开参数，不执行脚本、不碰 Cookie。
+pub(crate) fn extract_viewer_reload_param(body: &[u8]) -> Option<(String, String)> {
+    let text = decode_html(body);
+    let re = Regex::new(r#"(?i)(?:^|[^a-z0-9_])nl\s*[=:]\s*["']?([a-z0-9_-]{1,64})"#).ok()?;
+    let value = re.captures(&text)?.get(1)?.as_str().to_string();
+    Some(("nl".to_string(), value))
+}
+
 fn og_image(text: &str, base_url: &url::Url) -> Option<String> {
     let pattern = [
         r#"(?is)<meta[^>]+(?:property|name)\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["']"#,
@@ -1012,8 +1223,8 @@ mod tests {
         let meta = gallery(&html);
         assert_eq!(meta.page_count, 30);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
-        assert!(stored.filtered.len() >= 5);
-        assert!(stored.filtered.iter().any(|p| p.reason.contains("chrome")));
+        // 显式 <main> 收敛后，footer 图标不再进入候选；容器内二维码/缩略图仍被过滤。
+        assert!(stored.filtered.len() >= 2);
         assert!(stored.filtered.iter().any(|p| {
             p.reason.contains("small")
                 || p.reason.contains("banner")
@@ -1268,6 +1479,113 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("online-html-no-content"), "{err}");
+    }
+
+    #[test]
+    fn main_container_scopes_out_sidebar_and_recommendation_blocks() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><body>
+            <header><img src="/logo.png" width="128" height="128"></header>
+            <aside class="sidebar"><img src="/pages/side-1.jpg" width="800" height="1200"></aside>
+            <article class="entry-content">
+              <img src="/cover.jpg" width="800" height="1200">
+              <img src="/pages/001.jpg" width="800" height="1200">
+              <img src="/pages/002.jpg" width="800" height="1200">
+              <img src="/pages/003.jpg" width="800" height="1200">
+              <img src="/pages/004.jpg" width="800" height="1200">
+              <img src="/credit-1.jpg" width="800" height="1200">
+              <div class="jp-relatedposts"><img src="/pages/related-1.jpg" width="800" height="1200"></div>
+            </article>
+            <div class="post-content"><img src="/pages/side-2.jpg" width="800" height="1200"></div>
+            </body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 6);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let urls: Vec<&str> = stored.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "http://gallery.example/cover.jpg",
+                "http://gallery.example/pages/001.jpg",
+                "http://gallery.example/pages/002.jpg",
+                "http://gallery.example/pages/003.jpg",
+                "http://gallery.example/pages/004.jpg",
+                "http://gallery.example/credit-1.jpg",
+            ]
+        );
+        assert!(!urls.iter().any(|url| url.contains("related")));
+        assert!(!urls.iter().any(|url| url.contains("side-")));
+    }
+
+    #[test]
+    fn nested_content_wrappers_inside_one_article_are_not_split() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><body><article class="entry-content">
+            <figure class="content"><img src="/pages/001.jpg" width="800" height="1200"></figure>
+            <figure class="content"><img src="/pages/002.jpg" width="800" height="1200"></figure>
+            <figure class="content"><img src="/pages/003.jpg" width="800" height="1200"></figure>
+            <figure class="content"><img src="/pages/004.jpg" width="800" height="1200"></figure>
+            </article></body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 4);
+    }
+
+    #[test]
+    fn scoping_falls_back_when_container_holds_minority_of_images() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let mut html = String::from(r#"<html><body><article class="entry-content">"#);
+        for index in 1..=4 {
+            html.push_str(&format!(
+                r#"<img src="/article/{index:03}.jpg" width="800" height="1200">"#
+            ));
+        }
+        html.push_str("</article>");
+        for index in 1..=10 {
+            html.push_str(&format!(
+                r#"<img src="/pages/{index:03}.jpg" width="800" height="1200">"#
+            ));
+        }
+        html.push_str("</body></html>");
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 14);
+    }
+
+    #[test]
+    fn cms_original_attributes_and_parent_anchor_beat_thumbnails() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><body><article class="post-content">
+            <a href="/img/001.jpg"><img src="/img/001-724x1024.jpg" width="800" height="1200"></a>
+            <img data-orig-file="/img/002.jpg" src="/img/002-300x400.jpg" width="800" height="1200">
+            <img data-large-file="/img/003.jpg" src="/img/003-150x150.jpg" width="800" height="1200">
+            <img data-full-url="/img/004.jpg" src="/img/004-300x400.jpg" width="800" height="1200">
+            <img src="/img/001-300x400.jpg" width="800" height="1200">
+            </article></body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 4);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        let urls: Vec<&str> = stored.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "http://gallery.example/img/001.jpg",
+                "http://gallery.example/img/002.jpg",
+                "http://gallery.example/img/003.jpg",
+                "http://gallery.example/img/004.jpg",
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_script_supports_avif_sources() {
+        let page = url::Url::parse("http://gallery.example/view/1").unwrap();
+        let html = r#"<html><body>
+            <script>window.__GALLERY__ = ["https:\/\/cdn.example\/p\/01.avif", "https:\/\/cdn.example\/p\/02.avif"];</script>
+            </body></html>"#;
+        let meta = parse_gallery(html.as_bytes(), &page, &page).unwrap();
+        assert_eq!(meta.page_count, 2);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        assert_eq!(stored.pages[0].url, "https://cdn.example/p/01.avif");
+        assert_eq!(stored.pages[1].url, "https://cdn.example/p/02.avif");
     }
 
     #[test]

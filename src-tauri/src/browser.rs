@@ -54,7 +54,7 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "匯入目前頁",
             importing: "匯入中…",
             inactive: "尚未啟動交接",
-            empty: "目前視窗沒有已載入圖片",
+            empty: "目前頁面沒有已載入圖片",
             imported: "已匯入 {n} 章",
             failed: "匯入失敗",
         },
@@ -66,7 +66,7 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "Import current page",
             importing: "Importing…",
             inactive: "Handoff not started",
-            empty: "No loaded images in viewport",
+            empty: "No loaded images on this page",
             imported: "Imported {n} chapter(s)",
             failed: "Import failed",
         },
@@ -78,7 +78,7 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "Importar página actual",
             importing: "Importando…",
             inactive: "Handoff no iniciado",
-            empty: "No hay imágenes cargadas en la vista",
+            empty: "No hay imágenes cargadas en esta página",
             imported: "Importados {n} capítulo(s)",
             failed: "Error al importar",
         },
@@ -90,7 +90,7 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "現在のページを取込",
             importing: "取込中…",
             inactive: "ハンドオフ未開始",
-            empty: "表示中の読み込み済み画像がありません",
+            empty: "このページに読み込み済み画像がありません",
             imported: "{n} 章を取込しました",
             failed: "取込に失敗",
         },
@@ -102,7 +102,7 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "현재 페이지 가져오기",
             importing: "가져오는 중…",
             inactive: "핸드오프가 시작되지 않음",
-            empty: "뷰포트에 로드된 이미지가 없습니다",
+            empty: "이 페이지에 로드된 이미지가 없습니다",
             imported: "{n}개 장을 가져왔습니다",
             failed: "가져오기 실패",
         },
@@ -114,7 +114,7 @@ fn toolbar_labels(locale: &str) -> ToolbarLabels {
             import_page: "导入当前页",
             importing: "导入中…",
             inactive: "尚未启动交接",
-            empty: "当前视口没有已加载图片",
+            empty: "当前页面没有已加载图片",
             imported: "已导入 {n} 章",
             failed: "导入失败",
         },
@@ -135,46 +135,116 @@ const TOOLBAR_TEMPLATE: &str = r##"
   if (window.top !== window) return;
   if (!/^https?:$/.test(location.protocol)) return;
   var config = __CONFIG__;
+  if (typeof window.__moyuHandoffCleanup === 'function') {
+    try { window.__moyuHandoffCleanup(); } catch (_) {}
+  }
   var previous = document.getElementById('moyu-handoff-bar');
   if (previous && previous.parentNode) previous.parentNode.removeChild(previous);
-  var collect = function () {
-    var pages = [];
-    var seen = new Set();
-    var viewportWidth = window.innerWidth || 0;
-    var viewportHeight = window.innerHeight || 0;
+
+  // 通用 CMS 高清原图属性：具备这些属性的图片即使尚未解码也视为正文图。
+  var HD_ATTRS = ['data-orig-file', 'data-large-file', 'data-full-url', 'data-original', 'data-src'];
+  var collected = [];
+  var collectedKeys = new Set();
+
+  var resolveUrl = function (raw) {
+    if (!raw) return '';
+    try {
+      var url = new URL(raw, location.href);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+      return url.href;
+    } catch (_) { return ''; }
+  };
+
+  // 同名尺寸缩略图（-724x1024.jpg）与原图归一并去重。
+  var dedupeKey = function (href) {
+    try {
+      var url = new URL(href);
+      var segments = url.pathname.split('/');
+      var file = segments.pop() || '';
+      var dot = file.lastIndexOf('.');
+      var stem = dot > 0 ? file.slice(0, dot) : file;
+      var extension = dot > 0 ? file.slice(dot) : '';
+      stem = stem.replace(/-\d{1,5}x\d{1,5}$/, '');
+      segments.push(stem + extension);
+      url.pathname = segments.join('/');
+      return url.href;
+    } catch (_) { return href; }
+  };
+
+  var bestUrl = function (image) {
+    for (var index = 0; index < HD_ATTRS.length; index += 1) {
+      var direct = resolveUrl(image.getAttribute(HD_ATTRS[index]));
+      if (direct) return direct;
+    }
+    return resolveUrl(image.currentSrc)
+      || resolveUrl(image.getAttribute('src'))
+      || resolveUrl(image.getAttribute('data-src'));
+  };
+
+  var register = function (url) {
+    var key = dedupeKey(url);
+    if (collectedKeys.has(key)) return;
+    collectedKeys.add(key);
+    collected.push(url);
+  };
+
+  // 整页累积：DOM 顺序扫描所有已加载大图或带高清属性的正文图，
+  // 不再限制当前视口；滚动到位的懒加载图片会随观察器追加。
+  var scan = function () {
+    if (!document.documentElement) return collected.slice();
     var images = document.querySelectorAll('img');
     for (var index = 0; index < images.length; index += 1) {
       var image = images[index];
-      if (!image || !image.complete || image.naturalWidth <= 0) continue;
-      // 与后端默认正文尺寸门槛对齐，排除视口内的 logo/头像/横幅/二维码。
-      if (image.naturalWidth < 320 || image.naturalHeight < 240) continue;
-      var rect = image.getBoundingClientRect();
-      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
-      if (rect.bottom < 0 || rect.right < 0 || rect.top > viewportHeight || rect.left > viewportWidth) continue;
-      var candidates = [
-        image.currentSrc,
-        image.getAttribute('src'),
-        image.getAttribute('data-src'),
-        image.getAttribute('data-original')
-      ];
-      for (var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
-        var raw = candidates[candidateIndex];
-        if (!raw) continue;
-        try {
-          var url = new URL(raw, location.href);
-          if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
-          if (!seen.has(url.href)) {
-            seen.add(url.href);
-            pages.push(url.href);
-          }
+      if (!image) continue;
+      var hasHd = false;
+      for (var attr = 0; attr < HD_ATTRS.length; attr += 1) {
+        if (image.getAttribute(HD_ATTRS[attr])) {
+          hasHd = true;
           break;
-        } catch (_) {}
+        }
       }
+      if (!hasHd && !(image.complete && image.naturalWidth >= 280)) continue;
+      var url = bestUrl(image);
+      if (url) register(url);
     }
-    return pages;
+    return collected.slice();
   };
+
+  var scheduled = false;
+  var schedule = function () {
+    if (scheduled) return;
+    scheduled = true;
+    var run = function () { scheduled = false; scan(); };
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(run);
+    } else {
+      window.setTimeout(run, 180);
+    }
+  };
+
   var install = function () {
     if (!document.documentElement || document.getElementById('moyu-handoff-bar')) return;
+    var observer = null;
+    if (window.MutationObserver) {
+      observer = new MutationObserver(schedule);
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'srcset', 'data-src', 'data-srcset', 'data-original', 'data-orig-file', 'data-large-file', 'data-full-url']
+      });
+    }
+    window.addEventListener('scroll', schedule, { passive: true, capture: true });
+    document.addEventListener('load', schedule, true);
+    window.__moyuHandoffCleanup = function () {
+      if (observer) observer.disconnect();
+      window.removeEventListener('scroll', schedule, true);
+      document.removeEventListener('load', schedule, true);
+      var current = document.getElementById('moyu-handoff-bar');
+      if (current && current.parentNode) current.parentNode.removeChild(current);
+    };
+    scan();
+
     var bar = document.createElement('div');
     bar.id = 'moyu-handoff-bar';
     bar.setAttribute('role', 'toolbar');
@@ -203,42 +273,88 @@ const TOOLBAR_TEMPLATE: &str = r##"
     status.style.cssText = 'flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#CBD5E1;';
     status.textContent = config.callbackUrl ? '' : config.labels.inactive;
     bar.appendChild(status);
+
+    // 远程站点的 CSP connect-src 可能拦截 fetch。表单 text/plain 提交不经过
+    // CORS，且不受 connect-src 约束，作为受控回退通道。
+    var submitViaForm = function (payload) {
+      var frameName = 'moyu-handoff-sink';
+      var frame = document.getElementsByName(frameName)[0];
+      if (!frame) {
+        frame = document.createElement('iframe');
+        frame.name = frameName;
+        frame.style.display = 'none';
+        frame.setAttribute('aria-hidden', 'true');
+        document.documentElement.appendChild(frame);
+      }
+      var form = document.createElement('form');
+      form.method = 'POST';
+      form.action = config.callbackUrl;
+      form.target = frameName;
+      form.enctype = 'text/plain';
+      form.acceptCharset = 'UTF-8';
+      form.style.display = 'none';
+      var field = document.createElement('input');
+      field.type = 'hidden';
+      field.name = 'payload';
+      field.value = payload;
+      form.appendChild(field);
+      document.documentElement.appendChild(form);
+      try {
+        form.submit();
+      } finally {
+        window.setTimeout(function () {
+          if (form.parentNode) form.parentNode.removeChild(form);
+        }, 0);
+      }
+    };
+
     var importButton = makeButton(config.labels.importPage, async function () {
       if (!config.callbackUrl) {
         status.textContent = config.labels.inactive;
         return;
       }
-      var pages = collect();
+      var pages = scan();
       if (!pages.length) {
         status.textContent = config.labels.empty;
         return;
       }
       status.textContent = config.labels.importing;
+      var payload = JSON.stringify({
+        chapters: [{
+          url: location.href,
+          title: document.title || location.href,
+          pages: pages
+        }],
+        origin: location.origin,
+        userAgent: navigator.userAgent
+      });
+      var response = null;
       try {
-        var response = await fetch(config.callbackUrl, {
+        response = await fetch(config.callbackUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chapters: [{
-              url: location.href,
-              title: document.title || location.href,
-              pages: pages
-            }],
-            origin: location.origin,
-            userAgent: navigator.userAgent
-          })
+          body: payload
         });
-        if (!response.ok) {
-          status.textContent = config.labels.failed + ' (' + response.status + ')';
-          return;
-        }
-        var data = {};
-        try { data = await response.json(); } catch (_) {}
-        var count = data && Array.isArray(data.books) ? data.books.length : 1;
-        status.textContent = config.labels.imported.replace('{n}', String(count));
       } catch (_) {
-        status.textContent = config.labels.failed;
+        response = null;
       }
+      if (!response) {
+        try {
+          submitViaForm(payload);
+          status.textContent = config.labels.imported.replace('{n}', '1');
+        } catch (_) {
+          status.textContent = config.labels.failed;
+        }
+        return;
+      }
+      if (!response.ok) {
+        status.textContent = config.labels.failed + ' (' + response.status + ')';
+        return;
+      }
+      var data = {};
+      try { data = await response.json(); } catch (_) {}
+      var count = data && Array.isArray(data.books) ? data.books.length : 1;
+      status.textContent = config.labels.imported.replace('{n}', String(count));
     });
     importButton.style.borderColor = config.callbackUrl ? 'rgba(56,168,248,0.95)' : 'rgba(148,163,184,0.4)';
     importButton.style.background = config.callbackUrl ? '#38A8F8' : 'transparent';
@@ -426,6 +542,43 @@ fn downloads_dir() -> Result<PathBuf, String> {
     normalize_existing_path(&dir).map_err(|e| format!("定位下载目录失败：{e}"))
 }
 
+/// 辅助浏览器独立 WebView 用户数据目录（登录态由 WebView 自身保存）。
+///
+/// 应用不读取、不解析、不导出 Cookie；清理走「设置 → 隐私与安全 → 清除在线痕迹」。
+fn browser_profile_dir() -> Result<PathBuf, String> {
+    let dir = crate::data_dir()?.join("browser_profile");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建浏览器配置目录失败：{e}"))?;
+    Ok(dir)
+}
+
+/// 安全关闭辅助浏览器窗后彻底清空独立 Profile 目录。
+///
+/// 调用方必须先 [`close_browser_window`]；Windows WebView2 在窗口关闭后会
+/// 短暂持有 profile 文件句柄，采用有界重试。只在本次应用数据目录内删除，
+/// 绝不触碰主窗口数据或书库。
+pub(crate) fn clear_browser_profile() -> Result<(), String> {
+    let dir = crate::data_dir()?.join("browser_profile");
+    remove_profile_dir(&dir)
+}
+
+fn remove_profile_dir(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut last_error = String::new();
+    for attempt in 0..8u64 {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                last_error = error.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(120 * (attempt + 1)));
+            }
+        }
+    }
+    Err(format!("清空辅助浏览器配置失败：{last_error}"))
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowserDownloadEvent {
@@ -551,12 +704,14 @@ pub async fn open_browser_window(
         let download_app = app.clone();
         let download_dir = downloads;
         let load_app = app.clone();
+        let profile_dir = browser_profile_dir()?;
         WebviewWindowBuilder::new(&app, BROWSER_LABEL, WebviewUrl::External(url))
             .title(BROWSER_TITLE)
             .inner_size(BROWSER_WIDTH, BROWSER_HEIGHT)
-            // §4.3：辅助浏览器只服务当次人工验证，不持久化第三方 Cookie
-            // 或站点存储；关闭窗口即丢弃，避免下次启动复用上一站凭据。
-            .incognito(true)
+            // §4.3 更新（#349）：辅助浏览器是标准 Web 窗口，使用 app_data_dir
+            // 下的独立 WebView Profile 保持用户授权后的登录态。应用侧不读取、
+            // 不解析、不导出 document.cookie；清除在线痕迹会关闭窗口并删除该目录。
+            .data_directory(profile_dir)
             // 顶部交接条只读 DOM 图片地址并经 127.0.0.1 handoff 回传；
             // 不暴露 Tauri IPC，不读取 Cookie。
             .initialization_script(toolbar)
@@ -755,7 +910,15 @@ mod tests {
         assert!(script.contains("Import current page"));
         assert!(script.contains("event.isTrusted"));
         assert!(script.contains("image.naturalWidth"));
-        assert!(script.contains("getBoundingClientRect"));
+        // 整页累积收集：不再按视口裁剪。
+        assert!(!script.contains("getBoundingClientRect"));
+        assert!(!script.contains("innerWidth"));
+        assert!(script.contains("MutationObserver"));
+        assert!(script.contains("data-orig-file"));
+        assert!(script.contains("data-large-file"));
+        // 远程 CSP connect-src 拦截 fetch 时的表单回退通道。
+        assert!(script.contains("enctype = 'text/plain'"));
+        assert!(script.contains("form.submit()"));
         assert!(!script.contains("document.cookie"));
         assert!(!script.contains("__TAURI"));
         assert!(!script.contains("ipc"));
@@ -808,6 +971,27 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         dir
+    }
+
+    #[test]
+    fn clears_only_the_isolated_profile_directory() {
+        let dir = temp_dir("profile-clear");
+        let profile = dir.join("browser_profile");
+        std::fs::create_dir_all(profile.join("EBWebView").join("Default")).unwrap();
+        std::fs::write(
+            profile.join("EBWebView").join("Default").join("Cookies"),
+            b"x",
+        )
+        .unwrap();
+        let keep = dir.join("library.db");
+        std::fs::write(&keep, b"keep").unwrap();
+
+        remove_profile_dir(&profile).unwrap();
+        assert!(!profile.exists());
+        assert_eq!(std::fs::read(&keep).unwrap(), b"keep");
+        // 幂等：目录已不存在时同样成功。
+        remove_profile_dir(&profile).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

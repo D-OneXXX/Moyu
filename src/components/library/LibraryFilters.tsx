@@ -4,12 +4,17 @@ import { cn } from "@/lib/utils";
 
 export type SourceFilter = "all" | "local" | "online";
 
+/** 阅读状态快速筛选：与搜索、来源筛选、合集模式可叠加。 */
+export type ReadingFilter = "all" | "unread" | "reading" | "finished";
+
 /** 方案 C：书库排序方式——「最近打开」或「最近阅读」。 */
 export type SortMode = "recentOpened" | "recentRead";
 
 interface Props {
   sourceFilter: SourceFilter;
   onSourceFilterChange: (filter: SourceFilter) => void;
+  readingFilter: ReadingFilter;
+  onReadingFilterChange: (filter: ReadingFilter) => void;
   groupSeries: boolean;
   onGroupSeriesChange: (grouped: boolean) => void;
   sortMode: SortMode;
@@ -26,6 +31,8 @@ const CHIP_OFF = "text-muted-foreground hover:bg-accent hover:text-foreground";
 export default function LibraryFilters({
   sourceFilter,
   onSourceFilterChange,
+  readingFilter,
+  onReadingFilterChange,
   groupSeries,
   onGroupSeriesChange,
   sortMode,
@@ -36,6 +43,12 @@ export default function LibraryFilters({
     { key: "all", label: t("common.all") },
     { key: "local", label: t("source.local") },
     { key: "online", label: t("source.online") },
+  ];
+  const readingOptions: { key: ReadingFilter; label: string }[] = [
+    { key: "all", label: t("common.all") },
+    { key: "unread", label: t("library.readingUnread") },
+    { key: "reading", label: t("library.readingInProgress") },
+    { key: "finished", label: t("library.readingFinished") },
   ];
 
   return (
@@ -54,6 +67,27 @@ export default function LibraryFilters({
             className={cn(
               CHIP,
               sourceFilter === option.key ? CHIP_ON : CHIP_OFF,
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <div
+        role="group"
+        aria-label={t("library.readingFilterAria")}
+        className="inline-flex max-w-full flex-wrap items-center gap-1 rounded-full border border-border bg-card p-1 shadow-hard-sm"
+      >
+        {readingOptions.map((option) => (
+          <button
+            key={option.key}
+            type="button"
+            aria-pressed={readingFilter === option.key}
+            onClick={() => onReadingFilterChange(option.key)}
+            className={cn(
+              CHIP,
+              readingFilter === option.key ? CHIP_ON : CHIP_OFF,
             )}
           >
             {option.label}

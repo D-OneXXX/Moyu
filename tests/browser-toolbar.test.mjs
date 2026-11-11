@@ -26,7 +26,7 @@ function loadToolbarScript() {
       importPage: "Import current page",
       importing: "Importing…",
       inactive: "Handoff not started",
-      empty: "No loaded images in viewport",
+      empty: "No loaded images on this page",
       imported: "Imported {n} chapter(s)",
       failed: "Import failed",
     },
@@ -34,7 +34,7 @@ function loadToolbarScript() {
   return match[1].replace("__CONFIG__", JSON.stringify(config));
 }
 
-function makeElement(tag, byId) {
+function makeElement(tag, byId, submitted) {
   const element = {
     tagName: tag,
     id: "",
@@ -67,6 +67,9 @@ function makeElement(tag, byId) {
     addEventListener(type, handler) {
       (this.listeners[type] ??= []).push(handler);
     },
+    submit() {
+      submitted.push(this);
+    },
   };
   const register = (node) => {
     if (node.id) byId.set(node.id, node);
@@ -79,50 +82,40 @@ function makeElement(tag, byId) {
   return element;
 }
 
-function makeImage(url, rect, naturalWidth = 800, naturalHeight = 600) {
+function makeImage(url, naturalWidth = 800, naturalHeight = 600, attrs = {}) {
   return {
-    complete: true,
+    complete: naturalWidth > 0,
     naturalWidth,
     naturalHeight,
     currentSrc: url,
-    getBoundingClientRect: () => rect,
-    getAttribute: (name) => (name === "src" ? url : null),
+    getAttribute: (name) =>
+      Object.hasOwn(attrs, name) ? attrs[name] : name === "src" ? url : null,
   };
 }
 
-function runToolbar(script) {
+function runToolbar(script, options = {}) {
   const byId = new Map();
-  const documentElement = makeElement("html", byId);
-  const images = [
-    makeImage("https://cdn.example/loaded.jpg", {
-      width: 800,
-      height: 600,
-      top: 10,
-      left: 0,
-      right: 800,
-      bottom: 610,
+  const submitted = [];
+  const documentElement = makeElement("html", byId, submitted);
+  const images = options.images ?? [
+    makeImage("https://cdn.example/loaded.jpg"),
+    makeImage("https://cdn.example/logo.png", 128, 128),
+    // 视口外但已加载：整页收集必须纳入。
+    makeImage("https://cdn.example/offscreen.jpg"),
+    // 具备高清原图属性：未解码也纳入，并按尺寸后缀归一到原图。
+    makeImage("https://cdn.example/thumb-724x1024.jpg", 0, 0, {
+      "data-orig-file": "https://cdn.example/orig.jpg",
     }),
-    makeImage(
-      "https://cdn.example/logo.png",
-      { width: 128, height: 128, top: 0, left: 0, right: 128, bottom: 128 },
-      128,
-      128,
-    ),
-    makeImage("https://cdn.example/offscreen.jpg", {
-      width: 800,
-      height: 600,
-      top: 900,
-      left: 0,
-      right: 800,
-      bottom: 1500,
-    }),
+    // 极小图标：既无高清属性也未达到 280px。
+    makeImage("https://cdn.example/icon.png", 32, 32),
   ];
   const document = {
     readyState: "complete",
     title: "QA Page",
     documentElement,
-    createElement: (tag) => makeElement(tag, byId),
+    createElement: (tag) => makeElement(tag, byId, submitted),
     getElementById: (id) => byId.get(id) ?? null,
+    getElementsByName: () => [],
     querySelectorAll: (selector) => (selector === "img" ? images : []),
     addEventListener: () => {},
   };
@@ -148,14 +141,17 @@ function runToolbar(script) {
     navigator: { userAgent: "MoyuTestUA" },
     innerWidth: 1000,
     innerHeight: 800,
-    fetch: async (url, options) => {
-      calls.push({ url, options });
+    fetch: options.fetch ?? (async (url, request) => {
+      calls.push({ url, options: request });
       return {
         ok: true,
         status: 200,
         json: async () => ({ books: [{ id: "b1", title: "QA" }] }),
       };
-    },
+    }),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    setTimeout: (handler) => handler(),
     URL,
     Set,
     Promise,
@@ -174,10 +170,18 @@ function runToolbar(script) {
   );
   assert.ok(importButton, "应存在导入按钮");
   assert.ok(status, "应存在状态文本");
-  return { bar, importButton, status, calls, sandbox, history: sandbox.history };
+  return {
+    bar,
+    importButton,
+    status,
+    calls,
+    sandbox,
+    submitted,
+    history: sandbox.history,
+  };
 }
 
-test("toolbar collects only loaded viewport images and posts handoff payload", async () => {
+test("toolbar collects the whole loaded document in order and posts handoff payload", async () => {
   const { importButton, status, calls } = runToolbar(loadToolbarScript());
   const click = importButton.listeners.click[0];
   await click({ isTrusted: true });
@@ -189,10 +193,37 @@ test("toolbar collects only loaded viewport images and posts handoff payload", a
   const payload = JSON.parse(calls[0].options.body);
   assert.deepEqual(payload.chapters[0].pages, [
     "https://cdn.example/loaded.jpg",
+    "https://cdn.example/offscreen.jpg",
+    "https://cdn.example/orig.jpg",
   ]);
   assert.equal(payload.chapters[0].url, "https://site.example/ch/1");
   assert.equal(payload.origin, "https://site.example");
   assert.equal(payload.userAgent, "MoyuTestUA");
+  assert.equal(status.textContent, "Imported 1 chapter(s)");
+});
+
+test("toolbar falls back to a text/plain form when CSP blocks fetch", async () => {
+  const { importButton, status, submitted } = runToolbar(loadToolbarScript(), {
+    fetch: async () => {
+      throw new TypeError("blocked by connect-src");
+    },
+  });
+  await importButton.listeners.click[0]({ isTrusted: true });
+  assert.equal(submitted.length, 1);
+  const form = submitted[0];
+  assert.equal(
+    form.action,
+    "http://127.0.0.1:18080/handoff?token=test-token",
+  );
+  assert.equal(form.method, "POST");
+  assert.equal(form.enctype, "text/plain");
+  const field = form.children[0];
+  const payload = JSON.parse(field.value);
+  assert.deepEqual(payload.chapters[0].pages, [
+    "https://cdn.example/loaded.jpg",
+    "https://cdn.example/offscreen.jpg",
+    "https://cdn.example/orig.jpg",
+  ]);
   assert.equal(status.textContent, "Imported 1 chapter(s)");
 });
 

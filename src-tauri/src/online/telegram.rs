@@ -369,7 +369,10 @@ fn resolve_message(
             width: None,
             height: None,
             order: index,
+            dom_index: index,
             in_chrome: false,
+            in_main_scope: false,
+            content_scope: None,
             container: None,
             class_id: None,
             alt: Some(title.clone()),
@@ -483,7 +486,10 @@ fn resolve_telegraph(
             width,
             height,
             order: candidates.len(),
+            dom_index: candidates.len(),
             in_chrome: false,
+            in_main_scope: false,
+            content_scope: None,
             container: Some("article".into()),
             class_id: None,
             alt: None,
@@ -1172,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn message_resolves_album_with_anchors_and_filters_small_noise() {
+    fn message_resolves_album_keeping_small_but_not_tiny_noise() {
         let embed = r#"<html><body>
         <div class="tgme_widget_message" data-post="demo/200">
           <div class="tgme_widget_message_text">Album 1</div>
@@ -1188,6 +1194,7 @@ mod tests {
             ),
             ("https://cdn/a.png", 200, png(800, 1200)),
             ("https://cdn/b.png", 200, png(800, 1200)),
+            // 白名单来源只排除 <64×64；200×200 的说明/分割页必须完整保留。
             ("https://cdn/qr.png", 200, png(200, 200)),
         ]);
         let meta = resolve_book(
@@ -1197,10 +1204,10 @@ mod tests {
             &FilterThresholds::default(),
         )
         .unwrap();
-        assert_eq!(meta.page_count, 2);
+        assert_eq!(meta.page_count, 3);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
-        assert_eq!(stored.pages.len(), 2);
-        assert_eq!(stored.filtered.len(), 1);
+        assert_eq!(stored.pages.len(), 3);
+        assert!(stored.filtered.is_empty());
         let anchor = stored.pages[0].anchor.as_ref().unwrap();
         assert_eq!(anchor.channel, "demo");
         assert_eq!(anchor.message_id, 200);
@@ -1208,7 +1215,37 @@ mod tests {
     }
 
     #[test]
-    fn telegraph_extracts_article_images_and_drops_small_logo() {
+    fn message_drops_tiny_emoji_icon_below_sixty_four() {
+        let embed = r#"<html><body>
+        <div class="tgme_widget_message" data-post="demo/201">
+          <div class="tgme_widget_message_text">Album 2</div>
+          <a class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn/a.png')"></a>
+          <a class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn/icon.png')"></a>
+        </div></body></html>"#;
+        let http = MapHttp::new(vec![
+            (
+                "https://t.me/demo/201?embed=1",
+                200,
+                embed.as_bytes().to_vec(),
+            ),
+            ("https://cdn/a.png", 200, png(800, 1200)),
+            ("https://cdn/icon.png", 200, png(32, 32)),
+        ]);
+        let meta = resolve_book(
+            &http,
+            "https://t.me/demo/201",
+            &FilterMemory::default(),
+            &FilterThresholds::default(),
+        )
+        .unwrap();
+        assert_eq!(meta.page_count, 1);
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        assert_eq!(stored.filtered.len(), 1);
+        assert!(stored.filtered[0].reason.contains("small"));
+    }
+
+    #[test]
+    fn telegraph_extracts_article_images_and_keeps_medium_logo() {
         let html = r#"<html><head><title>Telegraph QA</title></head><body><article>
             <figure><img src="/file/a.png"></figure>
             <figure><img src="/file/b.png"></figure>
@@ -1232,9 +1269,10 @@ mod tests {
             &FilterThresholds::default(),
         )
         .unwrap();
-        assert_eq!(meta.page_count, 3);
+        // 96×96 不小于 64×64，白名单来源不按通用最小尺寸误删。
+        assert_eq!(meta.page_count, 4);
         let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
-        assert_eq!(stored.filtered.len(), 1);
+        assert!(stored.filtered.is_empty());
     }
 
     /// 构造频道/预览页：每条消息可带发布时间、标题与 N 张相册图。

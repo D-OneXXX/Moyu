@@ -22,6 +22,7 @@ import { recordBreadcrumb } from "@/features/resilience";
 import { useAppVisible, isAppVisible } from "@/features/performance/visibility";
 import {
   api,
+  isOnlineEnabled,
   type BookInfo,
   type Dashboard,
   type LibraryStats,
@@ -40,10 +41,15 @@ import PixelPet from "@/components/PixelPet";
 import { toast, toastErr } from "@/components/Toast";
 import { localizeBackendError } from "@/features/errors/localize";
 import {
+  enableOnlineDirect,
+  isFeatureDisabledError,
+} from "@/features/online/direct";
+import {
   isFeatureEnabled,
   useFeatureEnabled,
 } from "@/features/features";
 import LibraryFilters, {
+  type ReadingFilter,
   type SortMode,
   type SourceFilter,
 } from "@/components/library/LibraryFilters";
@@ -96,6 +102,61 @@ function notifyError(cmd: string, error: unknown): void {
   toastErr(cmd, error);
 }
 
+/** 阅读状态筛选：未读只看从未推进过的书；在读/已读完按末页判定。 */
+function matchesReadingFilter(book: BookInfo, filter: ReadingFilter): boolean {
+  if (filter === "all") return true;
+  const finished =
+    book.pageCount > 0 && book.currentPage + 1 >= book.pageCount;
+  if (filter === "finished") return finished;
+  if (filter === "unread") return book.currentPage === 0 && !book.updatedAt;
+  return book.currentPage > 0 && book.currentPage + 1 < book.pageCount;
+}
+
+/** 书库粘贴直达只接受单个 http(s) 或 tg:// 链接。 */
+function pastedLink(raw: string): string | null {
+  const value = raw.trim();
+  if (!value || /\s/.test(value)) return null;
+  if (/^tg:\/\//i.test(value)) return value;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (!url.hostname) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+/** Telegram 频道根链接需要交给 /browser 展开章节，而不是直接解析成书。 */
+function isTelegramChannelRoot(raw: string): boolean {
+  const value = raw.trim().toLowerCase();
+  if (value.startsWith("tg://")) return true;
+  try {
+    const url = new URL(raw);
+    if (!["t.me", "telegram.me"].includes(url.hostname.toLowerCase())) {
+      return false;
+    }
+    const segments = url.pathname.split("/").filter(Boolean);
+    return (
+      segments.length === 1 ||
+      (segments[0] === "s" && segments.length === 2)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isEditableElement(node: EventTarget | null): boolean {
+  if (!(node instanceof HTMLElement)) return false;
+  const tag = node.tagName.toLowerCase();
+  return (
+    tag === "input" ||
+    tag === "textarea" ||
+    tag === "select" ||
+    node.isContentEditable
+  );
+}
+
 /**
  * 书库主页（`/`）— 冰蓝胶囊浅色画布：
  * 大标题 + 胶囊搜索 + 分段筛选 + 书卡网格 + 详情 Sheet。
@@ -113,6 +174,7 @@ export default function LibraryPage() {
   // 方案 C：默认「最近打开」（后端按 last_opened_at 排序）；可切「最近阅读」。
   const [sortMode, setSortMode] = useState<SortMode>("recentOpened");
   const [sourceFilter, setSourceFilter] = useState(readSourceFilter);
+  const [readingFilter, setReadingFilter] = useState<ReadingFilter>("all");
   const [dash, setDash] = useState<Dashboard | null>(null);
   // ADR-032：后端聚合的合集计数；命令失败时为 null，回落本地已加载页计数。
   const [stats, setStats] = useState<LibraryStats | null>(null);
@@ -236,11 +298,17 @@ export default function LibraryPage() {
             (book) =>
               (book.sourceType === "local") === (sourceFilter === "local"),
           );
+    const byReading =
+      readingFilter === "all"
+        ? filtered
+        : filtered.filter((book) => matchesReadingFilter(book, readingFilter));
     // 方案 C：后端默认按「最近打开」（last_opened_at）排序；
     // 「最近阅读」需要按 updated_at 重排（后端只提供一种顺序）。
-    if (sortMode !== "recentRead") return filtered;
-    return [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }, [books, sourceFilter, safeMode, sortMode]);
+    if (sortMode !== "recentRead") return byReading;
+    return [...byReading].sort((a, b) =>
+      b.updatedAt.localeCompare(a.updatedAt),
+    );
+  }, [books, readingFilter, sourceFilter, safeMode, sortMode]);
 
   const accessibleAllBooks = useMemo(
     () =>
@@ -563,6 +631,103 @@ export default function LibraryPage() {
     [debounced, nav, reload, relocatingBook, t, ws],
   );
 
+  // 书库粘贴直达：合法 http(s)/tg 链接无需先找到地址栏。
+  const pasteBusyRef = useRef(false);
+  const openPastedLink = useCallback(
+    async (link: string) => {
+      if (pasteBusyRef.current) return;
+      if (isTelegramChannelRoot(link)) {
+        recordBreadcrumb("onlineRead");
+        nav(`/browser?url=${encodeURIComponent(link)}`);
+        return;
+      }
+      if (!isOnlineEnabled()) {
+        toast(translate("browser.directDisabled"), {
+          label: translate("common.enableNow"),
+          onAction: () => {
+            void enableOnlineDirect();
+          },
+        });
+        return;
+      }
+      pasteBusyRef.current = true;
+      try {
+        const book = await api.resolveOnlineUrl(link);
+        recordBreadcrumb("onlineRead");
+        toast(translate("browser.toastResolved", { title: book.title }));
+        nav(`/reader/${encodeURIComponent(book.id)}`);
+      } catch (e) {
+        if (isFeatureDisabledError(e)) {
+          toast(translate("error.featureDisabled"), {
+            label: translate("common.enableNow"),
+            onAction: () => {
+              void enableOnlineDirect();
+            },
+          });
+        } else {
+          toastErr("resolve_online_url", e);
+        }
+      } finally {
+        pasteBusyRef.current = false;
+      }
+    },
+    [nav],
+  );
+
+  useEffect(() => {
+    if (safeMode) return;
+    const onPaste = (event: ClipboardEvent) => {
+      // 输入态与浮层内粘贴保持原生行为，绝不抢用户输入。
+      if (
+        isEditableElement(document.activeElement) ||
+        isEditableElement(event.target)
+      ) {
+        return;
+      }
+      if (
+        sheetOpen ||
+        selectMode ||
+        ctxMenu !== null ||
+        confirmDelete !== null ||
+        relocatingBook !== null ||
+        opdsOpen
+      ) {
+        return;
+      }
+      const link = pastedLink(
+        event.clipboardData?.getData("text/plain") ?? "",
+      );
+      if (!link) return;
+      event.preventDefault();
+      void openPastedLink(link);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [
+    confirmDelete,
+    ctxMenu,
+    openPastedLink,
+    opdsOpen,
+    relocatingBook,
+    safeMode,
+    selectMode,
+    sheetOpen,
+  ]);
+
+  // 切换阅读状态胶囊时回到列表顶部，避免沿用上一筛选的窗口偏移。
+  useEffect(() => {
+    setScroll((prev) => (prev.top === 0 ? prev : { ...prev, top: 0 }));
+    let node: HTMLElement | null = gridRef.current?.parentElement ?? null;
+    while (node) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if (overflowY === "auto" || overflowY === "scroll") {
+        node.scrollTo({ top: 0 });
+        break;
+      }
+      node = node.parentElement;
+    }
+  }, [readingFilter]);
+
   const toggleCheck = useCallback((bookId: string) => {
     setCheckedIds((prev) => {
       const next = new Set(prev);
@@ -745,9 +910,11 @@ export default function LibraryPage() {
   const emptyMessage =
     debounced.length > 0
       ? t("library.emptySearch")
-      : sourceFilter !== "all"
-        ? t("library.emptyFilter")
-        : t("library.emptyLibrary");
+      : readingFilter !== "all"
+        ? t("library.emptyReadingFilter")
+        : sourceFilter !== "all"
+          ? t("library.emptyFilter")
+          : t("library.emptyLibrary");
 
   return (
     <div className="mx-auto w-full min-w-0 max-w-[1500px] px-5 pb-24 pt-4 sm:px-8">
@@ -845,6 +1012,8 @@ export default function LibraryPage() {
         <LibraryFilters
           sourceFilter={sourceFilter}
           onSourceFilterChange={setSourceFilter}
+          readingFilter={readingFilter}
+          onReadingFilterChange={setReadingFilter}
           groupSeries={groupSeries}
           onGroupSeriesChange={setGroupSeries}
           sortMode={sortMode}

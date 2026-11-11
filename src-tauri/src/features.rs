@@ -1,7 +1,7 @@
 //! 可选大功能的唯一注册表与后端门卫。
 //!
 //! 关闭语义：前端隐藏入口 + 后端命令返回稳定码 `feature-disabled`。
-//! 默认值以产品规格为准：除在线直读外全部开启；条漫保持现有实际体验。
+//! 默认值以产品规格为准：9 项功能默认全部开启；用户仍可在设置中逐项关闭。
 
 use serde::{Deserialize, Serialize};
 
@@ -133,7 +133,7 @@ impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
             webtoon: true,
-            online: false,
+            online: true,
             browser: true,
             pdf: true,
             opds: true,
@@ -164,7 +164,7 @@ mod tests {
     fn defaults_match_contract() {
         let f = FeatureFlags::default();
         assert!(f.webtoon);
-        assert!(!f.online);
+        assert!(f.online);
         assert!(f.browser && f.pdf && f.opds && f.web_access);
         assert!(f.updates && f.backup && f.diagnostics);
     }

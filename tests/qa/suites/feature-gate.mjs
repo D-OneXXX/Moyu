@@ -5,7 +5,7 @@
  * - 开发者入口集中展示 9 项门卫，并使用 set_feature_enabled 写入；
  * - 关闭 OPDS / Web Access / 浏览器后，入口不消失、挂载不发后端查询，
  *   只显示可恢复占位，并能在原地一键恢复；
- * - “恢复默认模块配置”回到既定默认值（online=false，其余 true）。
+ * - “恢复默认模块配置”回到既定默认值（9 项全部开启）。
  *
  * 本套件不启动 LAN 监听、不创建配对、不下载任何内容；所有写入在 finally
  * 中恢复默认值，避免污染后续套件。
@@ -15,7 +15,7 @@ import { fail, ok } from "../lib/report.mjs";
 
 const DEFAULTS = {
   webtoon: true,
-  online: false,
+  online: true,
   browser: true,
   pdf: true,
   opds: true,
@@ -72,8 +72,8 @@ export async function runFeatureGateSuite(ctx, report) {
       const switches = ids.map((id) => root?.querySelector('[data-testid="developer-feature-' + id + '"]'));
       return {
         count: switches.filter(Boolean).length,
-        onlineOff: switches[1]?.getAttribute("aria-checked") === "false",
-        othersOn: switches.filter((_, index) => index !== 1).every(
+        onlineOn: switches[1]?.getAttribute("aria-checked") === "true",
+        othersOn: switches.every(
           (node) => node?.getAttribute("aria-checked") === "true",
         ),
         hasReset: !!root?.querySelector('[data-testid="developer-feature-reset"]'),
@@ -81,7 +81,7 @@ export async function runFeatureGateSuite(ctx, report) {
     })()`);
     if (
       panel.count !== 9 ||
-      !panel.onlineOff ||
+      !panel.onlineOn ||
       !panel.othersOn ||
       !panel.hasReset
     ) {
@@ -90,7 +90,7 @@ export async function runFeatureGateSuite(ctx, report) {
         "feature-gate:panel-matrix",
         "开发者总控未展示 9 项门卫或默认值错误",
         JSON.stringify(panel),
-        "9 个开关，online 默认关闭、其余默认开启，并提供恢复默认按钮",
+        "9 个开关，online 与其余默认开启，并提供恢复默认按钮",
         JSON.stringify(panel),
         "检查 DeveloperFeaturePanel 的 FEATURE_REGISTRY 遍历与默认值徽章",
       );

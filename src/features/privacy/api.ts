@@ -42,6 +42,8 @@ export interface ClearTracesResult {
   webviewsCleared: number;
   bytesFreed: number;
   sessionHeadersCleared: boolean;
+  /** 辅助浏览器独立 Profile 已关闭并清空（#349）。 */
+  browserProfileCleared: boolean;
   timestamp: string;
 }
 

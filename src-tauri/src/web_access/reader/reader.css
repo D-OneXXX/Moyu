@@ -339,6 +339,19 @@ button:disabled {
   transform: scale(0.97);
 }
 
+.card-disabled {
+  opacity: 0.78;
+  cursor: not-allowed;
+}
+
+.card-disabled:active {
+  transform: none;
+}
+
+.card-disabled .poster {
+  border-style: dashed;
+}
+
 .poster {
   position: relative;
   aspect-ratio: 3 / 4;
@@ -403,6 +416,15 @@ button:disabled {
 
 .badge-missing {
   background: rgba(180, 83, 9, 0.9);
+}
+
+.badge-pdf {
+  left: auto;
+  right: 6px;
+  top: 6px;
+  bottom: auto;
+  background: rgba(56, 168, 248, 0.9);
+  color: #09090b;
 }
 
 .badge-top {

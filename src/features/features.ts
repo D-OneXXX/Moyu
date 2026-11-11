@@ -44,7 +44,7 @@ export const ONLINE_FEATURE: FeatureDefinition = {
   id: "online",
   settingKey: "online",
   mirrorKey: "mr-feature-online",
-  defaultEnabled: false,
+  defaultEnabled: true,
   titleKey: "settings.online.enableTitle",
   descriptionKey: "settings.online.enableDescription",
   subsystemKey: "developer.subsystem.online",

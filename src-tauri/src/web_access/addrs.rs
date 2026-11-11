@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn preferred_order_puts_physical_home_lan_first() {
-        let mut addresses = vec![
+        let mut addresses = [
             lan("172.17.0.1", "Docker Desktop"),
             lan("172.28.64.1", "vEthernet (WSL)"),
             lan("192.168.1.30", "Wi-Fi"),
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn virtual_only_machine_still_yields_a_default() {
-        let mut addresses = vec![
+        let mut addresses = [
             lan("172.17.0.1", "Docker Desktop"),
             lan("192.168.56.1", "VirtualBox Host-Only"),
         ];

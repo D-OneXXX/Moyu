@@ -182,6 +182,17 @@ async function runOne(report, ctx, suite) {
       (id) => report.checks.some((check) => check.id === id && check.status === "pass"),
     )) {
       record(report, { id: "pdf:crashed", suite: "pdf", layer: "infrastructure", title: "PDF 完整套件运行至结尾且未中断", pass: true });
+    } else if (suite.id !== "pdf") {
+      // A suite that returns without throwing ran to completion. Recording the
+      // suite-level pass closes historical `<suite>:crashed` P0 findings instead
+      // of leaving them open forever when no individual check uses that id.
+      record(report, {
+        id: `${suite.id}:crashed`,
+        suite: suite.id,
+        layer: "infrastructure",
+        title: `${suite.title} 完整套件运行至结尾且未中断`,
+        pass: true,
+      });
     }
   } catch (error) {
     fail(report, {

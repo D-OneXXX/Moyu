@@ -489,6 +489,15 @@ pub(crate) fn process_handoff_value(
     commands::ingest_resolved_batch(state, metas).map_err(HandoffError::from)
 }
 
+/// 解析交接请求体：JSON，或远程页面受 CSP `connect-src` 限制时
+/// 由隐藏 `<form enctype="text/plain">` 提交的 `payload=<json>` 载荷。
+fn parse_handoff_body(body: &[u8]) -> Option<serde_json::Value> {
+    let text = std::str::from_utf8(body).ok()?;
+    let text = text.trim();
+    let text = text.strip_prefix("payload=").unwrap_or(text).trim();
+    serde_json::from_str(text).ok()
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     token: &str,
@@ -527,9 +536,9 @@ fn handle_connection(
             let _ = respond(&mut stream, 204, "text/plain", b"");
         }
         "POST" => {
-            let value: serde_json::Value = match serde_json::from_slice(&request.body) {
-                Ok(value) => value,
-                Err(_) => {
+            let value = match parse_handoff_body(&request.body) {
+                Some(value) => value,
+                None => {
                     respond_error(&mut stream, 400, "invalid JSON");
                     return;
                 }
@@ -789,6 +798,16 @@ mod tests {
         send_request(port, &request)
     }
 
+    /// 隐藏表单 `enctype="text/plain"` 的实际请求体：`payload=<json>\r\n`。
+    fn post_plain(port: u16, token: &str, body: &str) -> String {
+        let payload = format!("payload={body}\r\n");
+        let request = format!(
+            "POST /handoff?token={token} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        send_request(port, &request)
+    }
+
     fn processor(
         st: Arc<AppState>,
         allow_session_headers: bool,
@@ -828,6 +847,39 @@ mod tests {
             assert!(script.contains(needle), "缺少 {needle}");
         }
         assert!(!script.contains("document.cookie"));
+    }
+
+    #[test]
+    fn plain_form_payload_imports_when_csp_blocks_fetch() {
+        let st = test_state();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (port, handle) = spawn_server(
+            test_token(),
+            cancel.clone(),
+            || true,
+            processor(st.clone(), false),
+        );
+        let body =
+            r#"{"chapters":[{"url":"http://e/form","title":"Form","pages":["http://x/1.jpg"]}]}"#;
+        let response = post_plain(port, &test_token(), body);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let id = crate::db::book_id_for_path("http://e/form");
+        let stored = st
+            .db
+            .with(|conn| crate::db::get_book(conn, &id).map_err(|e| e.to_string()))
+            .unwrap();
+        assert!(stored.is_some(), "表单回退载荷应入库");
+        cancel.store(true, Ordering::SeqCst);
+        assert!(matches!(handle.join().unwrap(), HandoffOutcome::Stopped));
+    }
+
+    #[test]
+    fn parse_handoff_body_accepts_json_and_form_prefix() {
+        let json = br#"{"chapters":[]}"#;
+        assert!(parse_handoff_body(json).is_some());
+        let form = b"payload={\"chapters\":[]}\r\n";
+        assert!(parse_handoff_body(form).is_some());
+        assert!(parse_handoff_body(b"payload=not-json").is_none());
     }
 
     #[test]

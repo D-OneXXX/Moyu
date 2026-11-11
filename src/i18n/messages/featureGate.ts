@@ -19,7 +19,7 @@ const zhCN = {
   "developer.resetting": "正在恢复默认…",
   "developer.resetConfirmTitle": "恢复默认模块配置？",
   "developer.resetConfirmMessage":
-    "将写入 9 项模块门卫的默认值：在线直读默认关闭，其余 8 项默认开启。已关闭的关联子系统不会自动重启，需要用户再次手动开启服务。",
+    "将写入 9 项模块门卫的默认值：9 项全部默认开启。已关闭的关联子系统不会自动重启，需要用户再次手动开启服务。",
   "developer.resetDone": "已恢复默认模块配置",
   "developer.resetPartial": "部分模块恢复失败：{detail}",
   "developer.safeMode":
@@ -63,7 +63,7 @@ const zhTW = {
   "developer.resetting": "正在恢復預設…",
   "developer.resetConfirmTitle": "恢復預設模組設定？",
   "developer.resetConfirmMessage":
-    "將寫入 9 項模組閘門的預設值：線上直讀預設關閉，其餘 8 項預設開啟。已關閉的關聯子系統不會自動重啟，需要使用者再次手動開啟服務。",
+    "將寫入 9 項模組閘門的預設值：9 項全部預設開啟。已關閉的關聯子系統不會自動重啟，需要使用者再次手動開啟服務。",
   "developer.resetDone": "已恢復預設模組設定",
   "developer.resetPartial": "部分模組恢復失敗：{detail}",
   "developer.safeMode":
@@ -107,7 +107,7 @@ const en = {
   "developer.resetting": "Restoring defaults…",
   "developer.resetConfirmTitle": "Restore default module gates?",
   "developer.resetConfirmMessage":
-    "Writes the default values for all nine gates: online direct reading is off by default and the other eight are on. Stopped subsystems do not restart automatically; the user must start the service again.",
+    "Writes the default values for all nine gates: all nine are on by default. Stopped subsystems do not restart automatically; the user must start the service again.",
   "developer.resetDone": "Default module gates restored",
   "developer.resetPartial": "Some modules failed to restore: {detail}",
   "developer.safeMode":
@@ -152,7 +152,7 @@ const es = {
   "developer.resetting": "Restaurando valores predeterminados…",
   "developer.resetConfirmTitle": "¿Restaurar los controles predeterminados?",
   "developer.resetConfirmMessage":
-    "Escribe los valores predeterminados de los nueve controles: la lectura directa en línea queda desactivada y los otros ocho activados. Los subsistemas detenidos no se reinician solos; el usuario debe volver a iniciar el servicio.",
+    "Escribe los valores predeterminados de los nueve controles: los nueve quedan activados. Los subsistemas detenidos no se reinician solos; el usuario debe volver a iniciar el servicio.",
   "developer.resetDone": "Controles predeterminados restaurados",
   "developer.resetPartial": "Algunos módulos no se restauraron: {detail}",
   "developer.safeMode":
@@ -242,7 +242,7 @@ const ko = {
   "developer.resetting": "기본값 복원 중…",
   "developer.resetConfirmTitle": "기본 모듈 설정을 복원할까요?",
   "developer.resetConfirmMessage":
-    "게이트 9개의 기본값을 기록합니다. 온라인 직접 읽기는 기본적으로 꺼져 있고 나머지 8개는 켜져 있습니다. 중지된 하위 시스템은 자동으로 다시 시작되지 않으며 사용자가 서비스를 다시 시작해야 합니다.",
+    "게이트 9개의 기본값을 기록합니다. 9개 모두 기본적으로 켜져 있습니다. 중지된 하위 시스템은 자동으로 다시 시작되지 않으며 사용자가 서비스를 다시 시작해야 합니다.",
   "developer.resetDone": "기본 모듈 설정을 복원했습니다",
   "developer.resetPartial": "일부 모듈을 복원하지 못했습니다: {detail}",
   "developer.safeMode":

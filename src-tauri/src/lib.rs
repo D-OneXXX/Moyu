@@ -892,12 +892,12 @@ mod settings_feature_tests {
     }
 
     #[test]
-    fn hydrate_defaults_keep_webtoon_on_and_online_off() {
+    fn hydrate_defaults_keep_optional_features_on() {
         let conn = conn();
         let mut s = Settings::default();
         hydrate_settings(&conn, &mut s).unwrap();
         assert!(s.features.webtoon);
-        assert!(!s.features.online);
+        assert!(s.features.online);
         assert!(s.features.pdf);
     }
 

@@ -129,6 +129,18 @@ browser WebView
 - Online image filtering uses layered signals (URL/DOM, dimensions, sequence clustering, and
   site profiles). It is not a substitute for the user’s responsibility for the content they
   access.
+- HTML and Telegraph candidates carry a monotonic DOM index. Header probes, path clustering,
+  deduplication, and zero-result fallbacks may change scores but never the final page order.
+  Main-content containers (`entry-content`, `post-content`, `chapter-content`,
+  `reading-content`, `tl_article_content`, `_tl_editor`) scope extraction and exclude
+  Jetpack/YARPP/share/comment noise; WordPress original-file attributes and wrapping image
+  anchors are preferred over thumbnail `src` URLs.
+- Telegraph article images are treated as author content: banner, keyword, and isolated
+  heuristics are disabled; only icons under 64 px on both axes are dropped.
+- The browser toolbar imports the whole document in DOM order, not just the viewport. If a page
+  CSP blocks the loopback fetch, it falls back to a hidden form POST; the handoff server accepts
+  form-urlencoded payloads. A re-import may replace a manifest only when the new page count is
+  not smaller than the stored one; shrinking still requires an explicit user action.
 
 ## Privacy and diagnostics
 
@@ -183,6 +195,9 @@ browser WebView
     inline with fixed colors and offered no replacement entry point;
   - the desktop shortcut, taskbar, and system tray icons always come from the bundled build
     resources (`src-tauri/icons/`), and the tray never reads a user-supplied image.
+  - the tray is installed once during setup (`tray::install`); its menu exposes the LAN toggle,
+    show-main-window, and quit actions, its tooltip starts with `Moyu`, and `close_to_tray`
+    hides the window only when a tray host exists.
   Changing one side must never affect the other, and neither side is user-customizable.
 - The skin system is a **reserved (dormant) framed-viewport layout**, not an overlay system:
   - `SkinCanvasFrame` paints the full-window canvas (theme background, artwork, outer frame);

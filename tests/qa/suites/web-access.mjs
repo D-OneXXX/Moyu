@@ -1,139 +1,64 @@
 /**
  * Web Access pairing UI harness (Issue #258).
  *
- * This suite drives the real desktop front-end through CDP, but replaces only
- * the `web_access_*` control-plane IPC calls with a deterministic in-page
- * fixture. It therefore exercises the actual React panel, countdown timers,
- * confirmation dialog, deny/cancel wiring and expiry convergence without
- * binding a LAN listener, generating certificates or pairing a real phone.
+ * This suite drives the real desktop front-end through CDP. The Vite QA plugin
+ * (`qaWebAccessFixturePlugin`) aliases only `src/features/web-access/api.ts` to
+ * `tests/qa/lib/web-access-api-fixture.mjs`; the fixture delegates to the real
+ * backend unless the suite installs `window.__QA_WEB_ACCESS__`. That keeps the
+ * actual React panel, countdown timers, confirmation dialog, deny/cancel wiring
+ * and expiry convergence under test without binding a LAN listener, creating
+ * certificates, pairing a real phone, or replacing the Tauri IPC bridge.
  *
- * Evidence level: automated DOM integration against the real UI bundle with
- * mocked control-plane responses. It is NOT a substitute for the L3 real
+ * Evidence level: automated DOM integration against the real UI bundle with a
+ * deterministic control-plane fixture. It is NOT a substitute for the L3 real
  * phone/TLS pairing run; that remains separately gated.
  */
 import { fail, ok } from "../lib/report.mjs";
 
-const INSTALL_MOCK = `(() => {
-  const internals = window.__TAURI_INTERNALS__;
-  if (!internals || typeof internals.invoke !== "function") return false;
-  if (window.__qaWebAccess) return true;
-  const original = internals.invoke.bind(internals);
+const SETUP_FIXTURE = `(() => {
   const now = Date.now();
-  const status = {
-    phase: "enabled",
-    transport: "https",
-    bindAddress: "192.168.1.10",
-    bindIp: "192.168.1.10",
-    port: 7443,
-    caInitialized: true,
-    rootFingerprintSha256: "aa".repeat(32),
-    leafFingerprintSha256: "bb".repeat(32),
-    leafNotAfter: Math.floor(now / 1000) + 86400,
-    certificateState: "valid",
-    deviceCount: 0,
-    pendingClaimCount: 1,
-    pairingActive: true,
-    lastErrorCode: null,
-    stopReason: null,
-  };
   const claim = () => ({
     claimId: "claim_qa_1",
     deviceName: "Pixel QA",
     sourceIp: "192.168.1.44",
     createdAtUnixMs: now,
-    expiresAtUnixMs: Date.now() + 20000,
+    // L3 下设置页加载/打开 disclosure 可能耗时十几秒；初始夹具必须活得
+    // 足够久，否则 claim 会在面板首次拉取前被过滤，造成假失败。过期收敛
+    // 另由 __qaSetWebAccessClaim(2) 覆盖。
+    expiresAtUnixMs: now + 180000,
   });
-  const pairing = {
-    window: {
-      url: "https://192.168.1.10:7443/?pair=1#pair_" + "c".repeat(32),
-      expiresAtUnixMs: now + 120000,
-    },
-    claims: [claim()],
-  };
-  const devices = [];
-  const calls = [];
   const state = {
-    status,
-    pairing,
-    devices,
-    calls,
-    claimId: "claim_qa_1",
-    denied: null,
+    status: {
+      phase: "enabled",
+      transport: "https",
+      bindAddress: "192.168.1.10",
+      bindIp: "192.168.1.10",
+      port: 7443,
+      caInitialized: true,
+      rootFingerprintSha256: "aa".repeat(32),
+      leafFingerprintSha256: "bb".repeat(32),
+      leafNotAfter: Math.floor(now / 1000) + 86400,
+      certificateState: "valid",
+      deviceCount: 0,
+      pendingClaimCount: 1,
+      pairingActive: true,
+      lastErrorCode: null,
+      stopReason: null,
+    },
+    pairing: {
+      window: {
+        url: "https://192.168.1.10:7443/?pair=1#pair_" + "c".repeat(32),
+        expiresAtUnixMs: now + 300000,
+      },
+      claims: [claim()],
+    },
+    addresses: [{ ip: "192.168.1.10", interface: "Ethernet" }],
+    devices: [],
+    calls: [],
     approved: null,
+    denied: null,
   };
-  const pairingState = () => ({
-    window: state.pairing.window,
-    // The backend prunes expired claims; emulate that on every snapshot so the
-    // panel's local expiry -> refreshPairing() convergence can be asserted.
-    claims: (state.pairing.claims || []).filter(
-      (item) => item.expiresAtUnixMs > Date.now(),
-    ),
-  });
-  const pendingCount = () => pairingState().claims.length;
-  const api = {
-    web_access_status: () => ({ ...state.status, pendingClaimCount: pendingCount() }),
-    web_access_addresses: () => [{ ip: "192.168.1.10", interface: "Ethernet" }],
-    web_access_pairing_state: () => {
-      const snap = pairingState();
-      state.status.pairingActive = snap.window !== null || snap.claims.length > 0;
-      return snap;
-    },
-    web_access_pairing_start: () => {
-      calls.push("pairing-start");
-      state.pairing.window = {
-        url: "https://192.168.1.10:7443/?pair=1#pair_" + "d".repeat(32),
-        expiresAtUnixMs: Date.now() + 120000,
-      };
-      state.status.pairingActive = true;
-      return state.pairing.window;
-    },
-    web_access_pairing_cancel: () => {
-      calls.push("pairing-cancel");
-      state.pairing.window = null;
-      state.pairing.claims = [];
-      state.status.pairingActive = false;
-      state.status.pendingClaimCount = 0;
-      return state.status;
-    },
-    web_access_pairing_deny: (_event, args) => {
-      calls.push("deny:" + String(args && args.claimId));
-      state.denied = String(args && args.claimId);
-      state.pairing.claims = [];
-      state.status.pendingClaimCount = 0;
-      return state.status;
-    },
-    web_access_pairing_approve: (_event, args) => {
-      calls.push("approve:" + String(args && args.claimId));
-      state.approved = String(args && args.claimId);
-      state.pairing.claims = [];
-      state.status.pendingClaimCount = 0;
-      state.status.deviceCount = 1;
-      return state.status;
-    },
-    web_access_stop: () => {
-      calls.push("stop");
-      state.status.phase = "disabled";
-      state.status.pairingActive = false;
-      state.pairing.window = null;
-      state.pairing.claims = [];
-      state.status.pendingClaimCount = 0;
-      return state.status;
-    },
-    web_access_devices_list: () => state.devices,
-    web_access_device_revoke: () => {
-      state.devices = [];
-      state.status.deviceCount = 0;
-      return true;
-    },
-  };
-  internals.invoke = async (command, args, options) => {
-    if (Object.prototype.hasOwnProperty.call(api, command)) {
-      calls.push(command);
-      return api[command](command, args, options);
-    }
-    return original(command, args, options);
-  };
-  window.__qaWebAccess = state;
+  window.__QA_WEB_ACCESS__ = state;
   window.__qaSetWebAccessClaim = (seconds) => {
     state.pairing.claims = [
       {
@@ -145,13 +70,6 @@ const INSTALL_MOCK = `(() => {
       },
     ];
     state.status.pendingClaimCount = 1;
-    return true;
-  };
-  window.__qaRestoreWebAccess = () => {
-    internals.invoke = original;
-    delete window.__qaWebAccess;
-    delete window.__qaSetWebAccessClaim;
-    delete window.__qaRestoreWebAccess;
     return true;
   };
   return true;
@@ -181,32 +99,57 @@ export async function runWebAccessSuite(ctx, report) {
   await page.eval(
     `window.__TAURI_INTERNALS__.invoke("set_feature_enabled", { feature: "webAccess", enabled: true })`,
   );
-  const installed = await page.eval(INSTALL_MOCK);
-  if (!installed) {
-    fail(report, {
-      id: "web-access:mock-install",
-      suite: "web-access",
-      layer: "infrastructure",
-      title: "无法安装 Web Access IPC 夹具",
-      severity: "P0",
-      details: "window.__TAURI_INTERNALS__.invoke 不可用",
-      location: "tests/qa/suites/web-access.mjs",
-    });
-    return;
-  }
+  await page.eval(SETUP_FIXTURE);
 
   try {
-    await ctx.goto("#/settings?tab=privacy");
+    // Web Access 挂在「网络与在线源」分区，不是隐私分区；深链必须与
+    // SettingsTab 的 network 分区一致，否则面板根本不会挂载。
+    await ctx.goto("#/settings?tab=network");
     page = ctx.page;
     await page.waitFor(
-      "!!document.querySelector('[data-testid=\"settings-web-access\"]') || !!document.querySelector('[data-testid=\"web-access-advanced\"]')",
-      { timeout: 15000, label: "web access settings card" },
+      "!!document.querySelector('[data-testid=\"settings-tab-network\"]')",
+      { timeout: 15000, label: "settings tabs" },
+    );
+    const fixtureActive = await page
+      .waitFor("window.__QA_WEB_ACCESS_FIXTURE_ACTIVE__ === true", {
+        timeout: 10000,
+        label: "web access fixture active",
+      })
+      .then(() => true)
+      .catch(() => false);
+    if (!fixtureActive) {
+      fail(report, {
+        id: "web-access:fixture-inactive",
+        suite: "web-access",
+        layer: "infrastructure",
+        title: "Web Access Vite 夹具未生效",
+        severity: "P0",
+        details:
+          "面板没有调用夹具模块；QA 可能复用了未设置 MR_QA_WEB_ACCESS_FIXTURE=1 的普通 dev server。",
+        location: "vite.config.ts",
+        expected:
+          "QA dev server 启用 qaWebAccessFixturePlugin 并加载 tests/qa/lib/web-access-api-fixture.mjs",
+        actual: "window.__QA_WEB_ACCESS_FIXTURE_ACTIVE__ 未置位",
+        fix: "停止复用中的 dev server，让 run-qa.mjs 启动自己的 Vite 实例",
+      });
+      return;
+    }
+    // 一级卡片只有摘要与「打开高级设置」入口；明细面板通过 disclosure
+    // 放在居中弹窗里，关闭时不挂载，必须显式打开后才会出现
+    // settings-web-access / claim 行。
+    await page.waitFor(
+      "!!document.querySelector('[data-testid=\"web-access-advanced\"]')",
+      { timeout: 15000, label: "web access advanced trigger" },
     );
     await page.eval(`(() => {
       const trigger = document.querySelector('[data-testid="web-access-advanced"]');
       if (trigger) trigger.click();
       return !!trigger;
     })()`);
+    await page.waitFor(
+      "!!document.querySelector('[data-testid=\"settings-web-access\"]')",
+      { timeout: 15000, label: "web access settings card" },
+    );
     await page.waitFor(
       "!!document.querySelector('[data-testid=\"settings-web-access\"] [data-testid=\"web-access-claim-row\"]')",
       { timeout: 15000, label: "pending pairing claim" },
@@ -291,7 +234,7 @@ export async function runWebAccessSuite(ctx, report) {
       const node = document.querySelector('[role="alertdialog"]');
       return node ? node.textContent || "" : "";
     })()`);
-    const approvedEarly = await page.eval("window.__qaWebAccess.approved");
+    const approvedEarly = await page.eval("window.__QA_WEB_ACCESS__.approved");
     if (!/entire library and reading progress/i.test(dialog) || !/self-reported/i.test(dialog) || approvedEarly) {
       failCheck(
         report,
@@ -330,7 +273,7 @@ export async function runWebAccessSuite(ctx, report) {
       "!document.querySelector('[data-testid=\"web-access-claim-row\"]')",
       { timeout: 8000, label: "claim denied" },
     );
-    const denied = await page.eval("window.__qaWebAccess.denied");
+    const denied = await page.eval("window.__QA_WEB_ACCESS__.denied");
     if (denied !== "claim_qa_1") {
       failCheck(
         report,
@@ -376,7 +319,7 @@ export async function runWebAccessSuite(ctx, report) {
       "!!document.querySelector('[data-testid=\"web-access-pairing-countdown\"]')",
       { timeout: 8000, label: "pairing restarted" },
     );
-    const calls = await page.eval("window.__qaWebAccess.calls.join(',')");
+    const calls = await page.eval("window.__QA_WEB_ACCESS__.calls.join(',')");
     if (!String(calls).includes("pairing-cancel") || !String(calls).includes("pairing-start")) {
       failCheck(
         report,
@@ -421,7 +364,9 @@ export async function runWebAccessSuite(ctx, report) {
         row: !!row,
         pendingZero:
           /Pending requests:\s*0/i.test(text) || /0 pending/i.test(text),
-        stateCalls: window.__qaWebAccess.calls.filter((c) => c === "web_access_pairing_state").length,
+        stateCalls: window.__QA_WEB_ACCESS__.calls.filter(
+          (name) => name === "web_access_pairing_state",
+        ).length,
       };
     })()`);
     if (expiry.row || !expiry.pendingZero || expiry.stateCalls < 2) {
@@ -448,7 +393,7 @@ export async function runWebAccessSuite(ctx, report) {
     // start" must route to the backend stop command instead of leaving a
     // half-bound service behind.
     await page.eval(`(() => {
-      const state = window.__qaWebAccess;
+      const state = window.__QA_WEB_ACCESS__;
       state.status.phase = "starting";
       state.status.bindAddress = null;
       state.status.port = null;
@@ -470,8 +415,8 @@ export async function runWebAccessSuite(ctx, report) {
       return !!button;
     })()`);
     await page.waitFor(
-      `window.__qaWebAccess.calls.includes("stop")`,
-      { timeout: 8000, label: "startup cancel routed to stop" },
+      `window.__QA_WEB_ACCESS__.calls.includes("stop")`,
+      { timeout: 8000, label: "startup cancellation routed to stop" },
     );
     ok(report, {
       id: "web-access:cancel-start",
@@ -481,6 +426,13 @@ export async function runWebAccessSuite(ctx, report) {
       details: "Cancel start -> web_access_stop",
     });
   } finally {
-    await ctx.page.eval("window.__qaRestoreWebAccess && window.__qaRestoreWebAccess()").catch(() => {});
+    await ctx.page
+      .eval(`(() => {
+        delete window.__QA_WEB_ACCESS__;
+        delete window.__QA_WEB_ACCESS_FIXTURE_ACTIVE__;
+        delete window.__qaSetWebAccessClaim;
+        return true;
+      })()`)
+      .catch(() => {});
   }
 }

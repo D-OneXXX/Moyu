@@ -242,17 +242,24 @@ export async function runCacheSuite(ctx, report) {
       label: "disk cache panel",
     });
     const ui = await page.eval(`(() => {
-      const slider = document.querySelector('#disk-cache-budget');
+      const sliderRoot = document.querySelector('#disk-cache-budget');
+      const sliderThumb =
+        sliderRoot?.querySelector('[role=slider]') ??
+        sliderRoot?.querySelector('[data-slot=slider-thumb]');
       const button = document.querySelector('[data-testid=clear-temp-cache]');
       const usage = document.querySelector('[data-testid=disk-cache-usage]');
       return {
-        slider: !!slider,
-        sliderMin: slider?.getAttribute('aria-valuemin') ?? slider?.min ?? null,
-        sliderMax: slider?.getAttribute('aria-valuemax') ?? slider?.max ?? null,
+        slider: !!sliderRoot,
+        sliderMin: sliderThumb?.getAttribute('aria-valuemin') ?? null,
+        sliderMax: sliderThumb?.getAttribute('aria-valuemax') ?? null,
         button: !!button,
         buttonDisabled: !!button?.disabled,
         usage: (usage?.textContent || '').replace(/\\s+/g, ' ').trim(),
-        progress: !!document.querySelector('[data-slot=progress]'),
+        // 模块四起，磁盘占用改为 render/online 双色分段条，不再使用
+        // shadcn Progress；断言必须跟着真实 DOM 契约走。
+        bar: !!document.querySelector('[data-testid=disk-cache-bar]'),
+        renderSegment: !!document.querySelector('[data-testid=disk-cache-render]'),
+        onlineSegment: !!document.querySelector('[data-testid=disk-cache-online]'),
       };
     })()`);
     const uiOk =
@@ -260,16 +267,18 @@ export async function runCacheSuite(ctx, report) {
       ui.button &&
       !ui.buttonDisabled &&
       ui.usage.length > 0 &&
-      ui.progress;
+      ui.bar &&
+      ui.renderSegment &&
+      ui.onlineSegment;
     if (!uiOk) {
       fail(report, {
         id: "cache:settings-ui",
         suite: "cache",
         layer: "e2e",
-        title: "设置页缓管理缺少滑杆/占用/一键清空",
+        title: "设置页缓存管理缺少滑杆/双色占用条/一键清空",
         severity: "P2",
         location: "src/pages/Settings.tsx",
-        expected: "磁盘滑杆、占用进度与一键清空按钮均可见可用",
+        expected: "磁盘滑杆、render/online 双色占用条与一键清空按钮均可见可用",
         actual: JSON.stringify(ui),
       });
     } else {

@@ -57,7 +57,7 @@ async function ensureVite(root, artifactDir) {
     ["run", "dev", "--", "--host", "127.0.0.1", "--port", "1420", "--strictPort"],
     {
       cwd: root,
-      env: process.env,
+      env: { ...process.env, MR_QA_WEB_ACCESS_FIXTURE: "1" },
       stdio: ["ignore", logFd, logFd],
       detached: process.platform !== "win32",
       shell: process.platform === "win32",

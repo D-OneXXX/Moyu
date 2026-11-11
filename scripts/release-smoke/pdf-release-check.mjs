@@ -444,12 +444,18 @@ function readingLogOf(db, bookId) {
 }
 
 /**
- * PDF 封面缓存校验：固定键 `<bookId>/000000@512x512.jpg`（见 render_cache.rs）。
+ * PDF 封面缓存校验：独立封面命名空间
+ * `<bookId>/covers/cover@512x512.bin`（见 render_cache.rs::cover_file_path）。
  * 写回路径只接受 JPEG（pdf.rs::validate_pdf_cover），因此这里要求 FF D8 FF。
  */
 export function coverCacheState(renderCacheDir, bookId) {
   const problems = [];
-  const file = path.join(renderCacheDir, bookId, `000000@${PDF_COVER_EDGE}x${PDF_COVER_EDGE}.jpg`);
+  const file = path.join(
+    renderCacheDir,
+    bookId,
+    "covers",
+    `cover@${PDF_COVER_EDGE}x${PDF_COVER_EDGE}.bin`,
+  );
   if (!fs.existsSync(file)) {
     return { problems: ["cover-cache-missing"], sha256: null, bytes: null, width: null, height: null };
   }

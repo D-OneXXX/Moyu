@@ -23,3 +23,14 @@ test("PR and main Rust caches have explicit scoped keys and release isolation", 
     assert.doesNotMatch(workflow(name), /moyu-v3-/);
   }
 });
+
+test("cache keys distinguish PR commits and do not persist merge-group caches", () => {
+  for (const name of ["ci.yml", "qa-l2.yml"]) {
+    const text = workflow(name);
+    const restoreKeys = text.match(/restore-keys: \|[\s\S]*?-main-/);
+    assert.ok(restoreKeys, name + " must include a main fallback");
+    assert.match(restoreKeys[0], /github\.event\.pull_request\.number/);
+    assert.match(text, /github\.event_name != 'merge_group'/);
+    assert.match(text, /steps\.rust_cache\.outputs\.cache-primary-key/);
+  }
+});

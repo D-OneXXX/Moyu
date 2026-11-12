@@ -1795,7 +1795,7 @@ function AboutBuildOriginCell() {
   );
 }
 
-/** 构建来源指纹值（非商用徽章行右侧）。 */
+/** 构建来源指纹值（许可证徽章行右侧）。 */
 function AboutBuildOriginValue() {
   const { t } = useI18n();
   const origin = useBuildOrigin();

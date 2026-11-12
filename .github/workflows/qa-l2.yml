@@ -125,6 +125,8 @@ jobs:
     if: needs.changes.result == 'success' && (github.event_name == 'merge_group' || github.event.pull_request.draft == false)
     runs-on: windows-2022
     timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout PR head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -147,17 +149,25 @@ jobs:
         if: needs.changes.outputs.runs_e2e == 'true'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - name: Cache Rust build
+      - name: Identify Rust cache environment
         if: needs.changes.outputs.runs_e2e == 'true'
-        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        id: rust_env
+        run: node scripts/ci/rust-cache-key.mjs
+
+      - name: Restore Rust build cache
+        if: needs.changes.outputs.runs_e2e == 'true'
+        id: rust_cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          workspaces: "./src-tauri -> target"
-          # Only trusted main pushes seed the default-branch cache. PRs restore, never save.
-          prefix-key: v2-moyu-trusted-debug
-          shared-key: desktop-debug-v1
-          cache-bin: false
-          env-vars: ImageOS CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+            !src-tauri/target/debug/incremental
+          key: moyu-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust_env.outputs.fingerprint }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', '**/rust-toolchain*', '**/.cargo/config*') }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: |
+            moyu-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust_env.outputs.fingerprint }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', '**/rust-toolchain*', '**/.cargo/config*') }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}-
+            moyu-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust_env.outputs.fingerprint }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', '**/rust-toolchain*', '**/.cargo/config*') }}-main-
 
       - name: Build frontend and debug binary
         if: needs.changes.outputs.runs_e2e == 'true'
@@ -192,6 +202,18 @@ jobs:
             tests/qa/artifacts/current/vite.log
             tests/qa/artifacts/current/data/logs/
             tests/qa/artifacts/current/screens/
+
+      - name: Save Rust build cache
+        if: ${{ success() && github.event_name != 'merge_group' && steps.rust_cache.outputs.cache-hit != 'true' && needs.changes.outputs.runs_e2e == 'true' }}
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+            !src-tauri/target/debug/incremental
+          key: ${{ steps.rust_cache.outputs.cache-primary-key }}
+
 
   gate:
     name: L2 · QA gate (known-issues)

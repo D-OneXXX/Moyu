@@ -2,20 +2,24 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { workflow } from "./contract-helpers.mjs";
 
-test("CI and QA share only the trusted debug cache key", () => {
+test("PR and main Rust caches have explicit scoped keys and release isolation", () => {
   for (const name of ["ci.yml", "qa-l2.yml"]) {
     const text = workflow(name);
-    assert.match(text, /prefix-key: v2-moyu-trusted-debug/);
-    assert.match(text, /shared-key: desktop-debug-v1/);
-    assert.match(text, /cache-bin: false/);
-    assert.match(text, /ImageOS CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG/);
+    assert.match(text, /actions\/cache\/restore@/);
+    assert.match(text, /actions\/cache\/save@/);
+    assert.match(text, /moyu-v3-/);
+    assert.match(text, /format\('pr-\{0\}', github\.event\.pull_request\.number\)/);
+    assert.match(text, /github\.event\.pull_request\.head\.sha \|\| github\.sha/);
+    assert.match(text, /-main-/);
+    assert.match(text, /github\.event_name != 'merge_group'/);
+    assert.match(text, /CARGO_INCREMENTAL: 0/);
+    assert.match(text, /merge_group:/);
   }
-  const ci = workflow("ci.yml");
-  const qa = workflow("qa-l2.yml");
-  assert.match(ci, /github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
-  assert.match(ci, /github\.event_name == 'workflow_dispatch' && github\.actor == github\.repository_owner/);
-  assert.match(qa, /save-if: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/);
-  assert.match(ci, /push:\s*\n\s*branches: \[main\]/);
-  assert.match(ci, /merge_group:/);
-  assert.match(qa, /merge_group:/);
+  const full = workflow("qa-full.yml");
+  assert.match(full, /prefix-key: v3-release-qa-trusted/);
+  assert.match(full, /steps\.source\.outputs\.sha == github\.sha/);
+  assert.match(full, /github\.ref == 'refs\/heads\/main'/);
+  for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
+    assert.doesNotMatch(workflow(name), /moyu-v3-/);
+  }
 });

@@ -525,7 +525,7 @@ fn title_or_url(title: Option<&str>, url: &url::Url) -> String {
     non_empty(title).unwrap_or_else(|| title_from_url(url))
 }
 
-fn series_hash(value: &str) -> String {
+pub(crate) fn series_hash(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
 

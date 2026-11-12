@@ -1281,10 +1281,59 @@ function buildHud() {
 
 function buildTapZones() {
   zonesEl = el("div", { class: "tapzones", "aria-hidden": "true" });
+  // 真实触屏会先 pointerup 再合成 click；统一由一个入口触发，并让紧随其后的
+  // 幽灵 click 失效，否则中央热区「打开 HUD」后会被第二次事件立即关掉。
+  let lastActivation = { zone: null, at: 0 };
+  const activate = (zone, row, col, event) => {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    lastActivation = { zone, at: Date.now() };
+    onZone(row, col);
+  };
   for (let row = 0; row < 3; row += 1) {
     for (let col = 0; col < 3; col += 1) {
       const zone = el("div", { class: "zone", "data-row": String(row), "data-col": String(col) });
-      zone.addEventListener("click", () => onZone(row, col));
+      let tracking = false;
+      let startX = 0;
+      let startY = 0;
+      let startAt = 0;
+      zone.addEventListener("pointerdown", (event) => {
+        tracking = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        startAt = Date.now();
+      });
+      zone.addEventListener("pointercancel", () => {
+        tracking = false;
+      });
+      zone.addEventListener("pointerup", (event) => {
+        if (!tracking) return;
+        tracking = false;
+        // 滚动 / 拖拽结束时不要误触九宫格。
+        if (
+          Math.hypot(event.clientX - startX, event.clientY - startY) > 12 ||
+          Date.now() - startAt > 900
+        ) {
+          return;
+        }
+        activate(zone, row, col, event);
+      });
+      zone.addEventListener("click", (event) => {
+        event.stopPropagation();
+        // 只屏蔽真实指针序列带来的合成 click；程序化 .click()（
+        // 键盘/自动化）isTrusted=false，必须照常切换，否则快速连点会失灵。
+        if (
+          event.isTrusted &&
+          lastActivation.zone === zone &&
+          Date.now() - lastActivation.at < 500
+        ) {
+          event.preventDefault();
+          return;
+        }
+        activate(zone, row, col, event);
+      });
       zonesEl.append(zone);
     }
   }

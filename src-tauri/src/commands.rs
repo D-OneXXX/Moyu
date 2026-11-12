@@ -26,7 +26,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use image::GenericImageView as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::State;
+use tauri::{Emitter, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::online::filter::{
     FilterAction, FilterMemory, FilterRule, FilterStats, FilterThresholds, FilteredPage,
@@ -2809,6 +2810,470 @@ pub async fn resolve_online_batch(
     .await
 }
 
+/// 图片选择器的候选页：只给规范化 URL 与已知尺寸，不落库。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineImagePreviewItem {
+    pub index: u32,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineImagePreview {
+    pub title: String,
+    pub canonical_url: String,
+    pub page_count: u32,
+    pub images: Vec<OnlineImagePreviewItem>,
+    /// 候选超过 `limit` 时为 true；前端必须明确提示只展示前 N 张。
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterLink {
+    pub url: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineBatchItem {
+    pub url: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub book: Option<BookInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnlineBatchProgress {
+    done: usize,
+    total: usize,
+    url: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// 把队列合集信息写进 `meta_json`。
+///
+/// `OnlineBookMeta` 上的 series 字段只是内存镜像；`to_book_info` 与后续
+/// 书库聚合读的是持久化 `StoredMeta`，只改结构体字段会导致合集在重启后丢失。
+fn apply_series_to_meta(
+    meta: &mut crate::online::direct::OnlineBookMeta,
+    series_id: &str,
+    series_title: &str,
+    chapter_index: u32,
+) -> Result<(), BackendError> {
+    meta.series_id = Some(series_id.to_string());
+    meta.series_title = Some(series_title.to_string());
+    meta.chapter_index = Some(chapter_index);
+    let mut stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json)
+        .map_err(|e| BackendError::Msg(format!("在线书元数据损坏：{e}")))?;
+    stored.series_id = Some(series_id.to_string());
+    stored.series_title = Some(series_title.to_string());
+    stored.chapter_index = Some(chapter_index);
+    meta.meta_json = serde_json::to_string(&stored)
+        .map_err(|e| BackendError::Msg(format!("在线书元数据序列化失败：{e}")))?;
+    Ok(())
+}
+
+fn preview_from_meta(
+    meta: &crate::online::direct::OnlineBookMeta,
+    limit: usize,
+) -> Result<OnlineImagePreview, BackendError> {
+    let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json)
+        .map_err(|e| BackendError::Msg(format!("在线书元数据损坏：{e}")))?;
+    let truncated = stored.pages.len() > limit;
+    let images = stored
+        .pages
+        .iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, page)| OnlineImagePreviewItem {
+            index: index as u32,
+            url: page.url.clone(),
+            width: page.width,
+            height: page.height,
+        })
+        .collect();
+    Ok(OnlineImagePreview {
+        title: meta.title.clone(),
+        canonical_url: meta.canonical_url.clone(),
+        page_count: meta.page_count as u32,
+        images,
+        truncated,
+    })
+}
+
+/// 解析目录/图集但不入库，返回图片选择器候选（带尺寸）。
+#[tauri::command]
+pub async fn preview_online_images(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    limit: Option<u32>,
+) -> Result<OnlineImagePreview, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let host = crate::online::filter::url_host(&url);
+        let memory = filter_memory_for(&st, &host)?;
+        let thresholds = thresholds_from(memory.profile.as_ref());
+        let meta = crate::online::resolve_with(&http, &url, &memory, &thresholds)?;
+        let limit = limit.unwrap_or(60).clamp(1, 200) as usize;
+        preview_from_meta(&meta, limit)
+    })
+    .await
+}
+
+/// 远程图片缩略图代理：桌面 CSP 只允许 `img-src 'self' data:`，选择器
+/// 不能直接把第三方 URL 塞进 `<img src>`。只返回缩小后的 data URL。
+#[tauri::command]
+pub async fn online_image_preview(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    referer: Option<String>,
+) -> Result<PageImage, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let canonical = crate::online::normalize_url(&url)?;
+        let headers =
+            crate::state::effective_online_headers_for(&st, &s.online_headers, canonical.as_str());
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let referer = referer.as_deref().map(str::trim).filter(|value| {
+            (value.starts_with("http://") || value.starts_with("https://"))
+                && !value.chars().any(char::is_control)
+        });
+        let response = http.get(
+            canonical.as_str(),
+            crate::online::PAGE_MAX_BYTES,
+            referer,
+            Some(canonical.as_str()),
+        )?;
+        if !(200..300).contains(&response.status) || response.body.is_empty() {
+            return Err(BackendError::Network(
+                "预览图片读取失败（online-fetch-failed）".into(),
+            ));
+        }
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(&response.body))
+            .with_guessed_format()
+            .map_err(|_| BackendError::Msg("预览图片格式不支持（online-fetch-failed）".into()))?
+            .into_dimensions()
+            .map_err(|_| BackendError::Msg("预览图片格式不支持（online-fetch-failed）".into()))?;
+        if width > 8192 || height > 8192 || u64::from(width) * u64::from(height) > 64_000_000 {
+            return Err(BackendError::Msg(
+                "预览图片尺寸超过安全上限（online-fetch-failed）".into(),
+            ));
+        }
+        let raw = source::RawPage {
+            bytes: response.body,
+            ext: String::new(),
+        };
+        let rendered = pipeline::render_raw(&raw, Some(180), Some(240))?;
+        Ok(to_page_image(0, rendered))
+    })
+    .await
+}
+
+/// 从目录页提取同源章节 `<a>` 链接，供批量队列勾选；不写库、不下载。
+#[tauri::command]
+pub async fn preview_chapter_links(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<Vec<ChapterLink>, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let base = crate::online::normalize_url(&url)?;
+        let headers =
+            crate::state::effective_online_headers_for(&st, &s.online_headers, base.as_str());
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let response = http.get(
+            base.as_str(),
+            crate::online::MANIFEST_MAX_BYTES,
+            Some(base.as_str()),
+            Some(base.as_str()),
+        )?;
+        if !(200..300).contains(&response.status) {
+            return Err(BackendError::Network(format!(
+                "目录页读取失败：HTTP {}（online-fetch-failed）",
+                response.status
+            )));
+        }
+        let text = crate::online::html::decode_html(&response.body);
+        let anchor =
+            regex::Regex::new(r#"(?is)<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>"#)
+                .map_err(|e| BackendError::Msg(format!("链接解析失败：{e}")))?;
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for caps in anchor.captures_iter(&text) {
+            if out.len() >= 300 {
+                break;
+            }
+            let raw = crate::online::html::decode_entities(caps[1].trim());
+            if raw.starts_with('#')
+                || raw.starts_with("javascript:")
+                || raw.starts_with("mailto:")
+                || raw.starts_with("tel:")
+            {
+                continue;
+            }
+            let Ok(target) = base.join(&raw) else {
+                continue;
+            };
+            if target.origin() != base.origin() || target.as_str() == base.as_str() {
+                continue;
+            }
+            let path = target.path().to_ascii_lowercase();
+            if [
+                ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".zip", ".cbz", ".rar", ".cbr",
+                ".7z", ".pdf",
+            ]
+            .iter()
+            .any(|ext| path.ends_with(ext))
+            {
+                continue;
+            }
+            let title = crate::online::html::decode_entities(&crate::online::html::strip_tags(
+                caps[2].trim(),
+            ))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+            let title = if title.is_empty() {
+                crate::online::title_from_url(&target)
+            } else {
+                crate::online::truncate_chars(&title, 120)
+            };
+            let url = target.to_string();
+            if seen.insert(url.clone()) {
+                out.push(ChapterLink { url, title });
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// 多 URL 串行解析队列：逐条解析/入库并通过事件汇报进度。
+///
+/// 每条独立事务，单条失败不会回滚已成功的书；所有成功项统一写入
+/// `seriesId`，便于书库按合集聚合。
+#[tauri::command]
+pub async fn resolve_online_urls(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    urls: Vec<String>,
+    series_title: Option<String>,
+) -> Result<Vec<OnlineBatchItem>, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let urls = urls
+        .into_iter()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .collect::<Vec<_>>();
+    if urls.is_empty() {
+        return Err("请至少粘贴一条 URL（online-url-invalid）".into());
+    }
+    if urls.len() > 100 {
+        return Err("单次批量最多 100 条 URL（online-too-many-pages）".into());
+    }
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        // 跨 origin 队列不得附带单站会话头，只使用用户显式保存的全局头。
+        let headers = s.online_headers.clone();
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let series_title = series_title
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| {
+                urls.first()
+                    .and_then(|url| url::Url::parse(url).ok())
+                    .and_then(|url| url.host_str().map(str::to_string))
+                    .unwrap_or_else(|| "在线批量导入".into())
+            });
+        let series_id = crate::online::direct::series_hash(&series_title);
+        let total = urls.len();
+        let mut results = Vec::with_capacity(total);
+        for (index, raw) in urls.iter().enumerate() {
+            let result = (|| -> Result<BookInfo, BackendError> {
+                let host = crate::online::filter::url_host(raw);
+                let memory = filter_memory_for(&st, &host)?;
+                let thresholds = thresholds_from(memory.profile.as_ref());
+                let mut meta = crate::online::resolve_with(&http, raw, &memory, &thresholds)?;
+                apply_series_to_meta(&mut meta, &series_id, &series_title, (index + 1) as u32)?;
+                let (row, changed) = apply_resolved_meta(&st, &meta)?;
+                if changed {
+                    invalidate_book_caches(&st, &row.id);
+                }
+                if let Err(e) = persist_filter_learning(&st, &meta, &row.id) {
+                    crate::logging::log_error(
+                        "online_filter",
+                        &format!("批量队列学习落库失败：{e}"),
+                    );
+                }
+                Ok(to_book_info(row))
+            })();
+            let item = match result {
+                Ok(book) => OnlineBatchItem {
+                    url: raw.clone(),
+                    ok: true,
+                    title: Some(book.title.clone()),
+                    book: Some(book),
+                    error: None,
+                },
+                Err(error) => OnlineBatchItem {
+                    url: raw.clone(),
+                    ok: false,
+                    title: None,
+                    book: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            let progress = OnlineBatchProgress {
+                done: index + 1,
+                total,
+                url: item.url.clone(),
+                ok: item.ok,
+                title: item.title.clone(),
+                error: item.error.clone(),
+            };
+            let _ = app.emit_to("main", "online-batch-progress", progress);
+            results.push(item);
+        }
+        Ok(results)
+    })
+    .await
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlinePrefetchResult {
+    pub pages: u32,
+    pub cached: u32,
+    pub failed: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnlinePrefetchProgress {
+    book_id: String,
+    done: u32,
+    total: u32,
+    failed: u32,
+}
+
+/// 后台并发预取在线书原图到 `online_cache/`。
+///
+/// 入库仍先完成（书立即可读），预取只补齐离线缓存；单页失败只计数，
+/// 不删除书、不改进度。读取的每页都会命中既有 `OnlineSource` 缓存层。
+#[tauri::command]
+pub async fn prefetch_online_book(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    book_id: String,
+    concurrency: Option<u32>,
+) -> Result<OnlinePrefetchResult, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let handle = st.source_handle_for_book(&book_id)?;
+        let pages = handle.page_count()? as u32;
+        let workers = concurrency.unwrap_or(4).clamp(1, 8) as usize;
+        let next = std::sync::atomic::AtomicU32::new(0);
+        let cached = std::sync::atomic::AtomicU32::new(0);
+        let failed = std::sync::atomic::AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= pages {
+                        break;
+                    }
+                    match handle.read_raw(index as usize) {
+                        Ok(_) => {
+                            cached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(error) => {
+                            failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            crate::logging::log_error(
+                                "online_prefetch",
+                                &format!("预取第 {index} 页失败：{error}"),
+                            );
+                        }
+                    }
+                    let done = cached.load(std::sync::atomic::Ordering::Relaxed)
+                        + failed.load(std::sync::atomic::Ordering::Relaxed);
+                    // 避免长书逐页刷事件：每 10 页与最后一页各汇报一次。
+                    if done == pages || done % 10 == 0 {
+                        let _ = app.emit_to(
+                            "main",
+                            "online-prefetch-progress",
+                            OnlinePrefetchProgress {
+                                book_id: book_id.clone(),
+                                done,
+                                total: pages,
+                                failed: failed.load(std::sync::atomic::Ordering::Relaxed),
+                            },
+                        );
+                    }
+                });
+            }
+        });
+        Ok(OnlinePrefetchResult {
+            pages,
+            cached: cached.load(std::sync::atomic::Ordering::Relaxed),
+            failed: failed.load(std::sync::atomic::Ordering::Relaxed),
+        })
+    })
+    .await
+}
+
 /// 只测试 JSON 清单或单页 HTML 图集 + 代理连通性，不写库。
 #[tauri::command]
 pub async fn test_online_connection(
@@ -3591,6 +4056,7 @@ pub async fn resolve_telegram_channel(
     state: State<'_, Arc<AppState>>,
     url: String,
     before: Option<i64>,
+    query: Option<String>,
 ) -> Result<crate::online::telegram::TelegramChannel, String> {
     crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
@@ -3607,7 +4073,14 @@ pub async fn resolve_telegram_channel(
         let host = crate::online::filter::url_host(&url);
         let memory = filter_memory_for(&st, &host)?;
         let thresholds = thresholds_from(memory.profile.as_ref());
-        crate::online::telegram::fetch_channel(&http, &url, before, &memory, &thresholds)
+        crate::online::telegram::fetch_channel(
+            &http,
+            &url,
+            before,
+            query.as_deref(),
+            &memory,
+            &thresholds,
+        )
     })
     .await
 }
@@ -3705,6 +4178,12 @@ pub async fn download_telegram_document(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
+        if url.trim().is_empty() {
+            return Err(BackendError::Msg(
+                "该 Telegram 文件附件没有公开下载直链，需登录账号后下载（telegram-document-login-required）"
+                    .into(),
+            ));
+        }
         let canonical = crate::online::normalize_url(&url)?;
         let lower_path = canonical.path().to_ascii_lowercase();
         let lower_name = filename.to_ascii_lowercase();
@@ -3780,6 +4259,45 @@ pub async fn download_telegram_document(
         Ok(book)
     })
     .await
+}
+
+/// 唤醒系统 Telegram 客户端打开公开消息。
+///
+/// `tg://` 不是 http(s)，opener 默认 scope 不允许；这里在 Rust 侧先严格
+/// 校验 t.me 链接再构造 `tg://resolve`，避免给前端开放任意自定义 scheme。
+fn telegram_client_target(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw.trim()).map_err(|_| "Telegram 链接无效".to_string())?;
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    if !matches!(host.as_str(), "t.me" | "telegram.me") {
+        return Err("仅支持 t.me / telegram.me 链接".into());
+    }
+    let mut segments = parsed
+        .path_segments()
+        .map(|segments| segments.filter(|part| !part.is_empty()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if segments.first().copied() == Some("s") {
+        segments.remove(0);
+    }
+    let channel = segments.first().copied().unwrap_or("");
+    let post = segments.get(1).copied().unwrap_or("");
+    if channel.is_empty()
+        || !channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        || !post.bytes().all(|byte| byte.is_ascii_digit())
+        || post.is_empty()
+    {
+        return Err("Telegram 消息链接缺少频道或消息编号".into());
+    }
+    Ok(format!("tg://resolve?domain={channel}&post={post}"))
+}
+
+#[tauri::command]
+pub fn open_telegram_client(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let target = telegram_client_target(&url)?;
+    app.opener()
+        .open_url(target, None::<String>)
+        .map_err(|error| format!("打开 Telegram 客户端失败：{error}"))
 }
 
 fn set_readonly_flag(path: &Path, readonly: bool) -> Result<(), std::io::Error> {
@@ -4546,6 +5064,50 @@ mod tests {
             cache_budget_before_failure,
             "DB failure must not change the in-memory cache budget"
         );
+    }
+
+    #[tokio::test]
+    async fn close_to_tray_updates_memory_and_database_immediately() {
+        let state = online_state();
+        assert!(!state.settings.lock().close_to_tray);
+
+        let enabled = update_settings(
+            state.clone(),
+            Settings {
+                close_to_tray: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enable close to tray");
+        assert!(enabled.close_to_tray);
+        assert!(
+            state.settings.lock().close_to_tray,
+            "关闭到托盘必须在事务提交后立刻进入内存态，下一次关窗才生效"
+        );
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "close_to_tray").map_err(err))
+            .expect("read close_to_tray")
+            .expect("close_to_tray persisted");
+        assert_eq!(persisted, "true");
+
+        update_settings(
+            state.clone(),
+            Settings {
+                close_to_tray: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("disable close to tray");
+        assert!(!state.settings.lock().close_to_tray);
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "close_to_tray").map_err(err))
+            .expect("read close_to_tray")
+            .expect("close_to_tray persisted");
+        assert_eq!(persisted, "false");
     }
 
     #[tokio::test]
@@ -6551,5 +7113,77 @@ mod tests {
         assert_eq!(object["totalBooks"].as_u64(), Some(7));
         assert_eq!(object["seriesCounts"]["series-1"].as_u64(), Some(3));
         assert_eq!(object["localSeriesCounts"]["series-1"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn telegram_client_target_accepts_public_message_links() {
+        assert_eq!(
+            telegram_client_target("https://t.me/sample_channel/2931").unwrap(),
+            "tg://resolve?domain=sample_channel&post=2931"
+        );
+        assert_eq!(
+            telegram_client_target("https://t.me/s/sample_channel/2931?single").unwrap(),
+            "tg://resolve?domain=sample_channel&post=2931"
+        );
+        assert_eq!(
+            telegram_client_target("https://telegram.me/sample_channel/42").unwrap(),
+            "tg://resolve?domain=sample_channel&post=42"
+        );
+    }
+
+    #[test]
+    fn telegram_client_target_rejects_other_hosts_and_missing_ids() {
+        for raw in [
+            "https://example.com/sample_channel/2931",
+            "https://t.me/sample_channel",
+            "https://t.me/sample_channel/not-a-number",
+            "https://t.me/../2931",
+            "file:///c:/windows/system32/calc.exe",
+        ] {
+            assert!(telegram_client_target(raw).is_err(), "accepted {raw}");
+        }
+    }
+
+    #[test]
+    fn batch_series_is_persisted_into_meta_json() {
+        let canonical = url::Url::parse("https://example.com/chapter-1").unwrap();
+        let pages = vec![crate::online::PageRef {
+            url: "https://cdn.example/1.jpg".into(),
+            viewer: false,
+            width: None,
+            height: None,
+            anchor: None,
+        }];
+        let mut meta = crate::online::direct::make_meta(&canonical, "Chapter", pages).unwrap();
+        apply_series_to_meta(&mut meta, "series-1", "Series", 3).unwrap();
+        assert_eq!(meta.series_id.as_deref(), Some("series-1"));
+        assert_eq!(meta.chapter_index, Some(3));
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        assert_eq!(stored.series_id.as_deref(), Some("series-1"));
+        assert_eq!(stored.series_title.as_deref(), Some("Series"));
+        assert_eq!(stored.chapter_index, Some(3));
+    }
+
+    #[test]
+    fn image_preview_limits_candidates_and_reports_truncation() {
+        let canonical = url::Url::parse("https://example.com/gallery").unwrap();
+        let pages = (0..3)
+            .map(|index| crate::online::PageRef {
+                url: format!("https://cdn.example/{index}.jpg"),
+                viewer: false,
+                width: Some(800),
+                height: Some(1200),
+                anchor: None,
+            })
+            .collect();
+        let meta = crate::online::direct::make_meta(&canonical, "Preview", pages).unwrap();
+        let preview = preview_from_meta(&meta, 2).unwrap();
+        assert_eq!(preview.title, "Preview");
+        assert_eq!(preview.page_count, 3);
+        assert_eq!(preview.images.len(), 2);
+        assert!(preview.truncated);
+        assert_eq!(preview.images[0].index, 0);
+        assert_eq!(preview.images[1].url, "https://cdn.example/1.jpg");
+        assert_eq!(preview.images[1].width, Some(800));
     }
 }

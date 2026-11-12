@@ -26,7 +26,9 @@ use crate::PageDim;
 /// Bound the Web page manifest independently of any source-reported count.
 const MAX_WEB_PAGES: u32 = 10_000;
 /// Frozen cover edge; the Web contract does not accept a size parameter.
-pub(crate) const WEB_THUMB_EDGE: u32 = 256;
+pub(crate) const WEB_THUMB_EDGE: u32 = 512;
+/// 旧版 Web 封面边长；升级后仍可读取，避免离线用户封面突然消失。
+const LEGACY_WEB_THUMB_EDGE: u32 = 256;
 
 /// 图片头部探测上限：覆盖 JPEG SOF / PNG IHDR / WebP / GIF 所需字节。
 /// 在线布局与导入探测都只读这一段，不再下载整页。
@@ -331,20 +333,27 @@ pub(crate) fn thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset,
     if row.format == db::BOOK_FORMAT_PDF {
         return pdf_thumb_asset(state, id);
     }
+    // 先读封面缓存，再校验/打开源句柄：在线书离线、本地目录暂时不可达
+    // 都不应让已经生成过的封面消失。缓存是派生字节，读取它不触碰源路径，
+    // 也不会发起网络请求。
+    let edge = WEB_THUMB_EDGE;
+    for cached_edge in [WEB_THUMB_EDGE, LEGACY_WEB_THUMB_EDGE] {
+        if let Some(bytes) = state.render.get_cover(id, cached_edge) {
+            match assembled_asset(bytes, 0, 0, false) {
+                Ok(asset) => return Ok(asset),
+                Err(_) => state.render.remove_cover(id, cached_edge),
+            }
+        }
+    }
     ensure_source_allowed(&row)?;
+    // 未命中缓存时才需要源：按需生成 512px 封面并回填 render_cache，
+    // 这样桌面端尚未滚动到该书时，Web 端首页封面也不会 404。
     let handle = state
         .source_handle_for_book(id)
         .map_err(|_| DataError::SourceMissing)?;
     let count = handle.page_count().map_err(|_| DataError::SourceMissing)?;
     if count == 0 {
         return Err(DataError::ThumbMissing);
-    }
-    let edge = WEB_THUMB_EDGE;
-    if let Some(bytes) = state.render.get_cover(id, edge) {
-        match assembled_asset(bytes, 0, 0, false) {
-            Ok(asset) => return Ok(asset),
-            Err(_) => state.render.remove_cover(id, edge),
-        }
     }
 
     let raw = handle.read_raw(0).map_err(|_| DataError::SourceMissing)?;
@@ -1788,6 +1797,28 @@ mod tests {
             .render
             .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)
             .is_none());
+
+        // 封面缓存优先于打开源：源路径暂时不可达时，已生成的封面仍可用于
+        // Web 端书库，不会 404。缓存字节不触碰源文件。
+        let offline = id_for('c');
+        insert_book(
+            &state,
+            &offline,
+            "Offline",
+            "2026-11-03 10:00:00",
+            "C:/library/offline-cover.zip",
+            0,
+            "local",
+            "image",
+            "{}",
+            1,
+        );
+        state
+            .render
+            .put_cover(&offline, WEB_THUMB_EDGE, &jpeg_bytes(32, 32));
+        let cached = thumb_asset(&state, &offline).expect("cached cover without source");
+        assert!(cached.bytes.starts_with(&[0xFF, 0xD8]));
+        assert!(cached.data_url.is_none());
     }
 
     #[test]

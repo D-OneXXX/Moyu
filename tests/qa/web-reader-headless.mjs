@@ -533,6 +533,58 @@ try {
   await page.eval(`document.querySelector('.tapzones .zone[data-row="1"][data-col="1"]').click()`);
   await wait("document.querySelector('.hud-bottom').dataset.hidden === 'false'");
 
+  // 中央热区必须可重复切换，而不是只在初次进入时生效一次。
+  const centre = "document.querySelector('.tapzones .zone[data-row=\\\"1\\\"][data-col=\\\"1\\\"]')";
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    assert.equal(
+      await page.eval("document.querySelector('.hud-top').dataset.hidden"),
+      "false",
+      `HUD cycle ${cycle + 1} starts visible`,
+    );
+    await page.eval(`${centre}.click()`);
+    await wait("document.querySelector('.hud-top').dataset.hidden === 'true' && document.querySelector('.hud-bottom').dataset.hidden === 'true'");
+    await page.eval(`${centre}.click()`);
+    await wait("document.querySelector('.hud-top').dataset.hidden === 'false' && document.querySelector('.hud-bottom').dataset.hidden === 'false'");
+  }
+  assert.equal(
+    await page.eval("document.querySelectorAll('.tapzones .zone').length"),
+    9,
+    "hidden HUD must never unmount the tap-zone DOM",
+  );
+  assert.equal(
+    await page.eval("getComputedStyle(document.querySelector('.tapzones')).pointerEvents"),
+    "auto",
+    "hidden HUD must not make the tap-zone overlay inert",
+  );
+
+  // 真实指针序列会触发 pointerup + 紧随其后的可信 click：只允许切换一次。
+  const centrePoint = await page.eval(`(() => {
+    const rect = ${centre}.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await page.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    button: "left",
+    clickCount: 1,
+    x: centrePoint.x,
+    y: centrePoint.y,
+  });
+  await page.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    button: "left",
+    clickCount: 1,
+    x: centrePoint.x,
+    y: centrePoint.y,
+  });
+  await wait("document.querySelector('.hud-top').dataset.hidden === 'true'");
+  assert.equal(
+    await page.eval("document.querySelector('.hud-top').dataset.hidden"),
+    "true",
+    "pointerup + trusted click must collapse to one HUD toggle",
+  );
+  await page.eval(`${centre}.click()`);
+  await wait("document.querySelector('.hud-top').dataset.hidden === 'false'");
+
   await shot("reader-webtoon.png");
   await shot("mobile-web-reader-hud-open.png");
 
@@ -697,8 +749,9 @@ try {
   /* -------------------------------------------------------------- failures */
   await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('PDF demo'))");
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('PDF demo')).click()");
-  await wait("document.querySelector('#app').textContent.includes('PDF reading is not available')");
-  await page.eval("document.querySelector('#app button').click()");
+  await wait(
+    "document.querySelector('.toast')?.textContent.includes('Please read PDF documents')",
+  );
   await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('Faulty'))");
 
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('Faulty')).click()");

@@ -376,11 +376,8 @@ fn parse_channel_html(
         // 目录汇总消息：正文里至少 2 个公开章节链接，且没有真实正文图集/附件。
         // `group.telegraph` 此时可能只是正文里的第一条链接，不能据此排除目录。
         let index_links = index_links(&group);
-        let thin_body = group.photos.len() <= 1
-            && group
-                .document
-                .as_ref()
-                .map_or(true, |doc| !doc.downloadable);
+        let thin_body =
+            group.photos.len() <= 1 && group.document.as_ref().is_none_or(|doc| !doc.downloadable);
         if index_links.len() >= 2 && thin_body {
             chapters.push(TelegramChapter {
                 id: format!("{channel}/{message_id}"),
@@ -970,7 +967,7 @@ fn adopt_inline_button(group: &mut MessageGroup) -> Option<InlineAdoption> {
         && group
             .document
             .as_ref()
-            .map_or(true, |document| !document.downloadable);
+            .is_none_or(|document| !document.downloadable);
     if !thin {
         return None;
     }

@@ -3250,7 +3250,7 @@ pub async fn prefetch_online_book(
                     let done = cached.load(std::sync::atomic::Ordering::Relaxed)
                         + failed.load(std::sync::atomic::Ordering::Relaxed);
                     // 避免长书逐页刷事件：每 10 页与最后一页各汇报一次。
-                    if done == pages || done % 10 == 0 {
+                    if done == pages || done.is_multiple_of(10) {
                         let _ = app.emit_to(
                             "main",
                             "online-prefetch-progress",

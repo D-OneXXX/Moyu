@@ -11,7 +11,7 @@
 - Organize folders, ZIP, CBZ, and local PDF documents in a local library.
 - Read in single-page, double-page, or continuous layouts; PDFs use a single-page layout.
 - Resume reading, relocate moved files, and choose from six languages and two themes.
-- Open supported online pages you are authorized to access; no online manga sources are bundled.
+- Open supported online pages and public Telegram channel previews you are authorized to access; no online manga sources are bundled. Availability depends on the source and release.
 
 The [website](https://d-onexxx.github.io/Moyu/) introduces the app using illustrative artwork. You can also open [the local HTML file](public/demo/index.html) after downloading the repository.
 

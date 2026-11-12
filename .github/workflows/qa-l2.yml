@@ -152,6 +152,12 @@ jobs:
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: "./src-tauri -> target"
+          # Only trusted main pushes seed the default-branch cache. PRs restore, never save.
+          prefix-key: v2-moyu-trusted-debug
+          shared-key: desktop-debug-v1
+          cache-bin: false
+          env-vars: ImageOS CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build frontend and debug binary
         if: needs.changes.outputs.runs_e2e == 'true'

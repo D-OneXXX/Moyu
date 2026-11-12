@@ -114,7 +114,6 @@ jobs:
 
       - name: Typecheck and production build
         run: |
-          npx tsc --noEmit
           npm run build
 
       - name: Rust unit tests

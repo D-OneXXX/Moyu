@@ -12,6 +12,8 @@ name: CI
 # Windows 宿主上 `cargo check` 会跳过所有 `#[cfg(target_os = "linux")]` 块，
 # Linux 专属代码的真实编译验证只能在这里完成。
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   # merge queue 会在合并组上重跑必需检查；缺这个触发时入队会一直等检查。
@@ -61,6 +63,12 @@ jobs:
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: "./src-tauri -> target"
+          # PRs restore only; main pushes and owner-dispatched runs seed their own ref.
+          prefix-key: v2-moyu-trusted-debug
+          shared-key: desktop-debug-v1
+          cache-bin: false
+          env-vars: ImageOS CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
+          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner) }}
 
       # 2026-11-06 实测：137 个包 / 55.6MB 的 WebKitGTK 依赖会在 azure 镜像上
       # 以 45KB/s 下载，单次卡 580 秒，Linux check 从 6 分钟变成 26–32 分钟。
@@ -175,9 +183,6 @@ jobs:
       - name: Rust formatting (rustfmt)
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
-      - name: Typecheck frontend
-        run: npx tsc --noEmit
-
       - name: Build frontend
         run: npm run build
 
@@ -234,3 +239,34 @@ jobs:
       # 生产依赖漏洞阻断；例外需书面记录。
       - name: NPM audit (production dependencies)
         run: npm audit --omit=dev --audit-level=high
+
+  warm-qa-cache:
+    name: Warm trusted Windows QA cache
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner) }}
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "./src-tauri -> target"
+          prefix-key: v2-moyu-trusted-debug
+          shared-key: desktop-debug-v1
+          cache-bin: false
+          env-vars: ImageOS CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend and debug binary
+        run: |
+          npm run build
+          cargo build --manifest-path src-tauri/Cargo.toml

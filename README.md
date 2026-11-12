@@ -49,4 +49,4 @@ npm run test:demo
 
 ## 许可证
 
-Moyu 的所有版本均可按照 [MIT 许可证](LICENSE)使用，包括此前发布的版本。详情见[许可历史](docs/license-history.md)及[第三方许可](THIRD_PARTY_NOTICES.md)。UnRAR 部分适用其自身条款。
+Moyu 的所有版本均可按照 [MIT 许可证](LICENSE)使用，包括此前发布的版本。详情见[许可历史](docs/license-history.md)及[第三方许可](THIRD_PARTY_NOTICES.md)。MIT 仅适用于项目自有内容；UnRAR 部分适用其自身条款，包括不得用于开发兼容 RAR 的压缩程序或重建 RAR 压缩算法。详见 [UnRAR 许可原文](docs/licenses/unrar-rs.txt)。

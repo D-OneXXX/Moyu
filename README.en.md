@@ -38,4 +38,4 @@ node tests/qa/run-qa.mjs --suite=static
 
 ## License
 
-All versions of Moyu, including earlier releases, are available under the [MIT License](LICENSE). See [license history](docs/license-history.md) and [third-party notices](THIRD_PARTY_NOTICES.md). The UnRAR component remains subject to its own terms.
+All versions of Moyu, including earlier releases, are available under the [MIT License](LICENSE). See [license history](docs/license-history.md) and [third-party notices](THIRD_PARTY_NOTICES.md). MIT applies only to project-owned content. The UnRAR component has its own terms, including restrictions on developing a RAR-compatible archiver or recreating the RAR compression algorithm; see the [UnRAR license](docs/licenses/unrar-rs.txt).

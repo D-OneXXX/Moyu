@@ -101,12 +101,25 @@ export interface OnlineFilterRule {
   hits: number;
 }
 
-export type TelegramChapterKind = "telegraph" | "photos" | "document";
+export type TelegramChapterKind =
+  | "telegraph"
+  | "photos"
+  | "document"
+  | "index";
+
+/** 目录汇总消息里的公开章节链接。 */
+export interface TelegramIndexLink {
+  url: string;
+  title: string;
+}
 
 export interface TelegramDocument {
+  /** 公开 CDN 直链；登录受限附件为空串。 */
   url: string;
   filename: string;
   size?: number | null;
+  /** false = Telegram 公开预览不提供匿名下载，只能登录后下载。 */
+  downloadable?: boolean;
 }
 
 export interface TelegramChapter {
@@ -118,6 +131,12 @@ export interface TelegramChapter {
   kind: TelegramChapterKind;
   document?: TelegramDocument | null;
   grouped: boolean;
+  /** 目录汇总消息展开出的章节链接（仅 index 章节非空）。 */
+  links?: TelegramIndexLink[];
+  /** 图集来自消息底部公开内联按钮。 */
+  viaInline?: boolean;
+  /** 消息正文中的公开 #标签（含 #）。 */
+  tags?: string[];
 }
 
 export interface TelegramChannel {
@@ -126,6 +145,54 @@ export interface TelegramChannel {
   chapters: TelegramChapter[];
   before?: number | null;
   hasMore: boolean;
+  /** 频道内搜索回显的关键词/ #标签。 */
+  query?: string | null;
+}
+
+/** 图片选择器候选页（解析但不入库）。 */
+export interface OnlineImagePreviewItem {
+  index: number;
+  url: string;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface OnlineImagePreview {
+  title: string;
+  canonicalUrl: string;
+  pageCount: number;
+  images: OnlineImagePreviewItem[];
+  truncated: boolean;
+}
+
+/** 目录页提取到的同源章节链接。 */
+export interface ChapterLink {
+  url: string;
+  title: string;
+}
+
+/** 多 URL 队列的单条结果；失败不影响其他条目。 */
+export interface OnlineBatchItem {
+  url: string;
+  ok: boolean;
+  title?: string | null;
+  book?: BookInfo | null;
+  error?: string | null;
+}
+
+export interface OnlineBatchProgress {
+  done: number;
+  total: number;
+  url: string;
+  ok: boolean;
+  title?: string | null;
+  error?: string | null;
+}
+
+export interface OnlinePrefetchResult {
+  pages: number;
+  cached: number;
+  failed: number;
 }
 
 export interface PageEntry {
@@ -506,6 +573,24 @@ export const api = {
     ),
   resolveOnlineUrl: (url: string) =>
     invoke<BookInfo>("resolve_online_url", { url }),
+  importResolvedPages: (url: string, title: string, pageUrls: string[]) =>
+    invoke<BookInfo>("import_resolved_pages", { url, title, pageUrls }),
+  previewOnlineImages: (url: string, limit = 60) =>
+    invoke<OnlineImagePreview>("preview_online_images", { url, limit }),
+  previewOnlineImage: (url: string, referer?: string | null) =>
+    invoke<PageImage>("online_image_preview", { url, referer: referer ?? null }),
+  previewChapterLinks: (url: string) =>
+    invoke<ChapterLink[]>("preview_chapter_links", { url }),
+  resolveOnlineUrls: (urls: string[], seriesTitle?: string | null) =>
+    invoke<OnlineBatchItem[]>("resolve_online_urls", {
+      urls,
+      seriesTitle: seriesTitle ?? null,
+    }),
+  prefetchOnlineBook: (bookId: string, concurrency = 4) =>
+    invoke<OnlinePrefetchResult>("prefetch_online_book", {
+      bookId,
+      concurrency,
+    }),
   // OPDS 1.2 自建库：配置只存本地 SQLite，密码只写不读。
   getOpdsConfig: () => invoke<OpdsConfigView>("opds_get_config"),
   setOpdsConfig: (config: OpdsConfigInput) =>
@@ -527,13 +612,21 @@ export const api = {
   getBrowserHandoffStatus: () =>
     invoke<HandoffStatus>("get_browser_handoff_status"),
   // Telegram 公开频道/消息/Telegraph 直读（免登录，仅公开预览页）。
-  resolveTelegramChannel: (url: string, before?: number | null) =>
+  resolveTelegramChannel: (
+    url: string,
+    before?: number | null,
+    query?: string | null,
+  ) =>
     invoke<TelegramChannel>("resolve_telegram_channel", {
       url,
       before: before ?? null,
+      query: query ?? null,
     }),
   downloadTelegramDocument: (url: string, filename: string) =>
     invoke<BookInfo>("download_telegram_document", { url, filename }),
+  /** 严格校验 t.me 消息后唤醒系统 Telegram 客户端（tg://resolve）。 */
+  openTelegramClient: (url: string) =>
+    invoke<void>("open_telegram_client", { url }),
   // 自学习提纯：统计、规则库、当前书被过滤页。
   getOnlineFilterStatus: () =>
     invoke<OnlineFilterStats>("get_online_filter_status"),

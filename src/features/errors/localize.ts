@@ -68,6 +68,11 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "open-with-pending", key: "error.backendGeneric" },
   { code: "sensitive-delete-target", key: "error.backendGeneric" },
   { code: "online-page-count-drop", key: "error.onlinePageCountDrop" },
+  {
+    code: "telegram-document-login-required",
+    key: "error.telegramDocumentLoginRequired",
+  },
+  { code: "telegram-search-invalid", key: "error.telegramSearchInvalid" },
   { code: "pdf-not-valid", key: "error.pdfNotValid" },
   { code: "pdf-not-found", key: "error.pdfNotFound" },
   { code: "pdf-source-not-allowed", key: "error.pdfSourceNotAllowed" },

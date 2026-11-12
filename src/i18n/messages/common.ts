@@ -161,6 +161,10 @@ const zhCN = {
   "error.pdfCoverTooLarge": "该 PDF 的封面数据超过体积上限",
   "error.pdfCoverDimensions": "该 PDF 的封面尺寸超过上限",
   "error.onlinePageCountDrop": "在线清单页数少于现有记录，已保留当前进度；如网页确实变短，请先删除该书再重新导入",
+  "error.telegramDocumentLoginRequired":
+    "该 Telegram 文件附件需要登录账号后下载",
+  "error.telegramSearchInvalid":
+    "频道内搜索关键词无效（最多 120 个字符，不能包含控制字符）",
   "error.caNotInitialized": "本地 CA 尚未初始化。",
   "error.caStateCorrupt": "本地 CA 状态损坏，请从备份恢复。",
   "error.caExpired": "CA 证书已过期。",
@@ -370,6 +374,10 @@ const zhTW: CommonMessages = {
   "error.pdfCoverTooLarge": "該 PDF 的封面資料超過體積上限",
   "error.pdfCoverDimensions": "該 PDF 的封面尺寸超過上限",
   "error.onlinePageCountDrop": "線上清單頁數少於現有紀錄，已保留目前進度；若網頁確實變短，請先刪除該書再重新匯入",
+  "error.telegramDocumentLoginRequired":
+    "此 Telegram 檔案附件需要登入帳號後下載",
+  "error.telegramSearchInvalid":
+    "頻道內搜尋關鍵詞無效（最多 120 個字元，不能包含控制字元）",
   "error.caNotInitialized": "本機 CA 尚未初始化。",
   "error.caStateCorrupt": "本機 CA 狀態損壞，請從備份還原。",
   "error.caExpired": "CA 憑證已過期。",
@@ -585,6 +593,10 @@ const en: CommonMessages = {
   "error.pdfCoverDimensions":
     "The cover dimensions of this PDF exceed the limit.",
   "error.onlinePageCountDrop": "The online manifest has fewer pages than the existing record, so your progress was kept. If the page really got shorter, delete the book and import it again.",
+  "error.telegramDocumentLoginRequired":
+    "This Telegram file attachment requires an account sign-in to download",
+  "error.telegramSearchInvalid":
+    "The channel search query is invalid (max 120 characters, no control characters)",
   "error.caNotInitialized": "The local CA is not initialized.",
   "error.caStateCorrupt": "The local CA state is corrupt. Restore it from a backup.",
   "error.caExpired": "The CA certificate has expired.",
@@ -816,6 +828,10 @@ const es: CommonMessages = {
   "error.pdfCoverDimensions":
     "Las dimensiones de la portada de este PDF superan el límite.",
   "error.onlinePageCountDrop": "El manifiesto en línea tiene menos páginas que el registro actual, así que se conservó tu progreso. Si la página realmente se acortó, elimina el libro y vuelve a importarlo.",
+  "error.telegramDocumentLoginRequired":
+    "Este archivo adjunto de Telegram requiere iniciar sesión para descargarse",
+  "error.telegramSearchInvalid":
+    "La búsqueda del canal no es válida (máx. 120 caracteres, sin caracteres de control)",
   "error.caNotInitialized": "La CA local no está inicializada.",
   "error.caStateCorrupt": "El estado de la CA local está dañado. Restáuralo desde una copia de seguridad.",
   "error.caExpired": "El certificado de la CA ha caducado.",
@@ -1055,6 +1071,10 @@ const ja: CommonMessages = {
     "この PDF の表紙のサイズ（寸法）が上限を超えています。",
   "error.pdfCoverMissing": "この PDF の表紙はまだ生成されていません。",
   "error.onlinePageCountDrop": "オンラインリストのページ数が既存の記録より少ないため、現在の進捗を保持しました。実際にページが減った場合は、この本を削除して再読み込みしてください。",
+  "error.telegramDocumentLoginRequired":
+    "この Telegram ファイル添付はログイン後にダウンロードできます",
+  "error.telegramSearchInvalid":
+    "チャンネル内検索キーワードが無効です（最大 120 文字、制御文字は使用不可）",
   "error.caNotInitialized": "ローカル CA は未初期化です。",
   "error.caStateCorrupt": "ローカル CA の状態が破損しています。バックアップから復元してください。",
   "error.caExpired": "CA 証明書の有効期限が切れています。",
@@ -1289,6 +1309,10 @@ const ko: CommonMessages = {
   "error.pdfCoverTooLarge": "이 PDF의 표지 데이터가 크기 한도를 초과합니다.",
   "error.pdfCoverDimensions": "이 PDF의 표지 크기가 한도를 초과합니다.",
   "error.onlinePageCountDrop": "온라인 목록의 페이지 수가 기존 기록보다 적어 현재 진행 상황을 유지했습니다. 페이지가 실제로 줄었다면 이 책을 삭제한 뒤 다시 가져오세요.",
+  "error.telegramDocumentLoginRequired":
+    "이 Telegram 파일 첨부는 로그인 후 내려받을 수 있습니다",
+  "error.telegramSearchInvalid":
+    "채널 내 검색어가 올바르지 않습니다(최대 120자, 제어 문자 사용 불가)",
   "error.caNotInitialized": "로컬 CA가 초기화되지 않았습니다.",
   "error.caStateCorrupt": "로컬 CA 상태가 손상되었습니다. 백업에서 복원하세요.",
   "error.caExpired": "CA 인증서가 만료되었습니다.",

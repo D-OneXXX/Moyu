@@ -1071,6 +1071,34 @@ mod tests {
     }
 
     #[test]
+    fn blob_downloads_and_attachment_names_stay_inside_downloads() {
+        let dir = temp_dir("blob-download");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // WebView2 对 blob: 下载可能只给出空 destination；仍必须落到
+        // <data>/downloads，并在列表里可见（能否导入取决于扩展名）。
+        let blob = Url::parse("blob:https://web.telegram.org/0b7f0f8e").unwrap();
+        let fallback = prepare_download_destination(&dir, &blob, Path::new(""));
+        assert!(fallback.starts_with(&dir));
+        assert!(fallback
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("download-")));
+
+        // Content-Disposition / <a download> 给出的文件名必须保留扩展名，
+        // 否则 .cbz 会被误判为不可导入。
+        let suggested = prepare_download_destination(&dir, &blob, Path::new("chapter 12.cbz"));
+        let name = suggested
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap();
+        assert!(name.starts_with("chapter 12-"));
+        assert!(name.ends_with(".cbz"), "{name}");
+        assert!(is_importable_download(&suggested));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn destination_falls_back_to_url_filename() {
         let dir = temp_dir("fallback");
         let url = url::Url::parse("https://example.com/files/fallback.cbz?x=1").unwrap();

@@ -322,20 +322,25 @@ export default function SettingsPage() {
     sessionHeadersRef.current = sessionHeaders;
   }, [sessionHeaders]);
 
-  /** 更新表单并同步镜像；persist 依赖它读取到最新值。 */
+  /**
+   * 更新表单并同步镜像；persist 依赖它读取到最新值。
+   *
+   * 关键：先同步计算并写入 formRef，再提交 React state。否则输入事件里
+   * 「setForm → 立刻 persist」会读到上一次渲染的旧值，导致开关看起来切换
+   * 成功、实际没有落库（关闭到托盘、功能开关都受此影响）。
+   */
   const applyForm = useCallback((updater: (prev: Settings) => Settings) => {
-    setForm((prev) => {
-      const next = updater(prev);
-      formRef.current = next;
-      return next;
-    });
+    const next = updater(formRef.current);
+    formRef.current = next;
+    setForm(next);
+    return next;
   }, []);
 
   /** 静默落盘：以「已加载设置 + 当前表单」整对象写回，保留隐藏字段。 */
-  const persist = useCallback(async () => {
+  const persist = useCallback(async (snapshot?: Settings) => {
     if (!loadedRef.current) return;
     const base: Settings = { ...loadedRef.current };
-    const current = formRef.current;
+    const current = snapshot ?? formRef.current;
     const next: Settings = { ...base, ...current };
     setSaveState("saving");
     try {
@@ -371,11 +376,11 @@ export default function SettingsPage() {
     }
   }, [applyForm]);
 
-  /** 即时落盘：开关 / 选择器点击瞬间。 */
+  /** 即时落盘：开关 / 选择器点击瞬间，直接把新快照交给 persist。 */
   const setField = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
-      applyForm((prev) => ({ ...prev, [key]: value }));
-      void persist();
+      const next = applyForm((prev) => ({ ...prev, [key]: value }));
+      void persist(next);
     },
     [applyForm, persist],
   );

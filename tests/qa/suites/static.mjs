@@ -1657,7 +1657,7 @@ export function checkReleaseSurface(root, report) {
         "--test memory_budget",
         "cargo audit",
         "npm audit",
-        "npx tsc --noEmit",
+        "npm run build",
         "cargo test --lib",
         "tests/qa/run-qa.mjs",
       ],
@@ -1686,6 +1686,15 @@ export function checkReleaseSurface(root, report) {
         errors.push(`${file} 缺少分支保护必需检查名 ${name}`);
       }
     }
+  }
+
+  // npm run build 必须实际执行 TypeScript，并且默认配置禁止输出。
+  const packageConfig = JSON.parse(read("package.json"));
+  const buildScript = packageConfig.scripts?.build ?? "";
+  const tsConfig = read("tsconfig.json");
+  if (!/(?:^|&&)\s*tsc(?:\s|&&|$)/.test(buildScript) ||
+      !/"noEmit"\s*:\s*true/.test(tsConfig)) {
+    errors.push("CI 的 npm run build 必须包含 noEmit TypeScript 检查");
   }
 
   // 双端锁定：CI 与打包配置不得出现 macOS 残留（runner / darwin / icns）。

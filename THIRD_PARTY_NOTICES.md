@@ -6,7 +6,7 @@ Moyu bundles or links the components listed below. The project’s own license
 
 This file covers bundled visual assets, direct runtime dependencies, and the CA infrastructure's
 crypto stack (including the listed transitive crates). Other transitive dependencies retain their
-upstream licenses and notices. The exact dependency graph is recorded in `package-lock.json` and
+upstream licenses and notices; see the [declared dependency inventory](docs/dependency-license-inventory.md). The exact dependency graph is recorded in `package-lock.json` and
 `src-tauri/Cargo.lock`.
 
 ## Bundled visual assets

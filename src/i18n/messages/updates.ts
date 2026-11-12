@@ -56,7 +56,7 @@ const zhCN = {
   "updates.linux.openFailed":
     "无法打开浏览器，请手动访问 GitHub Releases。",
   "updates.native.linuxCriticalChannel":
-    "当前为 Linux 长期稳定分支：官方仅推送高危安全与崩溃修复补丁；日常功能扩展可由社区非商用修改提供。",
+    "当前为 Linux 长期稳定分支：官方仅推送高危安全与崩溃修复补丁；日常功能扩展可由社区修改提供。",
 } as const;
 
 const en: Record<keyof typeof zhCN, string> = {
@@ -171,7 +171,7 @@ const zhTW: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "無法開啟瀏覽器，請手動前往 GitHub Releases。",
   "updates.native.linuxCriticalChannel":
-    "目前為 Linux 長期穩定分支：官方僅推送高危安全性與當機修復補丁；日常功能擴充可由社群非商業修改提供。",
+    "目前為 Linux 長期穩定分支：官方僅推送高危安全性與當機修復補丁；日常功能擴充可由社群修改提供。",
 };
 
 const es: Record<keyof typeof zhCN, string> = {
@@ -231,7 +231,7 @@ const es: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "No se pudo abrir el navegador. Visita GitHub Releases manualmente.",
   "updates.native.linuxCriticalChannel":
-    "Estás en la rama Linux de estabilidad a largo plazo: las actualizaciones oficiales solo entregan parches críticos de seguridad y de fallos. Las funciones cotidianas pueden provenir de modificaciones comunitarias no comerciales.",
+    "Estás en la rama Linux de estabilidad a largo plazo: las actualizaciones oficiales solo entregan parches críticos de seguridad y de fallos. Las funciones cotidianas pueden provenir de modificaciones comunitarias.",
 };
 
 const ja: Record<keyof typeof zhCN, string> = {
@@ -291,7 +291,7 @@ const ja: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "ブラウザーを開けませんでした。GitHub Releases に手動でアクセスしてください。",
   "updates.native.linuxCriticalChannel":
-    "Linux 長期安定ブランチです。公式は重大なセキュリティ修正とクラッシュ修正のみを配信します。日常機能の拡張はコミュニティによる非商用改変で提供されます。",
+    "Linux 長期安定ブランチです。公式は重大なセキュリティ修正とクラッシュ修正のみを配信します。日常機能の拡張はコミュニティによる改変で提供されます。",
 };
 
 const ko: Record<keyof typeof zhCN, string> = {
@@ -351,7 +351,7 @@ const ko: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "브라우저를 열 수 없습니다. GitHub Releases를 직접 방문하세요.",
   "updates.native.linuxCriticalChannel":
-    "Linux 장기 안정 브랜치입니다. 공식 업데이트는 중대 보안 및 크래시 수정만 전달하며, 일상 기능 확장은 커뮤니티 비상업 수정으로 제공될 수 있습니다.",
+    "Linux 장기 안정 브랜치입니다. 공식 업데이트는 중대 보안 및 크래시 수정만 전달하며, 일상 기능 확장은 커뮤니티 수정으로 제공될 수 있습니다.",
 };
 
 export const updatesMessages = {

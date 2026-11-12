@@ -1119,7 +1119,7 @@ fn og_image(text: &str, base_url: &url::Url) -> Option<String> {
 }
 
 /// 去掉标题中的 HTML 标签。
-fn strip_tags(s: &str) -> String {
+pub(crate) fn strip_tags(s: &str) -> String {
     Regex::new(r"(?is)<[^>]+>")
         .expect("tag strip regex")
         .replace_all(s, "")

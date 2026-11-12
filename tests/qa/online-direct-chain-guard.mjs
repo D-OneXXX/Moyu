@@ -102,8 +102,52 @@ const STUB = `
       if (!state.online) {
         throw "在线直读已在设置中关闭（feature-disabled）";
       }
-      return { name: "Test Channel", title: "Test Channel", chapters: [], before: null };
+      const base = {
+        channel: "example_channel",
+        title: "Test Channel",
+        before: null,
+        hasMore: false,
+      };
+      if (args.query) {
+        return { ...base, chapters: [], query: args.query };
+      }
+      return {
+        ...base,
+        chapters: [
+          {
+            id: "example_channel/100",
+            title: "第01话",
+            url: "https://t.me/example_channel/100",
+            messageId: 100,
+            pageCount: 4,
+            kind: "photos",
+            grouped: false,
+            viaInline: true,
+            tags: ["#漫画"],
+          },
+          {
+            id: "example_channel/200",
+            title: "目录",
+            url: "https://t.me/example_channel/200",
+            messageId: 200,
+            pageCount: null,
+            kind: "index",
+            grouped: false,
+            links: [
+              { url: "https://telegra.ph/A", title: "第 1 话" },
+              { url: "https://t.me/example_channel/201", title: "第 2 话" },
+            ],
+          },
+        ],
+      };
     },
+    resolve_online_urls: (args) =>
+      (args.urls || []).map((url) => ({
+        url,
+        ok: true,
+        title: "ok",
+        book: book("e".repeat(64), "ok"),
+      })),
     resolve_online_batch: () => [],
     get_app_info: () => ({
       version: "0.19.1",
@@ -546,8 +590,91 @@ try {
   assert.ok(telegramCall, "a Telegram link must reach resolve_telegram_channel");
   assert.equal(telegramCall.args.url, "https://t.me/example_channel");
 
+  /* ------------- 6. Telegram 面板：内联徽标 / #标签搜索 / 目录批量导入 */
+  await wait(
+    `document.querySelectorAll('[data-testid="telegram-chapter"]').length === 2`,
+  );
+  const panelState = await page.eval(`(() => ({
+    search: !!document.querySelector('[data-testid="telegram-search-input"]'),
+    tag: !!document.querySelector('[data-testid="telegram-tag"]'),
+    inlineBadge: document.querySelectorAll('[data-testid="telegram-inline-badge"]').length,
+    indexImportAll: !!document.querySelector('[data-testid="telegram-index-import-all"]'),
+  }))()`);
+  assert.ok(panelState.search, "the channel panel must expose the search box");
+  assert.ok(panelState.tag, "public #tags must render as filter buttons");
+  assert.equal(
+    panelState.inlineBadge,
+    1,
+    "an inline-button chapter must be marked as readable",
+  );
+  assert.ok(
+    panelState.indexImportAll,
+    "an index post must offer one-click batch import",
+  );
+
+  // 点击 #标签 → 重新请求同一频道，query 为带 # 的原文。
+  await page.eval(`(() => {
+    window.__mrCalls.length = 0;
+    document.querySelector('[data-testid="telegram-tag"]').click();
+    return true;
+  })()`);
+  await wait(`(() => {
+    const calls = window.__mrCalls || [];
+    return calls.some(
+      (call) => call.cmd === "resolve_telegram_channel" && call.args.query === "#漫画",
+    );
+  })()`);
+  await wait(
+    `document.querySelector('[data-testid="telegram-search-clear"]') !== null`,
+  );
+
+  // 清除搜索 → 回到完整章节列表。
+  await page.eval(`(() => {
+    window.__mrCalls.length = 0;
+    document.querySelector('[data-testid="telegram-search-clear"]').click();
+    return true;
+  })()`);
+  await wait(`(() => {
+    const calls = window.__mrCalls || [];
+    return calls.some(
+      (call) => call.cmd === "resolve_telegram_channel" && call.args.query == null,
+    );
+  })()`);
+  await wait(
+    `document.querySelectorAll('[data-testid="telegram-chapter"]').length === 2`,
+  );
+
+  // 展开目录并一次性导入全部链接 → 同一 seriesTitle。
+  await page.eval(`(() => {
+    window.__mrCalls.length = 0;
+    document.querySelector('[data-testid="telegram-index-toggle"]').click();
+    return true;
+  })()`);
+  await wait(
+    `document.querySelector('[data-testid="telegram-index-links"]') !== null`,
+  );
+  await page.eval(`(() => {
+    document.querySelector('[data-testid="telegram-index-import-all"]').click();
+    return true;
+  })()`);
+  await wait(`(() => {
+    const calls = window.__mrCalls || [];
+    return calls.some((call) => call.cmd === "resolve_online_urls");
+  })()`);
+  const indexCalls = await calls();
+  const indexCall = indexCalls.find((call) => call.cmd === "resolve_online_urls");
+  assert.ok(indexCall, "the index post must reach resolve_online_urls");
+  assert.equal(indexCall.args.seriesTitle, "目录");
+  assert.deepEqual(indexCall.args.urls, [
+    "https://telegra.ph/A",
+    "https://t.me/example_channel/201",
+  ]);
+
   console.log(
     "VERIFIED online chain guard: the online switch writes the flag instantly, the disabled state offers an enable-now escape, and the browser address bar dispatches HTML/JSON URLs to resolve_online_url and Telegram links to resolve_telegram_channel.",
+  );
+  console.log(
+    "VERIFIED Telegram panel: inline-button chapters are marked readable, #tags re-query the channel, and an index post imports every public chapter with one seriesTitle.",
   );
   console.log(
     `L2 resources: vite 127.0.0.1:${devPort}; owned headless Chrome PID ${chromeChild?.pid ?? "not-started"}; CDP ${cdpPort ?? "not-started"}.`,

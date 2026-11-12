@@ -4,7 +4,7 @@
 <p align="center"><strong>Your manga, your own library.</strong></p>
 <p align="center">A local-first desktop manga reader for Windows and Linux.</p>
 <p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
-<p align="center"><a href="https://d-onexxx.github.io/Moyu/">Interactive demo ↗</a> · <a href="https://github.com/D-OneXXX/Moyu/releases">Download ↗</a> · <a href="https://github.com/D-OneXXX/Moyu/issues">Support</a></p>
+<p align="center"><a href="https://d-onexxx.github.io/Moyu/">Website ↗</a> · <a href="https://github.com/D-OneXXX/Moyu/releases">Download ↗</a> · <a href="https://github.com/D-OneXXX/Moyu/issues">Support</a></p>
 
 ## Features
 
@@ -13,7 +13,7 @@
 - Resume reading, relocate moved files, and choose from six languages and two themes.
 - Open supported online pages you are authorized to access; no online manga sources are bundled.
 
-The [HTML demo](https://d-onexxx.github.io/Moyu/) is an interactive illustration; it does not access your files or save progress. You can also open [the local HTML file](public/demo/index.html) after downloading the repository.
+The [website](https://d-onexxx.github.io/Moyu/) introduces the app using illustrative artwork. You can also open [the local HTML file](public/demo/index.html) after downloading the repository.
 
 ## Download and privacy
 
@@ -40,4 +40,4 @@ node tests/qa/run-qa.mjs --suite=static
 
 ## License
 
-All versions of Moyu, including earlier releases, are available under the [MIT License](LICENSE). See [license history](docs/license-history.md) and [third-party notices](THIRD_PARTY_NOTICES.md). The UnRAR component remains subject to its own terms.
+All versions of Moyu, including earlier releases, are available under the [MIT License](LICENSE). See [license history](docs/license-history.md) and [third-party notices](THIRD_PARTY_NOTICES.md). MIT applies only to project-owned content. The UnRAR component has its own terms, including restrictions on developing a RAR-compatible archiver or recreating the RAR compression algorithm; see the [UnRAR license](docs/licenses/unrar-rs.txt).

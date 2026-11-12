@@ -4,7 +4,7 @@
 <p align="center"><strong>把喜欢的漫画，留在自己的书库里。</strong></p>
 <p align="center">本地优先的 Windows / Linux 桌面漫画阅读器。</p>
 <p align="center">简体中文 · <a href="README.md">English</a></p>
-<p align="center"><a href="https://d-onexxx.github.io/Moyu/"><strong>互动演示 ↗</strong></a> · <a href="https://github.com/D-OneXXX/Moyu/releases"><strong>下载 Moyu ↗</strong></a> · <a href="https://github.com/D-OneXXX/Moyu/issues">问题反馈</a></p>
+<p align="center"><a href="https://d-onexxx.github.io/Moyu/"><strong>产品网站 ↗</strong></a> · <a href="https://github.com/D-OneXXX/Moyu/releases"><strong>下载 Moyu ↗</strong></a> · <a href="https://github.com/D-OneXXX/Moyu/issues">问题反馈</a></p>
 
 ## 阅读，从这里开始
 
@@ -14,7 +14,7 @@
 - **外观与语言**：明亮、深色或跟随系统，支持六种界面语言。
 - **按需在线阅读**：使用你有权访问的在线地址；应用不内置在线漫画源。
 
-[体验简化互动演示 →](https://d-onexxx.github.io/Moyu/)　也可在下载仓库后打开 [HTML 文件](public/demo/index.html)。演示为示意画面，不读取本地文件或保存进度。
+[浏览产品网站 →](https://d-onexxx.github.io/Moyu/)　也可在下载仓库后打开 [HTML 文件](public/demo/index.html)。网站以示意素材介绍应用。
 
 ## 下载与开始
 
@@ -51,4 +51,4 @@ npm run test:demo
 
 ## 许可证
 
-Moyu 的所有版本均可按照 [MIT 许可证](LICENSE)使用，包括此前发布的版本。详情见[许可历史](docs/license-history.md)及[第三方许可](THIRD_PARTY_NOTICES.md)。UnRAR 部分适用其自身条款。
+Moyu 的所有版本均可按照 [MIT 许可证](LICENSE)使用，包括此前发布的版本。详情见[许可历史](docs/license-history.md)及[第三方许可](THIRD_PARTY_NOTICES.md)。MIT 仅适用于项目自有内容；UnRAR 部分适用其自身条款，包括不得用于开发兼容 RAR 的压缩程序或重建 RAR 压缩算法。详见 [UnRAR 许可原文](docs/licenses/unrar-rs.txt)。

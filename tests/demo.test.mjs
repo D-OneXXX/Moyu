@@ -21,7 +21,7 @@ test('landing page is self-contained and uses available local artwork',()=>{
  assert.doesNotMatch(html,/<script[^>]+src="https?:/i);
  assert.match(css,/prefers-reduced-motion/);
  assert.doesNotMatch(html,/\.cbz/i);
- assert.doesNotMatch(html,/<button\b/i);
+ assert.doesNotMatch(html,/data-mode|data-book/i);
 });
 test('external links remain hidden when the page is embedded in the app',()=>{
  const external=[{hidden:true}];

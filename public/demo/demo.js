@@ -8,6 +8,11 @@ const translations={
 'ko':['기능','Moyu 다운로드 ↗','YOUR STORIES, YOUR LIBRARY','좋아하는 만화를\n나만의 서재에.','로컬 서재와 온라인 읽기를 한곳에서.','Moyu 살펴보기 ↓','Windows와 Linux용입니다. 이미지는 예시입니다.','모으고, 읽고, 이어서.','로컬 서재에서 온라인 페이지까지 읽기를 시작하세요.','서재는 내 기기에.','폴더, ZIP, CBZ와 로컬 PDF를 정리하세요. 읽기 진행률은 기기에 저장됩니다.','나만의 속도로 읽기.','한 페이지, 두 페이지 또는 웹툰 모드를 선택하고 나중에 이어 읽으세요.','온라인 읽기도 여기서.','지원하는 만화 URL을 입력하거나 Telegram 공개 채널 미리보기에서 이용 가능한 콘텐츠를 가져와 읽을 수 있습니다.','만화 소스는 내장되어 있지 않습니다. 이용 가능 여부는 사이트와 접근 조건에, 기능은 릴리스에 따라 다릅니다.','Moyu를 열고 읽어 보세요.','데스크톱 앱을 다운로드하고 나만의 서재를 만드세요.','좋아하는 만화를 나만의 서재에.']};
 let language='zh-CN';try{language=localStorage.getItem('mr-locale')||navigator.language;const theme=localStorage.getItem('mr-theme');if(theme==='dark'||theme==='light')document.documentElement.dataset.demoTheme=theme;}catch{language=navigator.language;}
 if(!translations[language])language=language?.startsWith('zh')?'zh-CN':language?.slice(0,2);if(!translations[language])language='en';
-const t=key=>translations[language][keys.indexOf(key)]||translations.en[keys.indexOf(key)]||'';document.documentElement.lang=language;
-document.querySelectorAll('[data-i18n]').forEach(el=>el.textContent=t(el.dataset.i18n));
+function renderLanguage(){
+ document.documentElement.lang=language;
+ document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=translations[language][keys.indexOf(el.dataset.i18n)]||translations.en[keys.indexOf(el.dataset.i18n)]||'';});
+ document.querySelectorAll('[data-language]').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.language===language)));
+}
+document.querySelectorAll('[data-language]').forEach(el=>el.addEventListener('click',()=>{language=el.dataset.language;renderLanguage();}));
+renderLanguage();
 let inApp=!!window.__TAURI_INTERNALS__;try{inApp||=!!window.parent.__TAURI_INTERNALS__;}catch{}document.querySelectorAll('[data-external]').forEach(el=>el.hidden=inApp);

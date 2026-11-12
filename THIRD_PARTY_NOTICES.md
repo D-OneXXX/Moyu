@@ -1,7 +1,7 @@
 # Third-party notices
 
 Moyu bundles or links the components listed below. The project’s own license
-(PolyForm Noncommercial 1.0.0) is separate from these third-party licenses; see
+(MIT) is separate from these third-party licenses; see
 [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
 
 This file covers bundled visual assets, direct runtime dependencies, and the CA infrastructure's
@@ -107,7 +107,7 @@ crate's declared `license` metadata. "Transitive" means it is not declared direc
 | `password-hash` | 0.5.0 | MIT OR Apache-2.0 | Transitive password-hash trait layer |
 
 All listed licenses are permissive (MIT, ISC, Apache-2.0, BSD-3-Clause) and compatible with the
-project's PolyForm Noncommercial 1.0.0 license. No GPL/AGPL/SSPL or other copyleft dependency is
+project's own license. No GPL/AGPL/SSPL or other copyleft dependency is
 introduced by the CA or W7-TLS stacks.
 
 `unrar-rs` (OPDS CBR reading) is Apache-2.0 with the UnRAR restriction inherited from RARLAB's

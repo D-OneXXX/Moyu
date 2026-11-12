@@ -8,7 +8,7 @@
  * - 未检测到签名私钥时，生成 `src-tauri/tauri.community.json` 覆盖层，
  *   把 createUpdaterArtifacts 置为 false，一键产出本地 deb/rpm/AppImage；
  * - 注入 MR_BUILD_ORIGIN=community，使关于页与诊断快照显示
- *   `Community Modified Build (Non-Commercial)`；
+ *   `Community Modified Build`；
  * - 已配置官方私钥时直接走官方构建路径（并提示）。
  *
  * 用法：npm run build:community [-- 透传给 tauri build 的参数]

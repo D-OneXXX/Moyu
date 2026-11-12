@@ -116,7 +116,7 @@ const en: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "Could not open the browser. Please visit GitHub Releases manually.",
   "updates.native.linuxCriticalChannel":
-    "You are on the Linux long-term stability branch: official updates only deliver critical security and crash fixes. Day-to-day features can come from community non-commercial modifications.",
+    "You are on the Linux long-term stability branch: official updates only deliver critical security and crash fixes. Day-to-day features can come from community modifications.",
 };
 
 const zhTW: Record<keyof typeof zhCN, string> = {

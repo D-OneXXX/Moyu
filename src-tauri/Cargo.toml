@@ -3,6 +3,7 @@ name = "manga-reader-tauri"
 version = "0.20.1"
 description = "Moyu - a free desktop application for manga reading and library management (Tauri 2 + React)"
 authors = ["manga-reader"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.90"
 # Windows 基线：只支持 NT 10.0 (Build 10240)+。安装器由 nsis/hooks.nsh

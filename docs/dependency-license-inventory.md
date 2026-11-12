@@ -531,7 +531,7 @@ Declared metadata, including development and target-specific dependencies; inclu
 | unicode-normalization | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 |
-| unrar-rs | 0.15.1 | [TO CONFIRM] |
+| unrar-rs | 0.15.1 | [TO CONFIRM] Cargo license field absent; see [bundled license text](licenses/unrar-rs.txt) |
 | untrusted | 0.9.0 | ISC |
 | ureq | 2.12.1 | MIT OR Apache-2.0 |
 | url | 2.5.8 | MIT OR Apache-2.0 |

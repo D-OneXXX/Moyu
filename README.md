@@ -49,4 +49,4 @@ npm run test:demo
 
 ## 许可证
 
-Moyu 使用 [PolyForm Noncommercial License 1.0.0](LICENSE)，允许个人及其他非商业用途，不授予商业使用权。项目源码可见，但不属于 OSI 定义的开源软件。参见 [NOTICE](NOTICE.md) 与 [第三方许可](THIRD_PARTY_NOTICES.md)。
+Moyu 的所有版本均可按照 [MIT 许可证](LICENSE)使用，包括此前发布的版本。详情见[许可历史](docs/license-history.md)及[第三方许可](THIRD_PARTY_NOTICES.md)。UnRAR 部分适用其自身条款。

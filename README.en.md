@@ -38,4 +38,4 @@ node tests/qa/run-qa.mjs --suite=static
 
 ## License
 
-Moyu is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE), for personal and other noncommercial use. It is not OSI-approved open source; commercial use is not granted. See [NOTICE](NOTICE.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+All versions of Moyu, including earlier releases, are available under the [MIT License](LICENSE). See [license history](docs/license-history.md) and [third-party notices](THIRD_PARTY_NOTICES.md). The UnRAR component remains subject to its own terms.

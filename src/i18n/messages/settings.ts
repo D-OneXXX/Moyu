@@ -264,7 +264,7 @@ const zhCN = {
   "settings.about.buildOriginLabel": "构建来源指纹（Build Origin）",
   "settings.about.buildOriginOfficial": "Official Release",
   "settings.about.buildOriginCommunity": "Community Modified Build",
-  "settings.about.nonCommercial": "MIT License",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "以下本地书未恢复",
   "settings.backup.skippedHint":
     "源路径不存在、不是可读漫画，或命中系统/用户敏感目录。记录未写入书库，磁盘内容未被删除。",
@@ -701,7 +701,7 @@ const zhTW: SettingsMessages = {
   "settings.about.buildOriginLabel": "構建來源指紋（Build Origin）",
   "settings.about.buildOriginOfficial": "Official Release",
   "settings.about.buildOriginCommunity": "Community Modified Build",
-  "settings.about.nonCommercial": "MIT License",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "以下本機書籍未還原",
   "settings.backup.skippedHint":
     "來源路徑不存在、不是可讀漫畫，或命中系統/使用者敏感目錄。紀錄未寫入書庫，磁碟內容未被刪除。",
@@ -1140,7 +1140,7 @@ const en: SettingsMessages = {
   "settings.about.buildOriginLabel": "Build origin fingerprint",
   "settings.about.buildOriginOfficial": "Official Release",
   "settings.about.buildOriginCommunity": "Community Modified Build",
-  "settings.about.nonCommercial": "MIT License",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "Some local books were not restored",
   "settings.backup.skippedHint":
     "The source path is missing, not a readable manga, or points at a sensitive system/user folder. Nothing was added to the library and nothing on disk was deleted.",
@@ -1600,7 +1600,7 @@ const es: SettingsMessages = {
   "settings.about.buildOriginLabel": "Huella de origen de compilación",
   "settings.about.buildOriginOfficial": "Official Release",
   "settings.about.buildOriginCommunity": "Community Modified Build",
-  "settings.about.nonCommercial": "MIT License",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "Algunos libros locales no se restauraron",
   "settings.backup.skippedHint":
     "La ruta de origen no existe, no es un manga legible o apunta a una carpeta sensible del sistema/usuario. No se añadió nada a la biblioteca ni se borró nada del disco.",
@@ -2065,7 +2065,7 @@ const ja: SettingsMessages = {
   "settings.about.buildOriginLabel": "ビルド由来フィンガープリント",
   "settings.about.buildOriginOfficial": "Official Release",
   "settings.about.buildOriginCommunity": "Community Modified Build",
-  "settings.about.nonCommercial": "MIT License",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "一部のローカル書籍を復元できませんでした",
   "settings.backup.skippedHint":
     "元のパスが存在しない、読める漫画ではない、またはシステム/ユーザーの重要なフォルダーを指しています。書庫には追加せず、ディスク上の内容も削除していません。",
@@ -2522,7 +2522,7 @@ const ko: SettingsMessages = {
   "settings.about.buildOriginLabel": "빌드 출처 지문",
   "settings.about.buildOriginOfficial": "Official Release",
   "settings.about.buildOriginCommunity": "Community Modified Build",
-  "settings.about.nonCommercial": "MIT License",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "일부 로컬 책을 복원하지 못했습니다",
   "settings.backup.skippedHint":
     "원본 경로가 없거나 읽을 수 있는 만화가 아니거나 시스템/사용자 중요 폴더를 가리킵니다. 라이브러리에 추가하지 않았고 디스크 내용도 삭제하지 않았습니다.",

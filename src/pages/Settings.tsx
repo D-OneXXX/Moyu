@@ -1701,7 +1701,7 @@ export default function SettingsPage() {
                   variant="secondary"
                   className="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium"
                 >
-                  {t("settings.about.nonCommercial")}
+                  {t("settings.about.license")}
                 </Badge>
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("settings.about.buildOriginLabel")}

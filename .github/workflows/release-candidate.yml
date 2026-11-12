@@ -1,0 +1,429 @@
+name: Release candidate (Windows)
+
+# Phase 4 发布体系：**不再有 Tag 触发**。
+# 任何 `v*` Tag 推送都不会再自动构建或公开发布；正式发布必须由维护者手动
+# 触发本工作流（生成 Draft）→ 人工审批 → 触发 publish 工作流。
+#
+# 关键约束：
+# - 本 job 运行在 Environment `release-windows`（required reviewer 由维护者配置）；
+# - 只产出 **Draft**，绝不公开发布；
+# - 候选必须绑定：版本 + Commit + QA run id + 每个制品的 SHA-256。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "候选标签（vX.Y.Z）。已有标签必须指向候选提交"
+        required: true
+        type: string
+      source_commit:
+        description: "候选的完整 40 位 main 提交 SHA，必须与 QA 证据一致"
+        required: true
+        type: string
+      qa_run_id:
+        description: "qa-full 的 run id（必须成功，且 headSha 等于候选标签的 Commit）"
+        required: true
+        type: string
+      install_attestation_b64:
+        description: "干净 Windows VM 的安装/升级/回滚验证回执（base64 编码的 JSON）。正式发布必须提供"
+        required: false
+        type: string
+      release_notes:
+        description: "必填（仅隔离演练可留空）：双语 Release Notes，英文完整版在前、简体中文在后、3–5 条更新。清单 notes 在候选阶段固化，事后改 Draft 正文不会同步"
+        required: false
+        default: ""
+        type: string
+      rehearsal:
+        description: "隔离演练模式：只允许 v0.0.0-rehearsal 系列的标签，产物一律带 rehearsal- 前缀且永不发布"
+        required: false
+        default: false
+        type: boolean
+
+# 默认最小权限；只有需要写 Release 的 job 才提升。
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-windows-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Build signed Windows candidate → Draft
+    runs-on: windows-2022
+    # 需要人工审批的 Environment（尚未创建时本 job 会直接失败——这是安全的失败方向）。
+    environment: release-windows
+    permissions:
+      contents: write # 仅用于创建 Draft 与上传候选制品
+    steps:
+      - name: Checkout trusted main tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Validate requested candidate commit
+        id: candidate_ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ inputs.tag }}
+          CANDIDATE_COMMIT: ${{ inputs.source_commit }}
+          CANDIDATE_REHEARSAL: ${{ inputs.rehearsal }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          mkdir -p "$RUNNER_TEMP/candidate-gate"
+          cp scripts/release-governance/{candidate-evidence,candidate-identity,release-guard}.mjs "$RUNNER_TEMP/candidate-gate/"
+          node "$RUNNER_TEMP/candidate-gate/candidate-evidence.mjs"
+          echo "commit=$CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout verified candidate commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.candidate_ref.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enable Node.js dependency cache
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # ---------- 前置校验：标签 / 版本 / QA 证据必须彼此一致 ----------
+      - name: Resolve candidate identity
+        id: identity
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+          EXPECTED_COMMIT: ${{ steps.candidate_ref.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if [ "$REHEARSAL" = "true" ]; then
+            # 隔离演练：标签限定在 v0.0.0-rehearsal 系列，不参与版本语义。
+            # 允许递增后缀（v0.0.0-rehearsal2、v0.0.0-rehearsal12…），
+            # 让每次演练用独立标签，不必删除或改写既有演练标签。
+            # 发布侧对任何含 "rehearsal" 的标签无条件拒绝，演练产物永远无法公开。
+            if ! printf '%s' "$TAG" | grep -Eq '^v0\.0\.0-rehearsal[0-9]*$'; then
+              echo "演练模式的标签必须形如 v0.0.0-rehearsal 或 v0.0.0-rehearsal2：$TAG" >&2
+              exit 1
+            fi
+            VERSION="0.0.0"
+            # 演练构建的是标签指向的提交：记录里的 Commit 必须与实际构建一致。
+            COMMIT="$(git rev-parse HEAD)"
+          else
+            if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "标签必须形如 vX.Y.Z（常规通道不带 -linux 后缀）：$TAG" >&2
+              exit 1
+            fi
+            VERSION="$(node -p "require('./package.json').version")"
+            if [ "v${VERSION}" != "$TAG" ]; then
+              echo "标签 $TAG 与 package.json 版本 v${VERSION} 不一致" >&2
+              exit 1
+            fi
+            COMMIT="$(git rev-parse HEAD)"
+          fi
+          if [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "候选检出提交与验证的提交不一致" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "候选 Commit $COMMIT 不在 main 上，拒绝作为发布候选" >&2
+            exit 1
+          fi
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      # ---------- 发布说明 ----------
+      # 多行 workflow_dispatch 输入经 step output 传给 tauri-action：不把它拼进
+      # YAML 块标量或表达式字面量，空值/纯空白时回落到既有占位文案。
+      # 非空输入先按强制结构校验（英文完整版在前、简体中文在后、3–5 条更新、
+      # 不含内部工程细节），不合格直接失败，不让不合规文案进 Draft。
+      - name: Validate and resolve bilingual release notes
+        id: notes
+        shell: bash
+        env:
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          # 只有明确标记的隔离演练允许占位正文；普通发布留空会在此失败。
+          ALLOW_PLACEHOLDER: ${{ inputs.rehearsal }}
+        run: node scripts/release-governance/release-notes.mjs
+
+      # ---------- 已公开的 Release 不得被候选流程改写 ----------
+      # 候选阶段只允许写 Draft。tauri-action 在目标 tag 已存在时会「更新」该
+      # Release（复用同一份资产），若该 Release 已经公开发布，一次误触发的
+      # 候选就会静默改写已发布资产与公开清单。这里先做失败关闭检查：
+      # 目标不是 Draft 就直接拒绝，与 Linux 候选通道的判定保持一致。
+      - name: Refuse to touch a published release
+        id: release_guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # gh 对「不存在 / 401 / 403 限流 / 5xx / DNS 失败」都返回 exit 1，必须看诊断输出分类；
+          # 旧写法 `if ! gh release view` 会把瞬时故障当成"不存在"，继续构建并改写已发布资产。
+          # 临时文件放在 Node 也可见的原生临时目录（Git Bash 的 /tmp 原生 Node 读不到）。
+          WORKDIR="${RUNNER_TEMP:-$(node -p 'require("os").tmpdir()')}"
+          mkdir -p "$WORKDIR"
+          OUT_FILE="$WORKDIR/mr-release-guard-out-$$.txt"
+          ERR_FILE="$WORKDIR/mr-release-guard-err-$$.txt"
+          : >"$OUT_FILE"
+          : >"$ERR_FILE"
+          trap 'status=$?; rm -f "$OUT_FILE" "$ERR_FILE" 2>/dev/null || true; exit $status' EXIT
+          set +e
+          gh release view "$TAG" --json isDraft --jq .isDraft >"$OUT_FILE" 2>"$ERR_FILE"
+          STATUS=$?
+          set -e
+          # 只有正向 404 才放行；401/403/限流/5xx/网络/空输出/未知文本一律失败关闭。
+          STATE="$(node scripts/release-governance/release-guard.mjs \
+            --status "$STATUS" --stdout-file "$OUT_FILE" --stderr-file "$ERR_FILE" --tag "$TAG")"
+          case "$STATE" in
+            draft) echo "Draft 已存在，复用：$TAG" ;;
+            missing) echo "确认 Release 不存在，候选流程将创建 Draft：$TAG" ;;
+            *) echo "release-guard 返回未知状态：$STATE；拒绝继续" >&2; exit 1 ;;
+          esac
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify QA evidence run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+        run: |
+          set -euo pipefail
+          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${QA_RUN_ID}")"
+          CONCLUSION="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).conclusion')"
+          HEAD_SHA="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).head_sha')"
+          NAME="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).name')"
+          WORKFLOW_PATH="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).path')"
+          EVENT="$(printf '%s' "$RUN_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).event')"
+          if [ "$WORKFLOW_PATH" != ".github/workflows/qa-full.yml" ] || [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "QA run ${QA_RUN_ID} 不是手动触发的正式完整 QA 工作流" >&2
+            exit 1
+          fi
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "QA run ${QA_RUN_ID} 结论为 ${CONCLUSION}，不是成功" >&2
+            exit 1
+          fi
+          if [ "$HEAD_SHA" != "${{ steps.identity.outputs.commit }}" ]; then
+            echo "QA run ${QA_RUN_ID} 的 headSha=${HEAD_SHA} 与候选 Commit=${{ steps.identity.outputs.commit }} 不一致" >&2
+            exit 1
+          fi
+          echo "QA 证据绑定成功：run=${QA_RUN_ID}（${NAME}）headSha=${HEAD_SHA}"
+
+      - name: Local gates
+        run: |
+          npm run version:check
+          npm run test:version
+          npm run test:governance
+          npm run test:fixtures
+          npm run test:release
+          npm run format:check
+          npx tsc --noEmit
+          npm run build
+          cargo test --lib --manifest-path src-tauri/Cargo.toml
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+          npm audit --omit=dev --audit-level=high
+
+      # ---------- 构建 + 签名（签名私钥来自 Environment 级 Secret） ----------
+      # tauri-action 负责：签名、生成 updater 包（.nsis.zip）与 latest.json、
+      # 上传资产，并且**只创建 Draft**（releaseDraft: true）。
+      # 旧的 release-windows.yml 用的就是它（v0.17.0/v0.17.1 的更新清单由它产出），
+      # 这里保留同一条成熟路径，只把「直接发布」换成「建 Draft」。
+      - name: Re-check release state before Draft write
+        id: release_recheck
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # gh 对「不存在 / 401 / 403 限流 / 5xx / DNS 失败」都返回 exit 1，必须看诊断输出分类；
+          # 旧写法 `if ! gh release view` 会把瞬时故障当成"不存在"，继续构建并改写已发布资产。
+          # 临时文件放在 Node 也可见的原生临时目录（Git Bash 的 /tmp 原生 Node 读不到）。
+          WORKDIR="${RUNNER_TEMP:-$(node -p 'require("os").tmpdir()')}"
+          mkdir -p "$WORKDIR"
+          OUT_FILE="$WORKDIR/mr-release-guard-out-$$.txt"
+          ERR_FILE="$WORKDIR/mr-release-guard-err-$$.txt"
+          : >"$OUT_FILE"
+          : >"$ERR_FILE"
+          trap 'status=$?; rm -f "$OUT_FILE" "$ERR_FILE" 2>/dev/null || true; exit $status' EXIT
+          set +e
+          gh release view "$TAG" --json isDraft --jq .isDraft >"$OUT_FILE" 2>"$ERR_FILE"
+          STATUS=$?
+          set -e
+          # 只有正向 404 才放行；401/403/限流/5xx/网络/空输出/未知文本一律失败关闭。
+          STATE="$(node scripts/release-governance/release-guard.mjs \
+            --status "$STATUS" --stdout-file "$OUT_FILE" --stderr-file "$ERR_FILE" --tag "$TAG")"
+          case "$STATE" in
+            draft) echo "Draft 已存在，复用：$TAG" ;;
+            missing) echo "确认 Release 不存在，候选流程将创建 Draft：$TAG" ;;
+            *) echo "release-guard 返回未知状态：$STATE；拒绝继续" >&2; exit 1 ;;
+          esac
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Re-check candidate identity before Draft write
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.identity.outputs.tag }}
+          CANDIDATE_COMMIT: ${{ steps.identity.outputs.commit }}
+          CANDIDATE_REHEARSAL: ${{ inputs.rehearsal }}
+        run: |
+          node "$RUNNER_TEMP/candidate-gate/candidate-evidence.mjs"
+
+      - name: Build signed NSIS bundle → Draft
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MR_BUILD_ORIGIN: official
+        with:
+          tagName: ${{ steps.identity.outputs.tag }}
+          releaseCommitish: ${{ steps.identity.outputs.commit }}
+          releaseName: Moyu ${{ steps.identity.outputs.tag }}
+          # 由 Validate and resolve bilingual release notes 生成的 step output；空输入时是占位文案。
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: "--bundles nsis"
+
+      - name: Download Draft assets for verification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          rm -rf candidate && mkdir -p candidate
+          gh release download "$TAG" --dir candidate --clobber
+          ls -l candidate/
+      - name: Verify updater manifest (pre-Draft)
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="candidate/latest.json"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "缺少更新清单（tauri-action 应产出 latest.json）：$MANIFEST" >&2
+            exit 1
+          fi
+          node scripts/verify-updater-manifest.mjs "$MANIFEST" \
+            --require-platform windows-x86_64
+
+      # ---------- 只创建 Draft：绝不公开发布 ----------
+      - name: Build and upload RC record
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+        run: |
+          set -euo pipefail
+          rm -rf downloaded && mkdir -p downloaded
+          gh release download "$TAG" --dir downloaded --clobber
+          node -e '
+            const fs = require("fs");
+            const { buildRcRecord, collectCandidateArtifacts, renderRcSummary } = require("./scripts/release-governance/rc-record.mjs");
+            // 治理文件（rc-record / rc-summary / signature-verification /
+            // install-verification）不进入制品清单：重跑候选时不会被自己的
+            // 回执污染摘要，从而不会因「记录之外的制品」被发布门禁拒绝。
+            const artifacts = collectCandidateArtifacts("downloaded");
+            const record = buildRcRecord({
+              tag: process.env.TAG,
+              commit: process.env.COMMIT,
+              qa: { workflow: "qa-full", runId: process.env.QA_RUN_ID, buildCommit: process.env.COMMIT },
+              artifacts,
+            });
+            fs.writeFileSync("rc-record.json", JSON.stringify(record, null, 2) + "\n");
+            fs.writeFileSync("rc-summary.md", renderRcSummary(record) + "\n");
+          '
+          gh release upload "$TAG" rc-record.json rc-summary.md --clobber
+
+      # ---------- 强制签名证据：候选阶段就出具并回填 Draft ----------
+      # 发布工作流要求 Draft 中存在 signature-verification.json；在这里先验签，
+      # 验签失败则 job 直接失败（不产出证据）。工具来自官方 minisign Release，
+      # fetch-minisign.mjs 按仓库固定 SHA-256 校验；公钥来自当前 tauri.conf.json。
+      - name: Verify candidate signature → signature-verification.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/release-governance/fetch-minisign.mjs
+          EVIDENCE_DIR="$RUNNER_TEMP/mr-signature-evidence"
+          rm -rf "$EVIDENCE_DIR" && mkdir -p "$EVIDENCE_DIR"
+          node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json","utf8"));fs.writeFileSync(process.argv[1],Buffer.from(c.plugins.updater.pubkey,"base64"));' "$EVIDENCE_DIR/configured.pub"
+          INSTALLER="$(ls candidate/*.exe 2>/dev/null | head -1 || true)"
+          SIGNATURE="${INSTALLER}.sig"
+          if [ -z "$INSTALLER" ] || [ ! -f "$SIGNATURE" ]; then
+            echo "Draft 缺少安装包或 .exe.sig 签名文件，无法验签：拒绝候选" >&2
+            exit 1
+          fi
+          node scripts/release-governance/verify-signature.mjs \
+            --artifact "$INSTALLER" \
+            --signature "$SIGNATURE" \
+            --public-key "$EVIDENCE_DIR/configured.pub" \
+            --version "$VERSION" \
+            --commit "$COMMIT" \
+            --platform windows-x86_64 \
+            --out "$EVIDENCE_DIR/signature-verification.json"
+          gh release upload "$TAG" "$EVIDENCE_DIR/signature-verification.json" --clobber
+
+      - name: Upload install verification attestation (optional at candidate stage)
+        if: ${{ inputs.install_attestation_b64 != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          ATTESTATION_B64: ${{ inputs.install_attestation_b64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ATTESTATION_B64" | base64 -d > install-verification.json
+          node -e 'JSON.parse(require("fs").readFileSync("install-verification.json","utf8"))'
+          gh release upload "$TAG" install-verification.json --clobber
+          rm -f install-verification.json
+
+      - name: Summarize candidate
+        shell: bash
+        env:
+          TAG: ${{ steps.identity.outputs.tag }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+        run: |
+          {
+            echo "### Release Candidate (Windows)"
+            echo ""
+            echo "- Tag: \`${TAG}\`"
+            echo "- Commit: \`${COMMIT}\`"
+            echo "- QA run: \`${QA_RUN_ID}\`"
+            echo "- 状态：**Draft（未公开）**，等待人工审批后由 publish 工作流发布"
+          } >> "$GITHUB_STEP_SUMMARY"

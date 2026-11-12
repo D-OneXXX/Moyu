@@ -57,8 +57,8 @@
   --v3-reader: #09090b;
 
   /* ---------------------------------------------------------------------
-   * Skin tokens (Task 7) — every visual "skin" only has to inject this
-   * block. Components consume the semantic tokens below, never raw px.
+   * Skin tokens (Task 7 · 画框包裹式) — 一套变量即可切换整体美术：
+   * 整片窗口是画布（backdrop / frame），核心功能区是内嵌视窗（viewport）。
    * ------------------------------------------------------------------- */
   /* Card / sheet geometry. A "hard" skin uses 0.25rem, a "cute" skin 1.5rem. */
   --mr-radius-card: 1rem;
@@ -70,14 +70,28 @@
   --mr-border-style: solid;
   --mr-shadow-elevation: 0 4px 0 0 var(--mi-hard-shadow);
   --mr-shadow-elevation-sm: 0 2px 0 0 var(--mi-hard-shadow);
-  /* Shell backdrop layer: a wallpaper/pattern painted under every page.
-     `none` keeps the default flat ice-blue canvas at zero cost. */
-  --mr-surface-backdrop: none;
-  --mr-surface-backdrop-size: auto;
-  --mr-surface-backdrop-opacity: 1;
-  /* Decoration layer geometry. */
-  --mr-decoration-inset: 0px;
-  --mr-decoration-opacity: 1;
+
+  /* 画布层：铺满整个窗口的主题美术画布。 */
+  --mr-skin-canvas-bg: var(--sh-background);
+  --mr-skin-backdrop-image: none;
+  --mr-skin-backdrop-size: cover;
+  --mr-skin-backdrop-position: center;
+  /* 外围画框装饰画布：对齐视窗边缘的角花 / 边饰。 */
+  --mr-skin-frame-overlay: none;
+  --mr-skin-frame-size: cover;
+  --mr-skin-frame-position: center;
+  /* 内容视窗：内缩边距 top right bottom left（极简模式为 0px 全屏）。 */
+  --mr-skin-viewport-inset: 0px;
+  --mr-skin-viewport-radius: 0px;
+  --mr-skin-viewport-border: 0px solid transparent;
+  --mr-skin-viewport-shadow: none;
+  /* 视窗材质：底色 + 叠加通透度 + 毛玻璃模糊。
+     缺省为「透明叠加 + 不透明视窗底色」，因此预留态与未接入皮肤时的
+     视觉完全一致（零视觉变化）。 */
+  --mr-skin-surface-bg: var(--sh-background);
+  --mr-skin-surface-tint: transparent;
+  --mr-skin-surface-opacity: 1;
+  --mr-skin-surface-blur: 0px;
 
   /* Compatibility aliases for structural Reader CSS until it is fully ported. */
   --v3-accent: var(--sh-primary);
@@ -436,94 +450,91 @@
 }
 
 /* ---------------------------------------------------------------------------
- * Skin / mascot decoration slots (Task 7)
+ * Skin canvas + content viewport (Task 7 · framed viewport skinning)
  *
- * The layer is a pure overlay: `pointer-events: none` everywhere, so a
- * mascot can never steal a card click, a scrollbar drag or a top-bar hit.
- * Only an explicit `data-interactive="true"` area re-enables hit-testing.
+ * 整片窗口是一张主题画布：背景层与画框层铺满 100vw × 100vh，内容视窗
+ * 作为内嵌视窗放在画布上，视窗四周露出画布美术。
+ *
+ * 两层装饰都是 `pointer-events: none` 的绝对定位层：不参与布局、不拦截
+ * 命中测试，也不可能遮挡文字——它们只在视窗之外绘制。
  * ------------------------------------------------------------------------- */
-.mr-decoration-layer {
+.mr-skin-canvas {
   position: absolute;
   inset: 0;
-  z-index: 30;
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  flex-direction: column;
   overflow: hidden;
-  pointer-events: none;
-  contain: layout paint style;
+  background: var(--mr-skin-canvas-bg);
 }
 
-.mr-decoration-slot {
+.mr-skin-backdrop,
+.mr-skin-frame {
   position: absolute;
-  display: flex;
+  inset: 0;
   pointer-events: none;
-  opacity: var(--mr-decoration-opacity);
   -webkit-user-select: none;
   user-select: none;
 }
 
-/* Perch anchor: hangs from the window top edge in the free gap between the
-   brand mark and the centred navigation pill, so it never covers a control. */
-.mr-decoration-slot[data-slot="window-perch-top"] {
-  top: var(--mr-decoration-inset);
-  left: max(180px, calc(50% - 300px));
-  align-items: flex-start;
-  justify-content: center;
+.mr-skin-backdrop {
+  background-image: var(--mr-skin-backdrop-image);
+  background-size: var(--mr-skin-backdrop-size);
+  background-position: var(--mr-skin-backdrop-position);
+  background-repeat: no-repeat;
 }
 
-.mr-decoration-slot[data-slot="corner-companion-bottom-left"] {
-  bottom: var(--mr-decoration-inset);
-  left: var(--mr-decoration-inset);
-  align-items: flex-end;
+.mr-skin-frame {
+  background-image: var(--mr-skin-frame-overlay);
+  background-size: var(--mr-skin-frame-size);
+  background-position: var(--mr-skin-frame-position);
+  background-repeat: no-repeat;
 }
 
-.mr-decoration-slot[data-slot="corner-companion-bottom-right"] {
-  right: var(--mr-decoration-inset);
-  bottom: var(--mr-decoration-inset);
-  align-items: flex-end;
+.mr-skin-viewport {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin: var(--mr-skin-viewport-inset);
+  border: var(--mr-skin-viewport-border);
+  border-radius: var(--mr-skin-viewport-radius);
+  background: var(--mr-skin-surface-bg);
+  box-shadow: var(--mr-skin-viewport-shadow);
+  overflow: hidden;
 }
 
-.mr-decoration-slot[data-slot="window-frame-surround"] {
+/* 毛玻璃视窗：叠加层用 opacity 控制通透度，模糊由 backdrop-filter 承担。 */
+.mr-skin-viewport::before {
+  content: "";
+  position: absolute;
   inset: 0;
-  align-items: stretch;
+  z-index: 0;
+  background: var(--mr-skin-surface-tint);
+  opacity: var(--mr-skin-surface-opacity);
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(var(--mr-skin-surface-blur));
+  backdrop-filter: blur(var(--mr-skin-surface-blur));
 }
 
-.mr-decoration {
-  max-width: 100%;
-  border: 0;
-  background: transparent;
-  object-fit: contain;
-  -webkit-user-drag: none;
-  user-select: none;
+/* 视窗内容永远在叠加层之上，文字不会被底色压住。 */
+.mr-skin-viewport > * {
+  position: relative;
+  z-index: 1;
 }
 
-.mr-decoration[data-interactive="true"] {
-  pointer-events: auto;
+html[data-safe-mode="true"] .mr-skin-viewport::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
-/* A companion may breathe, but never while the window is hidden or the user
-   asked for less motion. */
-.mr-decoration[data-motion="bob"] {
-  animation: mr-decoration-bob 3.2s var(--mi-ease) infinite;
-}
-
-@keyframes mr-decoration-bob {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-4px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mr-decoration[data-motion="bob"] {
-    animation: none;
-  }
-}
-
-html[data-safe-mode="true"] .mr-decoration-layer,
-html[data-app-hidden="true"] .mr-decoration-layer {
-  display: none;
+html[data-app-hidden="true"] .mr-skin-viewport::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 /* 主窗最小化 / 隐藏到托盘：暂停一切装饰性动画，静默空闲态不再跑帧。 */

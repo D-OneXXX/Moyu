@@ -1,6 +1,7 @@
-//! MangaReader 后端：书库、阅读、在线直读、更新、隐私与韧性。
+//! Moyu 后端：书库、阅读、在线直读、更新、隐私与韧性。
 //! 前端契约见 `src/lib/tauri.ts`。
 
+mod archive_convert;
 mod backup;
 mod browser;
 pub mod ca;
@@ -31,6 +32,7 @@ mod state;
 mod system_proxy;
 mod tray;
 pub mod update;
+mod updater_gate;
 mod versioning;
 pub mod web_access;
 pub mod web_contract;
@@ -159,7 +161,11 @@ pub struct SeriesProgress {
 pub struct Dashboard {
     pub total_books: u32,
     pub reading: u32,
+    /// 已开始且翻到最后一页的书数（`page_count=0` 不计）。
+    pub finished: u32,
     pub today_pages: u32,
+    /// 累计阅读页数（`reading_log.pages` 总和，含软删书的历史）。
+    pub total_pages_read: u64,
     pub heatmap: Vec<HeatDay>,
     pub series: Vec<SeriesProgress>,
 }
@@ -344,6 +350,31 @@ fn load_normalized_settings(
     Ok((settings, repaired))
 }
 
+/// 主窗口关闭请求的最终裁决。
+///
+/// 抽成纯函数是为了让「关闭到托盘」链路可单测：窗口 label、内存设置、
+/// 局域网运行态、托盘可用性和退出标志任一组合都不能靠事件循环才验证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseAction {
+    /// 阻止默认关闭，只隐藏主窗口。
+    InterceptedAndHidden,
+    /// 放行关闭（进程按 Tauri 默认路径退出）。
+    AllowExit,
+}
+
+pub(crate) fn close_action(
+    label: &str,
+    close_to_tray: bool,
+    web_access_running: bool,
+    tray_available: bool,
+    is_quitting: bool,
+) -> CloseAction {
+    if label != "main" || is_quitting || !(close_to_tray || web_access_running) || !tray_available {
+        return CloseAction::AllowExit;
+    }
+    CloseAction::InterceptedAndHidden
+}
+
 /// 旧版数据根：`%LOCALAPPDATA%\com.local.manga-reader`（仅用于迁移与最终回落）。
 fn legacy_data_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("com.local.manga-reader"))
@@ -462,7 +493,7 @@ fn migrate_legacy_into(data: &Path, isolated: bool) {
 }
 
 fn init_app(state: &Arc<AppState>, dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let db_path = dir.join("library.db");
     state.set_db_path(db_path.clone());
     let conn = match db::open(&db_path) {
@@ -592,10 +623,9 @@ pub fn run() {
             let tauri::WindowEvent::CloseRequested { api, .. } = event else {
                 return;
             };
-            if window.label() != "main" || tray::is_exiting() {
-                return;
-            }
             let app = window.app_handle();
+            // 每次都从内存设置读取：set_settings 在事务提交后立即写回
+            // AppState，因此切换开关无需重启，下一次关窗就生效。
             let close_to_tray = app
                 .try_state::<Arc<AppState>>()
                 .map(|state| state.settings.lock().close_to_tray)
@@ -604,11 +634,14 @@ pub fn run() {
                 .try_state::<Arc<web_access::WebAccessRuntime>>()
                 .map(|runtime| runtime.is_running_snapshot())
                 .unwrap_or(false);
-            if close_to_tray || running {
-                if !tray::is_available(app) {
-                    // No tray host: let the window close instead of stranding it.
-                    return;
-                }
+            let action = close_action(
+                window.label(),
+                close_to_tray,
+                running,
+                tray::is_available(app),
+                tray::is_exiting(),
+            );
+            if action == CloseAction::InterceptedAndHidden {
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -623,35 +656,24 @@ pub fn run() {
                 tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
                     install_app_paths(tauri_data, app_cache, legacy)
                 }))
-                .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("启动路径后台任务失败：{error}"),
-                    )
-                })?;
+                .map_err(|error| std::io::Error::other(format!("启动路径后台任务失败：{error}")))?;
             // 1.1) 清理上次更新遗留的临时包 / AppImage 旧备份（>24h）。
-            let _ = tauri::async_runtime::spawn_blocking(update::cleanup_stale_artifacts);
+            drop(tauri::async_runtime::spawn_blocking(
+                update::cleanup_stale_artifacts,
+            ));
             // 2) 旧 Local AppData 数据一次性接续（仅补缺失文件；隔离模式跳过）。
             let migration_data = data_dir.clone();
             tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
                 migrate_legacy_into(&migration_data, isolated)
             }))
-            .map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("旧数据后台迁移任务失败：{error}"),
-                )
-            })?;
+            .map_err(|error| std::io::Error::other(format!("旧数据后台迁移任务失败：{error}")))?;
             // 3) AppState 的渲染/在线缓存根依赖已安装的 cache_dir，必须最后创建。
             let app_state =
                 tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(|| {
                     Arc::new(AppState::new())
                 }))
                 .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("缓存状态初始化后台任务失败：{error}"),
-                    )
+                    std::io::Error::other(format!("缓存状态初始化后台任务失败：{error}"))
                 })?;
             app.manage(app_state);
             // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
@@ -682,10 +704,7 @@ pub fn run() {
                     init_app(&init_state, &init_dir)
                 }))
                 .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("数据库初始化后台任务失败：{error}"),
-                    )
+                    std::io::Error::other(format!("数据库初始化后台任务失败：{error}"))
                 })?;
             if init_result.is_err() {
                 // 具体错误码已写入 AppState；这里只记录脱敏错误码，不输出路径。
@@ -718,7 +737,9 @@ pub fn run() {
             }
             // 启动时后台 trim 统一磁盘缓存（render + online，共用软上限）。
             let st2 = app.state::<Arc<AppState>>().inner().clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || st2.trim_disk_cache());
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                st2.trim_disk_cache()
+            }));
             // 之后不再有常驻巡检定时器：写盘累计 256MB（`note_cache_write`）
             // 与设置保存会按需触发淘汰，退出路径再做一次收尾。
             // 空闲静默态不允许任何周期线程唤醒（CPU 归零）。
@@ -746,6 +767,7 @@ pub fn run() {
             commands::put_pdf_thumbnail,
             commands::clear_thumbnail_cache,
             commands::clear_temp_cache,
+            commands::clear_online_cache,
             commands::get_webtoon_layout,
             commands::get_webtoon_tile,
             commands::get_memory_stats,
@@ -775,8 +797,14 @@ pub fn run() {
             commands::opds_download_entry,
             commands::import_resolved_pages,
             commands::resolve_online_batch,
+            commands::preview_online_images,
+            commands::online_image_preview,
+            commands::preview_chapter_links,
+            commands::resolve_online_urls,
+            commands::prefetch_online_book,
             commands::resolve_telegram_channel,
             commands::download_telegram_document,
+            commands::open_telegram_client,
             commands::get_online_filter_status,
             commands::list_online_filter_rules,
             commands::export_online_filter_rules,
@@ -795,6 +823,7 @@ pub fn run() {
             system_proxy::detect_system_proxy,
             browser::open_browser_window,
             browser::navigate_browser,
+            browser::sync_browser_toolbar,
             browser::list_browser_downloads,
             browser::import_browser_download,
             // 旧自定义补丁通道（check/download/install/cancel/snapshot）已下线：
@@ -802,6 +831,10 @@ pub fn run() {
             // 用户点击后的 restart_app；旧校验代码/负向测试仍可作为回归资产。
             update::get_app_info,
             update::restart_app,
+            // 官方 GitHub 更新通道的受控代理：WebView 不再持有 updater:default，
+            // 检查/安装都必须经这两个命令先过 FeatureId::Updates 门卫。
+            updater_gate::check_native_update,
+            updater_gate::install_native_update,
             // Task 7：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变。
             skin::skin_import_asset,
             security::security_audit,
@@ -828,7 +861,6 @@ pub fn run() {
             web_access::commands::web_access_devices_list,
             web_access::commands::web_access_device_revoke,
             tray::tray_set_locale,
-            tray::tray_set_icon,
             diagnostics::diagnostics_record_frontend_error,
             diagnostics::diagnostics_record_breadcrumb,
             diagnostics::diagnostics_update_context,
@@ -866,8 +898,13 @@ pub fn run() {
                     .db
                     .with(|conn| db::wal_checkpoint(conn).map_err(|error| error.to_string()))
             });
+            // timeout 必须在 runtime 内创建：直接放在 block_on 的参数位置
+            // 会先构造 Sleep，触发 "there is no reactor running" panic，
+            // 导致 checkpoint 根本没有执行。
+            let wait_for_checkpoint =
+                async move { tokio::time::timeout(shutdown_timeout, checkpoint).await };
             if !matches!(
-                tauri::async_runtime::block_on(tokio::time::timeout(shutdown_timeout, checkpoint,)),
+                tauri::async_runtime::block_on(wait_for_checkpoint),
                 Ok(Ok(Ok(())))
             ) {
                 logging::log_error("database", "退出时数据库收尾未完成（blocking-task-failed）");
@@ -888,12 +925,12 @@ mod settings_feature_tests {
     }
 
     #[test]
-    fn hydrate_defaults_keep_webtoon_on_and_online_off() {
+    fn hydrate_defaults_keep_optional_features_on() {
         let conn = conn();
         let mut s = Settings::default();
         hydrate_settings(&conn, &mut s).unwrap();
         assert!(s.features.webtoon);
-        assert!(!s.features.online);
+        assert!(s.features.online);
         assert!(s.features.pdf);
     }
 
@@ -931,6 +968,47 @@ mod settings_feature_tests {
         assert_eq!(
             load_normalized_settings(&readonly, Settings::default()).unwrap_err(),
             StartupSettingsError::Normalize
+        );
+    }
+}
+
+#[cfg(test)]
+mod close_action_tests {
+    use super::*;
+
+    #[test]
+    fn close_to_tray_intercepts_only_the_main_window() {
+        assert_eq!(
+            close_action("main", true, false, true, false),
+            CloseAction::InterceptedAndHidden
+        );
+        // 局域网阅读运行中即使用户关掉开关也必须保住监听。
+        assert_eq!(
+            close_action("main", false, true, true, false),
+            CloseAction::InterceptedAndHidden
+        );
+        // 非主窗（recovery / browser）保持各自语义。
+        assert_eq!(
+            close_action("browser", true, true, true, false),
+            CloseAction::AllowExit
+        );
+    }
+
+    #[test]
+    fn allow_exit_when_tray_missing_quitting_or_feature_off() {
+        assert_eq!(
+            close_action("main", true, false, false, false),
+            CloseAction::AllowExit,
+            "无托盘宿主时隐藏窗口会让应用失联"
+        );
+        assert_eq!(
+            close_action("main", true, true, true, true),
+            CloseAction::AllowExit,
+            "托盘彻底退出必须放行关闭"
+        );
+        assert_eq!(
+            close_action("main", false, false, true, false),
+            CloseAction::AllowExit
         );
     }
 }

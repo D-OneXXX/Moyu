@@ -15,6 +15,7 @@ use chrono::{Local, NaiveDateTime, TimeZone};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+use crate::online::StoredMeta;
 use crate::source::BackendError;
 
 /// 写锁等待上限：并发扫描/阅读写入时最多排队 5 秒，超出才报 `database is locked`。
@@ -600,6 +601,121 @@ pub fn upsert_online_book(
     Ok(())
 }
 
+/// 在线原图缓存清理候选（Issue #338）。
+///
+/// - 只有在线书（`source_type <> 'local'`）且未软删（`removed=0`）参与；
+/// - `keep_unread=true`：保留未读完且 30 天内打开过的书，只选中
+///   「已完成」（`page_count > 0 AND current_page + 1 >= page_count`）或
+///   「超过 30 天未活动」的书；从未打开过的书（`last_opened_at = ''`）
+///   以 `updated_at` 作为活动时间；
+/// - `keep_unread=false`：显式全量清理，返回全部在线书。
+///
+/// 时间比较统一使用本地 `YYYY-MM-DD HH:MM:SS`（与 `now_str` 同格式），
+/// 由调用方传入 30 天前的 cutoff。只返回书 id，绝不返回路径或标题。
+pub fn online_cache_clear_candidates(
+    conn: &Connection,
+    keep_unread: bool,
+    cutoff: &str,
+) -> Result<Vec<String>, BackendError> {
+    let mut ids = Vec::new();
+    if keep_unread {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM books
+             WHERE removed=0 AND source_type <> 'local'
+               AND (
+                 (page_count > 0 AND current_page + 1 >= page_count)
+                 OR (CASE WHEN last_opened_at = '' THEN updated_at ELSE last_opened_at END) < ?1
+               )
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![cutoff], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            ids.push(row?);
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM books
+             WHERE removed=0 AND source_type <> 'local'
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            ids.push(row?);
+        }
+    }
+    Ok(ids)
+}
+
+/// 只更新在线书的 `meta_json`（`source_type <> 'local'`）。
+///
+/// **不得**复用 [`upsert_online_book`]：那条路径会把 `last_opened_at` 改成
+/// “现在”、重写 path/title/页数，并在页数缩小时递增 `progress_rev`。
+/// 这里只做元数据替换，身份列与进度列一律不碰。返回是否命中一行。
+pub fn update_online_book_meta(
+    conn: &Connection,
+    id: &str,
+    meta_json: &str,
+) -> Result<bool, BackendError> {
+    let changed = conn.execute(
+        "UPDATE books SET meta_json=?2 WHERE id=?1 AND source_type <> 'local'",
+        params![id, meta_json],
+    )?;
+    Ok(changed > 0)
+}
+
+/// 纯函数：把单页真实尺寸合并进 `meta_json`。
+///
+/// - 解析失败（脏 JSON）→ `None`，绝不覆盖原值；
+/// - 解码尺寸非正 → `None`；
+/// - 下标越界或该页尺寸已一致 → `None`（无变化不写库）；
+/// - 只改目标页的 `width`/`height`，其它页、系列字段与过滤元数据原样保留。
+pub fn merge_page_dimensions(
+    meta_json: &str,
+    index: u32,
+    width: u32,
+    height: u32,
+) -> Option<String> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut meta: StoredMeta = serde_json::from_str(meta_json).ok()?;
+    let page = meta.pages.get_mut(index as usize)?;
+    if page.width == Some(width) && page.height == Some(height) {
+        return None;
+    }
+    page.width = Some(width);
+    page.height = Some(height);
+    serde_json::to_string(&meta).ok()
+}
+
+/// 读-合并-写：仅当合并确实产生变化时才落库，返回新的 `meta_json`。
+/// 非在线书、下标越界、尺寸未变一律返回 `None`（调用方据此跳过内存同步）。
+pub fn update_online_page_dimensions(
+    conn: &Connection,
+    id: &str,
+    index: u32,
+    width: u32,
+    height: u32,
+) -> Result<Option<String>, BackendError> {
+    let meta_json: Option<String> = conn
+        .query_row(
+            "SELECT meta_json FROM books WHERE id=?1 AND source_type <> 'local'",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(meta_json) = meta_json else {
+        return Ok(None);
+    };
+    let Some(merged) = merge_page_dimensions(&meta_json, index, width, height) else {
+        return Ok(None);
+    };
+    if !update_online_book_meta(conn, id, &merged)? {
+        return Ok(None);
+    }
+    Ok(Some(merged))
+}
+
 /// 无损重定位：把一本书从旧 id/path 迁到新 id/path（单事务）。
 ///
 /// - 保留 `scroll_pct` / `updated_at` / `source_type` / `meta_json` / `format`，清 `removed`；
@@ -999,11 +1115,15 @@ pub fn last_read_book(
     }
 }
 
-/// 仪表盘计数（Issue #236）：一次 SQL 求未软删总数与「在读」数。
+/// 仪表盘计数（Issue #236）：一次 SQL 求未软删总数、在读数、已读完数与累计阅读页数。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DashboardCounts {
     pub total_books: u32,
     pub reading: u32,
+    /// 已开始且翻到/越过最后一页的书（`page_count=0` 永不计入）。
+    pub finished: u32,
+    /// `reading_log.pages` 总和：全书库累计阅读页数，**包含软删书的历史**。
+    pub total_pages_read: u64,
 }
 
 /// 仪表盘「最近在读」行：只含渲染所需字段，不解析 meta_json。
@@ -1018,17 +1138,26 @@ pub struct DashboardSeriesRow {
 /// 仪表盘聚合计数：与 `list_books(None)` 的 `removed=0` 口径一致，
 /// 但不再把全表物化为 `BookRow`（Issue #236）。
 pub fn dashboard_counts(conn: &Connection) -> Result<DashboardCounts, BackendError> {
-    let (total, reading): (i64, i64) = conn.query_row(
+    // 单次聚合同时求四个量，避免多次全表扫描（Issue #236）：
+    // - reading / finished 是互补集合：`current_page+1` 与 `page_count` 比较；
+    // - `page_count=0` 的行既不算在读也不算读完（页数未知，不能判定读毕）；
+    // - total_pages_read 取整个 `reading_log`（不过滤 books.removed）：
+    //   软删只隐藏书，历史阅读量仍属于用户，不能被悄悄抹掉。
+    let (total, reading, finished, total_pages_read): (i64, i64, i64, i64) = conn.query_row(
         "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN current_page > 0 AND current_page + 1 < page_count THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN current_page > 0 AND current_page + 1 < page_count THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN current_page > 0 AND page_count > 0 AND current_page + 1 >= page_count THEN 1 ELSE 0 END), 0),
+                (SELECT COALESCE(SUM(pages), 0) FROM reading_log)
          FROM books
          WHERE removed=0",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     Ok(DashboardCounts {
         total_books: u32::try_from(total).unwrap_or(u32::MAX),
         reading: u32::try_from(reading).unwrap_or(u32::MAX),
+        finished: u32::try_from(finished).unwrap_or(u32::MAX),
+        total_pages_read: u64::try_from(total_pages_read.max(0)).unwrap_or(u64::MAX),
     })
 }
 
@@ -1445,11 +1574,15 @@ pub fn set_setting(conn: &Connection, k: &str, v: &str) -> Result<(), BackendErr
 
 /// Persist a related group of settings atomically. If any write fails, dropping
 /// the transaction rolls back every earlier key in the group.
+///
+/// `BEGIN IMMEDIATE` takes the write lock up front: a deferred transaction would
+/// first take a read snapshot and later upgrade, which can fail with `BUSY` (or
+/// leave a half group in a multi-connection race) under WAL.
 pub fn set_settings_atomic(
     conn: &Connection,
     pairs: &[(&str, String)],
 ) -> Result<(), BackendError> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     for (key, value) in pairs {
         set_setting(&tx, key, value)?;
     }
@@ -1930,6 +2063,31 @@ mod tests {
         );
     }
 
+    /// Issue #267：INSERT 触发失败时，同组内**先写入**的键也必须整体回滚；
+    /// 否则设置页会落成「部分新、部分旧」的撕裂状态。
+    #[test]
+    fn set_settings_atomic_rolls_back_all_keys_on_failure() {
+        let conn = mem();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_boom_insert
+             BEFORE INSERT ON settings
+             WHEN NEW.k = 'boom'
+             BEGIN SELECT RAISE(ABORT, 'injected settings failure'); END;",
+        )
+        .expect("install failure trigger");
+
+        let result =
+            set_settings_atomic(&conn, &[("a", "1".to_string()), ("boom", "x".to_string())]);
+
+        assert!(result.is_err(), "injected insert must fail");
+        assert_eq!(
+            get_setting(&conn, "a").unwrap(),
+            None,
+            "the key written before the failure must roll back"
+        );
+        assert_eq!(get_setting(&conn, "boom").unwrap(), None);
+    }
+
     #[test]
     fn setting_read_distinguishes_missing_key_from_database_error() {
         let conn = mem();
@@ -2351,6 +2509,229 @@ mod tests {
             )
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    fn online_meta(pages: &[(Option<u32>, Option<u32>)]) -> String {
+        let pages: Vec<serde_json::Value> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, (width, height))| {
+                let mut page = serde_json::json!({
+                    "url": format!("https://example.com/{}.jpg", index + 1)
+                });
+                if let Some(width) = width {
+                    page["width"] = serde_json::json!(width);
+                }
+                if let Some(height) = height {
+                    page["height"] = serde_json::json!(height);
+                }
+                page
+            })
+            .collect();
+        serde_json::json!({
+            "schema": 1,
+            "manifestHash": "h",
+            "fetchedAt": "t",
+            "pages": pages,
+            "seriesId": "s1",
+            "chapterIndex": 2,
+            "filtered": [{"url": "https://example.com/ad.gif", "reason": "size"}]
+        })
+        .to_string()
+    }
+
+    fn parsed(meta_json: &str) -> serde_json::Value {
+        serde_json::from_str(meta_json).unwrap()
+    }
+
+    #[test]
+    fn merge_page_dimensions_fills_missing_and_preserves_everything_else() {
+        let meta = online_meta(&[(None, None), (Some(10), Some(20))]);
+        let merged = merge_page_dimensions(&meta, 0, 800, 12000).expect("filled");
+        let value = parsed(&merged);
+        assert_eq!(value["pages"][0]["width"], 800);
+        assert_eq!(value["pages"][0]["height"], 12000);
+        // 其它页与系列/过滤元数据原样保留。
+        assert_eq!(value["pages"][1]["width"], 10);
+        assert_eq!(value["pages"][1]["height"], 20);
+        assert_eq!(value["seriesId"], "s1");
+        assert_eq!(value["chapterIndex"], 2);
+        assert_eq!(value["filtered"][0]["reason"], "size");
+        assert_eq!(value["pages"][0]["url"], "https://example.com/1.jpg");
+    }
+
+    #[test]
+    fn merge_page_dimensions_rejects_noops_and_invalid_input() {
+        let meta = online_meta(&[(Some(800), Some(12000)), (None, None)]);
+        assert!(
+            merge_page_dimensions(&meta, 0, 800, 12000).is_none(),
+            "same dims must not rewrite meta_json"
+        );
+        assert!(
+            merge_page_dimensions(&meta, 9, 800, 12000).is_none(),
+            "out-of-range index is a no-op"
+        );
+        assert!(
+            merge_page_dimensions(&meta, 1, 0, 12000).is_none(),
+            "zero width is not a real dimension"
+        );
+        assert!(
+            merge_page_dimensions(&meta, 1, 800, 0).is_none(),
+            "zero height is not a real dimension"
+        );
+        assert!(merge_page_dimensions("not json", 0, 800, 12000).is_none());
+        assert!(merge_page_dimensions("{}", 0, 800, 12000).is_none());
+    }
+
+    #[test]
+    fn update_online_page_dimensions_only_touches_meta_json() {
+        let conn = mem();
+        let meta = online_meta(&[(None, None), (Some(10), Some(20))]);
+        upsert_online_book(
+            &conn,
+            "o1",
+            "https://example.com/a",
+            "A",
+            2,
+            "generic_manga",
+            &meta,
+        )
+        .unwrap();
+        set_progress(&conn, "o1", 1, Some(0.5)).unwrap();
+        conn.execute(
+            "UPDATE books SET last_opened_at='2026-01-02 03:04:05' WHERE id='o1'",
+            [],
+        )
+        .unwrap();
+        let before = get_book(&conn, "o1").unwrap().unwrap();
+
+        let merged = update_online_page_dimensions(&conn, "o1", 0, 800, 12000)
+            .unwrap()
+            .expect("dimensions merged");
+        assert_eq!(parsed(&merged)["pages"][0]["width"], 800);
+
+        let after = get_book(&conn, "o1").unwrap().unwrap();
+        assert_eq!(after.meta_json, merged);
+        // 只改 meta_json：身份列、进度列、页数与时间戳全部保持。
+        assert_eq!(after.last_opened_at, before.last_opened_at);
+        assert_eq!(after.updated_at, before.updated_at);
+        assert_eq!(after.progress_rev, before.progress_rev);
+        assert_eq!(after.current_page, before.current_page);
+        assert_eq!(after.scroll_pct.to_bits(), before.scroll_pct.to_bits());
+        assert_eq!(after.page_count, before.page_count);
+        assert_eq!(after.path, before.path);
+        assert_eq!(after.title, before.title);
+        assert_eq!(after.source_type, before.source_type);
+
+        // 相同尺寸再写一次是无变化（不产生新的 meta_json）。
+        assert_eq!(
+            update_online_page_dimensions(&conn, "o1", 0, 800, 12000).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn update_online_page_dimensions_skips_local_and_unknown_books() {
+        let conn = mem();
+        let meta = online_meta(&[(None, None)]);
+        upsert_book(&conn, "local1", "p/local1", "Local", 1).unwrap();
+        upsert_online_book(
+            &conn,
+            "o1",
+            "https://example.com/a",
+            "A",
+            1,
+            "generic_manga",
+            &meta,
+        )
+        .unwrap();
+
+        assert_eq!(
+            update_online_page_dimensions(&conn, "local1", 0, 800, 12000).unwrap(),
+            None
+        );
+        assert_eq!(
+            get_book(&conn, "local1").unwrap().unwrap().meta_json,
+            "{}",
+            "local books must not have meta_json rewritten"
+        );
+        assert_eq!(
+            update_online_page_dimensions(&conn, "missing", 0, 800, 12000).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn online_cache_clear_candidates_respect_progress_and_inactivity() {
+        let conn = mem();
+        let cutoff = (Local::now() - chrono::Duration::days(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let old = (Local::now() - chrono::Duration::days(40))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let recent = (Local::now() - chrono::Duration::days(5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let insert = |id: &str,
+                      source: &str,
+                      pages: i64,
+                      current: i64,
+                      updated: &str,
+                      opened: &str,
+                      removed: i64| {
+            conn.execute(
+                "INSERT INTO books(id, path, title, page_count, current_page, updated_at,
+                                   last_opened_at, source_type, removed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    format!("http://x/{id}"),
+                    id,
+                    pages,
+                    current,
+                    updated,
+                    opened,
+                    source,
+                    removed
+                ],
+            )
+            .unwrap();
+        };
+        // 已完成：即使刚打开也清理。
+        insert("finished", "generic_manga", 10, 9, &recent, &recent, 0);
+        // 超过 30 天未打开：保留未读完也可能清理。
+        insert("stale", "generic_manga", 10, 2, &old, &old, 0);
+        // 未读完且 30 天内打开：必须保留。
+        insert("in-progress", "generic_manga", 10, 2, &recent, &recent, 0);
+        // 本地书永不参与，即便已完成且很久没打开。
+        insert("local-done", "local", 10, 9, &old, &old, 0);
+        // 从未打开：以 updated_at 判定，旧的导入书可清理。
+        insert("never-opened-old", "generic_manga", 10, 0, &old, "", 0);
+        // 从未打开且最近导入：必须保留。
+        insert("never-opened-new", "generic_manga", 10, 0, &recent, "", 0);
+        // 软删书不参与。
+        insert("removed-done", "generic_manga", 10, 9, &old, &old, 1);
+
+        let keep = online_cache_clear_candidates(&conn, true, &cutoff).unwrap();
+        assert_eq!(
+            keep,
+            vec!["finished", "never-opened-old", "stale"],
+            "只清理已完成 / 超期未活动的在线书"
+        );
+
+        let all = online_cache_clear_candidates(&conn, false, &cutoff).unwrap();
+        assert_eq!(
+            all,
+            vec![
+                "finished",
+                "in-progress",
+                "never-opened-new",
+                "never-opened-old",
+                "stale"
+            ],
+            "显式全量清理覆盖全部未删除在线书，但排除本地书与软删书"
+        );
     }
 
     #[test]
@@ -4151,6 +4532,11 @@ mod tests {
             init_schema(&conn).expect("建表");
             let empty = dashboard_counts(&conn).expect("空库计数");
             assert_eq!((empty.total_books, empty.reading), (0, 0));
+            assert_eq!(
+                (empty.finished, empty.total_pages_read),
+                (0, 0),
+                "空库：无读完书、无累计页数"
+            );
             assert!(dashboard_series(&conn).expect("空库系列").is_empty());
 
             for i in 0..25u32 {
@@ -4185,9 +4571,26 @@ mod tests {
             .unwrap();
             soft_remove_books(&conn, &["gone".to_string()]).unwrap();
 
+            // 累计页数：reading_log 全量求和——软删书的阅读历史与旧版
+            // NULL book_id 的全局历史都必须计入，不能被软删/迁移静默抹掉。
+            conn.execute_batch(
+                "INSERT INTO reading_log(date, book_id, pages) VALUES
+                    ('2026-11-01', 'b00', 5),
+                    ('2026-11-01', 'b01', 7),
+                    ('2026-11-02', 'gone', 11),
+                    ('2026-11-03', NULL, 9);",
+            )
+            .unwrap();
+
             let counts = dashboard_counts(&conn).expect("计数");
             assert_eq!(counts.total_books, 27, "25 在读 + 读完 + 未开始；软删排除");
             assert_eq!(counts.reading, 25, "只有已开始未读完计入 reading");
+            assert_eq!(counts.finished, 1, "仅 done 已开始且到最后一页");
+            assert_eq!(
+                counts.total_pages_read,
+                5 + 7 + 11 + 9,
+                "累计页数含软删书历史与 NULL 全局旧史"
+            );
 
             let series = dashboard_series(&conn).expect("系列");
             assert_eq!(series.len(), 20, "最多 20 本");
@@ -4197,5 +4600,40 @@ mod tests {
             assert!(series.iter().all(|row| row.id != "ns" && row.id != "gone"));
         }
         cleanup_db_files(&path);
+    }
+
+    /// 读完判定边界：`current_page == page_count-1` 才算读完；
+    /// 未开始（`current_page=0`）与页数未知（`page_count=0`）永不算读完。
+    #[test]
+    fn dashboard_finished_excludes_unstarted_and_zero_page_books() {
+        let conn = mem();
+        // 已开始且停在最后一页：读完。
+        upsert_book(&conn, "last", "p/last", "末页", 100).unwrap();
+        // 已开始但还差一页：在读，未读完。
+        upsert_book(&conn, "before", "p/before", "倒数第二页", 100).unwrap();
+        // 单页书停在第一页（current_page=0）：视为未开始。
+        upsert_book(&conn, "single", "p/single", "单页", 1).unwrap();
+        // 页数未知：即使 current_page>0 也不能判定读完。
+        upsert_book(&conn, "zero", "p/zero", "零页", 0).unwrap();
+        upsert_book(&conn, "zero_started", "p/zero-started", "零页已开始", 0).unwrap();
+        for (id, page) in [
+            ("last", 99),
+            ("before", 98),
+            ("single", 0),
+            ("zero", 0),
+            ("zero_started", 5),
+        ] {
+            conn.execute(
+                "UPDATE books SET current_page=?1 WHERE id=?2",
+                params![page, id],
+            )
+            .unwrap();
+        }
+
+        let counts = dashboard_counts(&conn).expect("边界计数");
+        assert_eq!(counts.total_books, 5);
+        assert_eq!(counts.finished, 1, "只有 last 位于最后一页");
+        assert_eq!(counts.reading, 1, "before 是唯一在读");
+        assert_eq!(counts.total_pages_read, 0, "未写 reading_log 即 0");
     }
 }

@@ -23,6 +23,8 @@ import {
 import { useI18n } from "@/i18n";
 import { localizeBackendError } from "@/features/errors/localize";
 import { recordBreadcrumb } from "@/features/resilience";
+import { useFeatureEnabled } from "@/features/features";
+import { FeatureDisabledNotice } from "@/components/settings/DeveloperFeaturePanel";
 import { toast, toastErr } from "@/components/Toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -140,7 +142,66 @@ function OpdsCover({
  * OPDS 1.2 远程书库浏览器：只读目录，逐级进入库/系列，选中章节下载到本地
  * 缓存后交给现有阅读管线。所有网络与凭据都在 Rust 侧，封面也由后端代理。
  */
-export default function OpdsBrowserDialog({
+export default function OpdsBrowserDialog(props: Props) {
+  const enabled = useFeatureEnabled("opds");
+  if (!enabled) return <OpdsFeatureDisabledDialog {...props} />;
+  return <OpdsBrowserDialogBody {...props} />;
+}
+
+/**
+ * 功能门卫关闭时的可恢复入口：不挂载 `getOpdsConfig` / `browseOpds`，
+ * 因此不会在挂载时制造满屏 feature-disabled 报错。
+ */
+function OpdsFeatureDisabledDialog({ open, onOpenChange, onGoSettings }: Props) {
+  const { t } = useI18n();
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        showCloseButton={false}
+        data-testid="opds-dialog-disabled"
+        className="max-w-[calc(100%-2rem)] gap-0 overflow-hidden rounded-2xl border border-border bg-card p-0 text-card-foreground shadow-hard sm:max-w-lg"
+      >
+        <Button
+          variant="pill-ghost"
+          size="pill-icon-sm"
+          className="absolute right-3 top-3 z-10"
+          onClick={() => onOpenChange(false)}
+          aria-label={t("common.close")}
+          title={t("common.close")}
+        >
+          <X aria-hidden />
+        </Button>
+        <DialogHeader className="gap-2 border-b border-border px-6 pb-4 pr-14 pt-5">
+          <DialogTitle className="text-lg font-bold leading-snug tracking-tight">
+            {t("opds.dialog.title")}
+          </DialogTitle>
+          <DialogDescription className="text-xs leading-relaxed text-muted-foreground">
+            {t("opds.dialog.description")}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] space-y-3 overflow-y-auto px-6 py-5">
+          <FeatureDisabledNotice
+            feature="opds"
+            actions={
+              <Button
+                type="button"
+                variant="pill"
+                size="pill-sm"
+                className="whitespace-nowrap"
+                onClick={onGoSettings}
+              >
+                <Settings2 className="size-3.5" aria-hidden />
+                {t("opds.dialog.goSettings")}
+              </Button>
+            }
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function OpdsBrowserDialogBody({
   open,
   onOpenChange,
   onOpenBook,
@@ -329,7 +390,10 @@ export default function OpdsBrowserDialog({
             ) : null}
           </div>
           {feed ? (
-            <Badge variant="outline" className="shrink-0 whitespace-nowrap">
+            <Badge
+              variant="outline"
+              className="shrink-0 whitespace-nowrap tabular-nums"
+            >
               {formatNumber(feed.entries.length)}
             </Badge>
           ) : null}

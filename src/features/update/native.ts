@@ -1,17 +1,16 @@
-import { invoke } from "@tauri-apps/api/core";
-import {
-  check,
-  type DownloadEvent,
-  type Update,
-} from "@tauri-apps/plugin-updater";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 import { platformKind } from "@/lib/platform";
 
 /**
- * Thin wrapper around the official Tauri updater/process plugins.
+ * Front-end facade for the official Tauri updater channel.
  *
- * This is the only active update channel: the endpoint and the minisign public
- * key are baked into the build config (`tauri.conf.json plugins.updater`).
+ * The endpoint and the minisign public key stay baked into the build config
+ * (`tauri.conf.json plugins.updater`). The webview no longer holds the
+ * `updater:default` capability, so `plugin:updater|check` and
+ * `plugin:updater|download_and_install` are blocked by the ACL; everything goes
+ * through the app-owned `check_native_update` / `install_native_update`
+ * commands, which enforce the updates feature gate before touching the updater.
  * Signature verification and installer execution stay in Rust; the webview only
  * receives sizes, versions and text.
  */
@@ -23,10 +22,16 @@ export interface NativeUpdateInfo {
   body?: string;
 }
 
-/** An announced update plus the backend resource that holds it. */
+/** Backend payload: display info plus the manifest replayed at install time. */
+interface NativeUpdatePayload extends NativeUpdateInfo {
+  /** Signed manifest cached by the backend; never logged or persisted. */
+  rawJson: unknown;
+}
+
+/** An announced update plus the manifest needed to install it. */
 export interface NativeUpdateCheck {
-  update: Update;
   info: NativeUpdateInfo;
+  rawJson: unknown;
 }
 
 export interface NativeDownloadProgress {
@@ -42,7 +47,16 @@ export type NativeInstallEvent =
   | ({ phase: "downloading" } & NativeDownloadProgress)
   | { phase: "installing" };
 
-export type NativeUpdateFailureStage = "check" | "install" | "close" | "relaunch";
+/** Wire format of `NativeInstallEvent` on the Rust side (adjacent tagging). */
+type NativeInstallEventPayload =
+  | { event: "started"; data: { contentLength: number | null } }
+  | {
+      event: "progress";
+      data: { downloaded: number; total: number | null; chunkLength: number };
+    }
+  | { event: "installing" };
+
+export type NativeUpdateFailureStage = "check" | "install" | "relaunch";
 
 function messageOf(reason: unknown): string {
   if (typeof reason === "string") return reason;
@@ -73,38 +87,35 @@ export async function getTempFreeBytes(): Promise<number | null> {
   return invoke<number | null>("get_temp_free_bytes");
 }
 
-async function assertUpdatesEnabled(): Promise<void> {
-  await invoke<void>("assert_feature_enabled", { feature: "updates" });
-}
-
-/** Manual check against the endpoints configured in `tauri.conf.json`. */
+/**
+ * Manual check against the endpoints configured in `tauri.conf.json`.
+ *
+ * The backend command enforces the `updates` feature gate first (stable code
+ * `feature-disabled`) and returns the manifest needed for a later install.
+ */
 export async function checkNativeUpdate(): Promise<NativeUpdateCheck | null> {
-  await assertUpdatesEnabled();
-  const update = await check();
-  if (!update) return null;
-  return {
-    update,
-    info: {
-      version: update.version,
-      currentVersion: update.currentVersion,
-      ...(update.date ? { date: update.date } : {}),
-      ...(update.body ? { body: update.body } : {}),
-    },
-  };
+  const payload = await invoke<NativeUpdatePayload | null>(
+    "check_native_update",
+  );
+  if (!payload) return null;
+  const { rawJson, ...info } = payload;
+  return { info, rawJson };
 }
 
 /**
  * Download the signed package and hand it to the installer.
  *
- * On Windows the app exits once the NSIS installer starts — this only happens
- * after the user pressed the install button. On other platforms the promise
- * resolves after installation and the caller must call {@link relaunchApp}.
+ * The backend restores the update from the manifest already handed out by
+ * {@link checkNativeUpdate} (no second network check), rejects a version that no
+ * longer matches, then streams progress over a Channel. On Windows the app exits
+ * once the NSIS installer starts — this only happens after the user pressed the
+ * install button. On other platforms the promise resolves after installation and
+ * the caller must call {@link relaunchApp}.
  */
 export async function installNativeUpdate(
-  update: Update,
+  check: NativeUpdateCheck,
   onProgress?: (event: NativeInstallEvent) => void,
 ): Promise<void> {
-  await assertUpdatesEnabled();
   let downloaded = 0;
   let total: number | null = null;
 
@@ -117,36 +128,30 @@ export async function installNativeUpdate(
     onProgress({ phase: "downloading", downloaded, total, percent });
   };
 
-  await update.download((event: DownloadEvent) => {
-    if (event.event === "Started") {
-      const length = event.data.contentLength;
+  const onEvent = new Channel<NativeInstallEventPayload>();
+  onEvent.onmessage = (payload) => {
+    if (payload.event === "started") {
+      const length = payload.data?.contentLength;
       total = typeof length === "number" && length > 0 ? length : null;
       downloaded = 0;
       emitProgress();
       return;
     }
-    if (event.event === "Progress") {
-      downloaded += event.data.chunkLength;
+    if (payload.event === "progress") {
+      downloaded = payload.data?.downloaded ?? 0;
+      const length = payload.data?.total;
+      total = typeof length === "number" && length > 0 ? length : total;
       emitProgress();
       return;
     }
     onProgress?.({ phase: "installing" });
+  };
+
+  await invoke<void>("install_native_update", {
+    expectedVersion: check.info.version,
+    rawJson: check.rawJson,
+    onEvent,
   });
-
-  onProgress?.({ phase: "installing" });
-  await update.install();
-}
-
-/** Releases the backend update resource; safe to call with nothing held. */
-export async function closeNativeUpdate(
-  update: Update | null | undefined,
-): Promise<void> {
-  if (!update) return;
-  try {
-    await update.close();
-  } catch (reason) {
-    reportNativeUpdateFailure("close", reason);
-  }
 }
 
 /** Restart the app after a non-Windows install (user-clicked only). */

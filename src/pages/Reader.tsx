@@ -426,13 +426,13 @@ export default function Reader() {
     bookState === "ready" &&
     book !== null &&
     n > 0 &&
-    book.sourceType !== "local" &&
     (mode === "webtoon"
       ? wtProgress.pct >= 0.97
       : page >= n - 1 || spread.includes(n - 1));
 
   // 「下一话」只在确实存在下一话时出现：已入库的下一话（get_next_book）
-  // 或尚未入库的下一话链接（book.nextUrl）。探针按 bookId 缓存，避免每次翻页重查。
+  // 或尚未入库的下一话链接（book.nextUrl）。本地卷同样支持按系列/标题前缀续读；
+  // 探针按 bookId 缓存，避免每次翻页重查。
   const [nextProbe, setNextProbe] = useState<{ id: string; book: BookInfo | null }>({
     id: "",
     book: null,
@@ -440,7 +440,7 @@ export default function Reader() {
   const nextProbeRef = useRef("");
   useEffect(() => {
     const id = book?.id ?? "";
-    if (!id || book?.sourceType === "local" || !atLastPage) {
+    if (!id || !atLastPage) {
       nextProbeRef.current = "";
       setNextProbe((prev) => (prev.id === "" && prev.book === null ? prev : { id: "", book: null }));
       return;
@@ -451,7 +451,7 @@ export default function Reader() {
       .getNextBook(id)
       .then((next) => setNextProbe({ id, book: next }))
       .catch(() => setNextProbe({ id, book: null }));
-  }, [book?.id, book?.sourceType, atLastPage]);
+  }, [book?.id, atLastPage]);
   const nextBook = nextProbe.id === (book?.id ?? "") ? nextProbe.book : null;
   const showNextChapter = atLastPage && (nextBook !== null || !!book?.nextUrl);
   const nextTitle = nextBook?.title ?? t("reader.next.pending");
@@ -954,7 +954,7 @@ export default function Reader() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, n]);
 
-  /* ---------- silent preload: 本地 current ±3；在线仅当前页起 +2（不回翻） ---------- */
+  /* ---------- silent preload: 本地 current ±3；在线预取 P+1/P+2（不回翻） ---------- */
   useEffect(() => {
     if (bookState !== "ready" || !book || n === 0) return;
     if (mode === "webtoon") return; // 条漫由 WebtoonView 预取
@@ -967,7 +967,8 @@ export default function Reader() {
         spreadFor(t.page, n, t.mode, t.dir, spreadOptsRef.current),
       );
       const online = book.sourceType !== "local";
-      const start = online ? t.page : t.page - 3;
+      // 在线书只向前预热：单页 P 预取 P+1/P+2；双页跨 P/P+1 时补 P+2。
+      const start = online ? t.page + 1 : t.page - 3;
       const end = online ? Math.min(n - 1, t.page + 2) : Math.min(n - 1, t.page + 3);
       for (let i = Math.max(0, start); i <= end; i++) {
         if (i < 0 || i >= n || vis.has(i)) continue;
@@ -1169,6 +1170,11 @@ export default function Reader() {
     (delta: 1 | -1) => {
       const t = trackRef.current;
       if (!t.book || t.pageCount === 0) return;
+      // 末页继续向后翻：直接进入已探明的下一话/下一卷（或 nextUrl）。
+      if (delta > 0 && showNextChapter) {
+        void goNextChapter();
+        return;
+      }
       if (t.mode === "webtoon") {
         wtHandle.current?.scrollByViewport(delta * 0.85);
         poke();
@@ -1180,7 +1186,7 @@ export default function Reader() {
       setPan({ x: 0, y: 0 });
       poke();
     },
-    [poke],
+    [goNextChapter, poke, showNextChapter],
   );
 
   const jumpTo = useCallback(
@@ -2662,35 +2668,25 @@ export default function Reader() {
       {showNextChapter && (
         <div
           data-reader-hud
-          className="absolute bottom-24 right-4 z-30 w-[min(340px,calc(100vw-2rem))]"
+          className="absolute bottom-24 left-1/2 z-30 w-[min(620px,calc(100vw-2rem))] -translate-x-1/2"
         >
           <button
             type="button"
             onClick={() => void goNextChapter()}
             disabled={nextBusy}
-            className="group flex w-full items-center gap-3 rounded-2xl border border-border/80 bg-card/95 p-3.5 text-left text-card-foreground shadow-hard outline-none backdrop-blur-md transition-colors hover:border-primary/60 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-wait"
+            title={t("reader.next.go")}
+            className="group flex w-full items-center gap-2.5 rounded-full border border-border/80 bg-card/95 py-2 pl-4 pr-2 text-left text-card-foreground shadow-hard-sm outline-none backdrop-blur-md transition-colors hover:border-primary/60 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-wait"
           >
-            <span className="min-w-0 flex-1">
-              <Badge
-                variant="secondary"
-                className="mb-1.5 border-border/60 px-2 py-0.5 text-[10px]"
-              >
-                {t("reader.next.finished")}
-              </Badge>
-              <span className="block truncate text-[13px] font-semibold">
-                {nextBusy
-                  ? t("reader.next.loading")
-                  : t("reader.next.label", { title: nextTitle })}
-              </span>
-              <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                {nextBusy ? t("reader.next.resolving") : t("reader.next.go")}
-              </span>
+            <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+              {nextBusy
+                ? t("reader.next.loading")
+                : t("reader.next.pill", { title: nextTitle })}
             </span>
-            <span className="grid size-9 shrink-0 place-items-center rounded-full border border-border bg-primary text-primary-foreground shadow-hard-sm">
+            <span className="grid size-7 shrink-0 place-items-center rounded-full border border-border bg-primary text-primary-foreground shadow-hard-sm">
               {nextBusy ? (
-                <Loader2 className="reader-spin size-4" />
+                <Loader2 className="reader-spin size-3.5" />
               ) : (
-                <ArrowRight className="size-4" />
+                <ArrowRight className="size-3.5" />
               )}
             </span>
           </button>

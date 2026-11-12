@@ -13,8 +13,11 @@ pub const DEFAULT_MIN_WIDTH: u32 = 320;
 pub const DEFAULT_MIN_HEIGHT: u32 = 240;
 pub const DEFAULT_MAX_ASPECT: f32 = 2.8;
 pub const DEFAULT_MEDIAN_TOLERANCE: f32 = 0.4;
-/// 单次解析最多探测多少张缺尺寸图片的头部（避免首屏请求风暴）。
-pub const MAX_PROBE_IMAGES: usize = 24;
+/// 单次解析最多探测多少张缺尺寸图片的头部。
+///
+/// 探测已改为 256 KiB Range + 4 路有界并发；48 张约 12 MiB、并发 4 路，
+/// 既覆盖常见整章又不会形成请求风暴。
+pub const MAX_PROBE_IMAGES: usize = 48;
 
 fn default_min_width() -> u32 {
     DEFAULT_MIN_WIDTH
@@ -76,8 +79,18 @@ pub enum CandidateSource {
     #[default]
     Json,
     Html,
+    /// `__NEXT_DATA__` / 内联脚本中的静态图片直链。
+    InlineJson,
     Telegram,
     Telegraph,
+}
+
+impl CandidateSource {
+    /// Telegram / Telegraph 的图片来自用户明确打开的消息或文章，不再用
+    /// 中位宽度偏差与 48 张探测截断做二次猜测。
+    fn is_trusted(self) -> bool {
+        matches!(self, Self::Telegram | Self::Telegraph)
+    }
 }
 
 /// 图片探测结果（自然尺寸 + 可选内容指纹）。
@@ -94,7 +107,8 @@ pub struct CandidateImage {
     pub url: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    pub order: usize,
+    /// 原始文档中的单调序号；过滤/探测/聚类不得改变最终输出顺序。
+    pub dom_index: usize,
     /// 位于 header/footer/nav/aside/评论区/推荐位等站点 chrome 内。
     pub in_chrome: bool,
     /// 最近的正文容器提示（selector 或 class/id），用于站点档案学习。
@@ -102,6 +116,8 @@ pub struct CandidateImage {
     /// 图片自身的 class/id 拼接，供负面词与用户规则使用。
     pub class_id: Option<String>,
     pub alt: Option<String>,
+    /// 候选来自已锁定的正文主容器 / Telegraph 文章正文。
+    pub main_content: bool,
     /// 候选来源：用于站点档案学习与诊断，部分入口不读取。
     #[allow(dead_code)]
     pub source: CandidateSource,
@@ -110,20 +126,40 @@ pub struct CandidateImage {
 
 impl CandidateImage {
     #[allow(dead_code)]
-    pub fn new(url: impl Into<String>, order: usize) -> Self {
+    pub fn new(url: impl Into<String>, dom_index: usize) -> Self {
         Self {
             url: url.into(),
             width: None,
             height: None,
-            order,
+            dom_index,
             in_chrome: false,
             container: None,
             class_id: None,
             alt: None,
+            main_content: false,
             source: CandidateSource::Json,
             anchor: None,
         }
     }
+}
+
+/// 正文主容器提示：只认明确的章节/正文选择器，避免把 `content-widget`
+/// 之类侧栏类名误判为正文。解析器会把该提示写入 `container`。
+pub(crate) fn is_main_content_hint(hint: &str) -> bool {
+    const TOKENS: &[&str] = &[
+        "entry-content",
+        "post-content",
+        "chapter-content",
+        "reading-content",
+        "tl_article_content",
+        "_tl_editor",
+        "wp-manga-chapter-img",
+        "manga-chapter-img",
+        "main-content",
+        "article-content",
+    ];
+    let lower = hint.to_ascii_lowercase();
+    TOKENS.iter().any(|token| lower.contains(token))
 }
 
 /// 被过滤的页面；保留在 meta_json 供“已过滤杂图抽屉”展示与恢复。
@@ -282,6 +318,15 @@ pub fn url_template(raw: &str) -> Option<String> {
     ))
 }
 
+/// 只保留数字归一化后的 path，用于“同一章图片”聚类。
+///
+/// 漫画站常把章节图片轮换到 `i1/i2/i3` 等 CDN 子域；按完整 host+path
+/// 分组会让每张图都成为单例，从而被 `isolated` 规则整章误杀。
+pub(crate) fn path_template(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    Some(normalize_digit_runs(url.path()))
+}
+
 /// 保留 host 与 path，去掉 query/fragment；用于规则/事件展示。
 pub fn redacted_url(raw: &str) -> String {
     crate::online::redact_url_for_log(raw)
@@ -359,6 +404,8 @@ pub fn rule_matches(rule: &FilterRule, candidate: &CandidateImage, sha256: Optio
 ///
 /// 仅匹配 URL path、class/id、alt 与容器提示，避免把签名 query 中的随机串
 /// 当成噪音；不收录 `ad`、`icon` 之外的宽泛短词，防止误杀正文文件名。
+/// `loading` / `placeholder` / `thumb` 是懒加载状态词而非内容判据：正文
+/// 图片常带 `lazy-loading`，真正的占位图由 [`placeholder_url`] 与尺寸阶段处理。
 const NEGATIVE_WORDS: &[&str] = &[
     "logo",
     "avatar",
@@ -375,9 +422,6 @@ const NEGATIVE_WORDS: &[&str] = &[
     "button",
     "footer",
     "sponsor",
-    "loading",
-    "placeholder",
-    "thumb",
     "emoji",
     "sticker",
     "share",
@@ -397,6 +441,8 @@ fn placeholder_url(lower: &str) -> bool {
         || lower.contains("spacer")
         || lower.contains("blank.gif")
         || lower.contains("pixel.gif")
+        || lower.contains("spinner")
+        || lower.contains("loader")
 }
 
 fn negative_hit(candidate: &CandidateImage) -> Option<&'static str> {
@@ -448,11 +494,14 @@ struct ScoredCandidate {
 
 /// 多阶段提纯：规则 → URL/属性 → 尺寸/宽高比 → 中位宽度 → 序列聚类 → 站点档案。
 pub fn filter_candidates(
-    candidates: Vec<CandidateImage>,
+    mut candidates: Vec<CandidateImage>,
     memory: &FilterMemory,
     thresholds: &FilterThresholds,
     probe: &mut dyn FnMut(&CandidateImage) -> Option<ProbeInfo>,
 ) -> FilterOutcome {
+    // DOM 序号是唯一权威顺序：入口先排序，后续探测/聚类/HashMap 均不得
+    // 改变最终 pages 与 filtered 的先后。
+    candidates.sort_by_key(|candidate| candidate.dom_index);
     let input_count = candidates.len();
     let host = if memory.host.is_empty() {
         candidates
@@ -462,20 +511,27 @@ pub fn filter_candidates(
     } else {
         memory.host.clone()
     };
-    let templates: Vec<Option<String>> = candidates.iter().map(|c| url_template(&c.url)).collect();
-    let mut template_counts: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
-    for template in templates.iter().flatten() {
-        *template_counts.entry(template.as_str()).or_insert(0) += 1;
+    // 聚类只看 path：轮换 CDN 子域仍是同一章；完整 URL 模板继续用于站点档案。
+    let path_templates: Vec<Option<String>> =
+        candidates.iter().map(|c| path_template(&c.url)).collect();
+    let mut path_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for template in path_templates.iter().flatten() {
+        *path_counts.entry(template.as_str()).or_insert(0) += 1;
     }
-    let main_template = template_counts
+    let main_path = path_counts
         .iter()
         .max_by_key(|(_, count)| **count)
         .map(|(template, _)| *template);
     let main_host = candidates
         .iter()
-        .find(|c| templates.get(c.order).and_then(|t| t.as_deref()) == main_template)
-        .map(|c| url_host(&c.url))
+        .enumerate()
+        .find(|(index, _)| {
+            path_templates
+                .get(*index)
+                .and_then(|template| template.as_deref())
+                == main_path
+        })
+        .map(|(_, candidate)| url_host(&candidate.url))
         .unwrap_or_default();
     let max_aspect = memory
         .profile
@@ -493,6 +549,12 @@ pub fn filter_candidates(
     let mut probed = 0usize;
     let mut scored: Vec<ScoredCandidate> = Vec::with_capacity(input_count);
     for (index, candidate) in candidates.into_iter().enumerate() {
+        let telegraph = candidate.source == CandidateSource::Telegraph;
+        let main_content = candidate.main_content
+            || candidate
+                .container
+                .as_deref()
+                .is_some_and(is_main_content_hint);
         let mut score = 1.0f32;
         let mut reason: Option<String> = None;
         let mut allow = memory
@@ -511,7 +573,7 @@ pub fn filter_candidates(
         let mut sha256 = None;
         if (width.is_none() || height.is_none())
             && thresholds.probe_missing_dimensions
-            && probed < MAX_PROBE_IMAGES
+            && (candidate.source.is_trusted() || probed < MAX_PROBE_IMAGES)
         {
             probed += 1;
             if let Some(info) = probe(&candidate) {
@@ -561,36 +623,56 @@ pub fn filter_candidates(
                 score -= 1.0;
                 reason.get_or_insert_with(|| "data".into());
             }
-            if let Some(word) = negative_hit(&candidate) {
-                score -= 0.85;
-                if reason.is_none() {
-                    reason = Some(format!("keyword:{word}"));
-                }
-            }
-            if let (Some(w), Some(h)) = (width, height) {
-                if w < thresholds.min_width || h < thresholds.min_height {
-                    score -= 1.0;
-                    reason.get_or_insert_with(|| "small".into());
-                }
-                if aspect_ratio(w, h) > max_aspect {
-                    score -= 0.9;
-                    reason.get_or_insert_with(|| "banner".into());
-                }
-                if let (Some(low), Some(high)) = (learned_width_min, learned_width_max) {
-                    if (w < low || w > high) && aspect_ratio(w, h) <= 1.5 {
-                        score -= 0.3;
-                        reason.get_or_insert_with(|| "profile".into());
+            if telegraph {
+                // Telegraph 正文只保留“极端小图标”这一条尺寸防线；
+                // 宽幅尾页、随机 hash、跨域图床与关键词碰撞都不得误杀。
+                if let (Some(w), Some(h)) = (width, height) {
+                    if w < 64 && h < 64 {
+                        score -= 1.0;
+                        reason.get_or_insert_with(|| "small".into());
                     }
                 }
-            }
-            if let Some(template) = templates.get(index).and_then(|t| t.as_deref()) {
-                let count = template_counts.get(template).copied().unwrap_or(0);
-                if main_template != Some(template) && count <= 1 && input_count >= 4 {
-                    score -= 0.4;
-                    if url_host(&candidate.url) != main_host {
-                        score -= 0.2;
+            } else {
+                if let Some(word) = negative_hit(&candidate) {
+                    score -= 0.85;
+                    if reason.is_none() {
+                        reason = Some(format!("keyword:{word}"));
                     }
-                    reason.get_or_insert_with(|| "isolated".into());
+                }
+                if let (Some(w), Some(h)) = (width, height) {
+                    if w < thresholds.min_width || h < thresholds.min_height {
+                        score -= 1.0;
+                        reason.get_or_insert_with(|| "small".into());
+                    }
+                    if aspect_ratio(w, h) > max_aspect {
+                        score -= 0.9;
+                        reason.get_or_insert_with(|| "banner".into());
+                    }
+                    // 主容器内的封面/尾页不参与站点档案宽度的二次猜测；
+                    // 但 qrcode/thumb 等小图仍按通用尺寸规则剔除。
+                    if !main_content {
+                        if let (Some(low), Some(high)) = (learned_width_min, learned_width_max) {
+                            if (w < low || w > high) && aspect_ratio(w, h) <= 1.5 {
+                                score -= 0.3;
+                                reason.get_or_insert_with(|| "profile".into());
+                            }
+                        }
+                    }
+                }
+                if !main_content {
+                    if let Some(template) = path_templates
+                        .get(index)
+                        .and_then(|template| template.as_deref())
+                    {
+                        let count = path_counts.get(template).copied().unwrap_or(0);
+                        if main_path != Some(template) && count <= 1 && input_count >= 4 {
+                            score -= 0.4;
+                            if url_host(&candidate.url) != main_host {
+                                score -= 0.2;
+                            }
+                            reason.get_or_insert_with(|| "isolated".into());
+                        }
+                    }
                 }
             }
         }
@@ -613,7 +695,15 @@ pub fn filter_candidates(
         let median_f = median as f32;
         let scored_len = scored.len();
         for (index, item) in scored.iter_mut().enumerate() {
-            if item.allow {
+            if item.allow
+                || item.candidate.main_content
+                || item
+                    .candidate
+                    .container
+                    .as_deref()
+                    .is_some_and(is_main_content_hint)
+                || item.candidate.source.is_trusted()
+            {
                 continue;
             }
             let (Some(width), Some(height)) = (item.width, item.height) else {
@@ -638,6 +728,9 @@ pub fn filter_candidates(
     // 这里保留 URL/DOM/尺寸规则的完整匹配，哈希规则由用户标记时写入，
     // 并在下一次解析的 URL 模板/尺寸规则中立即生效。
 
+    // 中位宽度阶段只改分数；输出前再次按 DOM 序号锁定顺序，
+    // 防止任何探测/聚类阶段改变页面次序。
+    scored.sort_by_key(|item| item.candidate.dom_index);
     let mut pages = Vec::new();
     let mut blocked = Vec::new();
     let mut kept_containers = Vec::new();
@@ -648,6 +741,7 @@ pub fn filter_candidates(
             }
             pages.push(PageRef {
                 url: item.candidate.url,
+                viewer: false,
                 width: item.width,
                 height: item.height,
                 anchor: item.candidate.anchor,
@@ -659,7 +753,7 @@ pub fn filter_candidates(
                 height: item.height,
                 reason: item.reason.unwrap_or_else(|| "isolated".into()),
                 score: item.score.max(0.0),
-                order: item.candidate.order,
+                order: item.candidate.dom_index,
                 anchor: item.candidate.anchor,
                 sha256: item.sha256,
             });
@@ -809,6 +903,24 @@ mod tests {
             .blocked
             .iter()
             .any(|p| p.reason.contains("chrome") || p.reason.contains("keyword")));
+    }
+
+    #[test]
+    fn rotating_cdn_subdomains_are_clustered_by_path() {
+        // 同一章 22 页轮换到 i1..i22；path 模式一致，不能逐张判为 isolated。
+        let candidates: Vec<CandidateImage> = (0..22)
+            .map(|i| {
+                candidate(
+                    &format!("https://i{}.cdn.example/ch/{:03}.jpg", i + 1, i + 1),
+                    800,
+                    1200,
+                    i,
+                )
+            })
+            .collect();
+        let outcome = run(candidates, &FilterMemory::default());
+        assert_eq!(outcome.pages.len(), 22, "blocked={:?}", outcome.blocked);
+        assert!(outcome.blocked.is_empty());
     }
 
     #[test]
@@ -976,6 +1088,88 @@ mod tests {
     }
 
     #[test]
+    fn trusted_sources_skip_median_width_penalty() {
+        let make = |source: CandidateSource| {
+            let mut candidates: Vec<CandidateImage> = (0..59)
+                .map(|index| {
+                    let mut item = candidate(
+                        &format!("https://cdn.example/pages/{:03}.jpg", index + 1),
+                        800,
+                        1200,
+                        index + 1,
+                    );
+                    item.source = source;
+                    item
+                })
+                .collect();
+            let mut cover = candidate("https://cdn.example/cover.jpg", 2000, 2000, 0);
+            cover.source = source;
+            candidates.insert(0, cover);
+            candidates
+        };
+        let trusted = run(make(CandidateSource::Telegram), &FilterMemory::default());
+        assert_eq!(trusted.pages.len(), 60, "{:?}", trusted.blocked);
+        let generic = run(make(CandidateSource::Json), &FilterMemory::default());
+        assert_eq!(generic.pages.len(), 59);
+        assert!(generic
+            .blocked
+            .iter()
+            .any(|page| page.url.ends_with("/cover.jpg")));
+    }
+
+    #[test]
+    fn trusted_sources_skip_probe_truncation() {
+        let make = |source: CandidateSource| {
+            (0..60)
+                .map(|index| {
+                    let mut item = CandidateImage::new(
+                        format!("https://cdn.example/pages/{:03}.jpg", index + 1),
+                        index,
+                    );
+                    item.source = source;
+                    item
+                })
+                .collect::<Vec<_>>()
+        };
+        let thresholds = FilterThresholds::default();
+        let mut trusted_probes = 0usize;
+        let mut trusted_probe = |_: &CandidateImage| {
+            trusted_probes += 1;
+            Some(ProbeInfo {
+                width: 800,
+                height: 1200,
+                sha256: None,
+            })
+        };
+        let trusted = filter_candidates(
+            make(CandidateSource::Telegram),
+            &FilterMemory::default(),
+            &thresholds,
+            &mut trusted_probe,
+        );
+        assert_eq!(trusted_probes, 60);
+        assert_eq!(trusted.pages.len(), 60);
+
+        let mut generic_probes = 0usize;
+        let mut generic_probe = |_: &CandidateImage| {
+            generic_probes += 1;
+            Some(ProbeInfo {
+                width: 800,
+                height: 1200,
+                sha256: None,
+            })
+        };
+        let generic = filter_candidates(
+            make(CandidateSource::Json),
+            &FilterMemory::default(),
+            &thresholds,
+            &mut generic_probe,
+        );
+        assert_eq!(generic_probes, crate::online::filter::MAX_PROBE_IMAGES);
+        assert_eq!(generic.pages.len(), 60);
+    }
+
+    #[test]
     fn size_and_url_rules_match() {
         let mut candidate = CandidateImage::new("https://x/ch01/001.jpg", 0);
         candidate.width = Some(728);
@@ -1009,5 +1203,136 @@ mod tests {
             ..size
         };
         assert!(rule_matches(&dom, &candidate, None));
+    }
+
+    #[test]
+    fn pages_and_blocked_follow_dom_index_when_input_is_shuffled() {
+        let page = |name: &str, dom: usize| {
+            candidate(
+                &format!("https://site.example/pages/{name}.jpg"),
+                800,
+                1200,
+                dom,
+            )
+        };
+        let banner = |name: &str, dom: usize| {
+            candidate(
+                &format!("https://site.example/extras/{name}.png"),
+                728,
+                90,
+                dom,
+            )
+        };
+        let outcome = run(
+            vec![
+                page("003", 2),
+                banner("late", 5),
+                page("001", 0),
+                page("002", 1),
+                banner("early", 4),
+            ],
+            &FilterMemory::default(),
+        );
+        let urls: Vec<&str> = outcome.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://site.example/pages/001.jpg",
+                "https://site.example/pages/002.jpg",
+                "https://site.example/pages/003.jpg",
+            ],
+            "pages 必须按 dom_index 而非输入/探测顺序输出"
+        );
+        let blocked: Vec<usize> = outcome.blocked.iter().map(|p| p.order).collect();
+        assert_eq!(blocked, vec![4, 5], "filtered 列表也必须按 dom_index 排序");
+    }
+
+    #[test]
+    fn main_content_keeps_cover_credit_and_rename_suffixes() {
+        let add = |url: &str, width: u32, height: u32, dom: usize| {
+            let mut item = candidate(url, width, height, dom);
+            item.container = Some("div.entry-content".into());
+            item.source = CandidateSource::Html;
+            item
+        };
+        let candidates = vec![
+            add("https://wp.example/uploads/cover.jpg", 400, 600, 0),
+            add(
+                "https://wp.example/uploads/pages/001-724x1024.jpg",
+                800,
+                1200,
+                1,
+            ),
+            add("https://wp.example/uploads/pages/002-1.jpg", 800, 1200, 2),
+            add("https://wp.example/uploads/pages/003.jpg", 800, 1200, 3),
+            add("https://wp.example/uploads/pages/004.jpg", 800, 1200, 4),
+            add("https://wp.example/uploads/credit.jpg", 400, 600, 5),
+        ];
+        let outcome = run(candidates, &FilterMemory::default());
+        assert_eq!(
+            outcome.pages.len(),
+            6,
+            "正文主容器内的封面/尾页/重命名页不得被 isolated/median 剔除：{:?}",
+            outcome.blocked
+        );
+        assert!(outcome.blocked.is_empty());
+        let urls: Vec<&str> = outcome.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://wp.example/uploads/cover.jpg",
+                "https://wp.example/uploads/pages/001-724x1024.jpg",
+                "https://wp.example/uploads/pages/002-1.jpg",
+                "https://wp.example/uploads/pages/003.jpg",
+                "https://wp.example/uploads/pages/004.jpg",
+                "https://wp.example/uploads/credit.jpg",
+            ]
+        );
+    }
+
+    #[test]
+    fn telegraph_trusted_content_keeps_wide_keyword_and_isolated_pages() {
+        let mut candidates = Vec::new();
+        for i in 0..18 {
+            let mut item = candidate(
+                &format!("https://telegra.ph/file/{:016x}.jpg", 0x1000 + i),
+                800,
+                1200,
+                i,
+            );
+            item.source = CandidateSource::Telegraph;
+            candidates.push(item);
+        }
+        let mut wide = candidate("https://telegra.ph/file/wide-tail.jpg", 2400, 700, 18);
+        wide.source = CandidateSource::Telegraph;
+        let wide_url = wide.url.clone();
+        candidates.push(wide);
+        let mut keyword = candidate("https://telegra.ph/file/ad/random-hash.jpg", 800, 1200, 19);
+        keyword.source = CandidateSource::Telegraph;
+        let keyword_url = keyword.url.clone();
+        candidates.push(keyword);
+        let mut isolated = candidate("https://graph.org/file/random-hash.jpg", 800, 1200, 20);
+        isolated.source = CandidateSource::Telegraph;
+        let isolated_url = isolated.url.clone();
+        candidates.push(isolated);
+        let mut icon = candidate("https://telegra.ph/file/tiny-icon.png", 32, 32, 21);
+        icon.source = CandidateSource::Telegraph;
+        let icon_url = icon.url.clone();
+        candidates.push(icon);
+
+        let outcome = run(candidates, &FilterMemory::default());
+        assert_eq!(
+            outcome.pages.len(),
+            21,
+            "Telegraph 21P 不得因宽幅/关键词/跨域路径丢页：{:?}",
+            outcome.blocked
+        );
+        assert_eq!(outcome.blocked.len(), 1);
+        assert_eq!(outcome.blocked[0].url, icon_url);
+        assert!(outcome.blocked[0].reason.contains("small"));
+        let urls: Vec<&str> = outcome.pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(urls[18], wide_url);
+        assert_eq!(urls[19], keyword_url);
+        assert_eq!(urls[20], isolated_url);
     }
 }

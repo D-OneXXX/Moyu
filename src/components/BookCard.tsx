@@ -214,6 +214,7 @@ export default function BookCard({
         FOCUS_RING,
       )}
       role="button"
+      data-testid="library-card"
       tabIndex={0}
       aria-label={ariaLabel}
       aria-pressed={selectMode ? !!checked : undefined}

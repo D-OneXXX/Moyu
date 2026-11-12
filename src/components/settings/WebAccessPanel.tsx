@@ -27,7 +27,8 @@ import { localizeStableErrorCode } from "@/features/errors/localize";
 import { useI18n, type MessageKey } from "@/i18n";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { useAppVisible } from "@/features/performance/visibility";
-import { useWebAccess } from "@/features/web-access/useWebAccess";
+import { useWebAccessController } from "@/features/web-access/WebAccessContext";
+import { pickPreferredLanAddress } from "@/features/web-access/address";
 import type {
   DeviceView,
   PendingClaimView,
@@ -152,7 +153,11 @@ function ClaimRow({
   );
   const expired = secondsLeft === 0;
   return (
-    <li className="rounded-xl border border-border bg-card/60 p-3">
+    <li
+      className="rounded-xl border border-border bg-card/60 p-3"
+      data-testid="web-access-claim-row"
+      data-claim-id={claim.claimId}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <Smartphone className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 break-words text-sm font-semibold">
@@ -161,7 +166,11 @@ function ClaimRow({
         <Badge variant="warning" className="whitespace-nowrap">
           {t("settings.webAccess.unverifiedDevice")}
         </Badge>
-        <Badge variant={expired ? "warning" : "muted"} className="whitespace-nowrap">
+        <Badge
+          variant={expired ? "warning" : "muted"}
+          className="whitespace-nowrap tabular-nums"
+          data-testid="web-access-claim-countdown"
+        >
           {expired
             ? t("settings.webAccess.claimExpired")
             : t("settings.webAccess.claimExpiresIn", { seconds: secondsLeft })}
@@ -192,6 +201,7 @@ function ClaimRow({
             claim.deviceName,
             t,
           )}`}
+          data-testid="web-access-claim-approve"
           disabled={busy !== null || expired}
           onClick={() => onApprove(claim)}
         >
@@ -211,6 +221,7 @@ function ClaimRow({
             claim.deviceName,
             t,
           )}`}
+          data-testid="web-access-claim-deny"
           disabled={busy !== null}
           onClick={() => onDeny(claim.claimId)}
         >
@@ -254,16 +265,21 @@ export default function WebAccessPanel() {
     start,
     cancelStart,
     stop,
+    switchTransport,
     startPairing,
     cancelPairing,
     approve,
     deny,
     revoke,
     clearError,
-  } = useWebAccess();
+  } = useWebAccessController();
 
   const [selectedIp, setSelectedIp] = useState("");
+  const [targetTransport, setTargetTransport] = useState<"http" | "https">(
+    "http",
+  );
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [approveClaim, setApproveClaim] = useState<PendingClaimView | null>(
     null,
   );
@@ -274,11 +290,27 @@ export default function WebAccessPanel() {
     setSelectedIp((previous) =>
       previous && addresses.some((address) => address.ip === previous)
         ? previous
-        : (addresses[0]?.ip ?? ""),
+        : (pickPreferredLanAddress(addresses) ?? ""),
     );
   }, [addresses]);
 
+  // Follow the running transport; a manual target selected while running is
+  // preserved because this effect only reacts to actual transport changes.
+  useEffect(() => {
+    if (status?.transport === "http" || status?.transport === "https") {
+      setTargetTransport(status.transport);
+    }
+  }, [status?.transport]);
+
   const isPlain = status?.transport === "http";
+  const currentTransport = status?.transport ?? null;
+  const runningTransport =
+    currentTransport === "http" || currentTransport === "https"
+      ? currentTransport
+      : null;
+  const transportDiffers =
+    runningTransport !== null && targetTransport !== runningTransport;
+  const httpsBlocked = targetTransport === "https" && !status?.caInitialized;
   const pairingWindow = pairing?.window ?? null;
   const pairingUrl = pairingWindow?.url ?? null;
   const pairingExpiresAt = pairingWindow?.expiresAtUnixMs ?? null;
@@ -360,14 +392,27 @@ export default function WebAccessPanel() {
     phase === "stopping" ||
     (phase === "error" && status?.bindAddress != null);
   const canCancelStart = phase === "starting";
+  const canSwitch = canStop && transportDiffers;
   // While enabled the pairing snapshot is authoritative; the status snapshot
   // only refreshes on state events, which claim creation does not emit.
   const pendingCount =
     phase === "enabled" ? claims.length : (status?.pendingClaimCount ?? 0);
 
   const onStart = () => {
+    if (!selectedIp || httpsBlocked) return;
+    void start(selectedIp, targetTransport === "https");
+  };
+
+  const onSwitchConfirmed = () => {
+    setConfirmSwitch(false);
     if (!selectedIp) return;
-    void start(selectedIp);
+    void switchTransport(selectedIp, targetTransport === "https");
+  };
+
+  const focusCaPanel = () => {
+    document
+      .getElementById("settings-ca-distribution")
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   const onApproveConfirm = () => {
@@ -440,7 +485,8 @@ export default function WebAccessPanel() {
               </div>
             ) : null}
 
-            {status.transport === "https" && !status.caInitialized ? (
+            {(httpsBlocked ||
+              (status.transport === "https" && !status.caInitialized)) ? (
               <div
                 role="status"
                 className="flex flex-wrap items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs leading-relaxed text-warning"
@@ -449,6 +495,15 @@ export default function WebAccessPanel() {
                 <span className="min-w-0 flex-1">
                   {t("settings.webAccess.caRequired")}
                 </span>
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="pill-sm"
+                  className="whitespace-nowrap"
+                  onClick={focusCaPanel}
+                >
+                  {t("settings.webAccess.caOpen")}
+                </Button>
               </div>
             ) : null}
 
@@ -464,14 +519,14 @@ export default function WebAccessPanel() {
               </div>
             ) : null}
 
-            {status.transport !== "https" ? (
-              <div role="status" className="rounded-2xl border border-warning/40 bg-warning/10 p-3 text-xs leading-relaxed text-warning">
+            {targetTransport !== "https" ? (
+              <div role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs leading-relaxed text-warning">
                 {t("settings.webAccess.httpWarning")}
               </div>
             ) : null}
 
             {/* Service status + bind controls */}
-            <div className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold">
                   {t("settings.webAccess.statusTitle")}
@@ -512,21 +567,76 @@ export default function WebAccessPanel() {
                   <dt className="text-muted-foreground">
                     {t("settings.webAccess.port")}
                   </dt>
-                  <dd className="mt-0.5 font-mono">
+                  <dd className="mt-0.5 font-mono tabular-nums">
                     {status.port === null ? "—" : String(status.port)}
                   </dd>
                 </div>
               </dl>
 
+              <div className="mt-3 space-y-2">
+                <p className="text-xs font-medium">
+                  {t("settings.webAccess.transport")}
+                </p>
+                <div
+                  className="flex flex-wrap gap-1.5"
+                  role="group"
+                  aria-label={t("settings.webAccess.transport")}
+                >
+                  <Button
+                    type="button"
+                    variant={targetTransport === "http" ? "pill-primary" : "pill"}
+                    size="pill-sm"
+                    className="whitespace-nowrap"
+                    aria-pressed={targetTransport === "http"}
+                    data-testid="web-access-transport-http"
+                    disabled={busy !== null || loading}
+                    onClick={() => setTargetTransport("http")}
+                  >
+                    {t("settings.webAccess.transportHttp")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={targetTransport === "https" ? "pill-primary" : "pill"}
+                    size="pill-sm"
+                    className="whitespace-nowrap"
+                    aria-pressed={targetTransport === "https"}
+                    data-testid="web-access-transport-https"
+                    disabled={busy !== null || loading}
+                    onClick={() => setTargetTransport("https")}
+                  >
+                    {t("settings.webAccess.transportHttps")}
+                  </Button>
+                </div>
+                {runningTransport ? (
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {t("settings.webAccess.currentTransport", {
+                      mode: t(
+                        runningTransport === "https"
+                          ? "settings.webAccess.transportHttps"
+                          : "settings.webAccess.transportHttp",
+                      ),
+                    })}
+                  </p>
+                ) : null}
+                {httpsBlocked ? (
+                  <p className="text-xs leading-relaxed text-warning">
+                    {t("settings.webAccess.caSetupHint")}
+                  </p>
+                ) : null}
+              </div>
+
               <div className="mt-2 flex flex-wrap gap-2">
-                <Badge variant="secondary" className="whitespace-nowrap">
+                <Badge
+                  variant="secondary"
+                  className="whitespace-nowrap tabular-nums"
+                >
                   {t("settings.webAccess.deviceCount", {
                     count: status.deviceCount,
                   })}
                 </Badge>
                 <Badge
                   variant={pendingCount > 0 ? "warning" : "muted"}
-                  className="whitespace-nowrap"
+                  className="whitespace-nowrap tabular-nums"
                 >
                   {t("settings.webAccess.pendingCount", {
                     count: pendingCount,
@@ -593,7 +703,6 @@ export default function WebAccessPanel() {
                     disabled={
                       busy !== null ||
                       loading ||
-                      phase === "enabled" ||
                       phase === "starting" ||
                       phase === "stopping"
                     }
@@ -612,80 +721,106 @@ export default function WebAccessPanel() {
                     )}
                   </select>
                 </label>
-                {canCancelStart ? (
-                  <Button
-                    type="button"
-                    variant="pill-danger"
-                    size="pill-sm"
-                    className="whitespace-nowrap"
-                    disabled={busy !== null && busy !== "start"}
-                    onClick={cancelStart}
-                  >
-                    {busy === "start-cancel" || busy === "stop" ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <X className="size-3.5" />
-                    )}
-                    {busy === "start-cancel" || busy === "stop"
-                      ? t("settings.webAccess.cancelingStart")
-                      : t("settings.webAccess.cancelStart")}
-                  </Button>
-                ) : canStop ? (
-                  <Button
-                    type="button"
-                    variant="pill-danger"
-                    size="pill-sm"
-                    className="whitespace-nowrap"
-                    disabled={busy !== null || phase === "stopping"}
-                    onClick={() => setConfirmStop(true)}
-                  >
-                    {phase === "stopping" || busy === "stop" ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <Square className="size-3.5" />
-                    )}
-                    {phase === "stopping" || busy === "stop"
-                      ? t("settings.webAccess.stopping")
-                      : t("settings.webAccess.stop")}
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="pill-primary"
-                    size="pill-sm"
-                    className="whitespace-nowrap"
-                    disabled={
-                      busy !== null ||
-                      loading ||
-                      safeModeActive ||
-                      !selectedIp
-                    }
-                    onClick={onStart}
-                  >
-                    {busy === "start" ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <Play className="size-3.5" />
-                    )}
-                    {busy === "start"
-                      ? t("settings.webAccess.starting")
-                      : t("settings.webAccess.start")}
-                  </Button>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {canCancelStart ? (
+                    <Button
+                      type="button"
+                      variant="pill-danger"
+                      size="pill-sm"
+                      className="whitespace-nowrap"
+                      disabled={busy !== null && busy !== "start"}
+                      onClick={cancelStart}
+                    >
+                      {busy === "start-cancel" || busy === "stop" ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <X className="size-3.5" />
+                      )}
+                      {busy === "start-cancel" || busy === "stop"
+                        ? t("settings.webAccess.cancelingStart")
+                        : t("settings.webAccess.cancelStart")}
+                    </Button>
+                  ) : (
+                    <>
+                      {canStop ? (
+                        <Button
+                          type="button"
+                          variant="pill-danger"
+                          size="pill-sm"
+                          className="whitespace-nowrap"
+                          data-testid="web-access-stop"
+                          disabled={busy !== null || phase === "stopping"}
+                          onClick={() => setConfirmStop(true)}
+                        >
+                          {phase === "stopping" || busy === "stop" ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Square className="size-3.5" />
+                          )}
+                          {phase === "stopping" || busy === "stop"
+                            ? t("settings.webAccess.stopping")
+                            : t("settings.webAccess.stop")}
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="pill-primary"
+                          size="pill-sm"
+                          className="whitespace-nowrap"
+                          data-testid="web-access-start"
+                          disabled={
+                            busy !== null ||
+                            loading ||
+                            safeModeActive ||
+                            httpsBlocked ||
+                            !selectedIp
+                          }
+                          onClick={onStart}
+                        >
+                          {busy === "start" ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Play className="size-3.5" />
+                          )}
+                          {busy === "start"
+                            ? t("settings.webAccess.starting")
+                            : t("settings.webAccess.start")}
+                        </Button>
+                      )}
+                      {canSwitch ? (
+                        <Button
+                          type="button"
+                          variant="pill"
+                          size="pill-sm"
+                          className="whitespace-nowrap"
+                          data-testid="web-access-switch-transport"
+                          disabled={
+                            busy !== null ||
+                            loading ||
+                            safeModeActive ||
+                            httpsBlocked ||
+                            !selectedIp
+                          }
+                          onClick={() => setConfirmSwitch(true)}
+                        >
+                          {busy === "switch" ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="size-3.5" />
+                          )}
+                          {busy === "switch"
+                            ? t("settings.webAccess.switching")
+                            : t("settings.webAccess.switchTransport")}
+                        </Button>
+                      ) : null}
+                    </>
+                  )}
+                </div>
               </div>
-              {!canStop ? (
-                <details className="mt-3 text-xs text-muted-foreground">
-                  <summary className="cursor-pointer">{t("settings.webAccess.startSecure")}</summary>
-                  {!status.caInitialized ? <p className="mt-2">{t("settings.webAccess.caRequired")}</p> : null}
-                  <Button type="button" variant="pill" size="pill-sm" className="mt-2 whitespace-nowrap"
-                    disabled={busy !== null || loading || safeModeActive || !selectedIp || !status.caInitialized}
-                    onClick={() => void start(selectedIp, true)}>{t("settings.webAccess.startSecure")}</Button>
-                </details>
-              ) : null}
             </div>
 
             {/* Pairing window */}
-            <div className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="flex items-center gap-2 text-sm font-semibold">
                   <QrCode className="size-4 text-primary" />
@@ -694,7 +829,8 @@ export default function WebAccessPanel() {
                 {pairingWindow && !isPlain ? (
                   <Badge
                     variant={pairingExpired ? "warning" : "success"}
-                    className="whitespace-nowrap"
+                    className="whitespace-nowrap tabular-nums"
+                    data-testid="web-access-pairing-countdown"
                   >
                     {pairingExpired
                       ? t("settings.webAccess.pairingExpired")
@@ -706,6 +842,9 @@ export default function WebAccessPanel() {
               </div>
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                 {t(isPlain ? "settings.webAccess.plainPairHint" : "settings.webAccess.pairingDescription")}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {t("settings.webAccess.networkHint")}
               </p>
 
               {phase !== "enabled" ? (
@@ -745,6 +884,11 @@ export default function WebAccessPanel() {
                         <p className="text-xs leading-relaxed text-muted-foreground">
                           {t(isPlain ? "settings.webAccess.plainPairHint" : "settings.webAccess.qrHint")}
                         </p>
+                        {!isPlain ? (
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            {t("settings.webAccess.httpsRequiresCa")}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   )}
@@ -786,7 +930,7 @@ export default function WebAccessPanel() {
             {/* Pending claims: one explicit approval at a time, never bulk. */}
             {phase === "enabled" ? (
               <div
-                className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm"
+                className="rounded-lg border border-border/60 bg-card/40 p-3"
                 aria-live="polite"
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -825,7 +969,7 @@ export default function WebAccessPanel() {
             ) : null}
 
             {/* Paired devices */}
-            <div className="rounded-2xl border border-border bg-background/60 p-4 shadow-hard-sm">
+            <div className="rounded-lg border border-border/60 bg-card/40 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold">
                   {t("settings.webAccess.devicesTitle")}
@@ -963,6 +1107,23 @@ export default function WebAccessPanel() {
             void stop();
           }}
           onCancel={() => setConfirmStop(false)}
+        />
+      ) : null}
+
+      {confirmSwitch ? (
+        <ConfirmDialog
+          title={t("settings.webAccess.switchConfirmTitle")}
+          message={t("settings.webAccess.switchConfirmMessage", {
+            mode: t(
+              targetTransport === "https"
+                ? "settings.webAccess.transportHttps"
+                : "settings.webAccess.transportHttp",
+            ),
+          })}
+          confirmText={t("settings.webAccess.switchTransport")}
+          tone="primary"
+          onConfirm={onSwitchConfirmed}
+          onCancel={() => setConfirmSwitch(false)}
         />
       ) : null}
 

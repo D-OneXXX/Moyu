@@ -2454,6 +2454,7 @@ mod tests {
         let fixture = Fixture::new();
         for path in [
             "/",
+            "/reader-boot.js",
             "/reader.js",
             "/reader.css",
             "/reader-theme.css",

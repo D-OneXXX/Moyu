@@ -15,8 +15,10 @@ How to use:
   4. Inside each language keep this order: one-sentence introduction, 3-5 update bullets,
      optional limitation/compatibility notes, download instructions.
   5. Both versions must carry the same features, the same limitations and the same downloads.
-  6. The example below must keep this exact structure. Maintainers validate it in the
-     full engineering environment before publishing.
+  6. The example below is checked by CI against the real validator:
+       node scripts/release-governance/release-notes.mjs \
+         --check-template .github/RELEASE_NOTES_TEMPLATE.md
+     Keep it passing.
 
 Keep out of public notes (they belong in release assets, Actions records or internal docs):
   - QA reports, pass counts, CI run identifiers
@@ -25,10 +27,10 @@ Keep out of public notes (they belong in release assets, Actions records or inte
     database migration internals, workflow permissions
   - approval records, provenance evidence, full artifact hash lists
 
-The full engineering toolchain validates this structure. The candidate workflow fails fast
-on an invalid body or on empty notes; the publish workflow refuses to publish a Draft whose
-body or manifest notes do not comply. A copy with empty bullets is intentionally invalid:
-fill it in.
+`scripts/release-governance/release-notes.mjs` validates this structure. The candidate
+workflow fails fast on an invalid body or on empty notes; the publish workflow refuses to
+publish a Draft whose body or manifest notes do not comply. A copy with empty bullets is
+intentionally invalid: fill it in.
 
 The Windows publish workflow also compares the manifest notes with the approved body and
 reports a warning when they diverge. That comparison is not a hard gate: the manifest is

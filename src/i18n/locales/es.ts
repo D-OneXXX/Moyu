@@ -10,6 +10,7 @@ import { resilienceMessages } from "../messages/resilience";
 import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
 import { settingsDetailMessages } from "../messages/settingsDetail";
+import { featureGateMessages } from "../messages/featureGate";
 import type { Messages } from "./zh-CN";
 
 export const es = {
@@ -24,5 +25,6 @@ export const es = {
   ...onlineMessages["es"],
   ...opdsMessages.es,
   ...settingsDetailMessages.es,
+  ...featureGateMessages.es,
   ...resilienceMessages.es,
 } satisfies Messages;

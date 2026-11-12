@@ -1,58 +1,40 @@
 import type { MessageKey } from "@/i18n";
 
 /**
- * Fixed decoration anchors. A skin may only mount artwork into these four
- * slots; adding a slot is a layout decision, not a skin decision, so the
- * anchor list stays closed.
- */
-export type SkinSlotId =
-  | "window-perch-top"
-  | "corner-companion-bottom-left"
-  | "corner-companion-bottom-right"
-  | "window-frame-surround";
-
-export const SKIN_SLOT_IDS: readonly SkinSlotId[] = [
-  "window-perch-top",
-  "corner-companion-bottom-left",
-  "corner-companion-bottom-right",
-  "window-frame-surround",
-];
-
-export type SkinAssetMotion = "none" | "bob";
-
-/**
- * Artwork source. Only two channels are legal under the production CSP
- * (`img-src 'self' data:`):
- *   1. a bundled static path under `/skins/…`;
- *   2. a `data:image/…;base64,…` payload produced by the Rust validator.
- * `resolveSkinAssetUrl` rejects everything else, including remote URLs.
+ * 皮肤配置包（Task 7 · 画框包裹式）。
+ *
+ * 皮肤只做两件事：
+ *  1. 给整片窗口画布注入背景与外围画框（`--mr-skin-backdrop-image`、
+ *     `--mr-skin-frame-overlay`）；
+ *  2. 决定内容视窗的内缩边距与材质（`--mr-skin-viewport-inset` 等）。
+ *
+ * 这里没有「漂浮挂件」槽位：角色与插画属于画布美术的一部分，永远待在
+ * 内容视窗的外围画框上，不可能压在列表或文字上面。
  */
 export interface SkinAsset {
   src: string;
   width?: number;
   height?: number;
-  /** Rendered height in px; width follows the intrinsic ratio. */
-  sizePx?: number;
-  motion?: SkinAssetMotion;
-}
-
-export interface SkinDecoration {
-  id: string;
-  slot: SkinSlotId;
-  asset: SkinAsset;
-  /** Only opt into hit-testing for a sliver that really is interactive. */
-  interactive?: boolean;
-  /** Non-empty alt text makes the decoration perceivable; otherwise hidden. */
-  alt?: string;
 }
 
 export interface SkinDefinition {
   id: string;
   nameKey: MessageKey;
   descriptionKey?: MessageKey;
-  /** CSS custom properties (`--mr-*`) injected on `<html>` by the provider. */
+  /** CSS 自定义属性（`--mr-*`），由 provider 注入到 <html>。 */
   tokens?: Record<string, string>;
-  decorations?: readonly SkinDecoration[];
+  /** 整页画布背景（内置静态路径或后端校验后的 data URL）。 */
+  backdrop?: SkinAsset;
+  /** 视窗外围的画框装饰画布。 */
+  frame?: SkinAsset;
+  /**
+   * 预留态皮肤：默认**不生效**。
+   *
+   * 启动解析持久化偏好时会跳过预留态皮肤，因此当前版本永远是「零内缩、
+   * 无背景图」的极简外观。未来的美术资源包由代码显式注入（`addSkin` +
+   * `setSkin`）后才会启用——这条通道就是预留接口本身。
+   */
+  dormant?: boolean;
 }
 
 export interface SkinAssetPayload {

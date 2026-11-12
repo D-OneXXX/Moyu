@@ -133,6 +133,8 @@ pub struct ClearTracesResult {
     pub webviews_cleared: u32,
     pub bytes_freed: u64,
     pub session_headers_cleared: bool,
+    /// 辅助浏览器独立 Profile 已关闭并清空。
+    pub browser_profile_cleared: bool,
     pub timestamp: String,
 }
 
@@ -193,7 +195,7 @@ pub async fn clear_online_traces(
     state: tauri::State<'_, std::sync::Arc<crate::AppState>>,
 ) -> Result<ClearTracesResult, String> {
     let cache_state = state.inner().clone();
-    *state.session_online_headers.lock() = None;
+    crate::state::clear_session_online_headers(state.inner());
     // 辅助会话（受控 WebView 验证后的 UA/用户自备请求头）同样只驻留内存，
     // 清理在线痕迹时必须一起作废。
     state.clear_assisted_sessions();
@@ -226,6 +228,12 @@ pub async fn clear_online_traces(
     if webviews_cleared == 0 && !windows.is_empty() {
         return Err("无法清除 WebView 浏览数据".to_string());
     }
+    // 清空浏览数据后关闭受控浏览器窗，再删除独立 Profile 目录。
+    crate::browser::close_browser_window(&app);
+    tokio::task::spawn_blocking(crate::browser::clear_browser_profile)
+        .await
+        .map_err(|_| "无法清理辅助浏览器配置（browser-profile-clear-failed）".to_string())?
+        .map_err(|error| format!("{error}（browser-profile-clear-failed）"))?;
 
     let after_state = state.inner().clone();
     let after = tokio::task::spawn_blocking(move || cache_totals(&after_state))
@@ -240,6 +248,7 @@ pub async fn clear_online_traces(
         webviews_cleared,
         bytes_freed,
         session_headers_cleared: true,
+        browser_profile_cleared: true,
         timestamp: chrono::Local::now().to_rfc3339(),
     })
 }
@@ -597,9 +606,24 @@ mod tests {
     }
 
     #[test]
-    fn embedded_capabilities_include_the_updater_file() {
+    fn embedded_capabilities_include_the_updater_file_without_plugin_permission() {
         // 审计数据源必须与 Tauri 实际扫描的 capabilities/ 三文件一致。
-        assert!(CAPABILITIES_JSON.contains("updater:default"));
+        // updater.json 仍然存在（绑定 main 窗口并参与审计），但**不授予**任何
+        // updater 插件权限：页面调用 `plugin:updater|*` 必须被 ACL 拒绝，
+        // 检查/安装只能走 check_native_update / install_native_update 代理命令。
+        let updater_json = include_str!("../capabilities/updater.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(updater_json).expect("updater.json 应可解析");
+        assert_eq!(parsed["windows"], serde_json::json!(["main"]));
+        let permissions = parsed["permissions"]
+            .as_array()
+            .expect("updater.json permissions 必须是数组");
+        assert!(
+            permissions.is_empty(),
+            "updater.json 不得授予任何插件权限：{permissions:?}"
+        );
+        assert!(!CAPABILITIES_JSON.contains("updater:default"));
+        assert!(!CAPABILITIES_JSON.contains("process:"));
         let evidence = parse_capability_evidence(CAPABILITIES_JSON).expect("capability 应可解析");
         assert_eq!(evidence.remote_capabilities, 0);
         assert!(evidence.scoped);

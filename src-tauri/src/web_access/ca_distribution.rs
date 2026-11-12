@@ -38,7 +38,7 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::ca::{CaError, CaManager};
 
-use super::addrs::{is_private_lan_ipv4, local_private_ipv4s};
+use super::addrs::{is_private_lan_ipv4, local_lan_addresses};
 use super::tls::ConnectionLimiter;
 
 /// The only path this service ever serves.
@@ -175,13 +175,21 @@ impl CaDistributionRuntime {
     }
 
     pub(crate) fn addresses(&self) -> Vec<Ipv4Addr> {
-        local_private_ipv4s().unwrap_or_default()
+        local_lan_addresses()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|address| address.ip)
+            .collect()
     }
 
     /// Start on the first current private LAN IPv4 when the caller did not
     /// choose one. No address is a stable failure, never a wildcard bind.
     pub(crate) async fn start_default(&self) -> CaDistributionResult<CaDistributionStatus> {
-        let ips = local_private_ipv4s().map_err(|_| CaDistributionError::NoLanAddress)?;
+        let ips = local_lan_addresses()
+            .map_err(|_| CaDistributionError::NoLanAddress)?
+            .into_iter()
+            .map(|address| address.ip)
+            .collect();
         self.start(choose_bind_ip(ips)?).await
     }
 
@@ -215,10 +223,7 @@ impl CaDistributionRuntime {
             tokio::task::spawn_blocking(move || CaManager::new(ca_root).root_certificate())
                 .await
                 .map_err(|_| {
-                    CaDistributionError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "CA certificate worker failed",
-                    ))
+                    CaDistributionError::Io(std::io::Error::other("CA certificate worker failed"))
                 })??;
         let listener = TcpListener::bind(SocketAddr::from((bind_ip, self.port))).await?;
         let local_addr = listener.local_addr()?;

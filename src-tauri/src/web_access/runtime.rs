@@ -850,10 +850,12 @@ impl WebAccessRuntime {
     /// Stop listener + pairing + sessions. Idempotent; a failed shutdown lands
     /// in `Error` and is never retried automatically.
     pub(crate) async fn stop(&self, reason: StopReason) -> WebAccessStatusView {
-        // Recovery/safe-mode/exit may run while the main WebView is frozen.
-        // The panel re-reads the snapshot on remount, so skip the event emit
-        // there rather than risk blocking on a dead renderer.
-        let notify = matches!(reason, StopReason::Stopped);
+        // Recovery/exit may run while the main WebView is frozen; those paths
+        // re-read the snapshot on remount instead of pushing an event. A
+        // user/tray stop and a safe-mode stop must both broadcast, otherwise
+        // an open settings panel and the tray keep showing "running" after
+        // the listener is already gone.
+        let notify = matches!(reason, StopReason::Stopped | StopReason::SafeMode);
         let _operation = self.operation.lock().await;
         let (service, listener, bridge) = {
             let mut state = self.state.lock().await;
@@ -1392,6 +1394,30 @@ mod tests {
         );
         // No recognizable OS/browser tokens: never echo the raw agent.
         assert_eq!(platform_label(Some("curl/8.0")), "Unknown");
+    }
+
+    #[tokio::test]
+    async fn safe_mode_stop_broadcasts_state_to_settings_and_tray() {
+        struct CountingSink(std::sync::atomic::AtomicUsize);
+        impl WebAccessEventSink for CountingSink {
+            fn emit_state(&self, _: &WebAccessStatusView) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            fn emit_pairing(&self, _: &PairingEventView) {}
+        }
+        let wrapper = temp_path("safe-mode-stop-event");
+        let sink = Arc::new(CountingSink(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime =
+            WebAccessRuntime::with_events(wrapper.join("ca"), Some(sink.clone()), true, None);
+        runtime.start_plain(Ipv4Addr::LOCALHOST, 0).await.unwrap();
+        let before = sink.0.load(std::sync::atomic::Ordering::SeqCst);
+        let stopped = runtime.stop(StopReason::SafeMode).await;
+        assert_eq!(stopped.phase, "disabled");
+        assert_eq!(stopped.stop_reason.as_deref(), Some("safe-mode"));
+        assert!(
+            sink.0.load(std::sync::atomic::Ordering::SeqCst) > before,
+            "safe-mode stop must emit a state event for the open settings panel and tray"
+        );
     }
 
     #[tokio::test]

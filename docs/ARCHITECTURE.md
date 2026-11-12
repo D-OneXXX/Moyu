@@ -44,8 +44,12 @@ browser WebView
 - Library metadata, progress, statistics, settings, and filter rules live in SQLite under
   Tauri’s `app_data_dir`.
 - Database connections use WAL, a busy timeout, foreign keys, and normal synchronous mode.
-- Related settings keys commit in one SQLite transaction. Cache/settings memory changes happen
-  only after commit; disabling an optional feature persists its gate before runtime cleanup.
+- Related settings keys commit in one immediate SQLite transaction. Cache/settings memory
+  changes happen only after commit; disabling an optional feature persists its gate before
+  runtime cleanup.
+- Dashboard totals are aggregate SQL: library size, in-progress, finished, and cumulative
+  pages read do not materialize `books` rows. Series counts ignore malformed `meta_json`
+  rows for grouping while still counting them as single books.
 - Missing setting keys use defaults, but SQL read failures and normalization failures propagate.
   Startup and backup recovery publish a database connection only after settings load and repair
   succeed; the settings repair batch commits atomically.
@@ -63,7 +67,13 @@ browser WebView
   and database writes to the blocking pool.
 - Schema versions move forward only; migrations and startup checks are part of the boot path.
 - Rendered pages and online images share a bounded disk cache under `app_cache_dir`. Cache
-  cleanup removes derived data only, never `library.db` or reading progress.
+  cleanup removes derived data only, never `library.db` or reading progress. Only rendered
+  output participates in automatic LRU; persistent online originals are shown separately in
+  Settings, with a selective cleanup for finished or 30-day-inactive online books.
+- Online page dimensions are first probed from a 256 KiB header. A fresh desktop decode writes
+  the real full-page width/height back to that page's `meta_json` (meta-only update, progress
+  and timestamps untouched); the webtoon view applies the corrected ratio with scroll-anchored
+  reflow so the visible center does not jump. Web read-only paths never write metadata.
 - Missing source files are marked and can be relocated. Relocation preserves progress,
   webtoon position, and reading statistics.
 
@@ -82,6 +92,13 @@ browser WebView
 - The reader offers single-page, double-page, RTL/LTR, and continuous webtoon layouts.
 - Very tall webtoon images are sliced into bounded tiles before rendering; the frontend
   stitches them in order. A failed tile has a visible failure state, not an empty gap.
+- Full-image fallback decodes (WebP, GIF, interlaced PNG, and oversized non-banded images)
+  are capped at two concurrent expansions by a process-wide gate; banded PNG rows and JPEG
+  IDCT paths bypass it.
+- Telegram archive attachments stream to a sibling `.part` file in 64 KiB chunks with a
+  256 MiB hard cap, then fsync, ZIP/RAR magic validation, and an atomic rename. The
+  attachment is never buffered whole in memory. Browser downloads are written directly by
+  the WebView, and OPDS archives use the existing streaming download path.
 - Progress writes update the book row and reading log in one transaction.
 
 ## Online reading and the browser
@@ -90,6 +107,21 @@ browser WebView
   sources or background crawlers.
 - Fetches go through the Rust backend so request headers, redirects, SSRF checks, filtering,
   and caching are consistent.
+- **Online direct reading is an optional feature** (`experimental_online`). It is toggled with a
+  switch that lives on the “online URL direct reading” card in the network settings; the same
+  switch also appears in the feature list. Both write the flag through the same command, so
+  the setting takes effect immediately and is never stale. When the feature is off, the browser
+  page offers an “enable now” action next to the error instead of a dead end.
+- The backend gate reads the in-memory feature snapshot, which is updated in the same write
+  that persists the flag. A safe-mode session blocks online access with the stable code
+  `safe-mode-blocked`.
+- **Address selection**: a hostname may resolve to several addresses. Only addresses that pass
+  the blocked-range list (loopback, private, link-local, CGNAT, cloud metadata) are kept, and a
+  public IPv4 is preferred over IPv6. A host that publishes both a public IPv4 and a private
+  IPv6 therefore still connects, instead of being rejected as a whole. The connection uses
+  exactly the validated addresses, so a blocked address is never contacted.
+- The TLS server name stays the original hostname even when the socket is pinned to a
+  validated IP, so certificate verification is unaffected.
 - Session request headers are scoped by origin and can be kept in memory only. They are never
   written to SQLite, logs, diagnostics, or backups.
 - The embedded browser is for user-driven navigation and download handoff. It has no IPC
@@ -97,6 +129,18 @@ browser WebView
 - Online image filtering uses layered signals (URL/DOM, dimensions, sequence clustering, and
   site profiles). It is not a substitute for the user’s responsibility for the content they
   access.
+- HTML and Telegraph candidates carry a monotonic DOM index. Header probes, path clustering,
+  deduplication, and zero-result fallbacks may change scores but never the final page order.
+  Main-content containers (`entry-content`, `post-content`, `chapter-content`,
+  `reading-content`, `tl_article_content`, `_tl_editor`) scope extraction and exclude
+  Jetpack/YARPP/share/comment noise; WordPress original-file attributes and wrapping image
+  anchors are preferred over thumbnail `src` URLs.
+- Telegraph article images are treated as author content: banner, keyword, and isolated
+  heuristics are disabled; only icons under 64 px on both axes are dropped.
+- The browser toolbar imports the whole document in DOM order, not just the viewport. If a page
+  CSP blocks the loopback fetch, it falls back to a hidden form POST; the handoff server accepts
+  form-urlencoded payloads. A re-import may replace a manifest only when the new page count is
+  not smaller than the stored one; shrinking still requires an explicit user action.
 
 ## Privacy and diagnostics
 
@@ -106,9 +150,6 @@ browser WebView
 - Backups contain a sanitized database snapshot and an explicit allowlist of preferences.
   They exclude image caches, online headers, proxies, cookies, filter events, and internal
   version markers.
-- Startup recovery verifies a staging database before replacing the live database. The prior
-  database and its WAL/SHM sidecars are quarantined as one recovery group; the three newest
-  groups are retained. Recovery is considered healthy only after restored settings normalize.
 - The application does not start a Python sidecar or background service.
 
 ## Updates
@@ -119,6 +160,12 @@ browser WebView
   critical-fix channel (deb/rpm/AppImage). System package installs are not replaced in place.
 - Update manifests and artifacts are verified with the configured Tauri updater key. The
   Windows installer is not Authenticode-signed; the updater signature is a separate control.
+- The updater plugin stays registered for Rust-side use, but the webview holds no updater
+  capability. The check and install steps are app-owned proxy commands
+  (`check_native_update` / `install_native_update`); both consult the `updates` feature
+  switch before touching the updater, so a console caller cannot bypass the switch. Install
+  replays the manifest returned by the check (`restore_update`), rejects a version that no
+  longer matches, and still requires the package signature to bind the announced version.
 
 ## Security boundaries
 
@@ -128,9 +175,43 @@ browser WebView
   CSP is relaxed only for the Vite dev server.
 - Online URL and redirect handling rejects loopback, private, link-local, and metadata
   addresses in release builds.
-- The full engineering toolchain keeps static QA for the capability surface, CSP profile, route
-  fallbacks, storage sanitization, and other long-lived invariants. The public snapshot ships the
-  runtime invariants without the internal QA harness.
+- The repository’s static QA suite guards the capability surface, CSP profile, route fallbacks,
+  storage sanitization, and other long-lived invariants. The Web Access pairing UI is covered by
+  an automated DOM integration suite that drives the real panel with a Vite-only control-plane
+  module fixture; the Tauri IPC bridge is never replaced, so the static anti-mock guard and every
+  other suite keep using the real backend. Real phone/TLS pairing remains a separately authorized
+  L3 check and is never implied by the fixture run.
+
+## Brand, icons, and skins
+
+- The brand display name is a single constant (`src/features/brand/brand.ts`). The native window
+  title, the document title, and the six dictionaries all read it, and the
+  `static:release-surface` guard (`scripts/release-surface.mjs`, also run by the Vite config)
+  fails the build when it drifts.
+- The upgrade identity anchors (`productName`, `identifier`, `mainBinaryName`) are guarded by
+  the same check: they decide how the installer recognizes an existing installation.
+- **Two independent icon surfaces, deliberately not synchronized:**
+  - the brand mark inside the main UI (top-left of the shell) is the 0.19.1 artwork, drawn
+    inline with fixed colors and offered no replacement entry point;
+  - the desktop shortcut, taskbar, and system tray icons always come from the bundled build
+    resources (`src-tauri/icons/`), and the tray never reads a user-supplied image.
+  - the tray is installed once during setup (`tray::install`); its menu exposes the LAN toggle,
+    show-main-window, and quit actions, its tooltip starts with `Moyu`, and `close_to_tray`
+    hides the window only when a tray host exists.
+  Changing one side must never affect the other, and neither side is user-customizable.
+- The skin system is a **reserved (dormant) framed-viewport layout**, not an overlay system:
+  - `SkinCanvasFrame` paints the full-window canvas (theme background, artwork, outer frame);
+  - `ContentViewport` holds the library, browser, and settings, inset by
+    `--mr-skin-viewport-inset` (`top right bottom left`), with radius, glass surface, and shadow;
+  - the reserved state ships with `--mr-skin-viewport-inset: 0px`, no backdrop image, and no
+    frame overlay, so the current build looks exactly like the plain minimal UI;
+  - dormant skin definitions are never activated from the persisted preference; a future art
+    pack is injected explicitly in code (`addSkin` + `setSkin`) and only then applies;
+  - there are no floating sprites above the content: artwork belongs to the canvas and is only
+    visible outside the viewport, so it can never cover text or list items;
+  - the immersive reader route drops the viewport entirely and renders full-bleed;
+  - skin assets are either bundled files under `public/skins/` or `data:` URLs produced by the
+    Rust validator, so the production CSP (`img-src 'self' data:`) is never widened.
 
 ## Repository map
 
@@ -139,7 +220,12 @@ browser WebView
 | `src/` | React UI, reader, settings, i18n, diagnostics, and resilience |
 | `src-tauri/src/` | Rust commands, database, import/render pipeline, online fetch, security, updates |
 | `src-tauri/capabilities/` | Tauri permission boundaries per window |
-| `docs/` | Public architecture overview, licenses, and build assets |
+| `tests/qa/` | Static, behavioral, visual, privacy, cache, online, and chaos checks |
+| `docs/` | Public architecture overview and build assets |
+| `scripts/` | Version, build, and release helpers |
 
-The full QA, release, and internal engineering tooling is not part of the public snapshot.
 Verification commands are listed under **Development** in the README.
+
+## Entry points
+
+`index.html` starts the main application. `recovery.html` starts the separate recovery surface, and `web.html` starts the web reader. All three are Vite build inputs in `vite.config.ts`; they must remain at their configured paths unless all references are updated.

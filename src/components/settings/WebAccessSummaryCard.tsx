@@ -6,6 +6,7 @@ import {
   Loader2,
   QrCode,
   RefreshCw,
+  ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +19,11 @@ import {
 import { toast } from "@/components/Toast";
 import { useI18n } from "@/i18n";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
-import { useWebAccess } from "@/features/web-access/useWebAccess";
+import {
+  useWebAccessController,
+  WebAccessProvider,
+} from "@/features/web-access/WebAccessContext";
+import { pickPreferredLanAddress } from "@/features/web-access/address";
 import type { WebAccessPhase } from "@/features/web-access/types";
 
 const PHASES: readonly string[] = [
@@ -54,14 +59,25 @@ function phaseVariant(
  *
  * Keeps exactly what a user needs at a glance — state, a quick toggle, the
  * access URL with its QR, and the paired-device count. Everything else
- * (bind address, pairing window, pending claims, device list, CA lifecycle,
- * OPDS credentials) lives in the secondary sheet rendered as `children`.
+ * (bind address, pairing window, pending claims, device list, CA lifecycle)
+ * lives in the secondary centered dialog rendered as `children`.
+ *
+ * The card owns the single `WebAccessProvider`; the advanced dialog consumes
+ * the same controller instead of opening a second independent status stream.
  */
 export default function WebAccessSummaryCard({
   children,
 }: {
   children: ReactNode;
 }) {
+  return (
+    <WebAccessProvider>
+      <WebAccessSummaryCardBody>{children}</WebAccessSummaryCardBody>
+    </WebAccessProvider>
+  );
+}
+
+function WebAccessSummaryCardBody({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const { active: safeMode } = useSafeMode();
   const {
@@ -75,11 +91,12 @@ export default function WebAccessSummaryCard({
     start,
     cancelStart,
     stop,
-  } = useWebAccess();
+  } = useWebAccessController();
 
-  const phase = normalizePhase(status?.phase ?? (loading ? "starting" : "error"));
+  const phase = normalizePhase(status?.phase ?? "disabled");
   const running = phase === "enabled" || phase === "starting";
   const transport = status?.transport === "https" ? "https" : "http";
+  const preferredIp = pickPreferredLanAddress(addresses);
   const accessUrl =
     status?.bindAddress && status.port
       ? `${transport}://${status.bindAddress}:${status.port}/`
@@ -99,8 +116,7 @@ export default function WebAccessSummaryCard({
 
   const onToggle = (next: boolean) => {
     if (next) {
-      const ip = addresses[0]?.ip;
-      if (ip) void start(ip, false);
+      if (preferredIp) void start(preferredIp, false);
       return;
     }
     if (phase === "starting") {
@@ -128,9 +144,19 @@ export default function WebAccessSummaryCard({
       summary={
         <div className="space-y-3" data-testid="settings-web-access-summary">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={phaseVariant(phase)} className="whitespace-nowrap">
+            <Badge
+              variant={phaseVariant(phase)}
+              className="whitespace-nowrap"
+              data-testid="web-access-summary-phase"
+            >
               {t(`settings.webAccess.phase.${phase}` as "settings.webAccess.phase.enabled")}
             </Badge>
+            {safeMode ? (
+              <Badge variant="warning" className="whitespace-nowrap">
+                <ShieldAlert className="size-3" aria-hidden />
+                {t("safeMode.badgeActive")}
+              </Badge>
+            ) : null}
             <span className="text-xs tabular-nums text-muted-foreground">
               {t("settings.webAccess.pairedDevices", {
                 count: status?.deviceCount ?? devices.length,
@@ -217,6 +243,7 @@ export default function WebAccessSummaryCard({
         >
           <Switch
             checked={running}
+            data-testid="web-access-quick-toggle"
             disabled={
               loading ||
               safeMode ||

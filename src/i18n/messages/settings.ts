@@ -6,7 +6,6 @@ const zhCN = {
   "settings.features.title": "功能开关",
   "settings.features.description":
     "每项功能可独立开启或关闭；关闭后入口隐藏，后端调用会被拒绝。更改立即生效。",
-  "settings.features.managedInGeneral": "由「功能开关」统一控制",
   "settings.features.browser.description":
     "用于站点验证与下载导入的辅助浏览器。关闭后顶栏入口隐藏。",
   "settings.features.pdf.title": "PDF 阅读",
@@ -55,27 +54,6 @@ const zhCN = {
   "settings.theme.systemNote":
     "「跟随系统」会随操作系统的深浅色自动切换。",
 
-  "settings.brandIcon.title": "品牌图标",
-  "settings.brandIcon.description":
-    "选择内置图标或上传自己的图片；切换后顶栏立即更新。",
-  "settings.brandIcon.current": "当前图标",
-  "settings.brandIcon.groupLabel": "品牌图标选择",
-  "settings.brandIcon.presetBook": "开卷",
-  "settings.brandIcon.presetFish": "墨鱼",
-  "settings.brandIcon.presetMoon": "夜读",
-  "settings.brandIcon.presetWave": "潮汐",
-  "settings.brandIcon.upload": "选择自定义图标",
-  "settings.brandIcon.replace": "更换自定义图标",
-  "settings.brandIcon.reset": "恢复默认",
-  "settings.brandIcon.customActive": "自定义图标",
-  "settings.brandIcon.hint":
-    "图标只保存在本机，不会上传或写入日志。支持 PNG / JPEG / WebP，文件不超过 200 KiB，单边不超过 1024 px。",
-  "settings.brandIcon.errorType": "请选择 PNG、JPEG 或 WebP 图片。",
-  "settings.brandIcon.errorSize": "图片不能超过 200 KiB。",
-  "settings.brandIcon.errorDimension": "图片单边不能超过 1024 px。",
-  "settings.brandIcon.errorRead": "无法读取这张图片，请换一张。",
-  "settings.brandIcon.errorSave":
-    "无法保存图标偏好，请检查本机存储权限。",
 
   "settings.experimental.webtoonTitle": "条漫模式",
   "settings.experimental.webtoonDescription":
@@ -148,7 +126,7 @@ const zhCN = {
   "settings.online.sessionAbsent": "当前没有会话请求头。",
   "settings.online.clearSession": "清空内存凭据",
   "settings.online.storageModeNote":
-    "存储模式切换后需点击底部「保存设置」生效。",
+    "会话请求头只驻留内存，且只对首次请求的站点生效；切换站点后需重新填写。",
   "settings.online.testTitle": "连通性测试",
   "settings.online.testDescription":
     "解析目标清单或图集，只做探测，不写入书库。",
@@ -182,11 +160,11 @@ const zhCN = {
   "settings.cache.budgetHint": "保存后立即套用到页面与缩略图的内存缓存。",
   "settings.cache.diskTitle": "磁盘缓存",
   "settings.cache.diskDescription":
-    "渲染结果与在线原图共用同一份磁盘缓存，超出上限时会自动清理较旧的文件。",
+    "渲染成品按上限自动清理；在线原图会离线保留，直到删除书籍或手动清空缓存。",
   "settings.cache.diskLabel": "磁盘缓存上限",
   "settings.cache.diskAria": "磁盘缓存上限（MB）",
   "settings.cache.diskHint":
-    "保存后立即套用；降低上限后，超出部分会在后续访问时清理。",
+    "保存后立即套用；上限只约束渲染成品，在线原图会保留到删除书籍或手动清空。",
   "settings.cache.diskUsage": "磁盘占用",
   "settings.cache.diskRender": "渲染缓存",
   "settings.cache.diskOnline": "在线原图",
@@ -217,9 +195,17 @@ const zhCN = {
   "settings.cache.clearingTemp": "正在清空…",
   "settings.cache.clearTempHint":
     "清除内存页缓存、渲染成品与在线原图；封面会按需重建，书库和阅读进度不受影响。",
+  "settings.cache.barAria":
+    "磁盘占用分布：渲染缓存 {render}，在线原图 {online}",
+  "settings.cache.onlineLarge":
+    "在线原图占用 {size}，已超过 2 GB；可按需清理，不影响阅读进度。",
+  "settings.cache.clearOnline": "清理在线原图",
+  "settings.cache.clearingOnline": "正在清理在线原图…",
+  "settings.cache.clearOnlineHint":
+    "保留未读完且 30 天内打开过的书；书库、阅读进度与渲染缓存不受影响。",
   "settings.cache.manageTitle": "缓存管理与 LRU 配额",
   "settings.cache.manageDescription":
-    "渲染缓存与在线图片缓存共用同一份 LRU 软上限（500 MB – 10 GB）；一键清空临时缓存。",
+    "渲染缓存按 LRU 软上限（500 MB – 10 GB）清理；在线原图不自动淘汰，删除书籍或一键清空时移除。",
   "settings.online.proxyMode.system": "跟随系统代理",
   "settings.online.proxyMode.manual": "手动代理",
   "settings.online.proxyMode.direct": "直连",
@@ -241,7 +227,7 @@ const zhCN = {
 
   "settings.toast.scanDone": "扫描完成，书库共 {count} 本",
   "settings.toast.scanErrors": "有 {count} 个条目无法读取，已跳过",
-  "settings.toast.proxyFilled": "已填入系统代理，保存后生效",
+  "settings.toast.proxyFilled": "已填入系统代理并保存",
   "settings.toast.proxyNotFound": "未检测到开启的系统代理",
   "settings.toast.sessionCleared": "已清空内存凭据",
   "settings.toast.urlRequired": "请填写清单或图集 URL",
@@ -250,6 +236,8 @@ const zhCN = {
     "已清除 {count} 个封面缓存，重新进入书库将自动重建",
   "settings.toast.pagesCleared": "页面缓存已清空",
   "settings.toast.tempCleared": "已清空临时缓存，释放 {size}",
+  "settings.toast.onlineCleared":
+    "已清理 {books} 本在线原图缓存，释放 {size}",
   "settings.toast.saved": "设置已保存",
 
   "settings.backup.title": "本地备份与恢复",
@@ -275,8 +263,8 @@ const zhCN = {
   "settings.about.buildOrigin": "构建来源",
   "settings.about.buildOriginLabel": "构建来源指纹（Build Origin）",
   "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build (Non-Commercial)",
-  "settings.about.nonCommercial": "非商业授权 (Non-Commercial Only)",
+  "settings.about.buildOriginCommunity": "Community Modified Build",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "以下本地书未恢复",
   "settings.backup.skippedHint":
     "源路径不存在、不是可读漫画，或命中系统/用户敏感目录。记录未写入书库，磁盘内容未被删除。",
@@ -363,6 +351,8 @@ const zhCN = {
   "settings.webAccess.start": "启动服务",
   "settings.webAccess.httpWarning": "局域网 HTTP 不加密；同一网络中的设备可能读取或篡改内容和会话。请仅在可信网络使用。",
   "settings.webAccess.startSecure": "高级：使用 HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "手机必须先信任本机根 CA，否则 HTTPS 地址只会显示证书错误或空白；不需要加密时请用默认「启动服务」。",
   "settings.webAccess.plainPairHint": "手机扫码或输入网址后，在此批准设备。无需安装证书。",
   "settings.webAccess.starting": "正在启动",
   "settings.webAccess.stop": "停止服务",
@@ -425,6 +415,23 @@ const zhCN = {
     "撤销「{name}」会立即断开它的访问，之后必须重新完成配对。",
   "settings.webAccess.securityNote":
     "设备名由手机自行上报，可能被修改；本项目没有 SAS 或密码学绑定，桌面端的人工批准是唯一授权。请不要因为设备出现在列表里就认为它已通过验证。",
+
+  "settings.webAccess.transport": "传输模式",
+  "settings.webAccess.transportHttp": "HTTP（不加密）",
+  "settings.webAccess.transportHttps": "HTTPS（本地 CA）",
+  "settings.webAccess.currentTransport": "当前运行模式：{mode}",
+  "settings.webAccess.switchTransport": "切换模式",
+  "settings.webAccess.switchConfirmTitle": "切换局域网传输模式？",
+  "settings.webAccess.switchConfirmMessage":
+    "将先停止当前服务并撤销所有已配对设备会话，再以 {mode} 重新启动监听。设备需要重新连接。",
+  "settings.webAccess.switching": "正在切换…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS 需要本地 CA。请先在下方「根 CA 与设备信任」中初始化根证书。",
+  "settings.webAccess.caOpen": "前往初始化根证书",
+  "settings.autoSaved": "已自动保存",
+  "settings.autoSaving": "正在保存…",
+  "settings.autoSaveFailed": "保存失败",
+  "settings.filter.blockedShort": "已拦截 {count} 项",
 } as const;
 
 type SettingsMessages = { [K in keyof typeof zhCN]: string };
@@ -433,7 +440,6 @@ const zhTW: SettingsMessages = {
   "settings.features.title": "功能開關",
   "settings.features.description":
     "每項功能可獨立開啟或關閉；關閉後入口隱藏，後端呼叫會被拒絕。變更立即生效。",
-  "settings.features.managedInGeneral": "由「功能開關」統一控制",
   "settings.features.browser.description":
     "用於站點驗證與下載匯入的輔助瀏覽器。關閉後頂欄入口隱藏。",
   "settings.features.pdf.title": "PDF 閱讀",
@@ -483,27 +489,6 @@ const zhTW: SettingsMessages = {
   "settings.theme.systemNote":
     "「跟隨系統」會隨作業系統的深淺色自動切換。",
 
-  "settings.brandIcon.title": "品牌圖示",
-  "settings.brandIcon.description":
-    "選擇內建圖示或上傳自己的圖片；切換後頂欄立即更新。",
-  "settings.brandIcon.current": "目前圖示",
-  "settings.brandIcon.groupLabel": "品牌圖示選擇",
-  "settings.brandIcon.presetBook": "開卷",
-  "settings.brandIcon.presetFish": "墨魚",
-  "settings.brandIcon.presetMoon": "夜讀",
-  "settings.brandIcon.presetWave": "潮汐",
-  "settings.brandIcon.upload": "選擇自訂圖示",
-  "settings.brandIcon.replace": "更換自訂圖示",
-  "settings.brandIcon.reset": "恢復預設",
-  "settings.brandIcon.customActive": "自訂圖示",
-  "settings.brandIcon.hint":
-    "圖示只保存在本機，不會上傳或寫入日誌。支援 PNG / JPEG / WebP，檔案不超過 200 KiB，單邊不超過 1024 px。",
-  "settings.brandIcon.errorType": "請選擇 PNG、JPEG 或 WebP 圖片。",
-  "settings.brandIcon.errorSize": "圖片不能超過 200 KiB。",
-  "settings.brandIcon.errorDimension": "圖片單邊不能超過 1024 px。",
-  "settings.brandIcon.errorRead": "無法讀取這張圖片，請換一張。",
-  "settings.brandIcon.errorSave":
-    "無法保存圖示偏好，請檢查本機儲存權限。",
 
   "settings.experimental.webtoonTitle": "條漫模式",
   "settings.experimental.webtoonDescription":
@@ -578,7 +563,7 @@ const zhTW: SettingsMessages = {
   "settings.online.sessionAbsent": "目前沒有工作階段請求標頭。",
   "settings.online.clearSession": "清空記憶體憑證",
   "settings.online.storageModeNote":
-    "儲存模式切換後需點擊底部「儲存設定」生效。",
+    "工作階段請求標頭僅駐留記憶體，且只對首次請求的站點生效；切換站點後需重新填寫。",
   "settings.online.testTitle": "連線測試",
   "settings.online.testDescription":
     "解析目標清單或圖集，只做探測，不寫入書庫。",
@@ -612,11 +597,11 @@ const zhTW: SettingsMessages = {
   "settings.cache.budgetHint": "儲存後立即套用到頁面與縮圖的記憶體快取。",
   "settings.cache.diskTitle": "磁碟快取",
   "settings.cache.diskDescription":
-    "渲染結果與線上原圖共用同一份磁碟快取，超過上限時會自動清理較舊的檔案。",
+    "渲染成品會依上限自動清理；線上原圖會離線保留，直到刪除書籍或手動清空快取。",
   "settings.cache.diskLabel": "磁碟快取上限",
   "settings.cache.diskAria": "磁碟快取上限（MB）",
   "settings.cache.diskHint":
-    "儲存後立即套用；調低上限後，超出部分會在後續存取時清理。",
+    "儲存後立即套用；上限只約束渲染成品，線上原圖會保留到刪除書籍或手動清空。",
   "settings.cache.diskUsage": "磁碟占用",
   "settings.cache.diskRender": "渲染快取",
   "settings.cache.diskOnline": "線上原圖",
@@ -647,9 +632,17 @@ const zhTW: SettingsMessages = {
   "settings.cache.clearingTemp": "正在清空…",
   "settings.cache.clearTempHint":
     "清除記憶體頁面快取、渲染成品與線上原圖；封面會按需重建，書庫與閱讀進度不受影響。",
+  "settings.cache.barAria":
+    "磁碟佔用分佈：渲染快取 {render}，線上原圖 {online}",
+  "settings.cache.onlineLarge":
+    "線上原圖佔用 {size}，已超過 2 GB；可視需要清理，不影響閱讀進度。",
+  "settings.cache.clearOnline": "清理線上原圖",
+  "settings.cache.clearingOnline": "正在清理線上原圖…",
+  "settings.cache.clearOnlineHint":
+    "保留未讀完且 30 天內開啟過的書；書庫、閱讀進度與渲染快取不受影響。",
   "settings.cache.manageTitle": "快取管理與 LRU 配額",
   "settings.cache.manageDescription":
-    "渲染快取與線上圖片快取共用同一份 LRU 軟上限（500 MB – 10 GB）；一鍵清空臨時快取。",
+    "渲染快取依 LRU 軟上限（500 MB – 10 GB）清理；線上原圖不會自動淘汰，刪除書籍或一鍵清空時移除。",
   "settings.online.proxyMode.system": "跟隨系統代理",
   "settings.online.proxyMode.manual": "手動代理",
   "settings.online.proxyMode.direct": "直連",
@@ -671,7 +664,7 @@ const zhTW: SettingsMessages = {
 
   "settings.toast.scanDone": "掃描完成，書庫共 {count} 本",
   "settings.toast.scanErrors": "有 {count} 個項目無法讀取，已跳過",
-  "settings.toast.proxyFilled": "已填入系統代理，儲存後生效",
+  "settings.toast.proxyFilled": "已填入系統代理並儲存",
   "settings.toast.proxyNotFound": "未偵測到開啟的系統代理",
   "settings.toast.sessionCleared": "已清空記憶體憑證",
   "settings.toast.urlRequired": "請填寫清單或圖集 URL",
@@ -680,6 +673,8 @@ const zhTW: SettingsMessages = {
     "已清除 {count} 個封面快取，重新進入書庫將自動重建",
   "settings.toast.pagesCleared": "頁面快取已清空",
   "settings.toast.tempCleared": "已清空臨時快取，釋放 {size}",
+  "settings.toast.onlineCleared":
+    "已清理 {books} 本線上原圖快取，釋放 {size}",
   "settings.toast.saved": "設定已儲存",
 
   "settings.backup.title": "本機備份與還原",
@@ -705,8 +700,8 @@ const zhTW: SettingsMessages = {
   "settings.about.buildOrigin": "構建來源",
   "settings.about.buildOriginLabel": "構建來源指紋（Build Origin）",
   "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build (Non-Commercial)",
-  "settings.about.nonCommercial": "非商業授權 (Non-Commercial Only)",
+  "settings.about.buildOriginCommunity": "Community Modified Build",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "以下本機書籍未還原",
   "settings.backup.skippedHint":
     "來源路徑不存在、不是可讀漫畫，或命中系統/使用者敏感目錄。紀錄未寫入書庫，磁碟內容未被刪除。",
@@ -793,6 +788,8 @@ const zhTW: SettingsMessages = {
   "settings.webAccess.start": "啟動服務",
   "settings.webAccess.httpWarning": "區域網路 HTTP 未加密；同一網路的裝置可能讀取或竄改內容與工作階段。請僅在可信網路使用。",
   "settings.webAccess.startSecure": "進階：使用 HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "手機必須先信任本機根 CA，否則 HTTPS 位址只會顯示憑證錯誤或空白；不需要加密時請用預設「啟動服務」。",
   "settings.webAccess.plainPairHint": "手機掃碼或輸入網址後，在此核准裝置。無需安裝憑證。",
   "settings.webAccess.starting": "正在啟動",
   "settings.webAccess.stop": "停止服務",
@@ -855,13 +852,29 @@ const zhTW: SettingsMessages = {
     "撤銷「{name}」會立即中斷它的存取，之後必須重新完成配對。",
   "settings.webAccess.securityNote":
     "裝置名稱由手機自行回報，可能被修改；本專案沒有 SAS 或密碼學綁定，桌面端的人工批准是唯一授權。請不要因為裝置出現在清單裡就認為它已通過驗證。",
+
+  "settings.webAccess.transport": "傳輸模式",
+  "settings.webAccess.transportHttp": "HTTP（不加密）",
+  "settings.webAccess.transportHttps": "HTTPS（本機 CA）",
+  "settings.webAccess.currentTransport": "目前執行模式：{mode}",
+  "settings.webAccess.switchTransport": "切換模式",
+  "settings.webAccess.switchConfirmTitle": "切換區域網路傳輸模式？",
+  "settings.webAccess.switchConfirmMessage":
+    "將先停止目前服務並撤銷所有已配對裝置工作階段，再以 {mode} 重新啟動監聽。裝置需要重新連線。",
+  "settings.webAccess.switching": "正在切換…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS 需要本機 CA。請先在下方「根 CA 與裝置信任」中初始化根憑證。",
+  "settings.webAccess.caOpen": "前往初始化根憑證",
+  "settings.autoSaved": "已自動儲存",
+  "settings.autoSaving": "正在儲存…",
+  "settings.autoSaveFailed": "儲存失敗",
+  "settings.filter.blockedShort": "已攔截 {count} 項",
 };
 
 const en: SettingsMessages = {
   "settings.features.title": "Feature switches",
   "settings.features.description":
     "Enable or disable each feature independently. Turning one off hides its entry points and blocks backend calls. Changes apply immediately.",
-  "settings.features.managedInGeneral": "Managed by Feature switches",
   "settings.features.browser.description":
     "Auxiliary browser for site verification and download import. Turning it off hides the top-bar entry.",
   "settings.features.pdf.title": "PDF reading",
@@ -911,29 +924,6 @@ const en: SettingsMessages = {
   "settings.theme.systemNote":
     "“System” follows your operating system's light and dark appearance automatically.",
 
-  "settings.brandIcon.title": "Brand icon",
-  "settings.brandIcon.description":
-    "Pick a built-in icon or upload your own image. Changes appear in the top bar immediately.",
-  "settings.brandIcon.current": "Current icon",
-  "settings.brandIcon.groupLabel": "Brand icon selection",
-  "settings.brandIcon.presetBook": "Open book",
-  "settings.brandIcon.presetFish": "Ink fish",
-  "settings.brandIcon.presetMoon": "Night read",
-  "settings.brandIcon.presetWave": "Tide",
-  "settings.brandIcon.upload": "Choose custom icon",
-  "settings.brandIcon.replace": "Replace custom icon",
-  "settings.brandIcon.reset": "Restore default",
-  "settings.brandIcon.customActive": "Custom icon",
-  "settings.brandIcon.hint":
-    "The icon stays on this device and is never uploaded or written to logs. PNG / JPEG / WebP, up to 200 KiB, max 1024 px per side.",
-  "settings.brandIcon.errorType": "Choose a PNG, JPEG or WebP image.",
-  "settings.brandIcon.errorSize": "The image must be 200 KiB or smaller.",
-  "settings.brandIcon.errorDimension":
-    "Each side must be 1024 px or smaller.",
-  "settings.brandIcon.errorRead":
-    "Could not read this image. Try another file.",
-  "settings.brandIcon.errorSave":
-    "Could not save the icon preference. Check local storage permissions.",
 
   "settings.experimental.webtoonTitle": "Webtoon mode",
   "settings.experimental.webtoonDescription":
@@ -1009,7 +999,7 @@ const en: SettingsMessages = {
   "settings.online.sessionAbsent": "No session headers right now.",
   "settings.online.clearSession": "Clear memory credentials",
   "settings.online.storageModeNote":
-    "After changing storage mode, click “Save settings” at the bottom to apply.",
+    "Session headers stay in memory only and apply only to the first site you use them with. Re-enter them after switching sites.",
   "settings.online.testTitle": "Connectivity test",
   "settings.online.testDescription":
     "Parses the target manifest or gallery as a probe only; nothing is written to the library.",
@@ -1044,11 +1034,11 @@ const en: SettingsMessages = {
     "Applied to the in-memory page and thumbnail caches immediately after saving.",
   "settings.cache.diskTitle": "Disk cache",
   "settings.cache.diskDescription":
-    "Rendered pages and online originals share one disk cache; older files are evicted automatically when the limit is exceeded.",
+    "Rendered pages are cleaned up to the limit; online originals stay offline until you delete the book or clear the cache.",
   "settings.cache.diskLabel": "Disk cache limit",
   "settings.cache.diskAria": "Disk cache limit (MB)",
   "settings.cache.diskHint":
-    "Applied immediately after saving; lowering the limit cleans up excess files on later access.",
+    "Applied immediately after saving; the limit only covers rendered pages, while online originals stay until you delete the book or clear the cache.",
   "settings.cache.diskUsage": "Disk usage",
   "settings.cache.diskRender": "Render cache",
   "settings.cache.diskOnline": "Online originals",
@@ -1079,9 +1069,17 @@ const en: SettingsMessages = {
   "settings.cache.clearingTemp": "Clearing…",
   "settings.cache.clearTempHint":
     "Clears in-memory pages, rendered files and online originals; covers rebuild as needed, while the library and reading progress are unaffected.",
+  "settings.cache.barAria":
+    "Disk usage split: render cache {render}, online originals {online}",
+  "settings.cache.onlineLarge":
+    "Online originals use {size}, over 2 GB; clear them when needed without affecting reading progress.",
+  "settings.cache.clearOnline": "Clear online originals",
+  "settings.cache.clearingOnline": "Clearing online originals…",
+  "settings.cache.clearOnlineHint":
+    "Keeps books still in progress and opened within 30 days; the library, reading progress and render cache are untouched.",
   "settings.cache.manageTitle": "Cache & LRU quota",
   "settings.cache.manageDescription":
-    "Render and online image caches share one soft LRU limit (500 MB – 10 GB); one click clears temporary caches.",
+    "Render cache follows the soft LRU limit (500 MB – 10 GB); online originals are never evicted automatically and are removed when you delete a book or clear caches.",
   "settings.online.proxyMode.system": "Follow system proxy",
   "settings.online.proxyMode.manual": "Manual proxy",
   "settings.online.proxyMode.direct": "Direct",
@@ -1103,7 +1101,7 @@ const en: SettingsMessages = {
 
   "settings.toast.scanDone": "Scan complete. {count} books in the library.",
   "settings.toast.scanErrors": "{count} entries could not be read and were skipped",
-  "settings.toast.proxyFilled": "System proxy filled in; save to apply",
+  "settings.toast.proxyFilled": "System proxy detected and saved",
   "settings.toast.proxyNotFound": "No enabled system proxy detected",
   "settings.toast.sessionCleared": "Memory credentials cleared",
   "settings.toast.urlRequired": "Enter a manifest or gallery URL",
@@ -1112,6 +1110,8 @@ const en: SettingsMessages = {
     "Cleared {count} cover thumbnails; they will rebuild when you reopen the library",
   "settings.toast.pagesCleared": "Page cache cleared",
   "settings.toast.tempCleared": "Temporary cache cleared, {size} freed",
+  "settings.toast.onlineCleared":
+    "Online originals cleared for {books} books, {size} freed",
   "settings.toast.saved": "Settings saved",
 
   "settings.backup.title": "Local backup & restore",
@@ -1139,8 +1139,8 @@ const en: SettingsMessages = {
   "settings.about.buildOrigin": "Build origin",
   "settings.about.buildOriginLabel": "Build origin fingerprint",
   "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build (Non-Commercial)",
-  "settings.about.nonCommercial": "Non-Commercial Only",
+  "settings.about.buildOriginCommunity": "Community Modified Build",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "Some local books were not restored",
   "settings.backup.skippedHint":
     "The source path is missing, not a readable manga, or points at a sensitive system/user folder. Nothing was added to the library and nothing on disk was deleted.",
@@ -1231,6 +1231,8 @@ const en: SettingsMessages = {
   "settings.webAccess.start": "Start service",
   "settings.webAccess.httpWarning": "Local HTTP is unencrypted. Devices on the network may read or alter content and sessions. Use only on a trusted network.",
   "settings.webAccess.startSecure": "Advanced: use HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "The phone must trust this machine's root CA first; otherwise the HTTPS address only shows a certificate error or a blank page. Use the default Start service when encryption is not required.",
   "settings.webAccess.plainPairHint": "Scan the code or enter the address, then approve the device here. No certificate is needed.",
   "settings.webAccess.starting": "Starting",
   "settings.webAccess.stop": "Stop service",
@@ -1300,13 +1302,29 @@ const en: SettingsMessages = {
     "Revoking “{name}” disconnects it immediately; it must pair again to reconnect.",
   "settings.webAccess.securityNote":
     "Device names are self-reported by the phone and can change. This project has no SAS or cryptographic binding; manual approval on this desktop is the only authorization. Do not treat a device as verified just because it appears in this list.",
+
+  "settings.webAccess.transport": "Transport",
+  "settings.webAccess.transportHttp": "HTTP (unencrypted)",
+  "settings.webAccess.transportHttps": "HTTPS (local CA)",
+  "settings.webAccess.currentTransport": "Running mode: {mode}",
+  "settings.webAccess.switchTransport": "Switch mode",
+  "settings.webAccess.switchConfirmTitle": "Switch the LAN transport mode?",
+  "settings.webAccess.switchConfirmMessage":
+    "The running service will stop first, every paired device session will be revoked, and the listener will restart with {mode}. Devices must reconnect.",
+  "settings.webAccess.switching": "Switching…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS needs a local CA. Initialize the root certificate under Root CA & device trust below first.",
+  "settings.webAccess.caOpen": "Initialize the root certificate",
+  "settings.autoSaved": "Auto-saved",
+  "settings.autoSaving": "Saving…",
+  "settings.autoSaveFailed": "Save failed",
+  "settings.filter.blockedShort": "{count} blocked",
 };
 
 const es: SettingsMessages = {
   "settings.features.title": "Interruptores de funciones",
   "settings.features.description":
     "Activa o desactiva cada función de forma independiente. Al desactivarla se ocultan sus entradas y se bloquean las llamadas al backend. Los cambios se aplican al instante.",
-  "settings.features.managedInGeneral": "Gestionado por Interruptores de funciones",
   "settings.features.browser.description":
     "Navegador auxiliar para verificación de sitios e importación de descargas. Al desactivarlo se oculta la entrada de la barra superior.",
   "settings.features.pdf.title": "Lectura de PDF",
@@ -1357,29 +1375,6 @@ const es: SettingsMessages = {
   "settings.theme.systemNote":
     "«Sistema» sigue automáticamente el modo claro u oscuro del sistema operativo.",
 
-  "settings.brandIcon.title": "Icono de marca",
-  "settings.brandIcon.description":
-    "Elige un icono integrado o sube tu propia imagen. El cambio aparece al instante en la barra superior.",
-  "settings.brandIcon.current": "Icono actual",
-  "settings.brandIcon.groupLabel": "Selección del icono de marca",
-  "settings.brandIcon.presetBook": "Libro abierto",
-  "settings.brandIcon.presetFish": "Pez tinta",
-  "settings.brandIcon.presetMoon": "Lectura nocturna",
-  "settings.brandIcon.presetWave": "Marea",
-  "settings.brandIcon.upload": "Elegir icono personalizado",
-  "settings.brandIcon.replace": "Cambiar icono personalizado",
-  "settings.brandIcon.reset": "Restaurar predeterminado",
-  "settings.brandIcon.customActive": "Icono personalizado",
-  "settings.brandIcon.hint":
-    "El icono permanece en este dispositivo y nunca se sube ni se escribe en los registros. PNG / JPEG / WebP, hasta 200 KiB y 1024 px por lado.",
-  "settings.brandIcon.errorType": "Elige una imagen PNG, JPEG o WebP.",
-  "settings.brandIcon.errorSize": "La imagen no puede superar 200 KiB.",
-  "settings.brandIcon.errorDimension":
-    "Cada lado debe medir 1024 px o menos.",
-  "settings.brandIcon.errorRead":
-    "No se pudo leer esta imagen. Prueba con otro archivo.",
-  "settings.brandIcon.errorSave":
-    "No se pudo guardar el icono. Revisa los permisos de almacenamiento local.",
 
   "settings.experimental.webtoonTitle": "Modo webtoon",
   "settings.experimental.webtoonDescription":
@@ -1455,7 +1450,7 @@ const es: SettingsMessages = {
   "settings.online.sessionAbsent": "No hay cabeceras de sesión.",
   "settings.online.clearSession": "Borrar credenciales en memoria",
   "settings.online.storageModeNote":
-    "Tras cambiar el modo, pulsa «Guardar ajustes» abajo para aplicarlo.",
+    "Las cabeceras de sesión solo permanecen en memoria y se aplican únicamente al primer sitio con el que se usan. Vuelve a introducirlas al cambiar de sitio.",
   "settings.online.testTitle": "Prueba de conectividad",
   "settings.online.testDescription":
     "Analiza el manifiesto o la galería solo como prueba; no escribe en la biblioteca.",
@@ -1491,11 +1486,11 @@ const es: SettingsMessages = {
     "Se aplica a la caché de páginas y miniaturas en memoria al guardar.",
   "settings.cache.diskTitle": "Caché en disco",
   "settings.cache.diskDescription":
-    "Las páginas renderizadas y los originales en línea comparten una caché en disco; los archivos antiguos se eliminan al superar el límite.",
+    "Las páginas renderizadas se limpian según el límite; los originales en línea se conservan sin conexión hasta que borres el libro o vacíes la caché.",
   "settings.cache.diskLabel": "Límite de caché en disco",
   "settings.cache.diskAria": "Límite de caché en disco (MB)",
   "settings.cache.diskHint":
-    "Se aplica al guardar; al bajar el límite, el exceso se limpia en accesos posteriores.",
+    "Se aplica al guardar; el límite solo afecta a las páginas renderizadas, mientras que los originales en línea se conservan hasta borrar el libro o vaciar la caché.",
   "settings.cache.diskUsage": "Uso en disco",
   "settings.cache.diskRender": "Caché de renderizado",
   "settings.cache.diskOnline": "Originales en línea",
@@ -1527,9 +1522,17 @@ const es: SettingsMessages = {
   "settings.cache.clearingTemp": "Vaciando…",
   "settings.cache.clearTempHint":
     "Borra las páginas en memoria, los archivos renderizados y los originales en línea; las portadas se reconstruyen cuando haga falta y la biblioteca y el progreso no se ven afectados.",
+  "settings.cache.barAria":
+    "Uso de disco: caché de renderizado {render}, originales en línea {online}",
+  "settings.cache.onlineLarge":
+    "Los originales en línea ocupan {size}, más de 2 GB; puedes vaciarlos cuando quieras sin afectar al progreso de lectura.",
+  "settings.cache.clearOnline": "Vaciar originales en línea",
+  "settings.cache.clearingOnline": "Vaciando originales en línea…",
+  "settings.cache.clearOnlineHint":
+    "Conserva los libros en curso abiertos en los últimos 30 días; la biblioteca, el progreso y la caché de renderizado no se tocan.",
   "settings.cache.manageTitle": "Caché y cuota LRU",
   "settings.cache.manageDescription":
-    "La caché de renderizado y las imágenes en línea comparten un límite LRU blando (500 MB – 10 GB); un clic borra la caché temporal.",
+    "La caché de renderizado respeta el límite LRU blando (500 MB – 10 GB); las imágenes en línea no se eliminan automáticamente y solo se borran al eliminar un libro o vaciar la caché.",
   "settings.online.proxyMode.system": "Proxy del sistema",
   "settings.online.proxyMode.manual": "Proxy manual",
   "settings.online.proxyMode.direct": "Directo",
@@ -1554,7 +1557,7 @@ const es: SettingsMessages = {
   "settings.toast.scanErrors":
     "No se pudieron leer {count} entradas; se omitieron",
   "settings.toast.proxyFilled":
-    "Proxy del sistema rellenado; guarda para aplicar",
+    "Proxy del sistema detectado y guardado",
   "settings.toast.proxyNotFound":
     "No se detectó ningún proxy del sistema activado",
   "settings.toast.sessionCleared": "Credenciales en memoria borradas",
@@ -1566,6 +1569,8 @@ const es: SettingsMessages = {
   "settings.toast.pagesCleared": "Caché de páginas vaciada",
   "settings.toast.tempCleared":
     "Caché temporal vaciada; se liberaron {size}",
+  "settings.toast.onlineCleared":
+    "Originales en línea de {books} libros vaciados; se liberaron {size}",
   "settings.toast.saved": "Ajustes guardados",
 
   "settings.backup.title": "Copia local y restauración",
@@ -1594,8 +1599,8 @@ const es: SettingsMessages = {
   "settings.about.buildOrigin": "Origen de compilación",
   "settings.about.buildOriginLabel": "Huella de origen de compilación",
   "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build (Non-Commercial)",
-  "settings.about.nonCommercial": "Solo no comercial (Non-Commercial Only)",
+  "settings.about.buildOriginCommunity": "Community Modified Build",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "Algunos libros locales no se restauraron",
   "settings.backup.skippedHint":
     "La ruta de origen no existe, no es un manga legible o apunta a una carpeta sensible del sistema/usuario. No se añadió nada a la biblioteca ni se borró nada del disco.",
@@ -1688,6 +1693,8 @@ const es: SettingsMessages = {
   "settings.webAccess.start": "Iniciar servicio",
   "settings.webAccess.httpWarning": "HTTP local no está cifrado. Otros dispositivos de la red pueden leer o modificar el contenido y la sesión. Úsalo solo en redes de confianza.",
   "settings.webAccess.startSecure": "Avanzado: usar HTTPS",
+  "settings.webAccess.httpsRequiresCa":
+    "El teléfono debe confiar primero en la CA raíz de este equipo; de lo contrario, la dirección HTTPS solo muestra un error de certificado o una página en blanco. Usa el inicio predeterminado si no necesitas cifrado.",
   "settings.webAccess.plainPairHint": "Escanea el código o introduce la dirección y aprueba el dispositivo aquí. No se necesita certificado.",
   "settings.webAccess.starting": "Iniciando",
   "settings.webAccess.stop": "Detener servicio",
@@ -1760,13 +1767,29 @@ const es: SettingsMessages = {
     "Al revocar «{name}» se corta su acceso de inmediato y tendrá que vincularse de nuevo.",
   "settings.webAccess.securityNote":
     "El nombre del dispositivo lo declara el teléfono y puede cambiarse; este proyecto no tiene SAS ni vínculo criptográfico, y la aprobación manual en el escritorio es la única autorización. No consideres un dispositivo verificado solo porque aparezca en la lista.",
+
+  "settings.webAccess.transport": "Transporte",
+  "settings.webAccess.transportHttp": "HTTP (sin cifrar)",
+  "settings.webAccess.transportHttps": "HTTPS (CA local)",
+  "settings.webAccess.currentTransport": "Modo en ejecución: {mode}",
+  "settings.webAccess.switchTransport": "Cambiar modo",
+  "settings.webAccess.switchConfirmTitle": "¿Cambiar el modo de transporte LAN?",
+  "settings.webAccess.switchConfirmMessage":
+    "El servicio en ejecución se detendrá primero, se revocarán todas las sesiones emparejadas y el listener se reiniciará con {mode}. Los dispositivos deberán volver a conectarse.",
+  "settings.webAccess.switching": "Cambiando…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS requiere una CA local. Inicializa primero el certificado raíz en «CA raíz y confianza de dispositivos».",
+  "settings.webAccess.caOpen": "Inicializar el certificado raíz",
+  "settings.autoSaved": "Guardado automáticamente",
+  "settings.autoSaving": "Guardando…",
+  "settings.autoSaveFailed": "Error al guardar",
+  "settings.filter.blockedShort": "{count} bloqueados",
 };
 
 const ja: SettingsMessages = {
   "settings.features.title": "機能スイッチ",
   "settings.features.description":
     "各機能を個別にオン・オフできます。オフにすると入口が非表示になり、バックエンド呼び出しは拒否されます。変更は即時反映されます。",
-  "settings.features.managedInGeneral": "「機能スイッチ」で管理",
   "settings.features.browser.description":
     "サイト検証とダウンロード取り込み用の補助ブラウザー。オフにすると上部バーの入口が非表示になります。",
   "settings.features.pdf.title": "PDF 閲覧",
@@ -1816,29 +1839,6 @@ const ja: SettingsMessages = {
   "settings.theme.systemNote":
     "「システム」は OS のライト / ダークに合わせて自動で切り替わります。",
 
-  "settings.brandIcon.title": "ブランドアイコン",
-  "settings.brandIcon.description":
-    "内蔵アイコンを選ぶか、画像をアップロードします。変更は上部バーにすぐ反映されます。",
-  "settings.brandIcon.current": "現在のアイコン",
-  "settings.brandIcon.groupLabel": "ブランドアイコンの選択",
-  "settings.brandIcon.presetBook": "開いた本",
-  "settings.brandIcon.presetFish": "墨魚",
-  "settings.brandIcon.presetMoon": "夜読み",
-  "settings.brandIcon.presetWave": "潮汐",
-  "settings.brandIcon.upload": "カスタムアイコンを選択",
-  "settings.brandIcon.replace": "カスタムアイコンを変更",
-  "settings.brandIcon.reset": "既定に戻す",
-  "settings.brandIcon.customActive": "カスタムアイコン",
-  "settings.brandIcon.hint":
-    "アイコンはこの端末にのみ保存され、アップロードやログ出力は行いません。PNG / JPEG / WebP、200 KiB 以下、各辺 1024 px 以下。",
-  "settings.brandIcon.errorType":
-    "PNG、JPEG、WebP の画像を選択してください。",
-  "settings.brandIcon.errorSize": "画像は 200 KiB 以下にしてください。",
-  "settings.brandIcon.errorDimension": "各辺は 1024 px 以下にしてください。",
-  "settings.brandIcon.errorRead":
-    "この画像を読み取れません。別のファイルをお試しください。",
-  "settings.brandIcon.errorSave":
-    "アイコン設定を保存できません。ローカルストレージの権限を確認してください。",
 
   "settings.experimental.webtoonTitle": "Webtoon モード",
   "settings.experimental.webtoonDescription":
@@ -1914,7 +1914,7 @@ const ja: SettingsMessages = {
   "settings.online.sessionAbsent": "現在セッションヘッダーはありません。",
   "settings.online.clearSession": "メモリ上の認証情報を消去",
   "settings.online.storageModeNote":
-    "保存モードを切り替えたら、下部の「設定を保存」で反映してください。",
+    "セッションヘッダーはメモリのみに保持され、最初に使用したサイトにのみ適用されます。サイトを切り替えたら再入力してください。",
   "settings.online.testTitle": "接続テスト",
   "settings.online.testDescription":
     "対象のマニフェストやギャラリーを解析するだけで、ライブラリには書き込みません。",
@@ -1950,11 +1950,11 @@ const ja: SettingsMessages = {
     "保存後、ページとサムネイルのメモリキャッシュにすぐ適用されます。",
   "settings.cache.diskTitle": "ディスクキャッシュ",
   "settings.cache.diskDescription":
-    "レンダリング画像とオンライン原画は同じディスクキャッシュを共有し、上限を超えると古いファイルから自動削除されます。",
+    "レンダリング画像は上限に従って自動整理されます。オンライン原画は書籍を削除するかキャッシュを手動で消すまでオフライン保持されます。",
   "settings.cache.diskLabel": "ディスクキャッシュ上限",
   "settings.cache.diskAria": "ディスクキャッシュ上限（MB）",
   "settings.cache.diskHint":
-    "保存後すぐに適用されます。上限を下げた場合、超過分は以降のアクセス時に整理されます。",
+    "保存後すぐに適用されます。上限はレンダリング画像のみ対象で、オンライン原画は書籍削除またはキャッシュ消去まで保持されます。",
   "settings.cache.diskUsage": "ディスク使用量",
   "settings.cache.diskRender": "レンダリングキャッシュ",
   "settings.cache.diskOnline": "オンライン原画",
@@ -1986,9 +1986,17 @@ const ja: SettingsMessages = {
   "settings.cache.clearingTemp": "削除中…",
   "settings.cache.clearTempHint":
     "メモリ上のページ、レンダリング済みファイル、オンライン原画を削除します。表紙は必要に応じて再生成され、ライブラリと読書進捗には影響しません。",
+  "settings.cache.barAria":
+    "ディスク使用量の内訳：レンダーキャッシュ {render}、オンライン原画 {online}",
+  "settings.cache.onlineLarge":
+    "オンライン原画が {size}（2 GB 超）を使用しています。必要に応じて削除でき、読書進捗には影響しません。",
+  "settings.cache.clearOnline": "オンライン原画を削除",
+  "settings.cache.clearingOnline": "オンライン原画を削除中…",
+  "settings.cache.clearOnlineHint":
+    "未読了かつ 30 日以内に開いた本は保持します。ライブラリ、読書進捗、レンダーキャッシュには影響しません。",
   "settings.cache.manageTitle": "キャッシュと LRU 上限",
   "settings.cache.manageDescription":
-    "レンダーキャッシュとオンライン画像キャッシュは同じ LRU 上限（500 MB ～ 10 GB）を共有。ワンクリックで一時キャッシュを削除できます。",
+    "レンダーキャッシュは LRU 上限（500 MB ～ 10 GB）に従って整理されます。オンライン原画は自動削除されず、書籍の削除またはキャッシュの一括消去でのみ削除されます。",
   "settings.online.proxyMode.system": "システムプロキシに従う",
   "settings.online.proxyMode.manual": "手動プロキシ",
   "settings.online.proxyMode.direct": "直接接続",
@@ -2014,7 +2022,7 @@ const ja: SettingsMessages = {
   "settings.toast.scanErrors":
     "{count} 件を読み込めずスキップしました",
   "settings.toast.proxyFilled":
-    "システムプロキシを入力しました。保存で反映されます",
+    "システムプロキシを検出して保存しました",
   "settings.toast.proxyNotFound": "有効なシステムプロキシが見つかりません",
   "settings.toast.sessionCleared": "メモリ上の認証情報を消去しました",
   "settings.toast.urlRequired":
@@ -2026,6 +2034,8 @@ const ja: SettingsMessages = {
   "settings.toast.pagesCleared": "ページキャッシュを空にしました",
   "settings.toast.tempCleared":
     "一時キャッシュを削除し、{size} を解放しました",
+  "settings.toast.onlineCleared":
+    "{books} 冊のオンライン原画キャッシュを削除し、{size} を解放しました",
   "settings.toast.saved": "設定を保存しました",
 
   "settings.backup.title": "ローカルバックアップと復元",
@@ -2054,8 +2064,8 @@ const ja: SettingsMessages = {
   "settings.about.buildOrigin": "ビルド由来",
   "settings.about.buildOriginLabel": "ビルド由来フィンガープリント",
   "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build (Non-Commercial)",
-  "settings.about.nonCommercial": "非商用ライセンス (Non-Commercial Only)",
+  "settings.about.buildOriginCommunity": "Community Modified Build",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "一部のローカル書籍を復元できませんでした",
   "settings.backup.skippedHint":
     "元のパスが存在しない、読める漫画ではない、またはシステム/ユーザーの重要なフォルダーを指しています。書庫には追加せず、ディスク上の内容も削除していません。",
@@ -2148,6 +2158,8 @@ const ja: SettingsMessages = {
   "settings.webAccess.start": "サービスを起動",
   "settings.webAccess.httpWarning": "ローカル HTTP は暗号化されません。同じネットワークの機器が内容やセッションを読み取り、改ざんする可能性があります。信頼できるネットワークでのみ使用してください。",
   "settings.webAccess.startSecure": "詳細：HTTPS を使用",
+  "settings.webAccess.httpsRequiresCa":
+    "スマートフォンがこの PC のルート CA を信頼していない場合、HTTPS アドレスは証明書エラーまたは空白ページになります。暗号化が不要なら既定の「サービスを開始」を使用してください。",
   "settings.webAccess.plainPairHint": "コードを読み取るかアドレスを入力し、ここで端末を承認します。証明書は不要です。",
   "settings.webAccess.starting": "起動中",
   "settings.webAccess.stop": "サービスを停止",
@@ -2217,13 +2229,29 @@ const ja: SettingsMessages = {
     "「{name}」を取り消すと、ただちにアクセスが切断され、再度ペアリングが必要になります。",
   "settings.webAccess.securityNote":
     "端末名はスマートフォンの自己申告であり、変更される可能性があります。本プロジェクトには SAS や暗号学的な紐付けはなく、デスクトップ側での手動承認だけが認可です。一覧に表示されているだけで検証済みとみなさないでください。",
+
+  "settings.webAccess.transport": "転送モード",
+  "settings.webAccess.transportHttp": "HTTP（暗号化なし）",
+  "settings.webAccess.transportHttps": "HTTPS（ローカル CA）",
+  "settings.webAccess.currentTransport": "現在の実行モード：{mode}",
+  "settings.webAccess.switchTransport": "モードを切り替え",
+  "settings.webAccess.switchConfirmTitle": "LAN 転送モードを切り替えますか？",
+  "settings.webAccess.switchConfirmMessage":
+    "実行中のサービスを先に停止し、ペアリング済みの全端末セッションを取り消してから、{mode} で待受を再起動します。端末は再接続が必要です。",
+  "settings.webAccess.switching": "切り替え中…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS にはローカル CA が必要です。下の「ルート CA と端末の信頼」でルート証明書を初期化してください。",
+  "settings.webAccess.caOpen": "ルート証明書を初期化する",
+  "settings.autoSaved": "自動保存しました",
+  "settings.autoSaving": "保存中…",
+  "settings.autoSaveFailed": "保存に失敗",
+  "settings.filter.blockedShort": "{count} 件をブロック",
 };
 
 const ko: SettingsMessages = {
   "settings.features.title": "기능 스위치",
   "settings.features.description":
     "각 기능을 독립적으로 켜고 끌 수 있습니다. 끄면 진입점이 숨겨지고 백엔드 호출이 거부됩니다. 변경 사항은 즉시 적용됩니다.",
-  "settings.features.managedInGeneral": "기능 스위치에서 관리",
   "settings.features.browser.description":
     "사이트 확인과 다운로드 가져오기에 쓰는 보조 브라우저입니다. 끄면 상단 표시줄의 진입점이 숨겨집니다.",
   "settings.features.pdf.title": "PDF 읽기",
@@ -2273,29 +2301,6 @@ const ko: SettingsMessages = {
   "settings.theme.systemNote":
     "「시스템」은 운영체제의 라이트/다크 모드를 자동으로 따릅니다.",
 
-  "settings.brandIcon.title": "브랜드 아이콘",
-  "settings.brandIcon.description":
-    "내장 아이콘을 선택하거나 직접 이미지를 업로드하세요. 변경 사항은 상단 바에 즉시 반영됩니다.",
-  "settings.brandIcon.current": "현재 아이콘",
-  "settings.brandIcon.groupLabel": "브랜드 아이콘 선택",
-  "settings.brandIcon.presetBook": "펼친 책",
-  "settings.brandIcon.presetFish": "먹물고기",
-  "settings.brandIcon.presetMoon": "밤 읽기",
-  "settings.brandIcon.presetWave": "조수",
-  "settings.brandIcon.upload": "사용자 아이콘 선택",
-  "settings.brandIcon.replace": "사용자 아이콘 변경",
-  "settings.brandIcon.reset": "기본값 복원",
-  "settings.brandIcon.customActive": "사용자 아이콘",
-  "settings.brandIcon.hint":
-    "아이콘은 이 기기에만 저장되며 업로드되거나 로그에 기록되지 않습니다. PNG / JPEG / WebP, 200 KiB 이하, 각 변 1024 px 이하.",
-  "settings.brandIcon.errorType":
-    "PNG, JPEG 또는 WebP 이미지를 선택하세요.",
-  "settings.brandIcon.errorSize": "이미지는 200 KiB 이하여야 합니다.",
-  "settings.brandIcon.errorDimension": "각 변은 1024 px 이하여야 합니다.",
-  "settings.brandIcon.errorRead":
-    "이미지를 읽을 수 없습니다. 다른 파일을 선택하세요.",
-  "settings.brandIcon.errorSave":
-    "아이콘 설정을 저장할 수 없습니다. 로컬 저장소 권한을 확인하세요.",
 
   "settings.experimental.webtoonTitle": "웹툰 모드",
   "settings.experimental.webtoonDescription":
@@ -2371,7 +2376,7 @@ const ko: SettingsMessages = {
   "settings.online.sessionAbsent": "현재 세션 헤더가 없습니다.",
   "settings.online.clearSession": "메모리 자격 증명 지우기",
   "settings.online.storageModeNote":
-    "저장 모드를 바꾼 뒤 하단의 「설정 저장」을 눌러야 적용됩니다.",
+    "세션 헤더는 메모리에만 보관되며 처음 사용한 사이트에만 적용됩니다. 사이트를 바꾸면 다시 입력하세요.",
   "settings.online.testTitle": "연결 테스트",
   "settings.online.testDescription":
     "대상 매니페스트나 갤러리를 분석만 하며 서재에 기록하지 않습니다.",
@@ -2407,11 +2412,11 @@ const ko: SettingsMessages = {
     "저장하면 페이지와 썸네일 메모리 캐시에 즉시 적용됩니다.",
   "settings.cache.diskTitle": "디스크 캐시",
   "settings.cache.diskDescription":
-    "렌더링 이미지와 온라인 원본이 하나의 디스크 캐시를 공유하며, 한도를 넘으면 오래된 파일부터 자동으로 정리됩니다.",
+    "렌더링 이미지는 한도에 따라 자동 정리됩니다. 온라인 원본은 책을 삭제하거나 캐시를 직접 비울 때까지 오프라인으로 보관됩니다.",
   "settings.cache.diskLabel": "디스크 캐시 상한",
   "settings.cache.diskAria": "디스크 캐시 상한(MB)",
   "settings.cache.diskHint":
-    "저장 후 즉시 적용됩니다. 상한을 낮추면 초과분은 이후 접근 시 정리됩니다.",
+    "저장 후 즉시 적용됩니다. 상한은 렌더링 이미지에만 적용되며 온라인 원본은 책 삭제 또는 캐시 비우기까지 보관됩니다.",
   "settings.cache.diskUsage": "디스크 사용량",
   "settings.cache.diskRender": "렌더링 캐시",
   "settings.cache.diskOnline": "온라인 원본",
@@ -2442,9 +2447,17 @@ const ko: SettingsMessages = {
   "settings.cache.clearingTemp": "지우는 중…",
   "settings.cache.clearTempHint":
     "메모리 페이지, 렌더링된 파일, 온라인 원본을 지웁니다. 표지는 필요할 때 다시 생성되며 서재와 읽기 진행률에는 영향을 주지 않습니다.",
+  "settings.cache.barAria":
+    "디스크 사용량 구성: 렌더 캐시 {render}, 온라인 원본 {online}",
+  "settings.cache.onlineLarge":
+    "온라인 원본이 {size}(2 GB 초과)를 사용 중입니다. 필요할 때 정리할 수 있으며 읽기 진행률에는 영향이 없습니다.",
+  "settings.cache.clearOnline": "온라인 원본 정리",
+  "settings.cache.clearingOnline": "온라인 원본 정리 중…",
+  "settings.cache.clearOnlineHint":
+    "읽는 중이고 30일 이내에 연 책은 유지합니다. 서재, 읽기 진행률, 렌더 캐시는 건드리지 않습니다.",
   "settings.cache.manageTitle": "캐시 및 LRU 할당량",
   "settings.cache.manageDescription":
-    "렌더 캐시와 온라인 이미지 캐시는 하나의 LRU 상한(500 MB – 10 GB)을 공유합니다. 원클릭으로 임시 캐시를 비웁니다.",
+    "렌더 캐시는 LRU 상한(500 MB – 10 GB)에 따라 정리됩니다. 온라인 원본은 자동으로 삭제되지 않으며 책 삭제 또는 캐시 일괄 비우기로만 제거됩니다.",
   "settings.online.proxyMode.system": "시스템 프록시 따르기",
   "settings.online.proxyMode.manual": "수동 프록시",
   "settings.online.proxyMode.direct": "직접 연결",
@@ -2468,7 +2481,7 @@ const ko: SettingsMessages = {
   "settings.toast.scanDone": "스캔 완료. 서재에 {count}권이 있습니다.",
   "settings.toast.scanErrors": "항목 {count}개를 읽지 못해 건너뛰었습니다",
   "settings.toast.proxyFilled":
-    "시스템 프록시를 채웠습니다. 저장 후 적용됩니다",
+    "시스템 프록시를 감지하여 저장했습니다",
   "settings.toast.proxyNotFound": "활성화된 시스템 프록시를 찾지 못했습니다",
   "settings.toast.sessionCleared": "메모리 자격 증명을 지웠습니다",
   "settings.toast.urlRequired": "매니페스트 또는 갤러리 URL을 입력하세요",
@@ -2479,6 +2492,8 @@ const ko: SettingsMessages = {
   "settings.toast.pagesCleared": "페이지 캐시를 비웠습니다",
   "settings.toast.tempCleared":
     "임시 캐시를 지우고 {size}를 확보했습니다",
+  "settings.toast.onlineCleared":
+    "{books}권의 온라인 원본 캐시를 정리하고 {size}를 확보했습니다",
   "settings.toast.saved": "설정이 저장되었습니다",
 
   "settings.backup.title": "로컬 백업 및 복원",
@@ -2506,8 +2521,8 @@ const ko: SettingsMessages = {
   "settings.about.buildOrigin": "빌드 출처",
   "settings.about.buildOriginLabel": "빌드 출처 지문",
   "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build (Non-Commercial)",
-  "settings.about.nonCommercial": "비상업 라이선스 (Non-Commercial Only)",
+  "settings.about.buildOriginCommunity": "Community Modified Build",
+  "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "일부 로컬 책을 복원하지 못했습니다",
   "settings.backup.skippedHint":
     "원본 경로가 없거나 읽을 수 있는 만화가 아니거나 시스템/사용자 중요 폴더를 가리킵니다. 라이브러리에 추가하지 않았고 디스크 내용도 삭제하지 않았습니다.",
@@ -2600,6 +2615,8 @@ const ko: SettingsMessages = {
   "settings.webAccess.start": "서비스 시작",
   "settings.webAccess.httpWarning": "로컬 HTTP는 암호화되지 않습니다. 같은 네트워크의 기기가 콘텐츠와 세션을 읽거나 변경할 수 있습니다. 신뢰할 수 있는 네트워크에서만 사용하세요.",
   "settings.webAccess.startSecure": "고급: HTTPS 사용",
+  "settings.webAccess.httpsRequiresCa":
+    "휴대폰이 이 PC의 루트 CA를 먼저 신뢰해야 합니다. 그렇지 않으면 HTTPS 주소는 인증서 오류나 빈 페이지만 표시합니다. 암호화가 필요 없다면 기본 '서비스 시작'을 사용하세요.",
   "settings.webAccess.plainPairHint": "코드를 스캔하거나 주소를 입력한 뒤 여기서 기기를 승인하세요. 인증서는 필요하지 않습니다.",
   "settings.webAccess.starting": "시작 중",
   "settings.webAccess.stop": "서비스 중지",
@@ -2666,6 +2683,23 @@ const ko: SettingsMessages = {
     "'{name}' 기기를 취소하면 즉시 연결이 끊기고 다시 페어링해야 합니다.",
   "settings.webAccess.securityNote":
     "기기 이름은 휴대폰이 스스로 신고한 값이라 바뀔 수 있습니다. 이 프로젝트에는 SAS나 암호학적 바인딩이 없으며 데스크톱에서의 수동 승인만이 유일한 인가입니다. 목록에 보인다는 이유만으로 검증된 기기로 간주하지 마세요.",
+
+  "settings.webAccess.transport": "전송 모드",
+  "settings.webAccess.transportHttp": "HTTP(암호화 없음)",
+  "settings.webAccess.transportHttps": "HTTPS(로컬 CA)",
+  "settings.webAccess.currentTransport": "현재 실행 모드: {mode}",
+  "settings.webAccess.switchTransport": "모드 전환",
+  "settings.webAccess.switchConfirmTitle": "LAN 전송 모드를 전환할까요?",
+  "settings.webAccess.switchConfirmMessage":
+    "실행 중인 서비스를 먼저 중지하고 페어링된 모든 기기 세션을 취소한 뒤 {mode}(으)로 수신을 다시 시작합니다. 기기는 다시 연결해야 합니다.",
+  "settings.webAccess.switching": "전환 중…",
+  "settings.webAccess.caSetupHint":
+    "HTTPS에는 로컬 CA가 필요합니다. 아래 '루트 CA 및 기기 신뢰'에서 루트 인증서를 먼저 초기화하세요.",
+  "settings.webAccess.caOpen": "루트 인증서 초기화",
+  "settings.autoSaved": "자동 저장됨",
+  "settings.autoSaving": "저장 중…",
+  "settings.autoSaveFailed": "저장 실패",
+  "settings.filter.blockedShort": "{count}개 차단됨",
 };
 
 export const settingsMessages = {

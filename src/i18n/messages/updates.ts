@@ -45,6 +45,7 @@ const zhCN = {
   "updates.disk.full":
     "系统临时目录剩余空间不足（至少需要 256 MB），请清理磁盘后重试。",
   "updates.native.errorRelaunch": "重启应用失败，请手动关闭并重新打开 Moyu。",
+  "updates.native.versionChanged": "更新版本已变化，请重新检查后再安装。",
   "updates.linux.manualTitle": "系统安装需要手动更新",
   "updates.linux.manualHint":
     "当前是 deb/rpm 系统安装，应用不能替换系统包文件。请下载新版本后用系统包管理器安装；AppImage 可直接下载运行。",
@@ -55,7 +56,7 @@ const zhCN = {
   "updates.linux.openFailed":
     "无法打开浏览器，请手动访问 GitHub Releases。",
   "updates.native.linuxCriticalChannel":
-    "当前为 Linux 长期稳定分支：官方仅推送高危安全与崩溃修复补丁；日常功能扩展可由社区非商用修改提供。",
+    "当前为 Linux 长期稳定分支：官方仅推送高危安全与崩溃修复补丁；日常功能扩展可由社区修改提供。",
 } as const;
 
 const en: Record<keyof typeof zhCN, string> = {
@@ -102,6 +103,8 @@ const en: Record<keyof typeof zhCN, string> = {
     "The system temporary folder has less than 256 MB free. Free some disk space and try again.",
   "updates.native.errorRelaunch":
     "Could not restart the app. Close and open Moyu manually.",
+  "updates.native.versionChanged":
+    "The available update changed. Check again before installing.",
   "updates.linux.manualTitle":
     "System installation requires a manual update",
   "updates.linux.manualHint":
@@ -113,7 +116,7 @@ const en: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "Could not open the browser. Please visit GitHub Releases manually.",
   "updates.native.linuxCriticalChannel":
-    "You are on the Linux long-term stability branch: official updates only deliver critical security and crash fixes. Day-to-day features can come from community non-commercial modifications.",
+    "You are on the Linux long-term stability branch: official updates only deliver critical security and crash fixes. Day-to-day features can come from community modifications.",
 };
 
 const zhTW: Record<keyof typeof zhCN, string> = {
@@ -157,6 +160,7 @@ const zhTW: Record<keyof typeof zhCN, string> = {
     "系統暫存目錄剩餘空間不足（至少需要 256 MB），請清理磁碟後重試。",
   "updates.native.errorRelaunch":
     "無法重新啟動應用程式，請手動關閉並重新開啟 Moyu。",
+  "updates.native.versionChanged": "更新版本已變更，請重新檢查後再安裝。",
   "updates.linux.manualTitle": "系統安裝需要手動更新",
   "updates.linux.manualHint":
     "目前是 deb/rpm 系統安裝，應用程式不能替換系統套件檔案。請下載新版本後用系統套件管理員安裝；AppImage 可直接下載執行。",
@@ -167,7 +171,7 @@ const zhTW: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "無法開啟瀏覽器，請手動前往 GitHub Releases。",
   "updates.native.linuxCriticalChannel":
-    "目前為 Linux 長期穩定分支：官方僅推送高危安全性與當機修復補丁；日常功能擴充可由社群非商業修改提供。",
+    "目前為 Linux 長期穩定分支：官方僅推送高危安全性與當機修復補丁；日常功能擴充可由社群修改提供。",
 };
 
 const es: Record<keyof typeof zhCN, string> = {
@@ -214,6 +218,8 @@ const es: Record<keyof typeof zhCN, string> = {
     "La carpeta temporal del sistema tiene menos de 256 MB libres. Libera espacio y vuelve a intentarlo.",
   "updates.native.errorRelaunch":
     "No se pudo reiniciar la aplicación. Cierra y abre Moyu manualmente.",
+  "updates.native.versionChanged":
+    "La actualización disponible cambió. Vuelve a comprobar antes de instalar.",
   "updates.linux.manualTitle":
     "La instalación del sistema requiere una actualización manual",
   "updates.linux.manualHint":
@@ -225,7 +231,7 @@ const es: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "No se pudo abrir el navegador. Visita GitHub Releases manualmente.",
   "updates.native.linuxCriticalChannel":
-    "Estás en la rama Linux de estabilidad a largo plazo: las actualizaciones oficiales solo entregan parches críticos de seguridad y de fallos. Las funciones cotidianas pueden provenir de modificaciones comunitarias no comerciales.",
+    "Estás en la rama Linux de estabilidad a largo plazo: las actualizaciones oficiales solo entregan parches críticos de seguridad y de fallos. Las funciones cotidianas pueden provenir de modificaciones comunitarias.",
 };
 
 const ja: Record<keyof typeof zhCN, string> = {
@@ -272,6 +278,8 @@ const ja: Record<keyof typeof zhCN, string> = {
     "システムの一時フォルダーの空き容量が 256 MB 未満です。ディスクを空けて再試行してください。",
   "updates.native.errorRelaunch":
     "アプリを再起動できませんでした。Moyu を手動で閉じて開き直してください。",
+  "updates.native.versionChanged":
+    "利用可能な更新が変わりました。再確認してからインストールしてください。",
   "updates.linux.manualTitle":
     "システムインストールは手動更新が必要です",
   "updates.linux.manualHint":
@@ -283,7 +291,7 @@ const ja: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "ブラウザーを開けませんでした。GitHub Releases に手動でアクセスしてください。",
   "updates.native.linuxCriticalChannel":
-    "Linux 長期安定ブランチです。公式は重大なセキュリティ修正とクラッシュ修正のみを配信します。日常機能の拡張はコミュニティによる非商用改変で提供されます。",
+    "Linux 長期安定ブランチです。公式は重大なセキュリティ修正とクラッシュ修正のみを配信します。日常機能の拡張はコミュニティによる改変で提供されます。",
 };
 
 const ko: Record<keyof typeof zhCN, string> = {
@@ -330,6 +338,8 @@ const ko: Record<keyof typeof zhCN, string> = {
     "시스템 임시 폴더의 여유 공간이 256MB 미만입니다. 디스크 공간을 확보한 후 다시 시도하세요.",
   "updates.native.errorRelaunch":
     "앱을 다시 시작하지 못했습니다. Moyu를 직접 종료한 후 다시 여세요.",
+  "updates.native.versionChanged":
+    "사용 가능한 업데이트가 변경되었습니다. 다시 확인한 후 설치하세요.",
   "updates.linux.manualTitle":
     "시스템 설치에는 수동 업데이트가 필요합니다",
   "updates.linux.manualHint":
@@ -341,7 +351,7 @@ const ko: Record<keyof typeof zhCN, string> = {
   "updates.linux.openFailed":
     "브라우저를 열 수 없습니다. GitHub Releases를 직접 방문하세요.",
   "updates.native.linuxCriticalChannel":
-    "Linux 장기 안정 브랜치입니다. 공식 업데이트는 중대 보안 및 크래시 수정만 전달하며, 일상 기능 확장은 커뮤니티 비상업 수정으로 제공될 수 있습니다.",
+    "Linux 장기 안정 브랜치입니다. 공식 업데이트는 중대 보안 및 크래시 수정만 전달하며, 일상 기능 확장은 커뮤니티 수정으로 제공될 수 있습니다.",
 };
 
 export const updatesMessages = {

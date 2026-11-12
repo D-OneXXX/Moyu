@@ -833,7 +833,12 @@ function bookCard(book) {
   }
 
   const label = readLabel(book);
-  if (book.missing) {
+  const pdfBook = book.format === "pdf";
+  if (pdfBook) {
+    poster.append(
+      el("span", { class: "badge badge-pdf", text: t("pdfDesktopOnly") }),
+    );
+  } else if (book.missing) {
     poster.append(el("span", { class: "badge badge-missing", text: t("missing") }));
   } else if (label && label !== t("readUnread")) {
     poster.append(
@@ -844,13 +849,22 @@ function bookCard(book) {
     );
   }
 
-  const progressText = label || t("readUnread");
+  const progressText = pdfBook ? t("pdfDesktopOnly") : label || t("readUnread");
   const card = el("button", {
-    class: "card",
+    class: "card" + (pdfBook ? " card-disabled" : ""),
     type: "button",
+    "aria-disabled": pdfBook ? "true" : undefined,
     "aria-label": `${book.title}, ${progressText}`,
   }, [poster, el("span", { class: "card-title", text: book.title })]);
-  card.addEventListener("click", () => void openBook(book));
+  card.addEventListener("click", () => {
+    if (pdfBook) {
+      // Mobile browsers cannot render PDF (the API answers 415); stop here
+      // instead of letting users land on a blank error screen.
+      toast(t("pdfDesktopHint"));
+      return;
+    }
+    void openBook(book);
+  });
   return card;
 }
 
@@ -1267,10 +1281,59 @@ function buildHud() {
 
 function buildTapZones() {
   zonesEl = el("div", { class: "tapzones", "aria-hidden": "true" });
+  // 真实触屏会先 pointerup 再合成 click；统一由一个入口触发，并让紧随其后的
+  // 幽灵 click 失效，否则中央热区「打开 HUD」后会被第二次事件立即关掉。
+  let lastActivation = { zone: null, at: 0 };
+  const activate = (zone, row, col, event) => {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    lastActivation = { zone, at: Date.now() };
+    onZone(row, col);
+  };
   for (let row = 0; row < 3; row += 1) {
     for (let col = 0; col < 3; col += 1) {
       const zone = el("div", { class: "zone", "data-row": String(row), "data-col": String(col) });
-      zone.addEventListener("click", () => onZone(row, col));
+      let tracking = false;
+      let startX = 0;
+      let startY = 0;
+      let startAt = 0;
+      zone.addEventListener("pointerdown", (event) => {
+        tracking = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        startAt = Date.now();
+      });
+      zone.addEventListener("pointercancel", () => {
+        tracking = false;
+      });
+      zone.addEventListener("pointerup", (event) => {
+        if (!tracking) return;
+        tracking = false;
+        // 滚动 / 拖拽结束时不要误触九宫格。
+        if (
+          Math.hypot(event.clientX - startX, event.clientY - startY) > 12 ||
+          Date.now() - startAt > 900
+        ) {
+          return;
+        }
+        activate(zone, row, col, event);
+      });
+      zone.addEventListener("click", (event) => {
+        event.stopPropagation();
+        // 只屏蔽真实指针序列带来的合成 click；程序化 .click()（
+        // 键盘/自动化）isTrusted=false，必须照常切换，否则快速连点会失灵。
+        if (
+          event.isTrusted &&
+          lastActivation.zone === zone &&
+          Date.now() - lastActivation.at < 500
+        ) {
+          event.preventDefault();
+          return;
+        }
+        activate(zone, row, col, event);
+      });
       zonesEl.append(zone);
     }
   }
@@ -2148,5 +2211,6 @@ window.addEventListener("resize", () => {
 
 const fragment = location.hash.slice(1);
 history.replaceState(null, "", location.pathname + location.search);
+if (typeof window.__moyuBooted === "function") window.__moyuBooted();
 if (/^pair_[0-9a-f]{32}$/.test(fragment)) void pair(fragment);
 else void start();

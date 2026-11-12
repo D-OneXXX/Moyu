@@ -21,10 +21,16 @@ const chrome =
   process.env.MR_HEADLESS_CHROME ||
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "moyu-web-reader-qa-"));
-const png = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL2WQAAAABJRU5ErkJggg==",
-  "base64",
-);
+// Real demo artwork keeps the acceptance screenshots representative; all
+// assets are same-origin and covered by the reader's `img-src 'self' blob:`.
+const demoArt = {
+  cover: await fs.readFile(path.join(root, "public/demo/art/europa-cover.webp")),
+  pages: await Promise.all(
+    ["europa-01.webp", "europa-02.webp", "europa-03.webp"].map((name) =>
+      fs.readFile(path.join(root, "public/demo/art", name)),
+    ),
+  ),
+};
 const id = "a".repeat(64);
 let paired = false;
 let sessionRequests = 0;
@@ -32,6 +38,9 @@ let localClaimRequests = 0;
 let writes = 0;
 let lastWrite = null;
 let progressState = { page: 0, pageCount: 3, scrollPct: -1, rev: 4 };
+let allowPairing = true;
+let devices = [];
+let conflictSent = false;
 
 async function waitForTarget(port, predicate, timeout = 30_000) {
   const deadline = Date.now() + timeout;
@@ -130,6 +139,7 @@ class CdpPage {
 
 const assets = new Map([
   ["/", [path.join(reader, "index.html"), "text/html"]],
+  ["/reader-boot.js", [path.join(reader, "reader-boot.js"), "text/javascript"]],
   ["/reader.js", [path.join(reader, "reader.js"), "text/javascript"]],
   ["/reader.css", [path.join(reader, "reader.css"), "text/css"]],
   [
@@ -176,6 +186,10 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(data));
   };
   if (req.method === "POST" && url.pathname === "/api/pair/claim") {
+    if (!allowPairing) {
+      json(403, { error: { code: "pairing-denied" } });
+      return;
+    }
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const claim = JSON.parse(raw);
@@ -196,7 +210,28 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/api/pair/claim/claim_123/consume") {
     paired = true;
+    devices = [
+      {
+        sessionId: "dev_1",
+        deviceName: "Phone",
+        platform: "Android Chrome",
+        createdAtUnixMs: 1_700_000_000_000,
+        lastActiveAtUnixMs: 1_700_000_000_500,
+      },
+    ];
     json(200, { state: "consumed" });
+    return;
+  }
+  if (url.pathname === "/api/devices" && req.method === "GET") {
+    assert.equal(paired, true, "device list requires a paired session");
+    json(200, { items: devices });
+    return;
+  }
+  if (url.pathname === "/api/devices/dev_1/revoke" && req.method === "POST") {
+    paired = false;
+    allowPairing = false;
+    devices = [];
+    json(200, { revoked: true });
     return;
   }
   if (url.pathname === "/api/session") {
@@ -241,8 +276,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname.endsWith("/thumb")) {
-    res.writeHead(200, { "content-type": "image/png" });
-    res.end(png);
+    res.writeHead(200, { "content-type": "image/webp" });
+    res.end(demoArt.cover);
     return;
   }
   if (url.pathname.endsWith("/progress") && req.method === "GET") {
@@ -260,7 +295,8 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) raw += chunk;
     lastWrite = JSON.parse(raw);
     writes += 1;
-    if (writes === 1) {
+    if (!conflictSent) {
+      conflictSent = true;
       progressState = { page: 2, pageCount: 3, scrollPct: 0.4, rev: 7 };
       json(409, {
         error: {
@@ -280,8 +316,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (/^\/api\/books\/[a-f0-9]{64}\/pages\/\d+$/.test(url.pathname)) {
-    res.writeHead(200, { "content-type": "image/png" });
-    res.end(png);
+    const index = Number(url.pathname.split("/").pop() || 0);
+    res.writeHead(200, { "content-type": "image/webp" });
+    res.end(demoArt.pages[index % demoArt.pages.length]);
     return;
   }
   if (url.pathname.includes("/tiles/")) {
@@ -294,12 +331,13 @@ const server = http.createServer(async (req, res) => {
       json(500, { error: { code: "internal" } });
       return;
     }
+    const tileIndex = Number(url.pathname.split("/").pop() || 0);
     res.writeHead(200, {
-      "content-type": "image/png",
+      "content-type": "image/webp",
       "x-tile-count": faulty ? "2" : "1",
       "x-tile-height": "2048",
     });
-    res.end(png);
+    res.end(demoArt.pages[tileIndex % demoArt.pages.length]);
     return;
   }
   json(404, { error: { code: "not-found" } });
@@ -343,7 +381,7 @@ try {
   await page.send("Emulation.setDeviceMetricsOverride", {
     width: 390,
     height: 844,
-    deviceScaleFactor: 1,
+    deviceScaleFactor: 2,
     mobile: true,
   });
   const wait = async (expression, timeout = 12_000) => {
@@ -399,12 +437,13 @@ try {
     await page.eval("!!document.querySelector('.card .poster img')"),
     "cover thumbnails render inside the poster frame",
   );
+  await wait(
+    "[...document.querySelectorAll('.card .poster img')].every((img) => img.complete && img.naturalWidth > 0)",
+    8000,
+  ).catch(() => {});
   await shot("library.png");
-  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
-  await sleep(120);
   await shot("library@2x.png");
-  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  await sleep(120);
+  await shot("mobile-web-library-light.png");
   assert.equal(
     await page.eval("getComputedStyle(document.querySelector('.search-clear')).display"),
     "none",
@@ -418,6 +457,7 @@ try {
   await page.eval("document.querySelector('[data-testid=theme-cycle]').click()");
   await wait("document.documentElement.dataset.theme === 'dark'");
   await shot("library-dark.png");
+  await shot("mobile-web-library-dark.png");
   await page.eval("document.querySelector('[data-testid=theme-cycle]').click()");
   await wait("!document.documentElement.dataset.theme");
 
@@ -439,14 +479,114 @@ try {
     await page.eval("getComputedStyle(document.querySelector('.tapzones')).pointerEvents"),
     "auto",
   );
+  const smallHudTargets = await page.eval(`(() => {
+    const visible = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    return [...document.querySelectorAll(".hud button, .hud .hud-action")]
+      .filter(visible)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          label: element.getAttribute("aria-label") || element.textContent.trim().slice(0, 24),
+          width: Math.round(rect.width * 10) / 10,
+          height: Math.round(rect.height * 10) / 10,
+        };
+      })
+      .filter((item) => item.width < 40 || item.height < 40);
+  })()`);
+  assert.deepEqual(smallHudTargets, [], "every mobile HUD target must be at least 40×40 px");
+  const hudMinTarget = await page.eval(`(() => {
+    const visible = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const sizes = [...document.querySelectorAll(".hud button, .hud .hud-action")]
+      .filter(visible)
+      .flatMap((element) => {
+        const rect = element.getBoundingClientRect();
+        return [rect.width, rect.height];
+      });
+    return sizes.length ? Math.round(Math.min(...sizes) * 10) / 10 : null;
+  })()`);
+  await page.eval(`(() => {
+    window.__readerCls = 0;
+    try {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!entry.hadRecentInput) window.__readerCls += entry.value;
+        }
+      }).observe({ type: "layout-shift", buffered: true });
+    } catch {
+      window.__readerCls = 0;
+    }
+    return true;
+  })()`);
 
   /* --------------------------------------------------- HUD toggle via centre */
   await page.eval(`document.querySelector('.tapzones .zone[data-row="1"][data-col="1"]').click()`);
   await wait("document.querySelector('.hud-bottom').dataset.hidden === 'true'");
+  await shot("mobile-web-reader-clean.png");
   await page.eval(`document.querySelector('.tapzones .zone[data-row="1"][data-col="1"]').click()`);
   await wait("document.querySelector('.hud-bottom').dataset.hidden === 'false'");
 
+  // 中央热区必须可重复切换，而不是只在初次进入时生效一次。
+  const centre = "document.querySelector('.tapzones .zone[data-row=\\\"1\\\"][data-col=\\\"1\\\"]')";
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    assert.equal(
+      await page.eval("document.querySelector('.hud-top').dataset.hidden"),
+      "false",
+      `HUD cycle ${cycle + 1} starts visible`,
+    );
+    await page.eval(`${centre}.click()`);
+    await wait("document.querySelector('.hud-top').dataset.hidden === 'true' && document.querySelector('.hud-bottom').dataset.hidden === 'true'");
+    await page.eval(`${centre}.click()`);
+    await wait("document.querySelector('.hud-top').dataset.hidden === 'false' && document.querySelector('.hud-bottom').dataset.hidden === 'false'");
+  }
+  assert.equal(
+    await page.eval("document.querySelectorAll('.tapzones .zone').length"),
+    9,
+    "hidden HUD must never unmount the tap-zone DOM",
+  );
+  assert.equal(
+    await page.eval("getComputedStyle(document.querySelector('.tapzones')).pointerEvents"),
+    "auto",
+    "hidden HUD must not make the tap-zone overlay inert",
+  );
+
+  // 真实指针序列会触发 pointerup + 紧随其后的可信 click：只允许切换一次。
+  const centrePoint = await page.eval(`(() => {
+    const rect = ${centre}.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await page.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    button: "left",
+    clickCount: 1,
+    x: centrePoint.x,
+    y: centrePoint.y,
+  });
+  await page.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    button: "left",
+    clickCount: 1,
+    x: centrePoint.x,
+    y: centrePoint.y,
+  });
+  await wait("document.querySelector('.hud-top').dataset.hidden === 'true'");
+  assert.equal(
+    await page.eval("document.querySelector('.hud-top').dataset.hidden"),
+    "true",
+    "pointerup + trusted click must collapse to one HUD toggle",
+  );
+  await page.eval(`${centre}.click()`);
+  await wait("document.querySelector('.hud-top').dataset.hidden === 'false'");
+
   await shot("reader-webtoon.png");
+  await shot("mobile-web-reader-hud-open.png");
 
   /* ------------------------------------------------ paged mode + tap zones */
   await page.eval("document.querySelector('[data-testid=mode-toggle]').click()");
@@ -475,6 +615,9 @@ try {
   await page.eval("document.querySelector('[data-testid=mode-toggle]').click()");
   await wait("document.querySelector('.reader').dataset.mode === 'webtoon' && document.querySelector('.tiles img')");
   await sleep(450);
+  // Measure only the webtoon scroll phase: mode switches are deliberate layout
+  // changes, not scroll-induced CLS. Placeholders must keep this at zero.
+  await page.eval("window.__readerCls = 0; true");
   await page.eval("const s = document.querySelector('.stage'); s.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 })); s.scrollTo(0, 1100)");
   await sleep(1100);
   assert.equal(writes, 3, "long-page scrolling is saved after the throttle interval");
@@ -484,6 +627,8 @@ try {
   assert.ok(lastWrite.scrollPct > 0 && lastWrite.scrollPct < 1);
   const savedY = await page.eval("document.querySelector('.stage').scrollTop");
   assert.ok(savedY > 0, "the saved long-page position is below the page top");
+  const cls = await page.eval("window.__readerCls ?? 0");
+  assert.ok(cls <= 0.001, `webtoon scrolling must not shift layout (CLS=${cls})`);
 
   /* ------------------------------------- back to library, reopen at 520 px */
   await page.eval("document.querySelector('.hud-top button').click()");
@@ -491,7 +636,7 @@ try {
   await page.send("Emulation.setDeviceMetricsOverride", {
     width: 520,
     height: 844,
-    deviceScaleFactor: 1,
+    deviceScaleFactor: 2,
     mobile: true,
   });
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('Demo')).click()");
@@ -532,6 +677,59 @@ try {
     "leaving the reader clears the trailing progress timer",
   );
 
+  /* ------------------------------------- last-page contract (paged + webtoon) */
+  progressState = { page: 0, pageCount: 3, scrollPct: -1, rev: 20 };
+  writes = 0;
+  lastWrite = null;
+  await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('Demo')).click()");
+  await wait("document.querySelector('.reader') && document.querySelector('.tiles img')");
+  await page.eval("document.querySelector('[data-testid=mode-toggle]').click()");
+  await wait("document.querySelector('.reader')?.dataset.mode === 'paged' && document.querySelector('.page-img')");
+  for (let step = 0; step < 4; step += 1) {
+    const atLast = await page.eval("document.querySelector('.pager').textContent.trim() === '3 / 3'");
+    if (atLast) break;
+    await page.eval(`document.querySelector('.tapzones .zone[data-row="1"][data-col="2"]').click()`);
+    await sleep(250);
+  }
+  await wait("document.querySelector('.pager').textContent.trim() === '3 / 3'");
+  {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && lastWrite?.page !== 2) await sleep(120);
+  }
+  assert.equal(lastWrite?.page, 2, "paged last screen persists page_count - 1");
+  assert.equal(progressState.page, 2, "server receives page_count - 1 for paged last screen");
+  await page.eval("document.querySelector('.hud-top button').click()");
+  await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('Demo'))");
+
+  progressState = { page: 0, pageCount: 3, scrollPct: -1, rev: 30 };
+  writes = 0;
+  lastWrite = null;
+  await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('Demo')).click()");
+  await wait("document.querySelector('.reader') && (document.querySelector('.tiles img') || document.querySelector('.page-img'))");
+  if ((await page.eval("document.querySelector('.reader').dataset.mode")) !== "webtoon") {
+    await page.eval("document.querySelector('[data-testid=mode-toggle]').click()");
+  }
+  await wait("document.querySelector('.reader')?.dataset.mode === 'webtoon' && document.querySelector('.tiles img')");
+  for (let step = 0; step < 3; step += 1) {
+    const atLast = await page.eval("document.querySelector('.pager').textContent.trim() === '3 / 3'");
+    if (atLast) break;
+    await page.eval("[...document.querySelectorAll('.hud-bottom .hud-btn')].at(-1).click()");
+    await sleep(300);
+  }
+  await wait("document.querySelector('.pager').textContent.trim() === '3 / 3'");
+  await page.eval(
+    "const stage = document.querySelector('.stage'); stage.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 })); stage.scrollTo(0, stage.scrollHeight); true",
+  );
+  {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && !(lastWrite?.scrollPct >= 0.99)) await sleep(120);
+  }
+  assert.equal(lastWrite?.page, 2, "webtoon bottom persists page_count - 1");
+  assert.ok(lastWrite?.scrollPct >= 0.99, "webtoon bottom reports scrollPct near 1");
+  assert.equal(progressState.page, 2, "server receives page_count - 1 for webtoon bottom");
+  await page.eval("document.querySelector('.hud-top button').click()");
+  await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('Demo'))");
+
   /* ------------------------------------------------------------- six locales */
   for (const language of ["zh-CN", "zh-TW", "en", "es", "ja", "ko"]) {
     await page.eval(`(() => {
@@ -549,9 +747,11 @@ try {
   await wait("document.documentElement.lang === 'en' && document.querySelectorAll('.card').length > 0");
 
   /* -------------------------------------------------------------- failures */
+  await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('PDF demo'))");
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('PDF demo')).click()");
-  await wait("document.querySelector('#app').textContent.includes('PDF reading is not available')");
-  await page.eval("document.querySelector('#app button').click()");
+  await wait(
+    "document.querySelector('.toast')?.textContent.includes('Please read PDF documents')",
+  );
   await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('Faulty'))");
 
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('Faulty')).click()");
@@ -605,6 +805,48 @@ try {
     "parseFloat(getComputedStyle(document.querySelector('.reader')).getPropertyValue('--r-zoom')) > 1.3",
   );
 
+  /* ----------------------------------- device list → revoke → mobile 401 */
+  const deviceList = await fetch(`http://127.0.0.1:${port}/api/devices`).then((response) => {
+    assert.equal(response.status, 200);
+    return response.json();
+  });
+  assert.equal(deviceList.items.length, 1, "the paired device appears in the desktop list");
+  assert.equal(deviceList.items[0].sessionId, "dev_1");
+  const revoke = await fetch(`http://127.0.0.1:${port}/api/devices/dev_1/revoke`, {
+    method: "POST",
+  });
+  assert.equal(revoke.status, 200);
+  const sessionAfterRevoke = await fetch(`http://127.0.0.1:${port}/api/session`);
+  assert.equal(sessionAfterRevoke.status, 401, "revoked session is rejected immediately");
+  const mobileSessionStatus = await page.eval(
+    "fetch('/api/session', { cache: 'no-store' }).then((response) => response.status).catch(() => 0)",
+  );
+  assert.equal(mobileSessionStatus, 401, "the mobile origin observes 401 immediately after revoke");
+  if (shotDir) {
+    await fs.mkdir(shotDir, { recursive: true });
+    await fs.writeFile(
+      path.join(shotDir, "mobile-metrics.json"),
+      JSON.stringify(
+        {
+          viewport: "390x844 @2x",
+          hudMinTarget,
+          cls,
+          devicesSeen: deviceList.items.length,
+          revokedSessionStatus: mobileSessionStatus,
+          screenshots: [
+            "mobile-web-library-light.png",
+            "mobile-web-library-dark.png",
+            "mobile-web-reader-hud-open.png",
+            "mobile-web-reader-clean.png",
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
+
   /* --------------------------------------------------------------- errors */
   const exceptions = page.events.filter(
     (event) =>
@@ -618,7 +860,7 @@ try {
   );
 
   console.log(
-    "VERIFIED D4 web reader: nine-grid taps, HUD, webtoon tiles, CAS conflict, scroll restore, 6 locales, failure surfaces.",
+    "VERIFIED D4 web reader: pairing claim/consume, device list → revoke → 401, 40px HUD targets, nine-grid taps, CLS=0 during webtoon scroll, last-page page_count-1 (paged + webtoon), CAS conflict, scroll restore, 6 locales, failure surfaces.",
   );
 } finally {
   if (page?.socket) page.socket.close();

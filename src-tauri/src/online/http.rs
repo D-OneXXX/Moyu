@@ -1,7 +1,8 @@
 //! 阻塞 HTTP Transport：ureq + 代理 + 重试 + 响应大小上限。
 
-use std::io::Read;
+use std::io::{BufWriter, Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +29,45 @@ pub trait HttpTransport: Send + Sync {
         referer: Option<&str>,
         header_scope: Option<&str>,
     ) -> Result<HttpResponse, OnlineError>;
+
+    /// 只读取 `start` 之后的 `max_bytes` 字节（图片头部尺寸探测）。
+    ///
+    /// 默认实现退化为普通 GET，便于测试桩与自定义传输保持兼容；
+    /// 生产 [`UreqTransport`] 会发送 `Range` 头并允许服务端截断响应。
+    fn get_range(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        referer: Option<&str>,
+        header_scope: Option<&str>,
+        start: u64,
+    ) -> Result<HttpResponse, OnlineError> {
+        let _ = start;
+        self.get(url, max_bytes, referer, header_scope)
+    }
+
+    /// 把响应**流式**落到 `dest`，返回写入字节数。
+    ///
+    /// 默认实现退化为普通 GET 再写文件（只给测试桩用），会先把整个响应体
+    /// 物化进内存；生产 [`UreqTransport`] 覆盖为 64 KiB 分块的真正流式写入，
+    /// 不会把大附件（如 256 MiB Telegram 文档）整包读进内存。
+    ///
+    /// 约束与 `get()` 一致：SSRF/主机校验、重定向、同源请求头作用域、
+    /// 408/429/5xx 重试与代理选择；错误信息不得包含 URL/请求头。
+    /// 超出 `max_bytes` 时必须删除 `dest` 并返回 [`OnlineError::TooLarge`]。
+    fn download_to(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        referer: Option<&str>,
+        header_scope: Option<&str>,
+        dest: &Path,
+    ) -> Result<u64, OnlineError> {
+        let response = self.get(url, max_bytes, referer, header_scope)?;
+        std::fs::write(dest, &response.body)
+            .map_err(|_| OnlineError::Network("下载写入失败（online-fetch-failed）".into()))?;
+        Ok(response.body.len() as u64)
+    }
 }
 
 /// 手动请求头：JSON 对象或单行 Cookie。
@@ -145,6 +185,15 @@ struct RawResponse {
     body: Vec<u8>,
     retry_after_s: Option<u64>,
     location: Option<String>,
+}
+
+/// 流式下载的中间结果：落盘完成，或收到非 2xx 状态（交给外层重试）。
+enum StreamOutcome {
+    Written(u64),
+    Status {
+        status: u16,
+        retry_after_s: Option<u64>,
+    },
 }
 
 struct PinnedTls {
@@ -333,14 +382,14 @@ fn no_proxy_matches(host: &str, port: Option<u16>, rules: &[String]) -> bool {
 /// 直连 agent 的连接层解析器。
 ///
 /// 返回的地址**就是 ureq 真正要连接的地址**（它不会再解析一次），且每个地址都过
-/// `validate_connection_addresses` 黑名单。因此「先解析校验、连接时再解析」的
+/// 可直连地址白名单。因此「先解析校验、连接时再解析」的
 /// DNS 重绑定窗口在直连路径上不存在：攻击者域名第二次解析到私网也不会被连上。
 fn direct_resolver(
     allow_loopback: bool,
 ) -> impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static {
     move |netloc: &str| {
         let addresses: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-        validate_connection_addresses(addresses, allow_loopback)
+        acceptable_addresses(addresses, allow_loopback)
     }
 }
 
@@ -361,21 +410,32 @@ fn build_agent(proxy: Option<&str>, allow_loopback: bool) -> Result<ureq::Agent,
     Ok(builder.build())
 }
 
-fn validate_connection_addresses(
+/// 只保留**允许直连**的地址，并让公网 IPv4 排在前面。
+///
+/// 这里刻意不再采用「任一地址被拦就整体拒绝」：一个域名同时给出公网 IPv4
+/// 与 ULA / link-local IPv6 时，整体拒绝会让本来可访问的站点彻底打不开
+/// （v0.18.0 → v0.19.x 的在线直读回归）。
+///
+/// SSRF 防护没有削弱：返回的地址就是 ureq 真正会连接的地址，被拦掉的私网
+/// 地址永远不会被连到；只有当**一个**可用地址都不存在时才 fail-closed。
+fn acceptable_addresses(
     addresses: Vec<SocketAddr>,
     allow_loopback: bool,
 ) -> std::io::Result<Vec<SocketAddr>> {
-    if addresses.is_empty()
-        || addresses
-            .iter()
-            .any(|addr| is_blocked_ip(addr.ip(), allow_loopback))
-    {
+    let mut acceptable: Vec<SocketAddr> = addresses
+        .into_iter()
+        .filter(|addr| !is_blocked_ip(addr.ip(), allow_loopback))
+        .collect();
+    if acceptable.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "blocked resolved address",
+            "no acceptable resolved address",
         ));
     }
-    Ok(addresses)
+    // 公网 IPv4 优先：SOCKS 适配器无法表达带方括号的 IPv6 目标，
+    // 且漫画站点的 IPv4 可达性通常更稳。
+    acceptable.sort_by_key(|addr| !addr.is_ipv4());
+    Ok(acceptable)
 }
 
 impl UreqTransport {
@@ -465,16 +525,15 @@ impl UreqTransport {
         let port = target.port_or_known_default().unwrap_or(443);
         let addrs = (self.resolver)(host, port)
             .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
-        let mut saw = false;
-        for addr in addrs {
-            saw = true;
-            if is_blocked_ip(addr.ip(), self.allow_loopback) {
-                return Err(OnlineError::Network(
-                    "目标域名解析到本机/私网/链路本地地址，已拒绝（online-blocked-address）".into(),
-                ));
-            }
-        }
-        if !saw {
+        // 只要解析结果里存在**可直连**的公网地址就放行：域名同时给出
+        // 公网 IPv4 与 ULA / link-local IPv6 时不能一刀切拒绝（v0.19.x 回归）。
+        // 连接只会发生在这些已校验的地址上，私网地址不会被连到。
+        let acceptable = acceptable_addresses(addrs, self.allow_loopback).map_err(|_| {
+            OnlineError::Network(
+                "目标域名只解析到本机/私网/链路本地地址，已拒绝（online-blocked-address）".into(),
+            )
+        })?;
+        if acceptable.is_empty() {
             return Err(OnlineError::Network(
                 "域名没有可用地址（online-fetch-failed）".into(),
             ));
@@ -495,7 +554,22 @@ impl UreqTransport {
         scope: Option<&url::Url>,
         max_bytes: usize,
         referer: Option<&str>,
+        range: Option<(u64, u64)>,
+        allow_truncate: bool,
     ) -> Result<RawResponse, OnlineError> {
+        let response = self.send_request(target, scope, referer, range)?;
+        read_response(response, target, max_bytes, allow_truncate)
+    }
+
+    /// 只发请求、不读响应体：`get()` 用 [`read_response`] 物化小响应，
+    /// `download_to()` 直接把 `into_reader()` 流式写盘。
+    fn send_request(
+        &self,
+        target: &url::Url,
+        scope: Option<&url::Url>,
+        referer: Option<&str>,
+        range: Option<(u64, u64)>,
+    ) -> Result<ureq::Response, OnlineError> {
         let within_scope = scope.is_some_and(|s| same_origin(target, s));
         let use_proxy = self.proxy.as_deref().filter(|_| {
             !no_proxy_matches(
@@ -515,10 +589,9 @@ impl UreqTransport {
             let port = target.port_or_known_default().unwrap_or(443);
             let addresses = (self.resolver)(host, port)
                 .map_err(|_| OnlineError::Network("域名解析失败（online-fetch-failed）".into()))?;
-            let addresses =
-                validate_connection_addresses(addresses, self.allow_loopback).map_err(|_| {
-                    OnlineError::Network("目标地址不允许访问（online-blocked-address）".into())
-                })?;
+            let addresses = acceptable_addresses(addresses, self.allow_loopback).map_err(|_| {
+                OnlineError::Network("目标地址不允许访问（online-blocked-address）".into())
+            })?;
             // ureq's SOCKS adapter treats bracketed IPv6 URL hosts as DNS
             // names. Never let the proxy resolve them again; prefer IPv4 and
             // fail closed for IPv6-only targets until the adapter supports it.
@@ -614,9 +687,11 @@ impl UreqTransport {
                 &target[url::Position::BeforeHost..url::Position::AfterPort],
             );
         }
+        if let Some((start, end)) = range {
+            req = req.set("Range", &format!("bytes={start}-{end}"));
+        }
         match req.call() {
-            Ok(resp) => read_response(resp, target, max_bytes),
-            Err(ureq::Error::Status(_, resp)) => read_response(resp, target, max_bytes),
+            Ok(resp) | Err(ureq::Error::Status(_, resp)) => Ok(resp),
             // Transport 的 Display/Debug 可能包含完整请求 URL/query，日志会经
             // `BackendError` 落到 `app.log`。只保留错误类别，避免泄漏查询串。
             Err(ureq::Error::Transport(t)) => {
@@ -633,11 +708,13 @@ impl UreqTransport {
         max_bytes: usize,
         referer: Option<&str>,
         scope: Option<&url::Url>,
+        range: Option<(u64, u64)>,
+        allow_truncate: bool,
     ) -> Result<RawResponse, OnlineError> {
         let mut current = url.clone();
         for hop in 0..=MAX_REDIRECTS {
             self.validate_target(&current)?;
-            let raw = self.execute(&current, scope, max_bytes, referer)?;
+            let raw = self.execute(&current, scope, max_bytes, referer, range, allow_truncate)?;
             if !is_redirect(raw.status) {
                 return Ok(raw);
             }
@@ -650,27 +727,77 @@ impl UreqTransport {
                 .location
                 .as_deref()
                 .ok_or_else(|| OnlineError::Network("重定向缺少 Location".into()))?;
-            let next = current
-                .join(location)
-                .map_err(|e| OnlineError::Network(format!("重定向地址无效：{e}")))?;
-            if !matches!(next.scheme(), "http" | "https") {
-                return Err(OnlineError::Network("重定向到非 HTTP(S) URL".into()));
-            }
-            // 重定向目标同样受输入约束：拒绝 userinfo 与超长 URL。
-            if !next.username().is_empty() || next.password().is_some() {
-                return Err(OnlineError::Network(
-                    "重定向目标不能包含用户名或密码".into(),
-                ));
-            }
-            if next.as_str().len() > 2048 {
-                return Err(OnlineError::Network(
-                    "重定向目标 URL 过长（上限 2048 字节）".into(),
-                ));
-            }
-            current = next;
+            current = redirect_target(&current, location)?;
         }
         unreachable!("redirect loop always returns")
     }
+
+    /// 流式版本的重定向跟随：与 [`Self::get_once`] 同一套逐跳校验与
+    /// header_scope 语义，但 2xx 响应体直接写进 `dest`，不经过内存。
+    fn get_once_to_file(
+        &self,
+        url: &url::Url,
+        max_bytes: usize,
+        referer: Option<&str>,
+        scope: Option<&url::Url>,
+        dest: &Path,
+    ) -> Result<StreamOutcome, OnlineError> {
+        let mut current = url.clone();
+        for hop in 0..=MAX_REDIRECTS {
+            self.validate_target(&current)?;
+            let response = self.send_request(&current, scope, referer, None)?;
+            let status = response.status();
+            if !is_redirect(status) {
+                if !(200..300).contains(&status) {
+                    let retry_after_s = response
+                        .header("retry-after")
+                        .and_then(|v| v.trim().parse::<u64>().ok());
+                    drop(response);
+                    return Ok(StreamOutcome::Status {
+                        status,
+                        retry_after_s,
+                    });
+                }
+                return Ok(StreamOutcome::Written(stream_response_to_file(
+                    response, max_bytes, dest,
+                )?));
+            }
+            if hop == MAX_REDIRECTS {
+                return Err(OnlineError::Network(format!(
+                    "重定向次数过多（上限 {MAX_REDIRECTS} 次）"
+                )));
+            }
+            let location = response
+                .header("location")
+                .map(str::to_string)
+                .ok_or_else(|| OnlineError::Network("重定向缺少 Location".into()))?;
+            drop(response);
+            current = redirect_target(&current, location.as_str())?;
+        }
+        unreachable!("redirect loop always returns")
+    }
+}
+
+/// 校验重定向目标：只允许 http(s)，拒绝 userinfo 与超长 URL。
+fn redirect_target(current: &url::Url, location: &str) -> Result<url::Url, OnlineError> {
+    let next = current
+        .join(location)
+        .map_err(|e| OnlineError::Network(format!("重定向地址无效：{e}")))?;
+    if !matches!(next.scheme(), "http" | "https") {
+        return Err(OnlineError::Network("重定向到非 HTTP(S) URL".into()));
+    }
+    // 重定向目标同样受输入约束：拒绝 userinfo 与超长 URL。
+    if !next.username().is_empty() || next.password().is_some() {
+        return Err(OnlineError::Network(
+            "重定向目标不能包含用户名或密码".into(),
+        ));
+    }
+    if next.as_str().len() > 2048 {
+        return Err(OnlineError::Network(
+            "重定向目标 URL 过长（上限 2048 字节）".into(),
+        ));
+    }
+    Ok(next)
 }
 
 /// 校验 URL 仅允许 http/https。
@@ -692,6 +819,7 @@ fn read_response(
     resp: ureq::Response,
     url: &url::Url,
     max_bytes: usize,
+    allow_truncate: bool,
 ) -> Result<RawResponse, OnlineError> {
     let status = resp.status();
     let final_url = url.to_string();
@@ -701,11 +829,16 @@ fn read_response(
         .header("retry-after")
         .and_then(|v| v.trim().parse::<u64>().ok());
     let mut body = Vec::new();
+    let read_cap = if allow_truncate {
+        max_bytes as u64
+    } else {
+        max_bytes.saturating_add(1) as u64
+    };
     resp.into_reader()
-        .take(max_bytes.saturating_add(1) as u64)
+        .take(read_cap)
         .read_to_end(&mut body)
         .map_err(|e| OnlineError::Network(e.to_string()))?;
-    if body.len() > max_bytes {
+    if !allow_truncate && body.len() > max_bytes {
         return Err(OnlineError::TooLarge(max_bytes));
     }
     Ok(RawResponse {
@@ -722,6 +855,87 @@ fn should_retry(status: u16) -> bool {
     matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
 }
 
+/// 把响应体按 64 KiB 分块流式写入 `dest`，绝不物化整包。
+///
+/// - `create_new(true)`：已存在的文件（含上次中断的 `.part`）不会被覆盖；
+/// - `Content-Length` 已知且超限 → 在创建文件之前失败（不留半成品）；
+/// - 未知长度时边写边计数，超过上限立即删除 `dest` 并返回 [`OnlineError::TooLarge`]；
+/// - 成功路径 `flush` + `sync_all` 后才返回，调用方可以安全改名；
+/// - 错误文案不含 URL、请求头或本地路径（日志脱敏红线）。
+fn stream_response_to_file(
+    response: ureq::Response,
+    max_bytes: usize,
+    dest: &Path,
+) -> Result<u64, OnlineError> {
+    if let Some(declared) = response
+        .header("content-length")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        if declared > max_bytes as u64 {
+            let _ = std::fs::remove_file(dest);
+            return Err(OnlineError::TooLarge(max_bytes));
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .map_err(|_| OnlineError::Network("下载文件创建失败（online-fetch-failed）".into()))?;
+    let mut writer = BufWriter::with_capacity(64 * 1024, file);
+    let mut reader = response.into_reader();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut written: u64 = 0;
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => {
+                drop(writer);
+                let _ = std::fs::remove_file(dest);
+                return Err(OnlineError::Network(
+                    "下载读取失败（online-fetch-failed）".into(),
+                ));
+            }
+        };
+        written = written.saturating_add(read as u64);
+        if written > max_bytes as u64 {
+            drop(writer);
+            let _ = std::fs::remove_file(dest);
+            return Err(OnlineError::TooLarge(max_bytes));
+        }
+        if writer.write_all(&buffer[..read]).is_err() {
+            drop(writer);
+            let _ = std::fs::remove_file(dest);
+            return Err(OnlineError::Network(
+                "下载写入失败（online-fetch-failed）".into(),
+            ));
+        }
+    }
+    if writer.flush().is_err() {
+        drop(writer);
+        let _ = std::fs::remove_file(dest);
+        return Err(OnlineError::Network(
+            "下载写入失败（online-fetch-failed）".into(),
+        ));
+    }
+    let file = match writer.into_inner() {
+        Ok(file) => file,
+        Err(_) => {
+            let _ = std::fs::remove_file(dest);
+            return Err(OnlineError::Network(
+                "下载写入失败（online-fetch-failed）".into(),
+            ));
+        }
+    };
+    if file.sync_all().is_err() {
+        let _ = std::fs::remove_file(dest);
+        return Err(OnlineError::Network(
+            "下载写入失败（online-fetch-failed）".into(),
+        ));
+    }
+    Ok(written)
+}
+
 impl HttpTransport for UreqTransport {
     fn get(
         &self,
@@ -734,7 +948,7 @@ impl HttpTransport for UreqTransport {
         self.validate_target(&url)?;
         let scope = parse_header_scope(header_scope);
         for attempt in 0..=2u32 {
-            match self.get_once(&url, max_bytes, referer, scope.as_ref())? {
+            match self.get_once(&url, max_bytes, referer, scope.as_ref(), None, false)? {
                 raw if should_retry(raw.status) && attempt < 2 => {
                     let wait_ms = raw
                         .retry_after_s
@@ -755,6 +969,84 @@ impl HttpTransport for UreqTransport {
         }
         unreachable!("retry loop always returns")
     }
+
+    fn get_range(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        referer: Option<&str>,
+        header_scope: Option<&str>,
+        start: u64,
+    ) -> Result<HttpResponse, OnlineError> {
+        let url = ensure_http_url(url)?;
+        self.validate_target(&url)?;
+        let scope = parse_header_scope(header_scope);
+        let end = start.saturating_add(max_bytes as u64).saturating_sub(1);
+        for attempt in 0..=2u32 {
+            match self.get_once(
+                &url,
+                max_bytes,
+                referer,
+                scope.as_ref(),
+                Some((start, end)),
+                true,
+            )? {
+                raw if should_retry(raw.status) && attempt < 2 => {
+                    let wait_ms = raw
+                        .retry_after_s
+                        .map(|s| s.saturating_mul(1000))
+                        .unwrap_or(if attempt == 0 { 500 } else { 1500 })
+                        .min(5000);
+                    std::thread::sleep(Duration::from_millis(wait_ms));
+                }
+                raw => {
+                    return Ok(HttpResponse {
+                        status: raw.status,
+                        final_url: raw.final_url,
+                        content_type: raw.content_type,
+                        body: raw.body,
+                    });
+                }
+            }
+        }
+        unreachable!("retry loop always returns")
+    }
+
+    /// 真正的流式下载：与 `get()` 同一套 SSRF 逐跳校验、重定向上限、header
+    /// 作用域、代理/直连与 408/429/5xx 重试，但响应体不经过 `Vec<u8>`。
+    fn download_to(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        referer: Option<&str>,
+        header_scope: Option<&str>,
+        dest: &Path,
+    ) -> Result<u64, OnlineError> {
+        let url = ensure_http_url(url)?;
+        self.validate_target(&url)?;
+        let scope = parse_header_scope(header_scope);
+        for attempt in 0..=2u32 {
+            match self.get_once_to_file(&url, max_bytes, referer, scope.as_ref(), dest)? {
+                StreamOutcome::Written(written) => return Ok(written),
+                StreamOutcome::Status {
+                    status,
+                    retry_after_s,
+                } if should_retry(status) && attempt < 2 => {
+                    let wait_ms = retry_after_s
+                        .map(|s| s.saturating_mul(1000))
+                        .unwrap_or(if attempt == 0 { 500 } else { 1500 })
+                        .min(5000);
+                    std::thread::sleep(Duration::from_millis(wait_ms));
+                }
+                StreamOutcome::Status { status, .. } => {
+                    return Err(OnlineError::Network(format!(
+                        "下载失败：HTTP {status}（online-fetch-failed）"
+                    )));
+                }
+            }
+        }
+        unreachable!("retry loop always returns")
+    }
 }
 
 #[cfg(test)]
@@ -763,10 +1055,41 @@ mod tests {
     fn connection_resolver_rejects_rebound_and_mixed_private_addresses() {
         let public = "8.8.8.8:443".parse().unwrap();
         let private = "192.168.1.1:443".parse().unwrap();
-        assert!(super::validate_connection_addresses(vec![public], false).is_ok());
-        assert!(super::validate_connection_addresses(vec![private], false).is_err());
-        assert!(super::validate_connection_addresses(vec![public, private], false).is_err());
-        assert!(super::validate_connection_addresses(vec![], false).is_err());
+        assert!(super::acceptable_addresses(vec![public], false).is_ok());
+        assert!(super::acceptable_addresses(vec![private], false).is_err());
+        // 混合解析结果：只要有公网地址就放行，并只把公网地址交给连接层。
+        let mixed = super::acceptable_addresses(vec![public, private], false).expect("mixed");
+        assert_eq!(mixed, vec![public]);
+        assert!(super::acceptable_addresses(vec![], false).is_err());
+    }
+
+    /// 回归：域名同时给出公网 IPv4 与 ULA / link-local IPv6 时，
+    /// 必须优先用公网 IPv4 正常连接，绝不能因为那条 IPv6 记录就整体拒绝。
+    #[test]
+    fn mixed_a_and_aaaa_keeps_the_public_ipv4() {
+        let public_v4: SocketAddr = "203.0.113.10:443".parse().unwrap();
+        let ula: SocketAddr = "[fd00::1]:443".parse().unwrap();
+        let link_local: SocketAddr = "[fe80::1]:443".parse().unwrap();
+        for extra in [ula, link_local] {
+            let accepted =
+                super::acceptable_addresses(vec![extra, public_v4], false).expect("public v4 wins");
+            assert_eq!(
+                accepted,
+                vec![public_v4],
+                "only the public IPv4 may reach the connection layer",
+            );
+        }
+    }
+
+    /// 公网 IPv4 与公网 IPv6 并存时，IPv4 排在前面：SOCKS 适配器无法表达
+    /// 带方括号的 IPv6 目标，且 IPv4 可达性在漫画站点上更稳。
+    #[test]
+    fn public_ipv4_is_preferred_over_public_ipv6() {
+        let public_v4: SocketAddr = "203.0.113.10:443".parse().unwrap();
+        let public_v6: SocketAddr = "[2001:db8::1]:443".parse().unwrap();
+        let accepted =
+            super::acceptable_addresses(vec![public_v6, public_v4], false).expect("both usable");
+        assert_eq!(accepted, vec![public_v4, public_v6]);
     }
     use super::*;
     use std::io::{Read, Write};
@@ -855,7 +1178,9 @@ mod tests {
             Ok(vec![SocketAddr::new(ip.parse().unwrap(), port)])
         });
         let target = url::Url::parse("http://rebind.example/page").unwrap();
-        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert!(transport
+            .get_once(&target, 1024, None, None, None, false)
+            .is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(
             listener.accept().unwrap_err().kind(),
@@ -877,7 +1202,9 @@ mod tests {
             )])
         });
         let target = url::Url::parse("http://ipv6-only.example/page").unwrap();
-        assert!(transport.get_once(&target, 1024, None, None).is_err());
+        assert!(transport
+            .get_once(&target, 1024, None, None, None, false)
+            .is_err());
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
@@ -965,7 +1292,9 @@ mod tests {
         transport.allow_loopback = true;
         transport.no_proxy.clear();
         let target = url::Url::parse("http://localhost:9876/book?x=1").unwrap();
-        let response = transport.execute(&target, None, 1024, None).unwrap();
+        let response = transport
+            .execute(&target, None, 1024, None, None, false)
+            .unwrap();
         assert_eq!(response.body, b"ok");
         let request = server.join().unwrap().to_ascii_lowercase();
         assert!(
@@ -977,6 +1306,42 @@ mod tests {
             request.contains("\r\nhost: localhost:9876\r\n"),
             "{request}"
         );
+    }
+
+    #[test]
+    fn range_execute_sends_exact_byte_range_and_accepts_truncation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut byte = [0u8; 1];
+            while !bytes.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 8192);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 2\r\nContent-Range: bytes 5-6/10\r\nConnection: close\r\n\r\nok",
+                )
+                .unwrap();
+            String::from_utf8(bytes).unwrap().to_ascii_lowercase()
+        });
+        let mut transport = UreqTransport::new("", "").unwrap();
+        transport.allow_loopback = true;
+        transport.no_proxy.clear();
+        let target = url::Url::parse(&format!("http://{address}/image.jpg")).unwrap();
+        let response = transport
+            .execute(&target, None, 2, None, Some((5, 6)), true)
+            .unwrap();
+        assert_eq!(response.status, 206);
+        assert_eq!(response.body, b"ok");
+        let request = server.join().unwrap();
+        assert!(request.contains("\r\nrange: bytes=5-6\r\n"), "{request}");
     }
 
     #[test]
@@ -1022,7 +1387,10 @@ mod tests {
         transport.no_proxy.clear();
         let target = url::Url::parse("http://localhost:9876/book").unwrap();
         assert_eq!(
-            transport.execute(&target, None, 1024, None).unwrap().body,
+            transport
+                .execute(&target, None, 1024, None, None, false)
+                .unwrap()
+                .body,
             b"ok"
         );
         assert!(server
@@ -1236,6 +1604,116 @@ mod tests {
             t.get(&url, 8, None, None),
             Err(OnlineError::TooLarge(8))
         ));
+        h.join().unwrap();
+    }
+
+    /// 每个用例独立的临时下载目标（`.part` 语义，与 Telegram 落盘一致）。
+    fn download_temp_path(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "mr-http-download-{tag}-{}-{nanos}.part",
+            std::process::id()
+        ))
+    }
+
+    /// 分块（`Transfer-Encoding: chunked`）响应：证明客户端是边读边写，
+    /// 而不是等 `Content-Length` 或整包读完。
+    fn spawn_chunked_server(chunks: Vec<&'static str>) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            );
+            for chunk in chunks {
+                let _ = s.write_all(format!("{:X}\r\n", chunk.len()).as_bytes());
+                let _ = s.write_all(chunk.as_bytes());
+                let _ = s.write_all(b"\r\n");
+                let _ = s.flush();
+            }
+            let _ = s.write_all(b"0\r\n\r\n");
+        });
+        (format!("http://{addr}/file"), h)
+    }
+
+    #[test]
+    fn download_to_streams_multi_chunk_body_to_exact_file() {
+        let (url, h) = spawn_chunked_server(vec!["first-", "second-", "third"]);
+        let t = UreqTransport::new("", "").unwrap();
+        let dest = download_temp_path("chunked");
+        let written = t.download_to(&url, 1024, None, None, &dest).unwrap();
+        h.join().unwrap();
+        assert_eq!(written, 18, "chunked 分块必须逐块计数");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"first-second-third",
+            "落盘字节必须与响应体逐字节一致"
+        );
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn download_to_rejects_oversized_body_and_leaves_no_file() {
+        // 已知 Content-Length：创建文件之前就失败。
+        let (url, h) = spawn_server(vec![(200, "application/octet-stream", vec![7u8; 32])]);
+        let t = UreqTransport::new("", "").unwrap();
+        let dest = download_temp_path("oversize-declared");
+        assert!(matches!(
+            t.download_to(&url, 16, None, None, &dest),
+            Err(OnlineError::TooLarge(16))
+        ));
+        assert!(!dest.exists(), "Content-Length 超限时不得创建目标文件");
+        h.join().unwrap();
+
+        // 未知 Content-Length（chunked）：写出超限后必须删除半成品。
+        let (url, h) = spawn_chunked_server(vec!["0123456789", "abcdefghij"]);
+        let dest = download_temp_path("oversize-chunked");
+        assert!(matches!(
+            t.download_to(&url, 12, None, None, &dest),
+            Err(OnlineError::TooLarge(12))
+        ));
+        assert!(!dest.exists(), "流式写出超限后必须删除半成品");
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn download_to_follows_redirect_and_keeps_same_origin_headers() {
+        let (url, h) = spawn_same_origin_redirect();
+        let t = UreqTransport::new("", CREDENTIAL_HEADERS).unwrap();
+        let dest = download_temp_path("redirect");
+        let written = t
+            .download_to(&url, 1024, None, Some(url.as_str()), &dest)
+            .unwrap();
+        assert_eq!(written, 2);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"ok");
+        let second = h.join().unwrap();
+        assert_eq!(header_value(&second, "cookie"), Some("sid=abc"), "{second}");
+        assert_eq!(
+            header_value(&second, "authorization"),
+            Some("Bearer secret"),
+            "{second}"
+        );
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn download_to_rejects_error_status_without_writing() {
+        let (url, h) = spawn_server(vec![(404, "text/plain", b"missing".to_vec())]);
+        let t = UreqTransport::new("", "").unwrap();
+        let dest = download_temp_path("status404");
+        let error = t
+            .download_to(&url, 1024, None, None, &dest)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("404"), "{error}");
+        assert!(error.contains("online-fetch-failed"), "{error}");
+        assert!(!dest.exists(), "非 2xx 响应不得落盘");
         h.join().unwrap();
     }
 

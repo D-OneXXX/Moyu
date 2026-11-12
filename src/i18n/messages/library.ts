@@ -10,6 +10,10 @@ const zhCN = {
   "library.searchPlaceholder": "搜索书名、合集…（Ctrl+K）",
   "library.searchAria": "搜索书名",
   "library.sourceFilterAria": "来源筛选",
+  "library.readingFilterAria": "阅读状态筛选",
+  "library.readingUnread": "未读",
+  "library.readingInProgress": "在读",
+  "library.readingFinished": "已读完",
   "library.groupAria": "合集显示方式",
   "library.groupSeries": "按合集",
   "library.groupSeriesTitle": "同一合集只显示代表卡",
@@ -34,6 +38,7 @@ const zhCN = {
   "library.loadFailed": "书库加载失败：{error}",
   "library.emptySearch": "没有搜到，去换个关键词吧",
   "library.emptyFilter": "当前来源筛选下还没有书，切换到「全部」看看",
+  "library.emptyReadingFilter": "当前阅读状态下没有书，切换到「全部」看看",
   "library.emptyLibrary":
     "书架还是空的——拖入 cbz/zip/pdf 或文件夹，或点「添加书籍」",
   "library.dragHint": "也可以直接把 zip / cbz / pdf 或文件夹拖进窗口导入",
@@ -128,6 +133,10 @@ const zhTW: LibraryMessages = {
   "library.searchPlaceholder": "搜尋書名、合集…（Ctrl+K）",
   "library.searchAria": "搜尋書名",
   "library.sourceFilterAria": "來源篩選",
+  "library.readingFilterAria": "閱讀狀態篩選",
+  "library.readingUnread": "未讀",
+  "library.readingInProgress": "在讀",
+  "library.readingFinished": "已讀完",
   "library.groupAria": "合集顯示方式",
   "library.groupSeries": "依合集",
   "library.groupSeriesTitle": "同一合集只顯示代表卡",
@@ -152,6 +161,7 @@ const zhTW: LibraryMessages = {
   "library.loadFailed": "書庫載入失敗：{error}",
   "library.emptySearch": "沒有搜尋到，換個關鍵字試試",
   "library.emptyFilter": "目前來源篩選下還沒有書，切換到「全部」看看",
+  "library.emptyReadingFilter": "目前閱讀狀態下沒有書，切換到「全部」看看",
   "library.emptyLibrary":
     "書架還是空的——拖入 cbz/zip/pdf 或資料夾，或點「新增書籍」",
   "library.dragHint": "也可以直接把 zip / cbz / pdf 或資料夾拖進視窗匯入",
@@ -244,6 +254,10 @@ const en: LibraryMessages = {
   "library.searchPlaceholder": "Search titles, series… (Ctrl+K)",
   "library.searchAria": "Search titles",
   "library.sourceFilterAria": "Source filter",
+  "library.readingFilterAria": "Reading status filter",
+  "library.readingUnread": "Unread",
+  "library.readingInProgress": "Reading",
+  "library.readingFinished": "Finished",
   "library.groupAria": "Series display",
   "library.groupSeries": "By series",
   "library.groupSeriesTitle": "Show one card per series",
@@ -269,6 +283,8 @@ const en: LibraryMessages = {
   "library.loadFailed": "Failed to load library: {error}",
   "library.emptySearch": "No matches — try another keyword",
   "library.emptyFilter": "No books for this source filter — switch to “All”",
+  "library.emptyReadingFilter":
+    "No books for this reading status — switch to “All”",
   "library.emptyLibrary":
     "The shelf is empty — drop cbz/zip/pdf files or a folder, or click “Add books”",
   "library.dragHint":
@@ -371,6 +387,10 @@ const es: LibraryMessages = {
   "library.searchPlaceholder": "Buscar títulos, series… (Ctrl+K)",
   "library.searchAria": "Buscar títulos",
   "library.sourceFilterAria": "Filtro de origen",
+  "library.readingFilterAria": "Filtro por estado de lectura",
+  "library.readingUnread": "Sin leer",
+  "library.readingInProgress": "Leyendo",
+  "library.readingFinished": "Terminado",
   "library.groupAria": "Visualización de series",
   "library.groupSeries": "Por serie",
   "library.groupSeriesTitle": "Mostrar una tarjeta por serie",
@@ -399,6 +419,8 @@ const es: LibraryMessages = {
   "library.emptySearch": "Sin resultados: prueba otra palabra clave",
   "library.emptyFilter":
     "No hay libros con este filtro de origen: cambia a «Todo»",
+  "library.emptyReadingFilter":
+    "No hay libros con este estado de lectura: cambia a «Todo»",
   "library.emptyLibrary":
     "La estantería está vacía: arrastra cbz/zip/pdf o una carpeta, o pulsa «Añadir libros»",
   "library.dragHint":
@@ -504,6 +526,10 @@ const ja: LibraryMessages = {
   "library.searchPlaceholder": "タイトル・シリーズを検索…（Ctrl+K）",
   "library.searchAria": "タイトルを検索",
   "library.sourceFilterAria": "ソースフィルター",
+  "library.readingFilterAria": "読書状態フィルター",
+  "library.readingUnread": "未読",
+  "library.readingInProgress": "読書中",
+  "library.readingFinished": "読了",
   "library.groupAria": "シリーズ表示",
   "library.groupSeries": "シリーズごと",
   "library.groupSeriesTitle": "同じシリーズは代表カードのみ表示",
@@ -531,6 +557,8 @@ const ja: LibraryMessages = {
   "library.emptySearch": "見つかりませんでした。別の言葉で検索してください",
   "library.emptyFilter":
     "このソースフィルターには本がありません。「すべて」に切り替えてください",
+  "library.emptyReadingFilter":
+    "この読書状態には本がありません。「すべて」に切り替えてください",
   "library.emptyLibrary":
     "書架は空です。cbz/zip/pdf やフォルダーをドロップするか、「本を追加」をクリックしてください",
   "library.dragHint":
@@ -634,6 +662,10 @@ const ko: LibraryMessages = {
   "library.searchPlaceholder": "제목, 시리즈 검색… (Ctrl+K)",
   "library.searchAria": "제목 검색",
   "library.sourceFilterAria": "출처 필터",
+  "library.readingFilterAria": "읽기 상태 필터",
+  "library.readingUnread": "안 읽음",
+  "library.readingInProgress": "읽는 중",
+  "library.readingFinished": "완독",
   "library.groupAria": "시리즈 표시",
   "library.groupSeries": "시리즈별",
   "library.groupSeriesTitle": "같은 시리즈는 대표 카드만 표시",
@@ -662,6 +694,8 @@ const ko: LibraryMessages = {
   "library.emptySearch": "검색 결과가 없습니다. 다른 검색어를 입력해 보세요",
   "library.emptyFilter":
     "이 출처 필터에 책이 없습니다. “전체”로 전환해 보세요",
+  "library.emptyReadingFilter":
+    "이 읽기 상태에 책이 없습니다. “전체”로 전환해 보세요",
   "library.emptyLibrary":
     "책장이 비어 있습니다. cbz/zip/pdf 또는 폴더를 끌어다 놓거나 “책 추가”를 누르세요",
   "library.dragHint":

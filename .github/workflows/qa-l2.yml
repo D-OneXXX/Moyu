@@ -1,0 +1,282 @@
+name: QA L2 (PR regression gate)
+
+# 分层 QA 门禁说明（三层，互不冒充）：
+#
+#   L1 快速门禁（ci.yml 的 Linux / Windows 两条 leg）：类型检查、静态 QA、发布治理契约、构建。
+#      —— 必须通过，分钟级。
+#   L2 PR 回归（本工作流）：按改动范围选择套件。
+#      —— 纯文档/演示/治理元数据只跑 static；小型前端跑 static+visual+architecture；
+#         非高危后端跑 static+architecture+cache；高危、混合、未知或空 diff 一律全量；
+#         Draft 不跑 L2（required check 保持 skipped，Draft 本不可合并），
+#         标记 ready_for_review 后重新计算。
+#      —— full 模式只跑全量 QA 套件，不再重复 L1（tsc/build/cargo test/clippy/audit）；
+#         L1 由同一 commit 的 Windows/Linux required checks 负责。
+#      —— `L2 · QA gate (known-issues)` 始终执行并保持 required check 名称不变。
+#   L3 发布验收（release-candidate* / release-publish* / release-install-verify*）：
+#      候选构建、签名与证据、Draft、审批、跨通道清单接力、干净机安装/升级。
+#      —— 只在正式发布前执行；`qa-full.yml` 仍是唯一发布 QA 证据生产者，本工作流
+#         不改它的全量语义。
+#
+# 设计约束（2026-11-06 实测）：
+# - 过去 11.5 小时 812 runner 分钟，其中 278 分钟是被后续提交取代的旧 run；
+# - 全量 QA 单次 10–28 分钟，其中约 7–8 分钟与 Windows check 重复；
+# - 不能在 workflow 级用 `paths:`：被过滤时 check run 不会创建，required check 会
+#   永远停在 Expected，反而卡住合并。因此 scope 判定放在 job 内，gate 始终运行。
+#
+# 信任边界：分类器从 base（main）检出后执行，而不是 PR head；否则 PR 可以改分类器，
+# 把高危改动标成 docs 绕过 QA。PR 改动 `scripts/release-governance/**` 本身就会命中
+# 全量，因此分类器规则的变更必须先经过全量 QA 才能合并。
+#
+# 注意：本工作流首次引入的那个 PR 不会触发自己（GitHub 只从默认分支/合并后的工作流文件解析
+# pull_request 事件），合并后对后续 PR 生效；分支保护里把 "L2 · QA gate" 设为必需检查即可。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # merge queue：在合并组提交上重跑同名门禁。合并组没有 pull_request 元数据，
+  # 因此下面的 base/head 一律回落到 merge_group 的 base_sha / head_sha，
+  # 并且跳过 draft 判定（入队的前提就是非 Draft）。
+  merge_group:
+
+permissions:
+  contents: read
+  actions: read # 下载本 run 的 QA 证据
+
+concurrency:
+  group: qa-l2-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: L2 · classify change scope
+    runs-on: ubuntu-22.04
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+      suite: ${{ steps.scope.outputs.suite }}
+      runs_e2e: ${{ steps.scope.outputs.runs_e2e }}
+      reason: ${{ steps.scope.outputs.reason }}
+    steps:
+      # 分类器必须来自 base（受信任），而不是 PR head。
+      - name: Checkout trusted base classifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify QA scope
+        id: scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          DRAFT: ${{ github.event.pull_request.draft || false }}
+        run: |
+          set -euo pipefail
+          write_full() {
+            {
+              echo "mode=full"
+              echo "suite="
+              echo "runs_e2e=true"
+              echo "reason=$1"
+            } >> "$GITHUB_OUTPUT"
+          }
+          # 本工作流首次引入时 base 还没有分类器：fail-closed 全量。
+          if [ ! -f scripts/release-governance/classify-qa-scope.mjs ]; then
+            write_full "base 尚无分类器：fail-closed 全量"
+            exit 0
+          fi
+          # 只需要 head 的 diff；fetch 失败也回落全量，避免瞬时网络问题卡住 PR。
+          if ! git fetch --no-tags origin "$HEAD_SHA"; then
+            write_full "fetch head 失败：fail-closed 全量"
+            exit 0
+          fi
+          if ! node scripts/release-governance/classify-qa-scope.mjs \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --draft "$DRAFT" \
+            --github-output "$GITHUB_OUTPUT"; then
+            # 分类失败（如瞬时 fetch/diff 错误）也回落全量，避免把 PR 卡成永久红。
+            write_full "分类失败：fail-closed 全量"
+            exit 0
+          fi
+
+      - name: Summarize scope
+        shell: bash
+        env:
+          MODE: ${{ steps.scope.outputs.mode }}
+          SUITE: ${{ steps.scope.outputs.suite }}
+          REASON: ${{ steps.scope.outputs.reason }}
+        run: |
+          {
+            echo "### L2 QA scope"
+            echo ""
+            printf -- '- Mode: `%s`\n' "${MODE:-unknown}"
+            printf -- '- Suite: `%s`\n' "${SUITE:-(full)}"
+            printf -- '- Reason: %s\n' "${REASON:-unknown}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pr-qa:
+    name: L2 · PR QA
+    needs: changes
+    # 所有非 Draft 模式共用：full 时 suite 为空，直接跑全量套件；
+    # 定向模式只跑相关 suite。本 job 不跑 L1，避免与 Windows/Linux check 重复。
+    # merge_group 没有 draft 概念：入队即代表 PR 已 ready_for_review。
+    if: needs.changes.result == 'success' && (github.event_name == 'merge_group' || github.event.pull_request.draft == false)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # 只有需要启动 QA 应用的套件才需要 Rust 与 debug 二进制；
+      # static-only（文档）不会启动应用，避免白等编译。
+      - name: Setup Rust toolchain
+        if: needs.changes.outputs.runs_e2e == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Identify Rust cache environment
+        if: needs.changes.outputs.runs_e2e == 'true'
+        id: rust_env
+        run: node scripts/ci/rust-cache-key.mjs
+
+      - name: Restore Rust build cache
+        if: needs.changes.outputs.runs_e2e == 'true'
+        id: rust_cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+            !src-tauri/target/debug/incremental
+          key: moyu-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust_env.outputs.fingerprint }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', '**/rust-toolchain*', '**/.cargo/config*') }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: |
+            moyu-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust_env.outputs.fingerprint }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', '**/rust-toolchain*', '**/.cargo/config*') }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}-
+            moyu-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust_env.outputs.fingerprint }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', '**/rust-toolchain*', '**/.cargo/config*') }}-main-
+
+      - name: Build frontend and debug binary
+        if: needs.changes.outputs.runs_e2e == 'true'
+        run: |
+          npm run build
+          cargo build --manifest-path src-tauri/Cargo.toml
+
+      - name: Run PR QA
+        shell: bash
+        env:
+          SUITE: ${{ needs.changes.outputs.suite }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SUITE" ]; then
+            node tests/qa/run-qa.mjs --suite="$SUITE"
+          else
+            node tests/qa/run-qa.mjs
+          fi
+
+      - name: Upload QA evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qa-evidence-${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+          path: |
+            tests/qa/reports/latest.md
+            tests/qa/reports/latest.json
+            tests/qa/artifacts/current/qa-app.log
+            tests/qa/artifacts/current/vite.log
+            tests/qa/artifacts/current/data/logs/
+            tests/qa/artifacts/current/screens/
+
+      - name: Save Rust build cache
+        if: ${{ success() && github.event_name != 'merge_group' && steps.rust_cache.outputs.cache-hit != 'true' && needs.changes.outputs.runs_e2e == 'true' }}
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+            !src-tauri/target/debug/incremental
+          key: ${{ steps.rust_cache.outputs.cache-primary-key }}
+
+
+  gate:
+    name: L2 · QA gate (known-issues)
+    needs: [changes, pr-qa]
+    # Draft 不跑 L2：required check 保持 skipped（Draft 不可合并）；
+    # 标记 ready_for_review 会重新触发本工作流并重新计算范围。
+    # merge_group 下没有 draft 字段，必须照常执行（否则合并组会缺这个必需检查）。
+    if: always() && (github.event_name == 'merge_group' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout trusted base gate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          persist-credentials: false
+
+      # 证据是本门禁的输入，必须能取到；取不到就让下一步判定"缺证据 → 阻断"。
+      - name: Download QA evidence
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download "${{ github.run_id }}" \
+            --repo "${{ github.repository }}" \
+            --name "qa-evidence-${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" \
+            --dir qa-evidence
+
+      - name: QA gate
+        shell: bash
+        env:
+          MODE: ${{ needs.changes.outputs.mode }}
+          SUITE: ${{ needs.changes.outputs.suite }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          EXPECTED_SUITES="$SUITE"
+          if [ "$MODE" = "full" ]; then
+            EXPECTED_SUITES="static,visual,reader,pdf,online,opds,cache,privacy,chaos,architecture"
+          fi
+          ARGS=(--report qa-evidence/reports/latest.json)
+          # base 还没有覆盖校验参数时保持兼容（首次引入本工作流的 PR）。
+          if grep -q -- "--expect-suites" scripts/release-governance/qa-gate.mjs; then
+            ARGS+=(--expect-suites "$EXPECTED_SUITES" --expect-commit "$HEAD_SHA")
+          fi
+          node scripts/release-governance/qa-gate.mjs "${ARGS[@]}"
+
+      - name: Summarize gate
+        if: always()
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          MODE: ${{ needs.changes.outputs.mode }}
+          SUITE: ${{ needs.changes.outputs.suite }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          PR_QA_RESULT: ${{ needs.pr-qa.result }}
+        run: |
+          {
+            echo "### L2 QA gate"
+            echo ""
+            printf -- '- PR head: `%s`\n' "${HEAD_SHA:-unknown}"
+            printf -- '- Scope mode: `%s`\n' "${MODE:-unknown}"
+            printf -- '- Suite: `%s`\n' "${SUITE:-(full)}"
+            printf -- '- Changes job: %s\n' "${CHANGES_RESULT:-unknown}"
+            printf -- '- PR QA job: %s\n' "${PR_QA_RESULT:-unknown}"
+            echo '- Registry: `scripts/release-governance/qa-known-issues.json`'
+          } >> "$GITHUB_STEP_SUMMARY"

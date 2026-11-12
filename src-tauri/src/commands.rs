@@ -26,7 +26,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use image::GenericImageView as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::State;
+use tauri::{Emitter, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::online::filter::{
     FilterAction, FilterMemory, FilterRule, FilterStats, FilterThresholds, FilteredPage,
@@ -415,11 +416,33 @@ fn title_for(path: &Path) -> String {
         return name.to_string();
     }
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["zip", "cbz", "pdf"].contains(&ext.to_ascii_lowercase().as_str()) => {
-            stem.to_string()
+        Some((stem, ext))
+            if ["zip", "cbz", "pdf", "rar", "cbr"].contains(&ext.to_ascii_lowercase().as_str()) =>
+        {
+            // 目录扫描导入的是 `<stem>-converted.cbz`，展示标题仍应回到原书 stem。
+            let suffix = format!("-converted.{}", ext.to_ascii_lowercase());
+            let lower = name.to_ascii_lowercase();
+            let base_stem = stem.strip_suffix("-converted").unwrap_or(stem);
+            let has_source_sibling = path.parent().is_some_and(|parent| {
+                ["rar", "cbr"]
+                    .iter()
+                    .any(|source_ext| parent.join(format!("{base_stem}.{source_ext}")).is_file())
+            });
+            if lower.ends_with(&suffix) && has_source_sibling {
+                base_stem.to_string()
+            } else {
+                stem.to_string()
+            }
         }
         _ => name.to_string(),
     }
+}
+
+fn converted_root_for(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .map(|parent| parent.join("converted"))
+        .unwrap_or_else(|| std::env::temp_dir().join("moyu-converted"))
 }
 
 /// 压缩包（单文件）的增量扫描指纹；目录不参与，避免漏掉嵌套变更。
@@ -438,6 +461,7 @@ fn archive_stamp(path: &Path) -> Option<db::SourceStamp> {
 /// 扫描一本书：打开源 → 取页数 → upsert。
 ///
 /// 显式扫描总是重新读取源目录；文件时间和字节数相同也可能换了内容。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn scan_single_book(
     conn: &rusqlite::Connection,
     path: &Path,
@@ -524,18 +548,33 @@ pub(crate) fn scan_single_book_with_title(
     result.map(to_book_info)
 }
 
-/// 下载文件复用现有单本扫描/入库逻辑；非 zip/cbz 返回 None。
+/// 下载文件复用现有单本扫描/入库逻辑；非 zip/cbz/rar/cbr 返回 None。
+///
+/// RAR/CBR（含伪装成 `.zip/.cbz` 的 RAR）先转码为 `.cbz`；返回书 id 与
+/// 实际入库路径，供浏览器下载标记只读与事件展示。
+pub(crate) fn import_local_archive_prepared(
+    db_path: PathBuf,
+    path: &Path,
+) -> Result<Option<(String, PathBuf)>, BackendError> {
+    if !source::is_archive_path(path) && !crate::archive_convert::is_convertible_archive_path(path)
+    {
+        return Ok(None);
+    }
+    let converted_root = converted_root_for(&db_path);
+    let prepared = crate::archive_convert::prepare_import_cbz(path, &converted_root)?;
+    let conn = db::open(db_path)?;
+    db::init_schema(&conn)?;
+    let book = scan_single_book_with_title(&conn, &prepared, Some(&title_for(path)))?;
+    Ok(Some((book.id, prepared)))
+}
+
+/// 兼容入口：只返回书 id（生产下载链使用 prepared 变体）。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn import_local_archive(
     db_path: PathBuf,
     path: &Path,
 ) -> Result<Option<String>, BackendError> {
-    if !source::is_archive_path(path) {
-        return Ok(None);
-    }
-    let conn = db::open(db_path)?;
-    db::init_schema(&conn)?;
-    let book = scan_single_book(&conn, path)?;
-    Ok(Some(book.id))
+    Ok(import_local_archive_prepared(db_path, path)?.map(|(id, _)| id))
 }
 
 /// 递归收集书籍路径：直下有图片的目录视为一本书；否则继续向下找章节目录
@@ -565,6 +604,12 @@ fn collect_book_paths(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         }
         if kid.is_dir() {
             collect_book_paths(&kid, depth + 1, out);
+        } else if crate::archive_convert::is_convertible_archive_path(&kid) {
+            // 已转码的 RAR/CBR 只保留 `<stem>-converted.cbz` 一本书，
+            // 重扫绝不再次转码或生成 `-converted-1.cbz`。
+            if crate::archive_convert::existing_converted_sibling(&kid).is_none() {
+                out.push(kid);
+            }
         } else if source::is_archive_path(&kid) || source::is_pdf_path(&kid) {
             out.push(kid);
         }
@@ -577,6 +622,7 @@ fn blocking_scan(
     root: &str,
 ) -> Result<(Vec<BookInfo>, Vec<String>), BackendError> {
     let path = PathBuf::from(root);
+    let converted_root = converted_root_for(&db_path);
     let conn = db::open(db_path)?;
     db::init_schema(&conn)?;
 
@@ -585,11 +631,15 @@ fn blocking_scan(
     let mut candidates = Vec::new();
     if path.is_dir() {
         collect_book_paths(&path, 0, &mut candidates);
-    } else if path.is_file() && (source::is_archive_path(&path) || source::is_pdf_path(&path)) {
+    } else if path.is_file()
+        && (source::is_archive_path(&path)
+            || source::is_pdf_path(&path)
+            || crate::archive_convert::is_convertible_archive_path(&path))
+    {
         candidates.push(path.clone());
     } else {
         return Err(BackendError::Msg(format!(
-            "扫描路径无效（需要目录或 .zip/.cbz/.pdf）：{root}"
+            "扫描路径无效（需要目录或 .zip/.cbz/.rar/.cbr/.pdf）：{root}"
         )));
     }
     let mut seen = std::collections::HashSet::new();
@@ -597,9 +647,11 @@ fn blocking_scan(
         if !seen.insert(candidate.clone()) {
             continue;
         }
-        match scan_single_book(&conn, &candidate) {
-            Ok(book) => books.push(book),
-            Err(error) => errors.push(format!("{}：{error}", candidate.display())),
+        let item = import_one(&conn, &candidate, &converted_root);
+        if let Some(book) = item.book {
+            books.push(book);
+        } else {
+            errors.push(format!("{}：{}", item.path, item.message));
         }
     }
     Ok((books, errors))
@@ -675,13 +727,18 @@ fn import_outcome(
 
 /// 单本书路径导入：已入库也重新扫描并 upsert，刷新页数/元数据，保留进度；
 /// 软删的书同样恢复。读取失败进入 failed，而不是静默 skipped。
-fn import_one(conn: &rusqlite::Connection, p: &Path) -> ImportItemResult {
+fn import_one(conn: &rusqlite::Connection, p: &Path, converted_root: &Path) -> ImportItemResult {
     let path = p.to_string_lossy().to_string();
-    let existed = db::find_book_id_by_path(conn, &path)
+    let prepared = match crate::archive_convert::prepare_import_cbz(p, converted_root) {
+        Ok(prepared) => prepared,
+        Err(error) => return import_outcome(&path, "failed", error.to_string(), None),
+    };
+    let prepared_path = prepared.to_string_lossy().to_string();
+    let existed = db::find_book_id_by_path(conn, &prepared_path)
         .ok()
         .flatten()
         .is_some();
-    match scan_single_book(conn, p) {
+    match scan_single_book_with_title(conn, &prepared, Some(&title_for(p))) {
         Ok(book) => {
             let (status, message) = if existed {
                 ("restored", "已刷新页数与元数据，阅读进度保留")
@@ -710,6 +767,7 @@ pub(crate) fn import_blocking(
     db_path: PathBuf,
     paths: Vec<String>,
 ) -> Result<Vec<ImportItemResult>, BackendError> {
+    let converted_root = converted_root_for(&db_path);
     let conn = db::open(db_path)?;
     db::init_schema(&conn)?;
     let mut out = Vec::new();
@@ -730,19 +788,22 @@ pub(crate) fn import_blocking(
             continue;
         }
         if p.is_file() {
-            if !source::is_archive_path(&p) && !source::is_pdf_path(&p) {
+            if !source::is_archive_path(&p)
+                && !source::is_pdf_path(&p)
+                && !crate::archive_convert::is_convertible_archive_path(&p)
+            {
                 out.push(import_outcome(
                     &path,
                     "failed",
-                    "不支持的文件（需要 .zip/.cbz/.pdf；图片文件夹请拖文件夹）".into(),
+                    "不支持的文件（需要 .zip/.cbz/.rar/.cbr/.pdf；图片文件夹请拖文件夹）".into(),
                     None,
                 ));
             } else {
-                out.push(import_one(&conn, &p));
+                out.push(import_one(&conn, &p, &converted_root));
             }
         } else if p.is_dir() {
             if dir_has_direct_images(&p) {
-                out.push(import_one(&conn, &p));
+                out.push(import_one(&conn, &p, &converted_root));
             } else {
                 let mut candidates = Vec::new();
                 collect_book_paths(&p, 0, &mut candidates);
@@ -753,13 +814,13 @@ pub(crate) fn import_blocking(
                         continue;
                     }
                     found += 1;
-                    out.push(import_one(&conn, &candidate));
+                    out.push(import_one(&conn, &candidate, &converted_root));
                 }
                 if found == 0 {
                     out.push(import_outcome(
                         &path,
                         "failed",
-                        "目录中没有可识别的书籍（需要：直下图片 / 含图片的嵌套目录 / zip/cbz/pdf）"
+                        "目录中没有可识别的书籍（需要：直下图片 / 含图片的嵌套目录 / zip/cbz/rar/cbr/pdf）"
                             .into(),
                         None,
                     ));
@@ -769,7 +830,7 @@ pub(crate) fn import_blocking(
             out.push(import_outcome(
                 &path,
                 "failed",
-                "不支持的路径（需要文件夹或 .zip/.cbz）".into(),
+                "不支持的路径（需要文件夹或 .zip/.cbz/.rar/.cbr/.pdf）".into(),
                 None,
             ));
         }
@@ -1083,6 +1144,7 @@ fn relocate_book_impl(
     conn: &rusqlite::Connection,
     old_id: &str,
     new_path: &str,
+    display_title: Option<&str>,
 ) -> Result<db::BookRow, BackendError> {
     let dest = new_path.trim().to_string();
     if dest.is_empty() {
@@ -1099,6 +1161,9 @@ fn relocate_book_impl(
     }
     let old =
         db::get_book(conn, old_id)?.ok_or_else(|| BackendError::Msg("书籍不存在".to_string()))?;
+    let display_title = display_title
+        .map(str::to_string)
+        .unwrap_or_else(|| title_for(&path));
     // PDF-1：PDF 目标只做识别与身份迁移，不解析页数（PDF-1 无渲染器，页数记 0）。
     let (page_count, format) = if source::is_pdf_path(&path) {
         source::validate_pdf_document(&path)?;
@@ -1133,12 +1198,12 @@ fn relocate_book_impl(
             old_id,
             &new_id,
             &dest,
-            &title_for(&path),
+            &display_title,
             page_count,
             &format,
         );
     }
-    db::relocate_book(conn, old_id, &new_id, &dest, &title_for(&path), page_count)
+    db::relocate_book(conn, old_id, &new_id, &dest, &display_title, page_count)
 }
 
 /// 失效路径无损重定位：
@@ -1156,9 +1221,14 @@ pub async fn relocate_book(
     let cache_state = state.inner().clone();
     let old_id = book_id.clone();
     blocking(move || {
+        let converted_root = converted_root_for(&db_path);
+        let prepared =
+            crate::archive_convert::prepare_import_cbz(Path::new(&new_path), &converted_root)?;
+        let prepared_path = prepared.to_string_lossy().to_string();
+        let display_title = title_for(Path::new(&new_path));
         let conn = db::open(db_path)?;
         db::init_schema(&conn)?;
-        let row = relocate_book_impl(&conn, &old_id, &new_path)?;
+        let row = relocate_book_impl(&conn, &old_id, &prepared_path, Some(&display_title))?;
         // Cache deletion and missing-source metadata checks both touch the
         // filesystem; complete them before leaving the blocking pool.
         cache_state.remove_book_caches(&old_id);
@@ -1335,6 +1405,52 @@ fn assembled_page(
     })
 }
 
+/// 在线页真实解码尺寸回写（fresh render 专用）。
+///
+/// 在线书的尺寸来自 `get_webtoon_layout` 的 256 KiB 头部探测：带巨型
+/// EXIF/XMP/ICC 头的图片探测会失败并留下占位 `(0,0)`，前端只能吃兜底比例。
+/// 一旦该页**真正解码**（`get_page` / `get_webtoon_tile` 的非 L2 路径），
+/// 就把真实整页尺寸合并进 `meta_json`，并同步内存布局缓存，让后续 L2/切片
+/// 请求复用同一逻辑页尺寸。失败只记脱敏日志（书 ID 前缀 + 页码），阅读照旧。
+fn persist_decoded_page_dimensions(
+    state: &AppState,
+    book_id: &str,
+    index: u32,
+    width: u32,
+    height: u32,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let persisted = state.db.with(|conn| {
+        db::update_online_page_dimensions(conn, book_id, index, width, height)
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = persisted {
+        crate::logging::log_error(
+            "online-metadata-write",
+            &format!(
+                "book={} 第 {} 页：{}",
+                short_book_ref(book_id),
+                index + 1,
+                safe_error_text(&e)
+            ),
+        );
+    }
+    // 内存布局同步与落库成败无关：本次请求已经拿到真实尺寸，后续切片/L2
+    // 请求应当立刻用上，而不是等下次重新加载布局。
+    let mut layouts = state.webtoon_layouts.lock();
+    if let Some(entry) = layouts.get(book_id) {
+        if entry.get(index as usize).copied() != Some((width, height)) {
+            let mut dims = entry.as_ref().clone();
+            if let Some(slot) = dims.get_mut(index as usize) {
+                *slot = (width, height);
+                layouts.insert(book_id.to_string(), Arc::new(dims));
+            }
+        }
+    }
+}
+
 /// 三级缓存取页（v3 毫秒级路径）：
 /// L1 内存 LRU（命中 ~0.1ms）→ L2 磁盘成品 JPEG（~1ms）→ 全管线
 /// （常开句柄单页读 → Triangle 降采样 → JPEG 编码，典型 30-60ms），
@@ -1404,6 +1520,11 @@ pub async fn get_page(
         let raw = handle.read_raw(index as usize)?;
         let raw_bytes = raw.bytes.len();
         let page = pipeline::render_raw(&raw, max_width, max_height)?;
+        // 仅在线源的 fresh render 才有「真实整页尺寸」这一事实；L2 命中没有
+        // 源尺寸，不能拿来当权威值（见上面的兜底注释）。
+        if is_online {
+            persist_decoded_page_dimensions(&st, &book, index, page.orig_width, page.orig_height);
+        }
         st.cache_if_current(cache_epoch, || {
             st.render.put(&book, index, w, h, &page.bytes)
         });
@@ -1485,6 +1606,7 @@ pub(crate) fn prefetch_is_current(captured: u64, current: u64) -> bool {
 /// 服务端邻页预取：主请求落地后，后台把邻页灌进 L1/L2，
 /// 翻页不依赖前端 idle 回调时机（P0 手感：命中翻页零等待）。
 /// 本地读盘廉价，预取 ±1/±2；在线走网络，只预取 +1/+2（不向前回读）。
+#[allow(clippy::too_many_arguments)] // 参数都是预取上下文的独立事实，拆结构只会增加调用点噪音。
 fn prefetch_neighbors(
     state: &State<'_, Arc<AppState>>,
     book_id: &str,
@@ -1943,6 +2065,64 @@ pub async fn clear_temp_cache(state: State<'_, Arc<AppState>>) -> Result<ClearCa
     .await
 }
 
+/// 在线原图清理结果（Issue #338）：只统计在线原图目录，绝不包含渲染缓存。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearOnlineCacheResult {
+    pub bytes_freed: u64,
+    pub files: u64,
+    /// 实际删除了在线原图目录的书本数量（不是书 id 列表）。
+    pub books: u64,
+}
+
+/// 按需清理在线原图缓存（Issues #338）。
+///
+/// - `keep_unread=true`：保留未读完且 30 天内打开过的书，只清理已完成或
+///   超过 30 天未活动的在线书；
+/// - `keep_unread=false`：清理全部未删除在线书的原图，属于用户显式全量清理。
+///
+/// 候选书 id 在 `DbSlot` 锁内一次性取出，随后在 DB 锁外（blocking 线程）
+/// 删除缓存目录。只动了 `online_cache`，绝不触碰 render 缓存、`library.db`、
+/// 书库行与阅读进度。
+#[tauri::command]
+pub async fn clear_online_cache(
+    state: State<'_, Arc<AppState>>,
+    keep_unread: bool,
+) -> Result<ClearOnlineCacheResult, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let cutoff = (chrono::Local::now() - chrono::Duration::days(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        // 只在这里短暂持有数据库锁；删除目录在锁外执行。
+        let ids = st
+            .db
+            .with(|conn| db::online_cache_clear_candidates(conn, keep_unread, &cutoff).map_err(err))
+            .map_err(BackendError::Msg)?;
+        let mut bytes_freed = 0u64;
+        let mut files = 0u64;
+        let mut books = 0u64;
+        for id in &ids {
+            let (bytes, count) = st.online_cache.remove_book_with_stats(id);
+            if bytes > 0 || count > 0 {
+                books = books.saturating_add(1);
+            }
+            bytes_freed = bytes_freed.saturating_add(bytes);
+            files = files.saturating_add(count);
+        }
+        crate::logging::log_error(
+            "clear_online_cache",
+            &format!("已清理 {books} 本在线原图缓存，释放 {bytes_freed} 字节 / {files} 个文件"),
+        );
+        Ok(ClearOnlineCacheResult {
+            bytes_freed,
+            files,
+            books,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
     // ADR-036：SQLite 聚合同样移入 blocking 线程，避免占用 async 执行器。
@@ -1972,7 +2152,9 @@ pub async fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard,
                 Ok(Dashboard {
                     total_books: counts.total_books,
                     reading: counts.reading,
+                    finished: counts.finished,
                     today_pages,
+                    total_pages_read: counts.total_pages_read,
                     heatmap,
                     series,
                 })
@@ -2158,12 +2340,12 @@ pub async fn get_webtoon_tile(
     }
     let st = state.inner().clone();
     let lookup_book_id = book_id.clone();
-    blocking(move || {
+    let is_online = blocking(move || {
         st.db
             .with(|conn| {
                 db::get_book(conn, &lookup_book_id)
                     .map_err(err)?
-                    .map(|_| ())
+                    .map(|b| b.source_type != "local")
                     .ok_or_else(|| "书籍不存在".into())
             })
             .map_err(BackendError::Msg)
@@ -2202,7 +2384,7 @@ pub async fn get_webtoon_tile(
         // 其它书/页的切片请求；锁内只做“双检 + 解码切片 + 落盘”。
         let handle = st.source_handle_for_book(&book)?;
         let raw = handle.read_raw(index as usize)?;
-        let _guard = st.tile_lock.lock();
+        let guard = st.tile_lock.lock();
         // 双检：等锁期间可能已被别的请求物化。
         if let Some(bytes) = st.render.get_tile(&book, index, tile, w) {
             return assembled_page(bytes, orig_dims.0, orig_dims.1);
@@ -2229,6 +2411,18 @@ pub async fn get_webtoon_tile(
         // 空 dataUrl，后续滚动命中将返回黑块。单次请求只在此编码 1 次。
         let mut requested = pages.into_iter().nth(tile as usize).expect("切片在界内");
         requested.data_url = requested.data_url_from_bytes();
+        // 整页物化完成后释放串行锁再写库：DB 写不能卡住下一张切片的解码。
+        drop(guard);
+        // fresh render 才有真实整页尺寸；L2 命中借的是布局缓存里的旧值。
+        if is_online {
+            persist_decoded_page_dimensions(
+                &st,
+                &book,
+                index,
+                requested.orig_width,
+                requested.orig_height,
+            );
+        }
         Ok(requested)
     })
     .await
@@ -2375,6 +2569,7 @@ pub async fn set_feature_enabled(
         match feature {
             crate::features::FeatureId::Online => {
                 crate::online::handoff::stop_handoff(&shutdown_app, &shutdown_state);
+                crate::state::clear_session_online_headers(&shutdown_state);
                 shutdown_state.invalidate_sources();
             }
             crate::features::FeatureId::Browser => {
@@ -2536,9 +2731,7 @@ pub async fn resolve_online_url(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -2590,9 +2783,9 @@ pub async fn resolve_online_batch(
     let st = state.inner().clone();
     blocking(move || {
         let s = st.settings.lock().clone();
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        // 批量 payload 可能跨多个 origin，会话头无法安全绑定到单一站点；
+        // 这里只用用户显式持久化的全局请求头，绝不附带内存会话凭据。
+        let headers = s.online_headers.clone();
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -2617,6 +2810,470 @@ pub async fn resolve_online_batch(
     .await
 }
 
+/// 图片选择器的候选页：只给规范化 URL 与已知尺寸，不落库。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineImagePreviewItem {
+    pub index: u32,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineImagePreview {
+    pub title: String,
+    pub canonical_url: String,
+    pub page_count: u32,
+    pub images: Vec<OnlineImagePreviewItem>,
+    /// 候选超过 `limit` 时为 true；前端必须明确提示只展示前 N 张。
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterLink {
+    pub url: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineBatchItem {
+    pub url: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub book: Option<BookInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnlineBatchProgress {
+    done: usize,
+    total: usize,
+    url: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// 把队列合集信息写进 `meta_json`。
+///
+/// `OnlineBookMeta` 上的 series 字段只是内存镜像；`to_book_info` 与后续
+/// 书库聚合读的是持久化 `StoredMeta`，只改结构体字段会导致合集在重启后丢失。
+fn apply_series_to_meta(
+    meta: &mut crate::online::direct::OnlineBookMeta,
+    series_id: &str,
+    series_title: &str,
+    chapter_index: u32,
+) -> Result<(), BackendError> {
+    meta.series_id = Some(series_id.to_string());
+    meta.series_title = Some(series_title.to_string());
+    meta.chapter_index = Some(chapter_index);
+    let mut stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json)
+        .map_err(|e| BackendError::Msg(format!("在线书元数据损坏：{e}")))?;
+    stored.series_id = Some(series_id.to_string());
+    stored.series_title = Some(series_title.to_string());
+    stored.chapter_index = Some(chapter_index);
+    meta.meta_json = serde_json::to_string(&stored)
+        .map_err(|e| BackendError::Msg(format!("在线书元数据序列化失败：{e}")))?;
+    Ok(())
+}
+
+fn preview_from_meta(
+    meta: &crate::online::direct::OnlineBookMeta,
+    limit: usize,
+) -> Result<OnlineImagePreview, BackendError> {
+    let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json)
+        .map_err(|e| BackendError::Msg(format!("在线书元数据损坏：{e}")))?;
+    let truncated = stored.pages.len() > limit;
+    let images = stored
+        .pages
+        .iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, page)| OnlineImagePreviewItem {
+            index: index as u32,
+            url: page.url.clone(),
+            width: page.width,
+            height: page.height,
+        })
+        .collect();
+    Ok(OnlineImagePreview {
+        title: meta.title.clone(),
+        canonical_url: meta.canonical_url.clone(),
+        page_count: meta.page_count as u32,
+        images,
+        truncated,
+    })
+}
+
+/// 解析目录/图集但不入库，返回图片选择器候选（带尺寸）。
+#[tauri::command]
+pub async fn preview_online_images(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    limit: Option<u32>,
+) -> Result<OnlineImagePreview, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let host = crate::online::filter::url_host(&url);
+        let memory = filter_memory_for(&st, &host)?;
+        let thresholds = thresholds_from(memory.profile.as_ref());
+        let meta = crate::online::resolve_with(&http, &url, &memory, &thresholds)?;
+        let limit = limit.unwrap_or(60).clamp(1, 200) as usize;
+        preview_from_meta(&meta, limit)
+    })
+    .await
+}
+
+/// 远程图片缩略图代理：桌面 CSP 只允许 `img-src 'self' data:`，选择器
+/// 不能直接把第三方 URL 塞进 `<img src>`。只返回缩小后的 data URL。
+#[tauri::command]
+pub async fn online_image_preview(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    referer: Option<String>,
+) -> Result<PageImage, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let canonical = crate::online::normalize_url(&url)?;
+        let headers =
+            crate::state::effective_online_headers_for(&st, &s.online_headers, canonical.as_str());
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let referer = referer.as_deref().map(str::trim).filter(|value| {
+            (value.starts_with("http://") || value.starts_with("https://"))
+                && !value.chars().any(char::is_control)
+        });
+        let response = http.get(
+            canonical.as_str(),
+            crate::online::PAGE_MAX_BYTES,
+            referer,
+            Some(canonical.as_str()),
+        )?;
+        if !(200..300).contains(&response.status) || response.body.is_empty() {
+            return Err(BackendError::Network(
+                "预览图片读取失败（online-fetch-failed）".into(),
+            ));
+        }
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(&response.body))
+            .with_guessed_format()
+            .map_err(|_| BackendError::Msg("预览图片格式不支持（online-fetch-failed）".into()))?
+            .into_dimensions()
+            .map_err(|_| BackendError::Msg("预览图片格式不支持（online-fetch-failed）".into()))?;
+        if width > 8192 || height > 8192 || u64::from(width) * u64::from(height) > 64_000_000 {
+            return Err(BackendError::Msg(
+                "预览图片尺寸超过安全上限（online-fetch-failed）".into(),
+            ));
+        }
+        let raw = source::RawPage {
+            bytes: response.body,
+            ext: String::new(),
+        };
+        let rendered = pipeline::render_raw(&raw, Some(180), Some(240))?;
+        Ok(to_page_image(0, rendered))
+    })
+    .await
+}
+
+/// 从目录页提取同源章节 `<a>` 链接，供批量队列勾选；不写库、不下载。
+#[tauri::command]
+pub async fn preview_chapter_links(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<Vec<ChapterLink>, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let base = crate::online::normalize_url(&url)?;
+        let headers =
+            crate::state::effective_online_headers_for(&st, &s.online_headers, base.as_str());
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let response = http.get(
+            base.as_str(),
+            crate::online::MANIFEST_MAX_BYTES,
+            Some(base.as_str()),
+            Some(base.as_str()),
+        )?;
+        if !(200..300).contains(&response.status) {
+            return Err(BackendError::Network(format!(
+                "目录页读取失败：HTTP {}（online-fetch-failed）",
+                response.status
+            )));
+        }
+        let text = crate::online::html::decode_html(&response.body);
+        let anchor =
+            regex::Regex::new(r#"(?is)<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>"#)
+                .map_err(|e| BackendError::Msg(format!("链接解析失败：{e}")))?;
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for caps in anchor.captures_iter(&text) {
+            if out.len() >= 300 {
+                break;
+            }
+            let raw = crate::online::html::decode_entities(caps[1].trim());
+            if raw.starts_with('#')
+                || raw.starts_with("javascript:")
+                || raw.starts_with("mailto:")
+                || raw.starts_with("tel:")
+            {
+                continue;
+            }
+            let Ok(target) = base.join(&raw) else {
+                continue;
+            };
+            if target.origin() != base.origin() || target.as_str() == base.as_str() {
+                continue;
+            }
+            let path = target.path().to_ascii_lowercase();
+            if [
+                ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".zip", ".cbz", ".rar", ".cbr",
+                ".7z", ".pdf",
+            ]
+            .iter()
+            .any(|ext| path.ends_with(ext))
+            {
+                continue;
+            }
+            let title = crate::online::html::decode_entities(&crate::online::html::strip_tags(
+                caps[2].trim(),
+            ))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+            let title = if title.is_empty() {
+                crate::online::title_from_url(&target)
+            } else {
+                crate::online::truncate_chars(&title, 120)
+            };
+            let url = target.to_string();
+            if seen.insert(url.clone()) {
+                out.push(ChapterLink { url, title });
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// 多 URL 串行解析队列：逐条解析/入库并通过事件汇报进度。
+///
+/// 每条独立事务，单条失败不会回滚已成功的书；所有成功项统一写入
+/// `seriesId`，便于书库按合集聚合。
+#[tauri::command]
+pub async fn resolve_online_urls(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    urls: Vec<String>,
+    series_title: Option<String>,
+) -> Result<Vec<OnlineBatchItem>, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let urls = urls
+        .into_iter()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .collect::<Vec<_>>();
+    if urls.is_empty() {
+        return Err("请至少粘贴一条 URL（online-url-invalid）".into());
+    }
+    if urls.len() > 100 {
+        return Err("单次批量最多 100 条 URL（online-too-many-pages）".into());
+    }
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        // 跨 origin 队列不得附带单站会话头，只使用用户显式保存的全局头。
+        let headers = s.online_headers.clone();
+        let http = crate::online::http::UreqTransport::new_with_assisted(
+            &s.online_proxy,
+            &headers,
+            st.assisted_sessions.clone(),
+        )?;
+        let series_title = series_title
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| {
+                urls.first()
+                    .and_then(|url| url::Url::parse(url).ok())
+                    .and_then(|url| url.host_str().map(str::to_string))
+                    .unwrap_or_else(|| "在线批量导入".into())
+            });
+        let series_id = crate::online::direct::series_hash(&series_title);
+        let total = urls.len();
+        let mut results = Vec::with_capacity(total);
+        for (index, raw) in urls.iter().enumerate() {
+            let result = (|| -> Result<BookInfo, BackendError> {
+                let host = crate::online::filter::url_host(raw);
+                let memory = filter_memory_for(&st, &host)?;
+                let thresholds = thresholds_from(memory.profile.as_ref());
+                let mut meta = crate::online::resolve_with(&http, raw, &memory, &thresholds)?;
+                apply_series_to_meta(&mut meta, &series_id, &series_title, (index + 1) as u32)?;
+                let (row, changed) = apply_resolved_meta(&st, &meta)?;
+                if changed {
+                    invalidate_book_caches(&st, &row.id);
+                }
+                if let Err(e) = persist_filter_learning(&st, &meta, &row.id) {
+                    crate::logging::log_error(
+                        "online_filter",
+                        &format!("批量队列学习落库失败：{e}"),
+                    );
+                }
+                Ok(to_book_info(row))
+            })();
+            let item = match result {
+                Ok(book) => OnlineBatchItem {
+                    url: raw.clone(),
+                    ok: true,
+                    title: Some(book.title.clone()),
+                    book: Some(book),
+                    error: None,
+                },
+                Err(error) => OnlineBatchItem {
+                    url: raw.clone(),
+                    ok: false,
+                    title: None,
+                    book: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            let progress = OnlineBatchProgress {
+                done: index + 1,
+                total,
+                url: item.url.clone(),
+                ok: item.ok,
+                title: item.title.clone(),
+                error: item.error.clone(),
+            };
+            let _ = app.emit_to("main", "online-batch-progress", progress);
+            results.push(item);
+        }
+        Ok(results)
+    })
+    .await
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlinePrefetchResult {
+    pub pages: u32,
+    pub cached: u32,
+    pub failed: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnlinePrefetchProgress {
+    book_id: String,
+    done: u32,
+    total: u32,
+    failed: u32,
+}
+
+/// 后台并发预取在线书原图到 `online_cache/`。
+///
+/// 入库仍先完成（书立即可读），预取只补齐离线缓存；单页失败只计数，
+/// 不删除书、不改进度。读取的每页都会命中既有 `OnlineSource` 缓存层。
+#[tauri::command]
+pub async fn prefetch_online_book(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    book_id: String,
+    concurrency: Option<u32>,
+) -> Result<OnlinePrefetchResult, String> {
+    crate::resilience::ensure_online_allowed().await?;
+    let st = state.inner().clone();
+    blocking(move || {
+        let s = st.settings.lock().clone();
+        crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
+            .map_err(BackendError::Msg)?;
+        let handle = st.source_handle_for_book(&book_id)?;
+        let pages = handle.page_count()? as u32;
+        let workers = concurrency.unwrap_or(4).clamp(1, 8) as usize;
+        let next = std::sync::atomic::AtomicU32::new(0);
+        let cached = std::sync::atomic::AtomicU32::new(0);
+        let failed = std::sync::atomic::AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= pages {
+                        break;
+                    }
+                    match handle.read_raw(index as usize) {
+                        Ok(_) => {
+                            cached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(error) => {
+                            failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            crate::logging::log_error(
+                                "online_prefetch",
+                                &format!("预取第 {index} 页失败：{error}"),
+                            );
+                        }
+                    }
+                    let done = cached.load(std::sync::atomic::Ordering::Relaxed)
+                        + failed.load(std::sync::atomic::Ordering::Relaxed);
+                    // 避免长书逐页刷事件：每 10 页与最后一页各汇报一次。
+                    if done == pages || done.is_multiple_of(10) {
+                        let _ = app.emit_to(
+                            "main",
+                            "online-prefetch-progress",
+                            OnlinePrefetchProgress {
+                                book_id: book_id.clone(),
+                                done,
+                                total: pages,
+                                failed: failed.load(std::sync::atomic::Ordering::Relaxed),
+                            },
+                        );
+                    }
+                });
+            }
+        });
+        Ok(OnlinePrefetchResult {
+            pages,
+            cached: cached.load(std::sync::atomic::Ordering::Relaxed),
+            failed: failed.load(std::sync::atomic::Ordering::Relaxed),
+        })
+    })
+    .await
+}
+
 /// 只测试 JSON 清单或单页 HTML 图集 + 代理连通性，不写库。
 #[tauri::command]
 pub async fn test_online_connection(
@@ -2629,9 +3286,7 @@ pub async fn test_online_connection(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -3176,6 +3831,7 @@ pub async fn restore_online_filtered_page(
             insert_at,
             crate::online::PageRef {
                 url: filtered_page.url.clone(),
+                viewer: false,
                 width: filtered_page.width,
                 height: filtered_page.height,
                 anchor: filtered_page.anchor.clone(),
@@ -3316,6 +3972,7 @@ pub async fn get_filtered_preview(
 ) -> Result<PageImage, String> {
     let st = state.inner().clone();
     blocking(move || {
+        ensure_feature(&st, crate::features::FeatureId::Online).map_err(BackendError::Msg)?;
         let row = st
             .db
             .with(|conn| db::get_book(conn, &book_id).map_err(err))
@@ -3328,9 +3985,7 @@ pub async fn get_filtered_preview(
             .cloned()
             .ok_or_else(|| BackendError::Msg("过滤记录不存在".into()))?;
         let s = st.settings.lock().clone();
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &row.path);
         let transport = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -3401,6 +4056,7 @@ pub async fn resolve_telegram_channel(
     state: State<'_, Arc<AppState>>,
     url: String,
     before: Option<i64>,
+    query: Option<String>,
 ) -> Result<crate::online::telegram::TelegramChannel, String> {
     crate::resilience::ensure_online_allowed().await?;
     let st = state.inner().clone();
@@ -3408,9 +4064,7 @@ pub async fn resolve_telegram_channel(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
-        let session_headers = st.session_online_headers.lock().clone();
-        let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+        let headers = crate::state::effective_online_headers_for(&st, &s.online_headers, &url);
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
@@ -3419,7 +4073,14 @@ pub async fn resolve_telegram_channel(
         let host = crate::online::filter::url_host(&url);
         let memory = filter_memory_for(&st, &host)?;
         let thresholds = thresholds_from(memory.profile.as_ref());
-        crate::online::telegram::fetch_channel(&http, &url, before, &memory, &thresholds)
+        crate::online::telegram::fetch_channel(
+            &http,
+            &url,
+            before,
+            query.as_deref(),
+            &memory,
+            &thresholds,
+        )
     })
     .await
 }
@@ -3441,7 +4102,11 @@ fn safe_telegram_download_name(raw: &str) -> String {
         .take(120)
         .collect();
     let lower = cleaned.to_ascii_lowercase();
-    if !(lower.ends_with(".zip") || lower.ends_with(".cbz")) {
+    if !(lower.ends_with(".zip")
+        || lower.ends_with(".cbz")
+        || lower.ends_with(".rar")
+        || lower.ends_with(".cbr"))
+    {
         cleaned.push_str(".cbz");
     }
     if cleaned
@@ -3452,6 +4117,53 @@ fn safe_telegram_download_name(raw: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// `foo.cbz` → `foo.cbz.part`：不经过字符串转换，保留任意合法文件名。
+fn telegram_part_path(target: &Path) -> PathBuf {
+    let mut raw = target.as_os_str().to_os_string();
+    raw.push(".part");
+    PathBuf::from(raw)
+}
+
+/// 下载完成后校验魔数，再把 `.part` 改名成最终路径。
+///
+/// Telegram CDN 可能返回登录页/错误页而不是附件，入库前必须嗅探内容：
+/// - ZIP / RAR → 接受（RAR 后续由 `prepare_import_cbz` 转码）；
+/// - 7z → 拒绝并给出稳定码 `archive-disguised-7z`；
+/// - 其它（HTML/图片/空文件）→ 拒绝并给出稳定码 `archive-not-zip`。
+///
+/// 任何失败都会删除 `.part`，绝不让半成品或伪装文件进入书库。
+fn finalize_downloaded_archive(part: &Path, target: &Path) -> Result<(), BackendError> {
+    use crate::archive_convert::{sniff_archive, ArchiveKind};
+    let outcome = (|| -> Result<(), BackendError> {
+        match sniff_archive(part)? {
+            ArchiveKind::Zip | ArchiveKind::Rar => {}
+            ArchiveKind::SevenZ => {
+                return Err(BackendError::Zip(
+                    "该文件实际是 7z 压缩包，请转换为标准无密码 ZIP/CBZ 后再导入（archive-disguised-7z）"
+                        .into(),
+                ));
+            }
+            ArchiveKind::Other => {
+                return Err(BackendError::Zip(
+                    "该文件不是有效的 ZIP/CBZ 压缩包，请转为标准无密码 ZIP/CBZ（archive-not-zip）"
+                        .into(),
+                ));
+            }
+        }
+        if target.exists() {
+            std::fs::remove_file(target)?;
+        }
+        std::fs::rename(part, target).map_err(|_| {
+            BackendError::Network("Telegram 附件落盘失败（online-fetch-failed）".into())
+        })?;
+        Ok(())
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(part);
+    }
+    outcome
 }
 
 #[tauri::command]
@@ -3466,38 +4178,38 @@ pub async fn download_telegram_document(
         let s = st.settings.lock().clone();
         crate::features::ensure_enabled(&s.features, crate::features::FeatureId::Online)
             .map_err(BackendError::Msg)?;
+        if url.trim().is_empty() {
+            return Err(BackendError::Msg(
+                "该 Telegram 文件附件没有公开下载直链，需登录账号后下载（telegram-document-login-required）"
+                    .into(),
+            ));
+        }
         let canonical = crate::online::normalize_url(&url)?;
         let lower_path = canonical.path().to_ascii_lowercase();
         let lower_name = filename.to_ascii_lowercase();
         // Telegram CDN 直链经常没有扩展名，以用户点击的附件名为准。
         if !(lower_path.ends_with(".zip")
             || lower_path.ends_with(".cbz")
+            || lower_path.ends_with(".rar")
+            || lower_path.ends_with(".cbr")
             || lower_name.ends_with(".zip")
-            || lower_name.ends_with(".cbz"))
+            || lower_name.ends_with(".cbz")
+            || lower_name.ends_with(".rar")
+            || lower_name.ends_with(".cbr"))
         {
-            return Err(BackendError::Msg("仅支持公开的 .zip/.cbz 漫画附件".into()));
+            return Err(BackendError::Msg(
+                "仅支持公开的 .zip/.cbz/.rar/.cbr 漫画附件".into(),
+            ));
         }
-        let session_headers = st.session_online_headers.lock().clone();
         let headers =
-            crate::state::effective_online_headers(&s.online_headers, session_headers.as_deref());
+            crate::state::effective_online_headers_for(&st, &s.online_headers, canonical.as_str());
         let http = crate::online::http::UreqTransport::new_with_assisted(
             &s.online_proxy,
             &headers,
             st.assisted_sessions.clone(),
         )?;
-        let resp = http.get(
-            canonical.as_str(),
-            TELEGRAM_DOC_MAX_BYTES,
-            Some("https://t.me/"),
-            Some(canonical.as_str()),
-        )?;
-        if !(200..300).contains(&resp.status) {
-            return Err(BackendError::Network(format!(
-                "Telegram 附件 HTTP {}",
-                resp.status
-            )));
-        }
         let safe_name = safe_telegram_download_name(&filename);
+        let display_title = title_for(Path::new(&safe_name));
         let root = st
             .db_path()
             .parent()
@@ -3506,17 +4218,40 @@ pub async fn download_telegram_document(
         std::fs::create_dir_all(&root)?;
         let digest = hex::encode(Sha256::digest(canonical.as_str().as_bytes()));
         let path = root.join(format!("{}-{}", &digest[..12], safe_name));
-        std::fs::write(&path, &resp.body)?;
+        // 流式落盘到 `.part`：256 MiB 的附件不再整包驻留内存；
+        // 上次中断留下的 `.part` 先删除，`create_new` 保证只写全新文件。
+        let part = telegram_part_path(&path);
+        let _ = std::fs::remove_file(&part);
+        if let Err(error) = http.download_to(
+            canonical.as_str(),
+            TELEGRAM_DOC_MAX_BYTES,
+            Some("https://t.me/"),
+            Some(canonical.as_str()),
+            &part,
+        ) {
+            let _ = std::fs::remove_file(&part);
+            return Err(error.into());
+        }
+        finalize_downloaded_archive(&part, &path)?;
         let db_path = st.db_path();
+        let converted_root = converted_root_for(&db_path);
+        let prepared = match crate::archive_convert::prepare_import_cbz(&path, &converted_root) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+        };
         let imported = {
             let conn = db::open(db_path)?;
             db::init_schema(&conn)?;
-            scan_single_book(&conn, &path)
+            scan_single_book_with_title(&conn, &prepared, Some(&display_title))
         };
         let book = match imported {
             Ok(book) => Ok(book),
             Err(e) => {
                 let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(&prepared);
                 Err(e)
             }
         }?;
@@ -3524,6 +4259,45 @@ pub async fn download_telegram_document(
         Ok(book)
     })
     .await
+}
+
+/// 唤醒系统 Telegram 客户端打开公开消息。
+///
+/// `tg://` 不是 http(s)，opener 默认 scope 不允许；这里在 Rust 侧先严格
+/// 校验 t.me 链接再构造 `tg://resolve`，避免给前端开放任意自定义 scheme。
+fn telegram_client_target(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw.trim()).map_err(|_| "Telegram 链接无效".to_string())?;
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    if !matches!(host.as_str(), "t.me" | "telegram.me") {
+        return Err("仅支持 t.me / telegram.me 链接".into());
+    }
+    let mut segments = parsed
+        .path_segments()
+        .map(|segments| segments.filter(|part| !part.is_empty()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if segments.first().copied() == Some("s") {
+        segments.remove(0);
+    }
+    let channel = segments.first().copied().unwrap_or("");
+    let post = segments.get(1).copied().unwrap_or("");
+    if channel.is_empty()
+        || !channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        || !post.bytes().all(|byte| byte.is_ascii_digit())
+        || post.is_empty()
+    {
+        return Err("Telegram 消息链接缺少频道或消息编号".into());
+    }
+    Ok(format!("tg://resolve?domain={channel}&post={post}"))
+}
+
+#[tauri::command]
+pub fn open_telegram_client(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let target = telegram_client_target(&url)?;
+    app.opener()
+        .open_url(target, None::<String>)
+        .map_err(|error| format!("打开 Telegram 客户端失败：{error}"))
 }
 
 fn set_readonly_flag(path: &Path, readonly: bool) -> Result<(), std::io::Error> {
@@ -3803,7 +4577,14 @@ pub(crate) fn apply_session_online_headers(
         }
         None => None,
     };
-    *state.session_online_headers.lock() = headers;
+    match headers {
+        Some(raw) => {
+            *state.session_online_headers.lock() = Some(raw);
+            // 重新填写后解除旧 origin 绑定，下一次请求重新绑定。
+            *state.session_online_headers_origin.lock() = None;
+        }
+        None => crate::state::clear_session_online_headers(state),
+    }
     state.invalidate_sources();
     Ok(())
 }
@@ -4226,10 +5007,14 @@ mod tests {
     #[tokio::test]
     async fn settings_writes_are_serialized_and_failures_keep_memory_unchanged() {
         let state = online_state();
-        let mut first = Settings::default();
-        first.cache_budget_mb = 96;
-        let mut second = Settings::default();
-        second.cache_budget_mb = 192;
+        let first = Settings {
+            cache_budget_mb: 96,
+            ..Default::default()
+        };
+        let second = Settings {
+            cache_budget_mb: 192,
+            ..Default::default()
+        };
 
         let first_task = {
             let state = state.clone();
@@ -4264,8 +5049,10 @@ mod tests {
         let settings_before_failure = current;
         let cache_budget_before_failure = state.cache.stats().1;
         state.db.clear();
-        let mut failed = Settings::default();
-        failed.cache_budget_mb = 384;
+        let failed = Settings {
+            cache_budget_mb: 384,
+            ..Default::default()
+        };
         assert!(update_settings(state.clone(), failed).await.is_err());
         assert_eq!(
             state.settings.lock().cache_budget_mb,
@@ -4280,11 +5067,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_to_tray_updates_memory_and_database_immediately() {
+        let state = online_state();
+        assert!(!state.settings.lock().close_to_tray);
+
+        let enabled = update_settings(
+            state.clone(),
+            Settings {
+                close_to_tray: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enable close to tray");
+        assert!(enabled.close_to_tray);
+        assert!(
+            state.settings.lock().close_to_tray,
+            "关闭到托盘必须在事务提交后立刻进入内存态，下一次关窗才生效"
+        );
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "close_to_tray").map_err(err))
+            .expect("read close_to_tray")
+            .expect("close_to_tray persisted");
+        assert_eq!(persisted, "true");
+
+        update_settings(
+            state.clone(),
+            Settings {
+                close_to_tray: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("disable close to tray");
+        assert!(!state.settings.lock().close_to_tray);
+        let persisted = state
+            .db
+            .with(|conn| db::get_setting(conn, "close_to_tray").map_err(err))
+            .expect("read close_to_tray")
+            .expect("close_to_tray persisted");
+        assert_eq!(persisted, "false");
+    }
+
+    #[tokio::test]
     async fn multi_key_settings_failure_rolls_back_database_and_keeps_memory_unchanged() {
         let state = online_state();
-        let mut previous = Settings::default();
-        previous.theme = "dark".into();
-        previous.cache_budget_mb = 64;
+        let previous = Settings {
+            theme: "dark".into(),
+            cache_budget_mb: 64,
+            ..Default::default()
+        };
         *state.settings.lock() = previous.clone();
         state
             .db
@@ -4873,6 +5706,76 @@ mod tests {
     }
 
     #[test]
+    fn telegram_attachment_names_preserve_rar_and_cbr() {
+        assert_eq!(safe_telegram_download_name("book.cbr"), "book.cbr");
+        assert_eq!(safe_telegram_download_name("book.RAR"), "book.RAR");
+        assert_eq!(safe_telegram_download_name("book"), "book.cbz");
+    }
+
+    #[test]
+    fn telegram_part_path_appends_part_without_losing_extension() {
+        assert_eq!(
+            telegram_part_path(Path::new("lib/foo.cbz")),
+            PathBuf::from("lib/foo.cbz.part")
+        );
+        assert_eq!(
+            telegram_part_path(Path::new("foo")),
+            PathBuf::from("foo.part")
+        );
+    }
+
+    #[test]
+    fn telegram_finalize_accepts_zip_and_rar_and_replaces_stale_target() {
+        let dir = test_temp_dir("telegram-finalize-ok");
+        for (name, magic) in [
+            ("book.cbz", b"PK\x03\x04zip-payload".as_slice()),
+            ("book.cbr", b"Rar!\x1a\x07\x00rar-payload".as_slice()),
+        ] {
+            let target = dir.join(name);
+            let part = telegram_part_path(&target);
+            // 旧目标（上一次下载）必须被新附件替换。
+            std::fs::write(&target, b"stale").unwrap();
+            std::fs::write(&part, magic).unwrap();
+            finalize_downloaded_archive(&part, &target).unwrap();
+            assert!(!part.exists(), "{name}: .part 必须改名消失");
+            assert_eq!(std::fs::read(&target).unwrap(), magic, "{name}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn telegram_finalize_rejects_7z_and_junk_and_removes_part() {
+        let dir = test_temp_dir("telegram-finalize-reject");
+        let target = dir.join("book.cbz");
+        let part = telegram_part_path(&target);
+
+        // 7z 魔数（37 7A BC AF 27 1C）→ 稳定码 archive-disguised-7z。
+        std::fs::write(&part, [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00]).unwrap();
+        let error = finalize_downloaded_archive(&part, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("archive-disguised-7z"), "{error}");
+        assert!(!part.exists(), "7z 必须删除 .part");
+        assert!(!target.exists(), "7z 不得改名成目标文件");
+
+        // Telegram 错误页/登录页 → 稳定码 archive-not-zip。
+        std::fs::write(&part, b"<html>please login</html>").unwrap();
+        let error = finalize_downloaded_archive(&part, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("archive-not-zip"), "{error}");
+        assert!(!part.exists(), "伪装内容必须删除 .part");
+        assert!(!target.exists());
+
+        // 空文件同样拒绝，不留半成品。
+        std::fs::write(&part, b"").unwrap();
+        assert!(finalize_downloaded_archive(&part, &target).is_err());
+        assert!(!part.exists() && !target.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn readonly_file_is_cleared_before_delete() {
         let dir = test_temp_dir("readonly");
         let file = dir.join("book.zip");
@@ -4992,6 +5895,24 @@ mod tests {
             .unwrap();
         z.write_all(b"not-a-real-png").unwrap(); // 导入只数条目名，不解码
         z.finish().unwrap();
+    }
+
+    #[test]
+    fn rescan_skips_rar_when_converted_cbz_already_exists() {
+        let dir = test_temp_dir("rar-rescan-skip");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("story.rar"), b"Rar!\x1a\x07\x00stub").unwrap();
+        build_zip(&dir.join("story-converted.cbz"));
+
+        let mut out = Vec::new();
+        collect_book_paths(&dir, 0, &mut out);
+        assert_eq!(out.len(), 1, "只应保留转换产物：{out:?}");
+        assert_eq!(
+            out[0].file_name().and_then(|name| name.to_str()),
+            Some("story-converted.cbz")
+        );
+        assert_eq!(title_for(&out[0]), "story");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]
@@ -5252,6 +6173,7 @@ mod tests {
     fn page_ref(index: u32) -> crate::online::PageRef {
         crate::online::PageRef {
             url: format!("https://example.com/pages/{index}.jpg"),
+            viewer: false,
             width: Some(800),
             height: Some(1200),
             anchor: None,
@@ -5355,6 +6277,25 @@ mod tests {
     }
 
     #[test]
+    fn apply_resolved_meta_allows_page_count_growth() {
+        let st = online_state();
+        let old = online_meta("https://example.com/gallery/6", "旧", "h1", pages(3));
+        let (row, _) = apply_resolved_meta(&st, &old).expect("首次入库");
+        let id = row.id;
+        st.db
+            .with(|conn| db::set_progress(conn, &id, 1, None).map_err(|e| e.to_string()))
+            .expect("写入进度");
+
+        // 再次点击「导入当前页」拿到更多正文页时必须允许覆盖，而不是
+        // 因为旧视口少抓了几页就报 online-page-count-drop。
+        let longer = online_meta("https://example.com/gallery/6", "新", "h2", pages(7));
+        let (row, changed) = apply_resolved_meta(&st, &longer).expect("页数增长应允许覆盖");
+        assert!(changed);
+        assert_eq!(row.page_count, 7);
+        assert_eq!(row.current_page, 1, "页数增长时保留阅读进度");
+    }
+
+    #[test]
     fn apply_resolved_meta_rejects_empty_manifest() {
         let st = online_state();
         let meta = online_meta("https://example.com/gallery/5", "空", "h0", Vec::new());
@@ -5390,6 +6331,10 @@ mod tests {
             st.session_online_headers.lock().as_deref(),
             Some("Cookie: sid=abc")
         );
+        assert!(
+            st.session_online_headers_origin.lock().is_none(),
+            "重新填写后应处于未绑定状态"
+        );
         assert_eq!(settings_count(&st), before, "会话头不得写入 settings");
 
         assert!(apply_session_online_headers(&st, Some("Host: example.com".into())).is_err());
@@ -5401,6 +6346,7 @@ mod tests {
 
         apply_session_online_headers(&st, None).unwrap();
         assert!(st.session_online_headers.lock().is_none());
+        assert!(st.session_online_headers_origin.lock().is_none());
         assert_eq!(settings_count(&st), before);
     }
 
@@ -5777,7 +6723,7 @@ mod tests {
         let new_path = dir.join("改名后的漫画.cbz");
         std::fs::rename(&old_path, &new_path).unwrap();
 
-        let row = relocate_book_impl(&conn, &book.id, &new_path.to_string_lossy()).unwrap();
+        let row = relocate_book_impl(&conn, &book.id, &new_path.to_string_lossy(), None).unwrap();
         assert_eq!(row.path, new_path.to_string_lossy());
         assert_eq!(row.page_count, 20);
         assert_eq!(row.current_page, 15, "重定位后必须仍停在第 15 页");
@@ -5806,7 +6752,7 @@ mod tests {
         db::upsert_book(&conn, &old_id, &old_path, "旧", 1).unwrap();
 
         let new_path = new_dir.to_string_lossy().to_string();
-        let row = relocate_book_impl(&conn, &old_id, &new_path).unwrap();
+        let row = relocate_book_impl(&conn, &old_id, &new_path, None).unwrap();
         assert_eq!(row.id, db::book_id_for_path(&new_path));
         assert_eq!(row.path, new_path);
         assert_eq!(row.title, "new");
@@ -5819,15 +6765,20 @@ mod tests {
         let other_path = other_dir.to_string_lossy().to_string();
         let other_id = db::book_id_for_path(&other_path);
         db::upsert_book(&conn, &other_id, &other_path, "other", 1).unwrap();
-        let err = relocate_book_impl(&conn, &row.id, &other_path)
+        let err = relocate_book_impl(&conn, &row.id, &other_path, None)
             .unwrap_err()
             .to_string();
         assert_eq!(err, "目标路径已在书库中");
 
         // 目标不存在 → 明确报错。
-        let err = relocate_book_impl(&conn, &row.id, &dir.join("gone.cbz").to_string_lossy())
-            .unwrap_err()
-            .to_string();
+        let err = relocate_book_impl(
+            &conn,
+            &row.id,
+            &dir.join("gone.cbz").to_string_lossy(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("目标路径不存在"), "{err}");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -6162,5 +7113,77 @@ mod tests {
         assert_eq!(object["totalBooks"].as_u64(), Some(7));
         assert_eq!(object["seriesCounts"]["series-1"].as_u64(), Some(3));
         assert_eq!(object["localSeriesCounts"]["series-1"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn telegram_client_target_accepts_public_message_links() {
+        assert_eq!(
+            telegram_client_target("https://t.me/sample_channel/2931").unwrap(),
+            "tg://resolve?domain=sample_channel&post=2931"
+        );
+        assert_eq!(
+            telegram_client_target("https://t.me/s/sample_channel/2931?single").unwrap(),
+            "tg://resolve?domain=sample_channel&post=2931"
+        );
+        assert_eq!(
+            telegram_client_target("https://telegram.me/sample_channel/42").unwrap(),
+            "tg://resolve?domain=sample_channel&post=42"
+        );
+    }
+
+    #[test]
+    fn telegram_client_target_rejects_other_hosts_and_missing_ids() {
+        for raw in [
+            "https://example.com/sample_channel/2931",
+            "https://t.me/sample_channel",
+            "https://t.me/sample_channel/not-a-number",
+            "https://t.me/../2931",
+            "file:///c:/windows/system32/calc.exe",
+        ] {
+            assert!(telegram_client_target(raw).is_err(), "accepted {raw}");
+        }
+    }
+
+    #[test]
+    fn batch_series_is_persisted_into_meta_json() {
+        let canonical = url::Url::parse("https://example.com/chapter-1").unwrap();
+        let pages = vec![crate::online::PageRef {
+            url: "https://cdn.example/1.jpg".into(),
+            viewer: false,
+            width: None,
+            height: None,
+            anchor: None,
+        }];
+        let mut meta = crate::online::direct::make_meta(&canonical, "Chapter", pages).unwrap();
+        apply_series_to_meta(&mut meta, "series-1", "Series", 3).unwrap();
+        assert_eq!(meta.series_id.as_deref(), Some("series-1"));
+        assert_eq!(meta.chapter_index, Some(3));
+        let stored: crate::online::StoredMeta = serde_json::from_str(&meta.meta_json).unwrap();
+        assert_eq!(stored.series_id.as_deref(), Some("series-1"));
+        assert_eq!(stored.series_title.as_deref(), Some("Series"));
+        assert_eq!(stored.chapter_index, Some(3));
+    }
+
+    #[test]
+    fn image_preview_limits_candidates_and_reports_truncation() {
+        let canonical = url::Url::parse("https://example.com/gallery").unwrap();
+        let pages = (0..3)
+            .map(|index| crate::online::PageRef {
+                url: format!("https://cdn.example/{index}.jpg"),
+                viewer: false,
+                width: Some(800),
+                height: Some(1200),
+                anchor: None,
+            })
+            .collect();
+        let meta = crate::online::direct::make_meta(&canonical, "Preview", pages).unwrap();
+        let preview = preview_from_meta(&meta, 2).unwrap();
+        assert_eq!(preview.title, "Preview");
+        assert_eq!(preview.page_count, 3);
+        assert_eq!(preview.images.len(), 2);
+        assert!(preview.truncated);
+        assert_eq!(preview.images[0].index, 0);
+        assert_eq!(preview.images[1].url, "https://cdn.example/1.jpg");
+        assert_eq!(preview.images[1].width, Some(800));
     }
 }

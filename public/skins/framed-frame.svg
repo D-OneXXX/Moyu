@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="none" width="1600" height="1000">
+  <!-- Moyu framed-skin frame overlay.
+       Corner brackets and edge filigree that read as the picture frame
+       around the inset content viewport. Everything here lives outside the
+       viewport rectangle, so it can never cover text or list items. -->
+  <defs>
+    <linearGradient id="moyuFrame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38a8f8"/>
+      <stop offset="1" stop-color="#7fd0ff"/>
+    </linearGradient>
+  </defs>
+
+  <g fill="none" stroke="url(#moyuFrame)" stroke-width="9" stroke-linecap="round" opacity="0.85">
+    <!-- 左上角 -->
+    <path d="M18 92V18h74"/>
+    <path d="M18 140V56h84" opacity="0.45"/>
+    <!-- 右上角 -->
+    <path d="M1582 92V18h-74"/>
+    <path d="M1582 140V56h-84" opacity="0.45"/>
+    <!-- 左下角 -->
+    <path d="M18 908v74h74"/>
+    <path d="M18 860v84h84" opacity="0.45"/>
+    <!-- 右下角 -->
+    <path d="M1582 908v74h-74"/>
+    <path d="M1582 860v84h-84" opacity="0.45"/>
+  </g>
+
+  <!-- 上边框：虚线点阵。 -->
+  <g fill="#38a8f8" opacity="0.5">
+    <circle cx="300" cy="22" r="5"/>
+    <circle cx="420" cy="22" r="5"/>
+    <circle cx="540" cy="22" r="5"/>
+    <circle cx="660" cy="22" r="5"/>
+    <circle cx="780" cy="22" r="5"/>
+    <circle cx="900" cy="22" r="5"/>
+    <circle cx="1020" cy="22" r="5"/>
+    <circle cx="1140" cy="22" r="5"/>
+    <circle cx="1260" cy="22" r="5"/>
+  </g>
+
+  <!-- 下边框：虚线点阵。 -->
+  <g fill="#38a8f8" opacity="0.5">
+    <circle cx="300" cy="978" r="5"/>
+    <circle cx="420" cy="978" r="5"/>
+    <circle cx="540" cy="978" r="5"/>
+    <circle cx="660" cy="978" r="5"/>
+    <circle cx="780" cy="978" r="5"/>
+    <circle cx="900" cy="978" r="5"/>
+    <circle cx="1020" cy="978" r="5"/>
+    <circle cx="1140" cy="978" r="5"/>
+    <circle cx="1260" cy="978" r="5"/>
+  </g>
+
+  <!-- 侧边：短竖线。 -->
+  <g stroke="#38a8f8" stroke-width="6" stroke-linecap="round" opacity="0.42">
+    <path d="M24 300v90M24 430v90M24 560v90M24 690v90"/>
+    <path d="M1576 300v90M1576 430v90M1576 560v90M1576 690v90"/>
+  </g>
+</svg>

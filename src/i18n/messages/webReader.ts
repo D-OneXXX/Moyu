@@ -26,6 +26,8 @@ export const messages = {
     saveThisPage: "Save this page instead",
     connectionFailed: "Connection or session failed. Pair again if necessary.",
     pdfUnsupported: "PDF reading is not available in the browser.",
+    pdfDesktopOnly: "PDF · Desktop",
+    pdfDesktopHint: "Please read PDF documents in Moyu on your computer.",
     imageFailed: "Image failed to load.",
     language: "Language",
     clampedNotice:
@@ -88,6 +90,8 @@ export const messages = {
     saveThisPage: "改为保存当前页",
     connectionFailed: "连接或会话失败，必要时请重新配对。",
     pdfUnsupported: "浏览器暂不支持 PDF 阅读。",
+    pdfDesktopOnly: "PDF · 桌面端",
+    pdfDesktopHint: "PDF 文档请使用电脑端 Moyu 阅读。",
     imageFailed: "图片加载失败。",
     language: "语言",
     clampedNotice: "已保存的页码超过本书范围，现显示最后一页。",
@@ -147,6 +151,8 @@ export const messages = {
     saveThisPage: "改為儲存目前頁",
     connectionFailed: "連線或工作階段失敗，必要時請重新配對。",
     pdfUnsupported: "瀏覽器暫不支援 PDF 閱讀。",
+    pdfDesktopOnly: "PDF · 桌面端",
+    pdfDesktopHint: "PDF 文件請使用電腦端 Moyu 閱讀。",
     imageFailed: "圖片載入失敗。",
     language: "語言",
     clampedNotice: "已儲存的頁碼超出本書範圍，現顯示最後一頁。",
@@ -207,6 +213,8 @@ export const messages = {
     connectionFailed:
       "Falló la conexión o la sesión. Vuelve a vincular si es necesario.",
     pdfUnsupported: "La lectura de PDF no está disponible en el navegador.",
+    pdfDesktopOnly: "PDF · Escritorio",
+    pdfDesktopHint: "Lee los documentos PDF en Moyu en el ordenador.",
     imageFailed: "No se pudo cargar la imagen.",
     language: "Idioma",
     clampedNotice:
@@ -270,6 +278,8 @@ export const messages = {
     connectionFailed:
       "接続またはセッションに失敗しました。必要に応じて再ペアリングしてください。",
     pdfUnsupported: "ブラウザーでは PDF を読めません。",
+    pdfDesktopOnly: "PDF · デスクトップ",
+    pdfDesktopHint: "PDF はパソコンの Moyu でお読みください。",
     imageFailed: "画像を読み込めません。",
     language: "言語",
     clampedNotice:
@@ -332,6 +342,8 @@ export const messages = {
     saveThisPage: "이 페이지 저장",
     connectionFailed: "연결 또는 세션에 실패했습니다. 필요하면 다시 페어링하세요.",
     pdfUnsupported: "브라우저에서 PDF 읽기는 지원되지 않습니다.",
+    pdfDesktopOnly: "PDF · 데스크톱",
+    pdfDesktopHint: "PDF 문서는 컴퓨터의 Moyu에서 읽어 주세요.",
     imageFailed: "이미지를 불러오지 못했습니다.",
     language: "언어",
     clampedNotice:

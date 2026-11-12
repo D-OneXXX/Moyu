@@ -474,6 +474,24 @@ impl ImageSource for AnySource {
     }
 }
 
+/// 二级查看器的解包结果：真实图片 URL + 可选备用重载查询参数（如 `nl`）。
+#[derive(Debug, Clone)]
+struct ViewerTarget {
+    url: String,
+    reload: Option<(String, String)>,
+}
+
+/// 在真实图 URL 上合并备用重载参数；已存在同名参数时不重复追加。
+fn with_reload_param(target: &str, reload: &Option<(String, String)>) -> Option<String> {
+    let (name, value) = reload.as_ref()?;
+    let mut url = url::Url::parse(target).ok()?;
+    if url.query_pairs().any(|(key, _)| key == name.as_str()) {
+        return None;
+    }
+    url.query_pairs_mut().append_pair(name, value);
+    Some(url.to_string())
+}
+
 /// 在线图片源：页列表来自 meta_json；read_raw 按需下载单页。
 ///
 /// Telegram 等 CDN 直链带时效签名：遇到 403/404 时按页锚点静默刷新一次并
@@ -487,6 +505,8 @@ pub struct OnlineSource {
     referer: String,
     /// 在线原图磁盘 L2；按 book + URL + Referer 缓存，离线重读不再发请求。
     cache: Option<Arc<crate::disk_cache::OnlinePageCache>>,
+    /// viewer URL -> 已解析的真实图片 URL 与可选备用重载参数（仅内存）。
+    viewer_targets: parking_lot::Mutex<std::collections::HashMap<String, ViewerTarget>>,
 }
 
 impl OnlineSource {
@@ -505,6 +525,7 @@ impl OnlineSource {
             permits: Arc::new(BlockingSemaphore::new(concurrency)),
             referer,
             cache,
+            viewer_targets: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -523,14 +544,144 @@ impl OnlineSource {
         }
     }
 
-    fn get_page(
+    /// 二级查看器按需解包：只有缓存未命中时才请求 viewer HTML。
+    ///
+    /// `refresh = true` 时忽略内存映射，重新抓查看器页面（用于 403/404 直链过期）。
+    fn resolve_viewer_target(
         &self,
         page: &PageRef,
+        index: usize,
+        refresh: bool,
+    ) -> Result<ViewerTarget, BackendError> {
+        if !page.viewer {
+            return Ok(ViewerTarget {
+                url: page.url.clone(),
+                reload: None,
+            });
+        }
+        if !refresh {
+            if let Some(target) = self.viewer_targets.lock().get(&page.url).cloned() {
+                return Ok(target);
+            }
+        }
+        let viewer_url = url::Url::parse(&page.url)
+            .map_err(|e| BackendError::Msg(format!("查看器 URL 无效：{e}")))?;
+        let resp = self
+            .http
+            .get(
+                &page.url,
+                crate::online::MANIFEST_MAX_BYTES,
+                Some(&self.referer),
+                Some(&self.referer),
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "第 {} 页查看器请求失败（{}）：{e}",
+                    index + 1,
+                    crate::online::redact_url_for_log(&page.url)
+                );
+                crate::logging::log_error("online_viewer", &msg);
+                BackendError::from(e)
+            })?;
+        if !(200..300).contains(&resp.status) {
+            let msg = format!("第 {} 页查看器 HTTP {}", index + 1, resp.status);
+            crate::logging::log_error(
+                "online_viewer",
+                &format!("{msg}：{}", crate::online::redact_url_for_log(&page.url)),
+            );
+            return Err(BackendError::Network(msg));
+        }
+        let target = crate::online::html::extract_viewer_image(&resp.body, &viewer_url)?;
+        let reload = crate::online::html::extract_viewer_reload_param(&resp.body);
+        let resolved = ViewerTarget {
+            url: target,
+            reload,
+        };
+        self.viewer_targets
+            .lock()
+            .insert(page.url.clone(), resolved.clone());
+        Ok(resolved)
+    }
+
+    fn get_range_page(
+        &self,
+        url: &str,
+        index: usize,
+        max_bytes: usize,
+    ) -> Result<crate::online::http::HttpResponse, BackendError> {
+        self.http
+            .get_range(url, max_bytes, Some(&self.referer), Some(&self.referer), 0)
+            .map_err(|e| {
+                let msg = format!(
+                    "第 {} 页头部请求失败（{}）：{e}",
+                    index + 1,
+                    crate::online::redact_url_for_log(url)
+                );
+                crate::logging::log_error("online_page", &msg);
+                BackendError::from(e)
+            })
+    }
+
+    /// 只读前 `max_bytes` 字节；优先命中整页缓存，否则发 Range 请求。
+    /// 不写缓存（截断字节不能当整页复用）。
+    fn read_partial(&self, index: usize, max_bytes: u64) -> Result<RawPage, BackendError> {
+        let page = self.page_at(index)?;
+        if let Some(cache) = &self.cache {
+            if let Some(hit) = cache.get(&self.book_id, &page.url, &self.referer) {
+                let take = hit.bytes.len().min(max_bytes as usize);
+                return Ok(RawPage {
+                    bytes: hit.bytes[..take].to_vec(),
+                    ext: hit.ext,
+                });
+            }
+        }
+        let _guard = self.permits.acquire();
+        let max_bytes = max_bytes.min(PAGE_MAX_BYTES as u64) as usize;
+        let mut resolved = self.resolve_viewer_target(&page, index, false)?;
+        let mut resp = self.get_range_page(&resolved.url, index, max_bytes)?;
+        if matches!(resp.status, 403 | 404 | 509) {
+            if page.viewer {
+                resolved = self.resolve_viewer_target(&page, index, true)?;
+                resp = self.get_range_page(&resolved.url, index, max_bytes)?;
+            }
+            if matches!(resp.status, 403 | 404 | 509) {
+                if let Some(retry) = with_reload_param(&resolved.url, &resolved.reload) {
+                    resp = self.get_range_page(&retry, index, max_bytes)?;
+                }
+            }
+        }
+        if !(200..300).contains(&resp.status) {
+            let msg = format!("第 {} 页头部 HTTP {}", index + 1, resp.status);
+            crate::logging::log_error(
+                "online_page",
+                &format!(
+                    "{msg}：{}",
+                    crate::online::redact_url_for_log(&resolved.url)
+                ),
+            );
+            return Err(BackendError::Network(msg));
+        }
+        let ext = match image::guess_format(&resp.body) {
+            Ok(image::ImageFormat::Jpeg) => "jpg",
+            Ok(image::ImageFormat::Png) => "png",
+            Ok(image::ImageFormat::Gif) => "gif",
+            Ok(image::ImageFormat::WebP) => "webp",
+            _ => "",
+        };
+        Ok(RawPage {
+            bytes: resp.body,
+            ext: ext.into(),
+        })
+    }
+
+    fn get_page(
+        &self,
+        url: &str,
         index: usize,
     ) -> Result<crate::online::http::HttpResponse, BackendError> {
         self.http
             .get(
-                &page.url,
+                url,
                 PAGE_MAX_BYTES,
                 Some(&self.referer),
                 Some(&self.referer),
@@ -540,7 +691,7 @@ impl OnlineSource {
                 let msg = format!(
                     "第 {} 页请求失败（{}）：{e}",
                     index + 1,
-                    crate::online::redact_url_for_log(&page.url)
+                    crate::online::redact_url_for_log(url)
                 );
                 crate::logging::log_error("online_page", &msg);
                 BackendError::from(e)
@@ -576,10 +727,14 @@ impl ImageSource for OnlineSource {
         }
         // 每本书独立的并发闸门：限制同时在途的页面下载数。
         let _guard = self.permits.acquire();
-        let mut resp = self.get_page(&page, index)?;
-        // Telegram CDN 直链过期：403/404 时按原消息坐标重新解析一次。
-        if matches!(resp.status, 403 | 404) {
-            if let Some(anchor) = page.anchor.as_ref() {
+        let mut resolved = self.resolve_viewer_target(&page, index, false)?;
+        let mut resp = self.get_page(&resolved.url, index)?;
+        // 二级查看器/Telegram CDN 直链过期：403/404/509 时按需重解包/重解析一次。
+        if matches!(resp.status, 403 | 404 | 509) {
+            if page.viewer {
+                resolved = self.resolve_viewer_target(&page, index, true)?;
+                resp = self.get_page(&resolved.url, index)?;
+            } else if let Some(anchor) = page.anchor.as_ref() {
                 match crate::online::telegram::refresh_page_url(&*self.http, anchor) {
                     Ok(Some(fresh)) => {
                         if let Ok(normalized) = crate::online::normalize_url(&fresh) {
@@ -590,8 +745,9 @@ impl ImageSource for OnlineSource {
                                     &format!("第 {} 页直链失效，已按消息锚点刷新", index + 1),
                                 );
                                 self.replace_page_url(index, fresh.clone());
-                                page.url = fresh;
-                                resp = self.get_page(&page, index)?;
+                                page.url = fresh.clone();
+                                resolved.url = fresh;
+                                resp = self.get_page(&resolved.url, index)?;
                             }
                         }
                     }
@@ -604,12 +760,21 @@ impl ImageSource for OnlineSource {
                     }
                 }
             }
+            // 查看器页面的备用节点重载参数（如 `nl`）只补试一次。
+            if matches!(resp.status, 403 | 404 | 509) {
+                if let Some(retry) = with_reload_param(&resolved.url, &resolved.reload) {
+                    resp = self.get_page(&retry, index)?;
+                }
+            }
         }
         if !(200..300).contains(&resp.status) {
             let msg = format!("第 {} 页 HTTP {}", index + 1, resp.status);
             crate::logging::log_error(
                 "online_page",
-                &format!("{msg}：{}", crate::online::redact_url_for_log(&page.url)),
+                &format!(
+                    "{msg}：{}",
+                    crate::online::redact_url_for_log(&resolved.url)
+                ),
             );
             return Err(BackendError::Network(msg));
         }
@@ -832,8 +997,7 @@ impl SourceHandle {
                     .to_ascii_lowercase();
                 Ok(RawPage { bytes, ext })
             }
-            // 在线页没有可廉价读取的本地 header：头部探测必须走整页下载，直接拒绝。
-            HandleKind::Online(_) => Err(BackendError::Msg("在线源不支持 header 探测".into())),
+            HandleKind::Online(s) => s.read_partial(index, max_bytes),
         }
     }
 }
@@ -1031,12 +1195,14 @@ mod tests {
         vec![
             PageRef {
                 url: "http://x/001.png".into(),
+                viewer: false,
                 width: Some(1),
                 height: Some(1),
                 anchor: None,
             },
             PageRef {
                 url: "http://x/002.png".into(),
+                viewer: false,
                 width: None,
                 height: None,
                 anchor: None,
@@ -1071,6 +1237,255 @@ mod tests {
                 Some("http://x/gallery/1".to_string()),
             )]
         );
+    }
+
+    #[test]
+    fn online_source_partial_read_uses_range_instead_of_full_get() {
+        struct RangeHttp {
+            calls: Mutex<Vec<(usize, u64)>>,
+        }
+        impl HttpTransport for RangeHttp {
+            fn get(
+                &self,
+                _url: &str,
+                _max_bytes: usize,
+                _referer: Option<&str>,
+                _header_scope: Option<&str>,
+            ) -> Result<HttpResponse, OnlineError> {
+                panic!("头部探测不得退回整页 GET");
+            }
+            fn get_range(
+                &self,
+                _url: &str,
+                max_bytes: usize,
+                _referer: Option<&str>,
+                _header_scope: Option<&str>,
+                start: u64,
+            ) -> Result<HttpResponse, OnlineError> {
+                self.calls.lock().unwrap().push((max_bytes, start));
+                Ok(HttpResponse {
+                    status: 206,
+                    final_url: "http://x/001.png".into(),
+                    content_type: Some("image/png".into()),
+                    body: tiny_png(),
+                })
+            }
+        }
+        let http = Arc::new(RangeHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-test".into(),
+            pages(),
+            http.clone(),
+            2,
+            "http://x/gallery/1".into(),
+            None,
+        );
+        let partial = src.read_partial(0, 256 * 1024).unwrap();
+        assert!(partial.bytes.starts_with(b"\x89PNG"));
+        assert_eq!(partial.ext, "png");
+        assert_eq!(*http.calls.lock().unwrap(), vec![(256 * 1024, 0)]);
+    }
+
+    struct ViewerHttp {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl HttpTransport for ViewerHttp {
+        fn get(
+            &self,
+            url: &str,
+            _max_bytes: usize,
+            _referer: Option<&str>,
+            _header_scope: Option<&str>,
+        ) -> Result<HttpResponse, OnlineError> {
+            self.calls.lock().unwrap().push(url.to_string());
+            if url.contains("/s/hash/") {
+                Ok(HttpResponse {
+                    status: 200,
+                    final_url: url.to_string(),
+                    content_type: Some("text/html".into()),
+                    body: br#"<html><body><img id="img" src="https://cdn.example/real.png"></body></html>"#.to_vec(),
+                })
+            } else {
+                Ok(HttpResponse {
+                    status: 200,
+                    final_url: url.to_string(),
+                    content_type: Some("image/png".into()),
+                    body: tiny_png(),
+                })
+            }
+        }
+    }
+
+    fn viewer_cache_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("mr-viewer-{}-{tag}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn online_source_resolves_viewer_only_on_cache_miss() {
+        let dir = viewer_cache_dir("read");
+        let http = Arc::new(ViewerHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-viewer".into(),
+            vec![PageRef {
+                url: "http://gallery.example/s/hash/100-1".into(),
+                viewer: true,
+                width: None,
+                height: None,
+                anchor: None,
+            }],
+            http.clone(),
+            2,
+            "http://gallery.example/g/100/token".into(),
+            Some(Arc::new(crate::disk_cache::OnlinePageCache::new(
+                dir.join("online"),
+            ))),
+        );
+        let first = src.read_raw(0).unwrap();
+        assert!(first.bytes.starts_with(b"\x89PNG"));
+        let second = src.read_raw(0).unwrap();
+        assert_eq!(first.bytes, second.bytes);
+        let calls = http.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|url| url.as_str() == "http://gallery.example/s/hash/100-1")
+                .count(),
+            1,
+            "{calls:?}"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|url| url.as_str() == "https://cdn.example/real.png")
+                .count(),
+            1,
+            "{calls:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn online_source_retries_viewer_image_with_nl_after_509() {
+        struct ReloadHttp {
+            calls: Mutex<Vec<String>>,
+        }
+        impl HttpTransport for ReloadHttp {
+            fn get(
+                &self,
+                url: &str,
+                _max_bytes: usize,
+                _referer: Option<&str>,
+                _header_scope: Option<&str>,
+            ) -> Result<HttpResponse, OnlineError> {
+                self.calls.lock().unwrap().push(url.to_string());
+                if url.contains("/s/hash/509-1") {
+                    return Ok(HttpResponse {
+                        status: 200,
+                        final_url: url.to_string(),
+                        content_type: Some("text/html".into()),
+                        body: br#"<html><body><script>var nl = "7788";</script><img id="img" src="https://cdn.example/real.png"></body></html>"#.to_vec(),
+                    });
+                }
+                if url.starts_with("https://cdn.example/real.png") {
+                    if url.contains("nl=7788") {
+                        return Ok(HttpResponse {
+                            status: 200,
+                            final_url: url.to_string(),
+                            content_type: Some("image/png".into()),
+                            body: tiny_png(),
+                        });
+                    }
+                    return Ok(HttpResponse {
+                        status: 509,
+                        final_url: url.to_string(),
+                        content_type: None,
+                        body: Vec::new(),
+                    });
+                }
+                Ok(HttpResponse {
+                    status: 200,
+                    final_url: url.to_string(),
+                    content_type: Some("image/png".into()),
+                    body: tiny_png(),
+                })
+            }
+        }
+        let http = Arc::new(ReloadHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-viewer".into(),
+            vec![PageRef {
+                url: "http://gallery.example/s/hash/509-1".into(),
+                viewer: true,
+                width: None,
+                height: None,
+                anchor: None,
+            }],
+            http.clone(),
+            1,
+            "http://gallery.example/g/509/token".into(),
+            None,
+        );
+        let raw = src.read_raw(0).unwrap();
+        assert!(raw.bytes.starts_with(b"\x89PNG"));
+        let calls = http.calls.lock().unwrap().clone();
+        assert!(
+            calls
+                .iter()
+                .any(|url| url == "https://cdn.example/real.png?nl=7788"),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn online_source_partial_read_resolves_viewer_once() {
+        let dir = viewer_cache_dir("partial");
+        let http = Arc::new(ViewerHttp {
+            calls: Mutex::new(Vec::new()),
+        });
+        let src = super::OnlineSource::new(
+            "book-viewer".into(),
+            vec![PageRef {
+                url: "http://gallery.example/s/hash/100-2".into(),
+                viewer: true,
+                width: None,
+                height: None,
+                anchor: None,
+            }],
+            http.clone(),
+            1,
+            "http://gallery.example/g/100/token".into(),
+            Some(Arc::new(crate::disk_cache::OnlinePageCache::new(
+                dir.join("online"),
+            ))),
+        );
+        let first = src.read_partial(0, 256 * 1024).unwrap();
+        assert!(first.bytes.starts_with(b"\x89PNG"));
+        let second = src.read_partial(0, 256 * 1024).unwrap();
+        assert_eq!(first.bytes, second.bytes);
+        let calls = http.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|url| url.as_str() == "http://gallery.example/s/hash/100-2")
+                .count(),
+            1,
+            "{calls:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1197,6 +1612,7 @@ mod tests {
 
         let page = PageRef {
             url: "http://cdn.test/old.png".into(),
+            viewer: false,
             width: Some(800),
             height: Some(1200),
             anchor: Some(crate::online::PageAnchor {
@@ -1399,7 +1815,7 @@ mod tests {
     }
 
     #[test]
-    fn online_handle_rejects_header_probe() {
+    fn online_handle_supports_bounded_header_probe() {
         let handle = super::SourceHandle::open_online(
             "book-test".into(),
             "http://x/gallery/1".into(),
@@ -1411,12 +1827,9 @@ mod tests {
         .unwrap();
         assert_eq!(handle.page_count().unwrap(), 2);
         assert_eq!(handle.path(), Path::new("http://x/gallery/1"));
-        let err = handle
-            .read_partial(0, 1024)
-            .err()
-            .expect("在线源 header 探测应返回错误")
-            .to_string();
-        assert_eq!(err, "在线源不支持 header 探测");
+        let partial = handle.read_partial(0, 1024).expect("在线源应支持头部探测");
+        assert!(partial.bytes.starts_with(b"\x89PNG"));
+        assert_eq!(partial.ext, "png");
     }
 
     #[test]

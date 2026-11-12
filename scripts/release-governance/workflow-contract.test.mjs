@@ -1,0 +1,1047 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { test } from "node:test";
+import { inputBlock, parseSteps, workflow } from "./contract-helpers.mjs";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+
+for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+  test(`${name}：正文读取与发布后摘要校验保留原始字节，拒绝真实改写`, () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-publish-body-"));
+    try {
+      fs.mkdirSync(path.join(dir, "approved"));
+      fs.mkdirSync(path.join(dir, "scripts", "release-governance"), { recursive: true });
+      fs.copyFileSync(path.join(repoRoot, "scripts/release-governance/rc-record.mjs"),
+        path.join(dir, "scripts/release-governance/rc-record.mjs"));
+      // 外部 gh 边界：已用真实 gh 确认 --jq 给字符串追加 LF，而 --template 不追加。
+      // 不连接 GitHub、不执行 release edit；其余运行实际 workflow 的读取/摘要比较代码。
+      fs.writeFileSync(path.join(dir, "gh-fixture.cjs"), `
+        const fs = require("node:fs");
+        const args = process.argv.slice(2);
+        if (args[0] !== "release" || args[1] !== "view" || !args.includes("--json")) process.exit(90);
+        const body = JSON.parse(fs.readFileSync("body.json", "utf8")).body;
+        if (args.includes("--jq") && args[args.indexOf("--jq") + 1] === ".body") process.stdout.write(body + "\\n");
+        else if (args.includes("--template") && args[args.indexOf("--template") + 1] === "{{.body}}") process.stdout.write(body);
+        else process.exit(91);
+      `);
+      const steps = parseSteps(workflow(name));
+      const titles = ["Enforce bilingual release notes", "Re-check tag and Draft identity before publish", "Post-release verification"];
+      const reads = titles.map((title) => {
+        const step = steps.find((entry) => entry.name === title);
+        const line = step.run.split("\n").find((entry) => /gh release view .*--json body/.test(entry));
+        assert.ok(line, `${title} 必须读取正文`);
+        return line.trim();
+      });
+      const post = steps.find((entry) => entry.name === "Post-release verification").run;
+      const start = post.indexOf('if [ -f approved/release-notes.sha256 ]; then');
+      const end = post.indexOf("\nfi", start);
+      assert.ok(start >= 0 && end > start, "必须保留发布后正文摘要校验");
+      const guard = post.slice(start, end + 3);
+      const run = (script) => spawnSync("bash", ["-c", `set -euo pipefail\ngh() { node gh-fixture.cjs "$@"; }\n${script}`], {
+        cwd: dir, encoding: "utf8", timeout: 20_000,
+        env: { ...process.env, TAG: "v0.19.1" },
+      });
+      for (const body of ["English\n简体中文", "English\n简体中文\n", "English\n简体中文\n\n", "English\r\n简体中文\r\n"]) {
+        fs.writeFileSync(path.join(dir, "body.json"), JSON.stringify({ body }));
+        for (const read of reads) {
+          const result = run(read);
+          assert.equal(result.status, 0, result.stderr);
+          const output = read.match(/>\s*(\S+)$/)[1];
+          assert.equal(fs.readFileSync(path.join(dir, output), "utf8"), body, `${name}: ${read} 不得增删正文换行`);
+        }
+        fs.writeFileSync(path.join(dir, "approved/release-notes.sha256"), createHash("sha256").update(body).digest("hex") + "\n");
+        const same = run(guard);
+        assert.equal(same.status, 0, same.stderr);
+        // 不以 trim() 放宽审批绑定：正文改字和仅末尾新增 LF 都必须拒绝。
+        for (const changed of [body.replace("English", "Changed"), body + "\n"]) {
+          fs.writeFileSync(path.join(dir, "body.json"), JSON.stringify({ body: changed }));
+          const rejected = run(guard);
+          assert.equal(rejected.status, 1, rejected.stderr);
+          assert.match(rejected.stderr, /正文与审批快照不一致/);
+        }
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`${name}：发布后校验显式接收候选 COMMIT，不依赖前序 shell`, () => {
+    const source = workflow(name);
+    const section = source.split("      - name: Post-release verification")[1].split("        run: |")[0];
+    const binding = section.match(/^\s+COMMIT:\s*(.+)$/m)?.[1];
+    assert.equal(binding, "${{ steps.identity.outputs.commit }}", "独立 step 的严格 shell 需要显式候选提交输入");
+  });
+}
+
+test("候选阶段：固定提交先验证再检出并在写 Draft 前复核", () => {
+  for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
+    const source = workflow(name);
+    assert.match(inputBlock(source, "source_commit"), /required:\s*true/);
+    const steps = parseSteps(source);
+    const index = (name) => steps.findIndex((step) => step.name === name);
+    const preflight = index("Validate requested candidate commit");
+    const checkout = index("Checkout verified candidate commit");
+    const recheck = index("Re-check candidate identity before Draft write");
+    const write = index(name === "release-candidate.yml" ? "Build signed NSIS bundle → Draft" : "Create or reuse Draft release");
+    assert.ok(preflight >= 0 && checkout > preflight && recheck > checkout && write > recheck, name);
+    assert.match(steps[preflight].run, /candidate-evidence\.mjs/);
+    assert.match(steps[recheck].run, /candidate-evidence\.mjs/);
+    assert.doesNotMatch(source, /git\s+push\s+[^\n]*refs\/tags/);
+    if (name === "release-candidate.yml") assert.match(source, /releaseCommitish:\s*\$\{\{ steps\.identity\.outputs\.commit \}\}/);
+    else assert.match(source, /gh release create "\$TAG" --target "\$COMMIT" --draft/);
+  }
+});
+
+test("安装验证：Draft 必须绑定固定提交且无需预建版本标签", () => {
+  for (const name of ["release-install-verify.yml", "release-install-verify-linux.yml"]) {
+    const source = workflow(name);
+    assert.match(inputBlock(source, "source_commit"), /required:\s*true/);
+    const steps = parseSteps(source);
+    const identity = steps.findIndex((step) => step.name === "Resolve candidate tag commit");
+    const download = steps.findIndex((step) => step.name === "Download Draft assets");
+    assert.ok(identity >= 0 && download > identity, name);
+    assert.match(steps[identity].run, /candidate-evidence\.mjs/);
+    assert.match(steps[identity].run, /COMMIT="\$CANDIDATE_COMMIT"/);
+    assert.match(source, /CANDIDATE_REQUIRE_DRAFT:\s*'true'/);
+    assert.doesNotMatch(steps[identity].run, /git fetch --no-tags origin "refs\/tags/);
+  }
+});
+
+
+test("正式发布：从 Draft 的 RC 记录解析固定提交，不检出尚可能不存在的标签", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.doesNotMatch(
+      source,
+      /ref:\s*refs\/tags\/\$\{\{\s*inputs\.tag\s*\}\}/,
+      `${name} 不得在候选标签创建前检出标签`,
+    );
+    assert.match(source, /ref:\s*main\b/, `${name} 必须从受保护的 main 取得治理工具`);
+    assert.ok(source.includes("Resolve release identity from Draft"), `${name} 必须从 Draft 解析发布身份`);
+    assert.ok(source.includes("publish-identity.mjs"), `${name} 必须使用统一发布身份闸门`);
+    for (const marker of ["--release-json", "--record release-meta/rc-record.json", 'git checkout --detach "$COMMIT"']) {
+      assert.ok(source.includes(marker), `${name} 缺少发布身份标记：${marker}`);
+    }
+    assert.match(source, /rc-record\.json/, `${name} 必须从 Draft 的 RC 记录取得候选提交`);
+  }
+});
+
+test("正式发布：不自动创建/推送标签，标签缺失或指向别处必须失败关闭", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.doesNotMatch(source, /git\s+push[^\n]*refs\/tags/, `${name} 不得推送标签`);
+    assert.doesNotMatch(source, /git\s+tag\s/, `${name} 不得在发布流程内创建标签`);
+    assert.doesNotMatch(source, /gh\s+release\s+create/, `${name} 不得在发布流程内创建 Release/标签`);
+    assert.doesNotMatch(source, /git\/refs/, `${name} 不得直接写 refs 绕过标签保护`);
+    assert.ok(source.includes("publish-identity.mjs"), `${name} 必须校验标签存在且绑定候选提交`);
+    // gh 的 --verify-tag 只有同时给了 --tag 才会真正检查远端标签；缺 --tag 时是空操作。
+    assert.match(
+      source,
+      /gh release edit "\$TAG" --tag "\$TAG" --draft=false --verify-tag/,
+      `${name} 必须用 --tag + --verify-tag 禁止发布时顺带创建标签`,
+    );
+    assert.ok(
+      source.includes("--notes-file approved/release-notes.md"),
+      `${name} 发布时必须使用审批快照正文，而不是可能被改写的 Draft 正文`,
+    );
+  }
+});
+
+test("正式发布：审批后重新下载并校验全部 Draft 资产，再公开；发布后再次复核", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const steps = parseSteps(workflow(name));
+    const index = (title) => steps.findIndex((step) => step.name === title);
+    const notes = index("Enforce bilingual release notes");
+    const recheck = index("Re-check tag and Draft identity before publish");
+    const publish = index("Publish the Draft");
+    const post = index("Post-release verification");
+    assert.ok(notes >= 0 && recheck > notes && publish > recheck && post > publish, `${name} 发布步骤顺序异常`);
+
+    const recheckStep = steps[recheck];
+    for (const marker of [
+      "publish-identity.mjs",
+      "gh release download",
+      "--clobber",
+      "rc-record.json",
+      "install-verification.json",
+      "sha256File",
+      "verify-draft.mjs",
+      "release-notes.mjs",
+      "approved/release-notes.sha256",
+    ]) {
+      assert.ok(recheckStep.run.includes(marker), `${name} 发布前复检缺少：${marker}`);
+    }
+    assert.match(recheckStep.run, /RECHECK_COMMIT[^\n]*COMMIT/, `${name} 必须比对复检得到的候选提交`);
+    assert.match(recheckStep.run, /set -euo pipefail/, `${name} 复检必须失败关闭`);
+
+    const postStep = steps[post];
+    for (const marker of [
+      "publish-identity.mjs",
+      "verify-draft.mjs",
+      "published/rc-record.json",
+      "approved/${name}",
+      "--allow-extra",
+      "peer-expected.json",
+      "approved/release-notes.sha256",
+    ]) {
+      assert.ok(postStep.run.includes(marker), `${name} 发布后复核缺少：${marker}`);
+    }
+  }
+});
+
+test("release-candidate：候选阶段产出并回填 signature-verification.json", () => {
+  const source = workflow("release-candidate.yml");
+  const rc = source.indexOf("Build and upload RC record");
+  const verify = source.indexOf("Verify candidate signature");
+  assert.ok(rc >= 0, "缺少 RC 记录步骤");
+  assert.ok(verify > rc, "签名验证必须位于 RC 记录之后");
+  for (const marker of [
+    "scripts/release-governance/fetch-minisign.mjs",
+    "scripts/release-governance/verify-signature.mjs",
+    "mr-signature-evidence",
+    "configured.pub",
+    "--platform windows-x86_64",
+    '--out "$EVIDENCE_DIR/signature-verification.json"',
+    'gh release upload "$TAG" "$EVIDENCE_DIR/signature-verification.json" --clobber',
+  ]) {
+    assert.ok(source.includes(marker), `缺少签名证据标记：${marker}`);
+  }
+  // 公钥必须从仓库当前 tauri.conf.json 派生，而不是外部输入。
+  assert.ok(source.includes("src-tauri/tauri.conf.json"));
+  assert.ok(source.includes("plugins.updater.pubkey"));
+  assert.ok(source.includes("contents: write"));
+  assert.ok(!source.includes("permissions: write-all"));
+});
+
+
+test("release-install-verify：previous_tag/previous_version 无版本默认值且失败关闭", () => {
+  const source = workflow("release-install-verify.yml");
+  for (const name of ["tag", "previous_tag", "previous_version"]) {
+    const block = inputBlock(source, name);
+    assert.match(block, /required:\s*true/, `${name} 必须必填`);
+    assert.ok(!/^\s*default:/m.test(block), `${name} 不得有版本特定默认值`);
+  }
+  for (const marker of [
+    'if [ "$PREVIOUS_TAG" = "$TAG" ]',
+    "'^0\\.[0-9]+\\.[0-9]+$'",
+    'if [ "v${PREVIOUS_VERSION}" != "$PREVIOUS_TAG" ]',
+    "MangaReader_${PREVIOUS_VERSION}_x64-setup.exe",
+  ]) {
+    assert.ok(source.includes(marker), `缺少升级基线校验：${marker}`);
+  }
+  const validate = source.indexOf("Validate previous release inputs");
+  const download = source.indexOf("Download previous installer");
+  assert.ok(validate >= 0 && validate < download, "基线校验必须先于下载旧安装包");
+});
+
+test("release-install-verify：只回填通过总闸且哈希一致的那一份安装证据", () => {
+  const source = workflow("release-install-verify.yml");
+  for (const marker of [
+    "Attach verified install evidence to Draft",
+    'BEFORE="$(sha256 "$SRC")"',
+    'AFTER="$(sha256 "$STAGE/install-verification.json")"',
+    'if [ "$BEFORE" != "$AFTER" ]',
+    'gh release upload "$TAG" "$STAGE/install-verification.json" --clobber',
+  ]) {
+    assert.ok(source.includes(marker), `缺少证据回填标记：${marker}`);
+  }
+  const uploads = [...source.matchAll(/^\s+gh release upload/gm)];
+  assert.equal(uploads.length, 1, "只允许一次 gh release upload");
+  assert.ok(!/gh release\s+(edit|delete)/.test(source), "不得修改/删除 Release");
+  // 回填必须在证据总闸之后。
+  const gate = source.indexOf("verify-evidence.mjs");
+  const attach = source.indexOf("Attach verified install evidence to Draft");
+  assert.ok(gate >= 0 && attach > gate, "回填必须位于 verify-evidence 之后");
+});
+
+test("候选容器：RC 记录排除治理文件（Windows 与 Linux 一致）", () => {
+  for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
+    const source = workflow(name);
+    assert.ok(source.includes("collectCandidateArtifacts"), `${name} 必须使用统一制品收集器`);
+    assert.ok(!source.includes('n !== "rc-record.json"'), `${name} 仍只排除单一治理文件`);
+  }
+});
+
+test("发布接力：只从已公开且非预发布的 Release 携带另一通道清单", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.ok(
+      source.includes("select(.draft == false and .prerelease == false)"),
+      `${name} 的清单接力必须排除 Draft / 预发布`,
+    );
+    assert.ok(!source.includes("--jq '.[].tag_name'"), `${name} 仍会从 Draft 接力清单`);
+  }
+});
+
+test("发布接力：对端清单必须绑定源 Release 自己的 rc-record 摘要", () => {
+  const cases = {
+    "release-publish.yml": { channel: "linux-critical", name: "latest-linux-critical.json" },
+    "release-publish-linux.yml": { channel: "windows", name: "latest.json" },
+  };
+  for (const [file, { channel, name }] of Object.entries(cases)) {
+    const source = workflow(file);
+    const handoff = parseSteps(source).find((step) => step.name === "Channel hand-off (carry the other channel manifest)");
+    assert.ok(handoff, `${file} 缺少通道接力步骤`);
+    assert.ok(handoff.run.includes("verify-peer-manifest.mjs"), `${file} 接力清单必须校验源记录`);
+    assert.ok(handoff.run.includes("rc-record.json"), `${file} 接力必须下载源 Release 的 rc-record.json`);
+    assert.ok(handoff.run.includes(`--channel ${channel}`), `${file} 必须校验源通道`);
+    assert.ok(handoff.run.includes(`--name ${name}`), `${file} 必须校验对端清单名称`);
+    assert.ok(handoff.run.includes("--out handoff/peer-expected.json"), `${file} 必须记录接力清单的源摘要`);
+    const verifyAt = handoff.run.indexOf("verify-peer-manifest.mjs");
+    const uploadAt = handoff.run.indexOf("gh release upload");
+    assert.ok(verifyAt >= 0 && uploadAt > verifyAt, `${file} 必须先验证摘要再上传接力清单`);
+  }
+});
+
+test("候选通道：已公开的 Release 不得被候选流程覆盖（Windows 与 Linux 一致）", () => {
+  for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
+    const source = workflow(name);
+    const guard = source.indexOf("Refuse to touch a published release");
+    assert.ok(guard >= 0, `${name} 必须显式拒绝改写已公开发布的 Release`);
+    assert.ok(
+      source.slice(guard, guard + 900).includes('gh release view "$TAG" --json isDraft'),
+      `${name} 的守卫必须先判定目标 Release 是否仍是 Draft`,
+    );
+    assert.ok(
+      /release-guard\.mjs[\s\S]{0,1400}\*\)[^\n]*exit 1/.test(source.slice(guard)),
+      `${name} 的守卫必须经分类器失败关闭（未知状态 exit 1）`,
+    );
+    // 守卫必须早于任何 Release 写入与构建步骤，确保失败发生在副作用之前。
+    // 注意用具体步骤名，不要用 “Build signed”（job 名里也有这几个字）。
+    for (const marker of [
+      "gh release upload",
+      "gh release create",
+      "Build signed NSIS bundle",
+      "Build signed Linux bundles",
+    ]) {
+      const at = source.indexOf(marker);
+      if (at >= 0) assert.ok(guard < at, `${name} 的守卫必须先于「${marker}」`);
+    }
+  }
+});
+
+test("发布通道：干净环境证据必须来自 GitHub-hosted（Windows 与 Linux 一致）", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    const verifyAt = source.indexOf("verify-provenance.mjs");
+    assert.ok(verifyAt >= 0, `${name} 必须在线核验安装证据 provenance`);
+    assert.ok(
+      source.slice(verifyAt, verifyAt + 400).includes("--require-github-actions"),
+      `${name} 的 provenance 核验必须要求 GitHub-hosted 干净环境，不得接受自述的本地 VM`,
+    );
+  }
+});
+
+test("发布通道：已公开但缺清单必须可重跑补齐（Windows 与 Linux 一致）", () => {
+  const channels = {
+    "release-publish.yml": "windows",
+    "release-publish-linux.yml": "linux",
+  };
+  for (const [name, channel] of Object.entries(channels)) {
+    const source = workflow(name);
+    assert.ok(source.includes("Assess publication state"), `${name} 必须显式判定发布状态`);
+    assert.ok(
+      source.includes(`publish-state.mjs --channel ${channel}`),
+      `${name} 必须使用 ${channel} 通道的清单定义`,
+    );
+
+    // 公开与接力必须由两个独立状态驱动，不能共用一个 published 布尔值。
+    const publishAt = source.indexOf("Publish the Draft");
+    const handoffAt = source.indexOf("Channel hand-off");
+    assert.ok(publishAt > 0 && handoffAt > publishAt, `${name} 的步骤顺序异常`);
+    assert.ok(
+      source.slice(publishAt, publishAt + 160).includes("need_publish == 'true'"),
+      `${name} 的公开步骤必须由 need_publish 驱动`,
+    );
+    assert.ok(
+      source.slice(handoffAt, handoffAt + 160).includes("need_handoff == 'true'"),
+      `${name} 的接力步骤必须由 need_handoff 驱动`,
+    );
+
+    // 发布后校验不得被“已发布”短路，否则部分失败的重跑永远不会被检查。
+    const verifyStep = parseSteps(source).find((step) => step.name === "Post-release verification");
+    assert.ok(verifyStep, `${name} 缺少发布后校验步骤`);
+    assert.ok(!verifyStep.run.includes("published != 'true'"), `${name} 的发布后校验不得跳过已公开状态`);
+    const peer = channel === "windows" ? "latest-linux-critical.json" : "latest.json";
+    assert.ok(
+      verifyStep.run.includes(peer),
+      `${name} 的发布后校验必须确认另一通道清单 ${peer} 存在`,
+    );
+
+    // 摘要不得用 always()：失败时不能打印"已公开"的完成态。
+    assert.ok(
+      !/Summarize publication\n\s+if: always\(\)/.test(source),
+      `${name} 的发布摘要不得使用 always()`,
+    );
+  }
+});
+
+const PUBLISH_WORKFLOWS = ["release-publish.yml", "release-publish-linux.yml"];
+
+function publishSteps(name) {
+  return parseSteps(workflow(name));
+}
+
+/** draft-assets/ 的唯一产出者：下载 Release 资产的步骤。 */
+function draftAssetsProducer(steps) {
+  return steps.find(
+    (step) => step.run.includes("gh release download") && step.run.includes("draft-assets"),
+  );
+}
+
+test("候选通道：发布状态守卫必须早于本地门禁与构建（Windows 与 Linux 一致）", () => {
+  const cases = [
+    ["release-candidate.yml", "Build signed NSIS bundle → Draft"],
+    ["release-candidate-linux.yml", "Build signed Linux bundles"],
+  ];
+  for (const [name, buildStep] of cases) {
+    const steps = parseSteps(workflow(name));
+    const at = (title) => steps.findIndex((step) => step.name === title);
+    const identity = at("Resolve candidate identity");
+    const guard = at("Refuse to touch a published release");
+    const gates = at("Local gates");
+    const build = at(buildStep);
+    for (const [label, index] of [
+      ["Resolve candidate identity", identity],
+      ["Refuse to touch a published release", guard],
+      ["Local gates", gates],
+      [buildStep, build],
+    ]) {
+      assert.ok(index >= 0, `${name} 缺少步骤：${label}`);
+    }
+    assert.ok(identity < guard, `${name}: 守卫必须在身份解析之后`);
+    assert.ok(
+      guard < gates,
+      `${name}: 发布状态守卫必须早于 Local gates，否则已发布 Release 也要先编译完才被拒`,
+    );
+    assert.ok(guard < build, `${name}: 守卫必须早于构建`);
+    assert.ok(gates < build, `${name}: Local gates 必须仍在构建之前`);
+  }
+});
+
+test("候选通道：Release 存在性判定必须按错误分类 fail closed", () => {
+  for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
+    const steps = parseSteps(workflow(name));
+    const guard = steps.find((step) => step.name === "Refuse to touch a published release");
+    assert.ok(guard, `${name} 缺少发布状态守卫`);
+    assert.ok(
+      guard.run.includes("release-guard.mjs"),
+      `${name} 必须用分类器判定 Release 状态，而不是裸 if gh release view`,
+    );
+    assert.ok(guard.run.includes("--status"), `${name} 必须显式捕获 gh 退出码`);
+    assert.ok(
+      guard.run.includes("--stdout-file") && guard.run.includes("--stderr-file"),
+      `${name} 必须保留 stdout/stderr 供分类`,
+    );
+    assert.ok(!/if gh release view/.test(guard.run), `${name} 不得再用裸 if gh release view 判定`);
+    assert.ok(
+      /set \+e[\s\S]*STATUS=\$\?[\s\S]*set -e/.test(guard.run),
+      `${name} 必须显式记录退出码后再恢复严格模式`,
+    );
+  }
+});
+
+test("重跑依赖：Windows 与 Linux 的 draft-assets 产出步骤都必须无条件执行", () => {
+  for (const name of PUBLISH_WORKFLOWS) {
+    const producer = draftAssetsProducer(publishSteps(name));
+    assert.ok(producer, `${name} 缺少下载 Release 资产的步骤`);
+    assert.equal(
+      producer.if,
+      "",
+      `${name}: "${producer.name}" 不得被 need_publish/published 门控——已公开但缺清单的重跑同样需要这些资产`,
+    );
+  }
+});
+
+test("重跑依赖：消费 draft-assets 的步骤不得在产出步骤被跳过的路径上运行", () => {
+  for (const name of PUBLISH_WORKFLOWS) {
+    const steps = publishSteps(name);
+    const producer = draftAssetsProducer(steps);
+    const consumers = steps.filter(
+      (step) => step !== producer && step.run.includes("draft-assets"),
+    );
+    assert.ok(consumers.length >= 3, `${name} 应至少有 3 个消费 draft-assets 的步骤`);
+    for (const consumer of consumers) {
+      assert.ok(
+        !/need_publish|published/.test(consumer.if),
+        `${name}: "${consumer.name}" 依赖 draft-assets，却按发布状态被跳过`,
+      );
+    }
+  }
+});
+
+test("场景 1/2：首次公开与已发布重跑走同一套资产校验，产出步骤都先生效", () => {
+  for (const name of PUBLISH_WORKFLOWS) {
+    const steps = publishSteps(name);
+    const producerIndex = steps.indexOf(draftAssetsProducer(steps));
+    const firstConsumer = steps.findIndex(
+      (step) => step.run.includes("draft-assets/") && step !== draftAssetsProducer(steps),
+    );
+    assert.ok(producerIndex >= 0, `${name} 缺少资产产出步骤`);
+    assert.ok(
+      producerIndex < firstConsumer,
+      `${name} 资产必须先下载再被消费（首次公开与重跑同一顺序）`,
+    );
+    // 两种状态（Draft / 已公开）都不会让产出步骤消失：它没有 if。
+    assert.equal(draftAssetsProducer(steps).if, "");
+    // 已公开重跑才允许对端接力清单；首次公开的 Draft 不得夹带额外资产。
+    const producer = draftAssetsProducer(steps);
+    assert.ok(producer.run.includes("NEED_PUBLISH"), `${name} 资产校验必须按发布状态决定是否允许接力清单`);
+    assert.match(
+      producer.run,
+      /ALLOW_EXTRA=\(\)\s*\n\s*if \[ "\$NEED_PUBLISH" != "true" \]; then\s*\n\s*ALLOW_EXTRA\+=\(--allow-extra/,
+      `${name} 只有已公开重跑才允许携带接力清单，首次公开的 Draft 不得夹带`,
+    );
+  }
+});
+
+test("场景 3：重试时资产齐全——覆盖式下载且不提前退出", () => {
+  for (const name of PUBLISH_WORKFLOWS) {
+    const producer = draftAssetsProducer(publishSteps(name));
+    assert.ok(producer.run.includes("--clobber"), `${name} 重试下载必须允许覆盖本地残留`);
+    const downloadAt = producer.run.indexOf("gh release download");
+    const earlyExitAt = producer.run.indexOf("exit 0");
+    assert.ok(downloadAt >= 0, `${name} 资产产出步骤必须真正下载资产`);
+    if (earlyExitAt >= 0) {
+      assert.ok(
+        downloadAt < earlyExitAt,
+        `${name} 不得在下载前就用 exit 0 结束步骤`,
+      );
+    }
+  }
+});
+
+test("场景 4：缺少必需资产时必须失败关闭并给出稳定线索", () => {
+  for (const name of PUBLISH_WORKFLOWS) {
+    const producer = draftAssetsProducer(publishSteps(name));
+    for (const marker of ["rc-record.json", "install-verification.json"]) {
+      assert.ok(
+        producer.run.includes(`if [ ! -f draft-assets/${marker} ]`),
+        `${name} 缺少对 ${marker} 的存在性检查`,
+      );
+    }
+    assert.ok(/exit 1/.test(producer.run), `${name} 资产缺失分支必须以非零退出`);
+  }
+});
+
+test("场景 5：下载失败必须中断步骤，不得被吞掉", () => {
+  for (const name of PUBLISH_WORKFLOWS) {
+    const producer = draftAssetsProducer(publishSteps(name));
+    assert.match(producer.run, /set -euo pipefail/, `${name} 资产下载步骤缺少严格模式`);
+    assert.ok(
+      !/gh release download[^\n]*\|\|\s*true/.test(producer.run),
+      `${name} 下载失败不得用 || true 吞掉`,
+    );
+  }
+});
+
+test("场景 6：验签/证据校验失败必须向上传播，不得降级为告警", () => {
+  for (const name of PUBLISH_WORKFLOWS) {
+    const steps = publishSteps(name);
+    const verifiers = steps.filter((step) =>
+      /verify-signature\.mjs|verify-evidence\.mjs|verify-provenance\.mjs|verify-updater-manifest\.mjs/.test(
+        step.run,
+      ),
+    );
+    assert.ok(verifiers.length >= 2, `${name} 至少应保留签名与证据两类校验`);
+    for (const verifier of verifiers) {
+      assert.ok(
+        !/\|\|\s*true/.test(verifier.run),
+        `${name}: "${verifier.name}" 不得把校验失败吞成成功`,
+      );
+    }
+    assert.ok(
+      !/continue-on-error:\s*true/.test(workflow(name)),
+      `${name} 不得对任一步骤启用 continue-on-error`,
+    );
+  }
+});
+
+/** 读取 GITHUB_OUTPUT（key=value 每行一条）。 */
+function readGithubOutput(file) {
+  const outputs = new Map();
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+    const at = line.indexOf("=");
+    if (at > 0) outputs.set(line.slice(0, at), line.slice(at + 1));
+  }
+  return outputs;
+}
+
+test("候选守卫：实际 run 块对 404/401/已发布返回不同退出码", (t) => {
+  // 纯文本断言无法证明 shell 接线正确（例如清理动作覆盖退出码、stdout 多一行导致
+  // case 失配）。这里把工作流里的 run 块原样抽出来，用桩 gh 真跑一遍。
+  const probe = spawnSync("bash", ["-c", "true"], { encoding: "utf8" });
+  if (probe.error) {
+    t.skip("当前环境缺少 bash，跳过守卫接线测试");
+    return;
+  }
+
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-guard-wire-"));
+  const binDir = path.join(workDir, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const stub = path.join(binDir, "gh");
+  fs.writeFileSync(
+    stub,
+    [
+      "#!/usr/bin/env bash",
+      'case "$FAKE_MODE" in',
+      '  missing) echo "release not found" >&2; exit 1 ;;',
+      '  auth) echo "HTTP 401: Bad credentials" >&2; exit 1 ;;',
+      '  published) echo "false"; exit 0 ;;',
+      '  draft) echo "true"; exit 0 ;;',
+      '  *) echo "boom" >&2; exit 1 ;;',
+      "esac",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.chmodSync(stub, 0o755);
+
+  const scenarios = [
+    ["missing", 0],
+    ["draft", 0],
+    ["published", 2],
+    ["auth", 3],
+    ["unknown", 3],
+  ];
+
+  try {
+    for (const name of ["release-candidate.yml", "release-candidate-linux.yml"]) {
+      const guard = parseSteps(workflow(name)).find(
+        (step) => step.name === "Refuse to touch a published release",
+      );
+      assert.ok(guard, `${name} 缺少发布状态守卫`);
+      const script = path.join(workDir, `${name}.sh`);
+      fs.writeFileSync(script, guard.run, "utf8");
+
+      for (const [mode, expected] of scenarios) {
+        // GitHub Actions 始终提供 GITHUB_OUTPUT；本地跑真实 run 块时也要补上。
+        const outputFile = path.join(workDir, `output-${name}-${mode}.txt`);
+        fs.writeFileSync(outputFile, "", "utf8");
+        const result = spawnSync("bash", [script], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+            FAKE_MODE: mode,
+            TAG: "v0.19.0",
+            RUNNER_TEMP: workDir,
+            GITHUB_OUTPUT: outputFile,
+          },
+        });
+        assert.equal(
+          result.status,
+          expected,
+          `${name} / ${mode}: 期望退出码 ${expected}，实际 ${result.status}\n${result.stderr || result.stdout}`,
+        );
+
+        // 状态必须写给下游：可继续的分支写 state=<state>，拒绝的分支不得留残留值。
+        const outputs = readGithubOutput(outputFile);
+        if (expected === 0) {
+          assert.equal(
+            outputs.get("state"),
+            mode,
+            `${name} / ${mode}: 守卫必须把判定写入 GITHUB_OUTPUT`,
+          );
+        } else {
+          assert.ok(
+            !outputs.has("state"),
+            `${name} / ${mode}: 拒绝时不得留下 state，否则下游会把残留值当成可继续`,
+          );
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("候选通道：Linux 写入前复检并复用其状态，不得二次查询", () => {
+  const source = workflow("release-candidate-linux.yml");
+  const steps = parseSteps(source);
+  const guardIndex = steps.findIndex((s) => s.name === "Refuse to touch a published release");
+  const recheckIndex = steps.findIndex(
+    (s) => s.name === "Re-check release state before Draft write",
+  );
+  const createIndex = steps.findIndex((s) => s.name === "Create or reuse Draft release");
+
+  assert.ok(guardIndex >= 0, "缺少早期发布状态守卫");
+  assert.ok(recheckIndex >= 0, "缺少写入前复检步骤");
+  assert.ok(createIndex >= 0, "缺少 Create or reuse Draft release 步骤");
+  assert.ok(guardIndex < recheckIndex, "复检必须在早期守卫之后");
+  assert.ok(recheckIndex < createIndex, "复检必须位于写入步骤之前");
+
+  const recheck = steps[recheckIndex];
+  assert.ok(recheck.run.includes("release-guard.mjs"), "复检必须复用同一分类器");
+  assert.ok(recheck.run.includes("GITHUB_OUTPUT"), "复检必须把新状态写给下游");
+
+  const createBlock = source.slice(
+    source.indexOf("Create or reuse Draft release"),
+    source.indexOf("Upload candidate artifacts to Draft"),
+  );
+  assert.match(
+    createBlock,
+    /RELEASE_STATE:\s*\$\{\{\s*steps\.release_recheck\.outputs\.state\s*\}\}/,
+    "创建步骤必须消费复检写出的状态，而不是构建前的旧状态",
+  );
+
+  const create = steps[createIndex];
+  assert.ok(
+    !/gh release view/.test(create.run),
+    "Draft 创建/复用步骤不得再次调用 gh release view（瞬时故障会被误判为不存在）",
+  );
+});
+
+
+
+test("发布通道：安装包必须唯一命中解析，不得依赖 ls 的失败语义", () => {
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const source = workflow(name);
+    assert.ok(
+      source.includes("resolve-draft-asset.mjs"),
+      `${name} 必须用唯一命中解析器取安装包与签名`,
+    );
+    assert.ok(
+      !/ls draft-assets\/\*\./.test(source),
+      `${name} 不得再用 ls 取安装包（set -euo pipefail 下 ls 无匹配会先退出，友好提示成死代码）`,
+    );
+    const steps = parseSteps(source);
+    const resolverStep = steps.find((step) => step.run.includes("resolve-draft-asset.mjs"));
+    assert.ok(resolverStep, `${name} 缺少安装包解析步骤`);
+    assert.match(
+      resolverStep.run,
+      /set -euo pipefail/,
+      `${name} 解析步骤必须保持严格模式`,
+    );
+    assert.ok(
+      !/\|\| true/.test(resolverStep.run),
+      `${name} 不得吞掉解析失败（缺件必须失败关闭）`,
+    );
+  }
+});
+
+test("Linux 写入前复检：真实 run 块的状态传递、失败关闭与分支选择", (t) => {
+  if (spawnSync("bash", ["-c", "true"], { encoding: "utf8" }).error) {
+    t.skip("当前环境缺少 bash，跳过复检接线测试");
+    return;
+  }
+  const steps = parseSteps(workflow("release-candidate-linux.yml"));
+  const recheck = steps.find((s) => s.name === "Re-check release state before Draft write");
+  const create = steps.find((s) => s.name === "Create or reuse Draft release");
+  assert.ok(recheck, "缺少写入前复检步骤");
+  assert.ok(create, "缺少 Draft 创建/复用步骤");
+
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "mr-recheck-wire-"));
+  const binDir = path.join(workDir, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const ghStub = path.join(binDir, "gh");
+  fs.writeFileSync(
+    ghStub,
+    [
+      "#!/usr/bin/env bash",
+      'echo "$*" >> "$GH_CALLS"',
+      'case "$FAKE_MODE" in',
+      '  draft) echo "true"; exit 0 ;;',
+      '  missing) echo "release not found" >&2; exit 1 ;;',
+      '  published) echo "false"; exit 0 ;;',
+      '  auth) echo "HTTP 401: Bad credentials" >&2; exit 1 ;;',
+      '  ratelimit) echo "HTTP 403: API rate limit exceeded" >&2; exit 1 ;;',
+      '  server) echo "HTTP 500: Internal Server Error" >&2; exit 1 ;;',
+      '  network) echo "Get https://api.github.com/: EOF" >&2; exit 1 ;;',
+      "  empty) exit 1 ;;",
+      '  *) echo "boom" >&2; exit 1 ;;',
+      "esac",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.chmodSync(ghStub, 0o755);
+
+  const runRecheck = (mode, env = {}) => {
+    const suffix = `${mode}-${Math.random().toString(36).slice(2, 8)}`;
+    const outFile = path.join(workDir, `recheck-${suffix}.txt`);
+    const callsFile = path.join(workDir, `calls-${suffix}.txt`);
+    fs.writeFileSync(outFile, "", "utf8");
+    fs.writeFileSync(callsFile, "", "utf8");
+    const result = spawnSync("bash", ["-c", recheck.run], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        FAKE_MODE: mode,
+        TAG: "v0.19.0",
+        RUNNER_TEMP: workDir,
+        GITHUB_OUTPUT: outFile,
+        GH_CALLS: callsFile,
+        ...env,
+      },
+    });
+    return {
+      status: result.status,
+      stderr: result.stderr ?? "",
+      state: readGithubOutput(outFile).get("state"),
+      hasState: readGithubOutput(outFile).has("state"),
+      calls: fs.readFileSync(callsFile, "utf8"),
+    };
+  };
+
+  const writeCalls = /release (upload|create|edit)/;
+
+  try {
+    const draft = runRecheck("draft");
+    assert.equal(draft.status, 0, draft.stderr);
+    assert.equal(draft.state, "draft", "Draft 必须写出 state=draft");
+    assert.ok(!writeCalls.test(draft.calls), "复检本身不得写 Release");
+
+    const missing = runRecheck("missing");
+    assert.equal(missing.status, 0, missing.stderr);
+    assert.equal(missing.state, "missing", "确认不存在必须写出 state=missing");
+
+    const published = runRecheck("published");
+    assert.notEqual(published.status, 0, "已发布 Release 必须失败关闭");
+    assert.equal(published.hasState, false, "拒绝时不得留下 state（下游会把残留值当成可继续）");
+    assert.ok(!writeCalls.test(published.calls), "已发布时不得写 Release");
+
+    for (const mode of ["auth", "ratelimit", "server", "network", "empty"]) {
+      const failed = runRecheck(mode);
+      assert.notEqual(failed.status, 0, `${mode} 必须失败关闭`);
+      assert.equal(failed.hasState, false, `${mode} 不得留下 state`);
+      assert.ok(!writeCalls.test(failed.calls), `${mode} 不得写 Release`);
+    }
+
+    // 写入步骤必须按复检给出的状态分叉：Draft 原地复用，确认不存在才新建。
+    const runCreate = (state) => {
+      const callsFile = path.join(workDir, `create-calls-${Math.random().toString(36).slice(2, 8)}.txt`);
+      const outFile = path.join(workDir, `create-out-${Math.random().toString(36).slice(2, 8)}.txt`);
+      fs.writeFileSync(callsFile, "", "utf8");
+      fs.writeFileSync(outFile, "", "utf8");
+      const result = spawnSync("bash", ["-c", create.run], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          FAKE_MODE: "draft",
+          TAG: "v0.19.0",
+          COMMIT: "a".repeat(40),
+          GH_CALLS: callsFile,
+          GITHUB_OUTPUT: outFile,
+          RELEASE_STATE: state,
+          RELEASE_BODY: "body",
+        },
+      });
+      return { status: result.status, calls: fs.readFileSync(callsFile, "utf8") };
+    };
+
+    const reuse = runCreate(draft.state);
+    assert.equal(reuse.status, 0, reuse.calls);
+    assert.match(reuse.calls, /release edit/, "Draft 必须原地复用");
+    assert.doesNotMatch(reuse.calls, /release create/, "Draft 不得新建 Release");
+
+    const fresh = runCreate(missing.state);
+    assert.equal(fresh.status, 0, fresh.calls);
+    assert.match(fresh.calls, /release create/, "确认不存在必须新建 Draft");
+    assert.match(fresh.calls, /--draft/, "新建必须是 Draft");
+    assert.match(fresh.calls, /--target a{40}/, "新 Draft 必须绑定固定提交");
+
+    // 清理失败不得覆盖原始退出码。
+    const failBin = path.join(workDir, "failbin");
+    fs.mkdirSync(failBin, { recursive: true });
+    const rmStub = path.join(failBin, "rm");
+    fs.writeFileSync(rmStub, "#!/usr/bin/env bash\nexit 1\n", "utf8");
+    fs.chmodSync(rmStub, 0o755);
+    const withFailingCleanup = runRecheck("published", {
+      PATH: `${failBin}${path.delimiter}${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    });
+    assert.equal(withFailingCleanup.status, 2, "清理失败不得把退出码改成别的值");
+    assert.equal(withFailingCleanup.hasState, false);
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("演练标签门禁：候选接受 v0.0.0-rehearsal 系列，常规通道仍只收 vX.Y.Z，发布无条件拒绝 rehearsal", () => {
+  const source = workflow("release-candidate.yml");
+  const patterns = [...source.matchAll(/grep -Eq '([^']+)'/g)].map((m) => m[1]);
+  const rehearsalPattern = patterns.find((p) => p.includes("rehearsal"));
+  const releasePattern = patterns.find((p) => p.includes("v[0-9]"));
+  assert.ok(rehearsalPattern, "候选工作流缺少演练标签门控");
+  assert.ok(releasePattern, "候选工作流缺少常规标签门控");
+
+  const rehearsalGate = new RegExp(rehearsalPattern);
+  const releaseGate = new RegExp(releasePattern);
+
+  // 演练族：允许递增后缀，便于每次演练用独立标签而不动旧标签。
+  for (const tag of ["v0.0.0-rehearsal", "v0.0.0-rehearsal2", "v0.0.0-rehearsal12"]) {
+    assert.ok(rehearsalGate.test(tag), `演练标签族必须接受 ${tag}`);
+  }
+  for (const tag of ["v0.0.0-rehearsalX", "v0.0.0-rehearsal-2", "v0.1.0", "v0.19.0", "v0.0.0"]) {
+    assert.ok(!rehearsalGate.test(tag), `演练标签族必须拒绝 ${tag}`);
+  }
+
+  // 常规通道：演练标签永远不是合法发布标签。
+  for (const tag of ["v0.19.0", "v1.2.3"]) {
+    assert.ok(releaseGate.test(tag), `常规通道必须接受 ${tag}`);
+  }
+  for (const tag of ["v0.0.0-rehearsal2", "v0.19.0-linux-sec1", "v0.19", "v0.19.0.1"]) {
+    assert.ok(!releaseGate.test(tag), `常规通道必须拒绝 ${tag}`);
+  }
+
+  // 发布侧：任何含 rehearsal 的标签无条件拒绝（子串匹配，新增后缀也不放过）。
+  for (const name of ["release-publish.yml", "release-publish-linux.yml"]) {
+    const publish = workflow(name);
+    assert.ok(
+      publish.includes('grep -q "rehearsal"'),
+      `${name} 必须对任何含 rehearsal 的标签无条件拒绝`,
+    );
+    assert.ok(
+      publish.includes("演练标签永远不得发布"),
+      `${name} 必须给出明确的演练拒绝提示`,
+    );
+  }
+});
+
+test("qa-full：证据来源必须是实际检出的提交，且无效引用必须明确失败", () => {
+  const source = workflow("qa-full.yml");
+  // 必须先解析引用，再按解析结果检出。
+  assert.match(
+    source,
+    /node scripts\/release-governance\/resolve-qa-ref\.mjs/,
+    "必须用解析器校验 ref 输入",
+  );
+  assert.match(
+    source,
+    /ref: \$\{\{ steps\.resolve\.outputs\.ref \}\}/,
+    "检出必须使用解析后的引用",
+  );
+  // 不得把用户输入直接当作检出来源（那会让无效引用静默回退到默认分支）。
+  assert.ok(
+    !/ref: \$\{\{ inputs\.ref \}\}/.test(source),
+    "不得直接用 inputs.ref 检出",
+  );
+  // head_sha 来自实际检出的提交，并与解析出的提交比对。
+  assert.match(source, /git rev-parse HEAD/, "head_sha 必须来自实际检出的 HEAD");
+  assert.match(source, /EXPECTED_SHA/, "必须比对检出的提交与解析出的提交");
+  // 解析失败必须让作业失败（set -euo pipefail + 非零退出码）。
+  assert.match(source, /set -euo pipefail/, "解析步骤必须在严格模式下运行");
+});
+
+test("L2 门禁：按改动范围选择 QA，gate 始终用登记表判定；P0/P1 不得登记豁免", () => {
+  const source = workflow("qa-l2.yml");
+  assert.ok(
+    !source.includes("uses: ./.github/workflows/qa-full.yml"),
+    "PR 的 L2 不得再调用 qa-full：发布证据只在候选阶段生成，PR 不再重复其 L1",
+  );
+  assert.ok(
+    !source.includes("L2 · full QA"),
+    "PR 的 L2 不得再有 full-qa job；full 模式由同一个 PR QA job 跑全量套件",
+  );
+  assert.match(
+    source,
+    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.event\.merge_group\.head_sha \}\}/,
+    "L2 必须对 PR 的 head 提交跑回归（短 SHA 不受支持）；merge_group 回落到合并组 head_sha",
+  );
+  assert.match(source, /qa-gate\.mjs/, "L2 必须用登记表门禁判定，而不是直接看 QA 退出码");
+  assert.match(
+    source,
+    /qa-evidence-\$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.event\.merge_group\.head_sha \}\}/,
+    "门禁必须读取与 head 绑定的证据",
+  );
+
+  // 分层：先分类，再决定 suite；full/定向共用同一个 PR QA job，gate 名称不变。
+  assert.match(source, /classify-qa-scope\.mjs/, "L2 必须按改动范围分类");
+  assert.match(source, /name: L2 · PR QA/, "full/定向必须共用 L2 · PR QA job");
+  assert.match(
+    source,
+    /node tests\/qa\/run-qa\.mjs --suite=/,
+    "定向 QA 必须显式传 --suite=",
+  );
+  assert.match(
+    source,
+    /node tests\/qa\/run-qa\.mjs\n\s*fi/,
+    "suite 为空（full）时必须回退到全量 QA",
+  );
+  assert.match(
+    source,
+    /name: L2 · QA gate \(known-issues\)/,
+    "required check 名称必须保持 L2 · QA gate (known-issues)",
+  );
+  assert.ok(
+    !/^\s{4}paths:/m.test(source),
+    "不得在 workflow 级使用 paths 过滤：check 不会创建，required check 会卡在 Expected",
+  );
+  assert.match(
+    source,
+    /Checkout trusted base classifier/,
+    "分类器必须从 base 检出，不能由 PR head 自证范围",
+  );
+  assert.match(
+    source,
+    /--expect-suites/,
+    "gate 必须校验报告实际执行的套件，防止定向 QA 静默漏跑",
+  );
+  assert.match(
+    source,
+    /--expect-commit/,
+    "gate 必须校验报告来自 PR head，防止复用旧证据",
+  );
+  assert.match(source, /overwrite: true/, "定向证据重跑时必须覆盖旧 artifact");
+  assert.match(
+    source,
+    /if: always\(\) && \(github\.event_name == 'merge_group' \|\| github\.event\.pull_request\.draft == false\)/,
+    "Draft 不得产生可复用的绿色 gate；ready_for_review 后必须重跑；merge_group 必须照常执行",
+  );
+  assert.match(source, /^\s{2}merge_group:/m, "L2 必须支持 merge_group，否则合并队列缺必需检查");
+
+  // 登记表本身：字段完整、不得登记 P0/P1 豁免。
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const registryRaw = fs.readFileSync(
+    path.join(repoRoot, "scripts/release-governance/qa-known-issues.json"),
+    "utf8",
+  );
+  const registry = JSON.parse(registryRaw);
+  assert.ok(Array.isArray(registry.issues), "登记表必须有 issues 数组");
+  for (const issue of registry.issues) {
+    for (const field of ["id", "scope", "evidence", "owner", "reviewBy"]) {
+      assert.ok(String(issue[field] ?? "").trim(), `登记表条目 ${issue.id ?? "?"} 缺少 ${field}`);
+    }
+    assert.ok(
+      !["P0", "P1"].includes(String(issue.severity ?? "").toUpperCase()),
+      `登记表不得为 ${issue.id} 登记 ${issue.severity} 豁免（P0/P1 永不豁免）`,
+    );
+    assert.match(String(issue.reviewBy), /^\d{4}-\d{2}-\d{2}$/, `登记表条目 ${issue.id} 的 reviewBy 必须是日期`);
+  }
+});
+
+test("发布证据：qa-full 不得被参数化为半套 QA", () => {
+  const source = workflow("qa-full.yml");
+  assert.ok(
+    !source.includes("--suite="),
+    "qa-full 必须始终跑全量 QA，不能接受 suite 参数；定向 QA 只能放在 PR 工作流",
+  );
+
+  const inputNames = (block) =>
+    [...String(block).matchAll(/^ {6}([a-z_]+):$/gm)].map((match) => match[1]);
+
+  const dispatchBlock = source.split("workflow_dispatch:")[1]?.split("workflow_call:")[0] ?? "";
+  assert.deepEqual(
+    inputNames(dispatchBlock),
+    ["ref"],
+    "qa-full 的 workflow_dispatch 只允许 ref 输入；否则半套手动 run 可能被候选误认为发布证据",
+  );
+
+  const callBlock = source.split("workflow_call:")[1]?.split("permissions:")[0] ?? "";
+  assert.deepEqual(
+    inputNames(callBlock),
+    ["ref"],
+    "qa-full 的 workflow_call 只允许 ref 输入；PR 定向 QA 只能留在 qa-l2",
+  );
+});

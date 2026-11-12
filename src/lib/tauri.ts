@@ -4,6 +4,7 @@ import {
   FEATURE_REGISTRY,
   emitFeaturesChanged,
   isFeatureEnabled,
+  setLiveFeatureFlags,
   type FeatureFlags,
   type FeatureId,
 } from "@/features/features";
@@ -100,12 +101,25 @@ export interface OnlineFilterRule {
   hits: number;
 }
 
-export type TelegramChapterKind = "telegraph" | "photos" | "document";
+export type TelegramChapterKind =
+  | "telegraph"
+  | "photos"
+  | "document"
+  | "index";
+
+/** 目录汇总消息里的公开章节链接。 */
+export interface TelegramIndexLink {
+  url: string;
+  title: string;
+}
 
 export interface TelegramDocument {
+  /** 公开 CDN 直链；登录受限附件为空串。 */
   url: string;
   filename: string;
   size?: number | null;
+  /** false = Telegram 公开预览不提供匿名下载，只能登录后下载。 */
+  downloadable?: boolean;
 }
 
 export interface TelegramChapter {
@@ -117,6 +131,12 @@ export interface TelegramChapter {
   kind: TelegramChapterKind;
   document?: TelegramDocument | null;
   grouped: boolean;
+  /** 目录汇总消息展开出的章节链接（仅 index 章节非空）。 */
+  links?: TelegramIndexLink[];
+  /** 图集来自消息底部公开内联按钮。 */
+  viaInline?: boolean;
+  /** 消息正文中的公开 #标签（含 #）。 */
+  tags?: string[];
 }
 
 export interface TelegramChannel {
@@ -125,6 +145,54 @@ export interface TelegramChannel {
   chapters: TelegramChapter[];
   before?: number | null;
   hasMore: boolean;
+  /** 频道内搜索回显的关键词/ #标签。 */
+  query?: string | null;
+}
+
+/** 图片选择器候选页（解析但不入库）。 */
+export interface OnlineImagePreviewItem {
+  index: number;
+  url: string;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface OnlineImagePreview {
+  title: string;
+  canonicalUrl: string;
+  pageCount: number;
+  images: OnlineImagePreviewItem[];
+  truncated: boolean;
+}
+
+/** 目录页提取到的同源章节链接。 */
+export interface ChapterLink {
+  url: string;
+  title: string;
+}
+
+/** 多 URL 队列的单条结果；失败不影响其他条目。 */
+export interface OnlineBatchItem {
+  url: string;
+  ok: boolean;
+  title?: string | null;
+  book?: BookInfo | null;
+  error?: string | null;
+}
+
+export interface OnlineBatchProgress {
+  done: number;
+  total: number;
+  url: string;
+  ok: boolean;
+  title?: string | null;
+  error?: string | null;
+}
+
+export interface OnlinePrefetchResult {
+  pages: number;
+  cached: number;
+  failed: number;
 }
 
 export interface PageEntry {
@@ -194,7 +262,11 @@ export interface SeriesProgress {
 export interface Dashboard {
   totalBooks: number;
   reading: number;
+  /** 已开始且翻到最后一页的书数；pageCount=0 的书不计入。 */
+  finished: number;
   todayPages: number;
+  /** 累计阅读页数（reading_log 总和，包含已软删书的历史）。 */
+  totalPagesRead: number;
   heatmap: HeatDay[];
   series: SeriesProgress[];
 }
@@ -252,6 +324,13 @@ export interface OpenWithRequest {
 export interface ClearCacheResult {
   bytesFreed: number;
   files: number;
+}
+
+/** `clear_online_cache` 结果：只统计在线原图，`books` 为实际清理的书本数量。 */
+export interface ClearOnlineCacheResult {
+  bytesFreed: number;
+  files: number;
+  books: number;
 }
 
 export interface Settings {
@@ -357,6 +436,8 @@ const EXP_WT_KEY = "mr-exp-wt";
 const EXP_ONLINE_KEY = "mr-exp-online";
 
 function applySettingsMirror(s: Settings) {
+  // 权威内存快照优先：即使 localStorage 不可用，业务组件也能读到最新门卫。
+  setLiveFeatureFlags(s.features);
   try {
     for (const feature of FEATURE_REGISTRY) {
       localStorage.setItem(
@@ -447,6 +528,9 @@ export const api = {
     invoke<void>("put_pdf_thumbnail", { bookId, dataBase64 }),
   // 清空临时磁盘缓存（render + online 原图），返回释放体积与文件数。
   clearTempCache: () => invoke<ClearCacheResult>("clear_temp_cache"),
+  // 只清理在线原图：keepUnread=true 保留未读完且 30 天内打开过的书。
+  clearOnlineCache: (keepUnread: boolean) =>
+    invoke<ClearOnlineCacheResult>("clear_online_cache", { keepUnread }),
   getMemoryStats: () => invoke<MemoryStats>("get_memory_stats"),
   getDashboard: () => invoke<Dashboard>("get_dashboard"),
   // 逐日阅读页数：bookId=null 全局；Some(id) 只看该书。days 1..365。
@@ -479,9 +563,6 @@ export const api = {
   /** Persist + apply the native tray menu language (6 dictionaries). */
   setTrayLocale: (locale: string) =>
     invoke<void>("tray_set_locale", { locale }),
-  /** Push the Task 7 brand icon to the tray (64×64 PNG data URL; null resets). */
-  setTrayIcon: (dataUrl: string | null) =>
-    invoke<void>("tray_set_icon", { dataUrl }),
   setFeatureEnabled: (feature: FeatureId, enabled: boolean) =>
     invoke<Settings>("set_feature_enabled", { feature, enabled }).then(
       (settings) => {
@@ -492,6 +573,24 @@ export const api = {
     ),
   resolveOnlineUrl: (url: string) =>
     invoke<BookInfo>("resolve_online_url", { url }),
+  importResolvedPages: (url: string, title: string, pageUrls: string[]) =>
+    invoke<BookInfo>("import_resolved_pages", { url, title, pageUrls }),
+  previewOnlineImages: (url: string, limit = 60) =>
+    invoke<OnlineImagePreview>("preview_online_images", { url, limit }),
+  previewOnlineImage: (url: string, referer?: string | null) =>
+    invoke<PageImage>("online_image_preview", { url, referer: referer ?? null }),
+  previewChapterLinks: (url: string) =>
+    invoke<ChapterLink[]>("preview_chapter_links", { url }),
+  resolveOnlineUrls: (urls: string[], seriesTitle?: string | null) =>
+    invoke<OnlineBatchItem[]>("resolve_online_urls", {
+      urls,
+      seriesTitle: seriesTitle ?? null,
+    }),
+  prefetchOnlineBook: (bookId: string, concurrency = 4) =>
+    invoke<OnlinePrefetchResult>("prefetch_online_book", {
+      bookId,
+      concurrency,
+    }),
   // OPDS 1.2 自建库：配置只存本地 SQLite，密码只写不读。
   getOpdsConfig: () => invoke<OpdsConfigView>("opds_get_config"),
   setOpdsConfig: (config: OpdsConfigInput) =>
@@ -513,13 +612,21 @@ export const api = {
   getBrowserHandoffStatus: () =>
     invoke<HandoffStatus>("get_browser_handoff_status"),
   // Telegram 公开频道/消息/Telegraph 直读（免登录，仅公开预览页）。
-  resolveTelegramChannel: (url: string, before?: number | null) =>
+  resolveTelegramChannel: (
+    url: string,
+    before?: number | null,
+    query?: string | null,
+  ) =>
     invoke<TelegramChannel>("resolve_telegram_channel", {
       url,
       before: before ?? null,
+      query: query ?? null,
     }),
   downloadTelegramDocument: (url: string, filename: string) =>
     invoke<BookInfo>("download_telegram_document", { url, filename }),
+  /** 严格校验 t.me 消息后唤醒系统 Telegram 客户端（tg://resolve）。 */
+  openTelegramClient: (url: string) =>
+    invoke<void>("open_telegram_client", { url }),
   // 自学习提纯：统计、规则库、当前书被过滤页。
   getOnlineFilterStatus: () =>
     invoke<OnlineFilterStats>("get_online_filter_status"),
@@ -557,6 +664,8 @@ export const api = {
     invoke<void>("open_browser_window", { url }),
   navigateBrowser: (url: string) =>
     invoke<void>("navigate_browser", { url }),
+  // Handoff 启停后刷新辅助浏览器顶部条（窗口不存在时静默成功）。
+  syncBrowserToolbar: () => invoke<void>("sync_browser_toolbar"),
   listBrowserDownloads: () =>
     invoke<BrowserDownload[]>("list_browser_downloads"),
   importBrowserDownload: (path: string) =>

@@ -10,6 +10,7 @@ import { resilienceMessages } from "../messages/resilience";
 import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
 import { settingsDetailMessages } from "../messages/settingsDetail";
+import { featureGateMessages } from "../messages/featureGate";
 import type { Messages } from "./zh-CN";
 
 export const ko = {
@@ -24,5 +25,6 @@ export const ko = {
   ...onlineMessages["ko"],
   ...opdsMessages.ko,
   ...settingsDetailMessages.ko,
+  ...featureGateMessages.ko,
   ...resilienceMessages.ko,
 } satisfies Messages;

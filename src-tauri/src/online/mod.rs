@@ -4,6 +4,7 @@
 
 pub mod direct;
 pub mod filter;
+pub mod gallery;
 pub mod handoff;
 pub mod html;
 pub mod http;
@@ -38,10 +39,18 @@ pub struct PageAnchor {
     pub refresh_base: Option<String>,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// 单个页面引用（URL + 可选尺寸提示 + 过期源锚点）。
+///
+/// `viewer = true` 表示该 URL 是二级查看器页面：读取时才解析真实图片地址。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PageRef {
     pub url: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub viewer: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,6 +199,7 @@ pub fn normalize_page_urls(page_urls: &[String]) -> Result<Vec<PageRef>, Backend
         if seen.insert(page.clone()) {
             pages.push(PageRef {
                 url: page,
+                viewer: false,
                 width: None,
                 height: None,
                 anchor: None,
@@ -286,6 +296,17 @@ pub fn resolve_with(
     // 只有正文根本不是 JSON 时才回退 HTML；合法 JSON 但清单语义错误
     // （版本、页数、页 URL 非法等）必须原样返回清单错误，避免误当图集导入。
     let body_is_json = serde_json::from_slice::<serde_json::Value>(&resp.body).is_ok();
+    let body_is_html = resp
+        .body
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b'<');
+    // 二级分页索引画廊：阶段一只收集 viewer URL，不请求查看器页面。
+    if body_is_html {
+        if let Some(meta) = gallery::resolve_from_html(http, &resp.body, &base_url, &url)? {
+            return Ok(meta);
+        }
+    }
     let mut effective_memory = memory.clone();
     if effective_memory.host.is_empty() {
         effective_memory.host = filter::url_host(url.as_str());
@@ -302,6 +323,11 @@ pub fn resolve_with(
             thresholds,
         ) {
             Ok(meta) => Ok(meta),
+            // 返回的是 HTML 页面时，JSON 解析错误只是“第一列不是 {”，
+            // 对用户没有信息量；只保留 HTML 过滤原因。
+            Err(html_err) if body_is_html => Err(BackendError::Msg(format!(
+                "页面不是 JSON 清单，也未找到正文图片：{html_err}"
+            ))),
             Err(html_err) => Err(BackendError::Msg(format!(
                 "无法解析为 JSON 或 HTML 图集：JSON={json_err}; HTML={html_err}"
             ))),
@@ -469,9 +495,35 @@ mod tests {
     }
 
     #[test]
+    fn page_ref_viewer_flag_is_backward_compatible() {
+        let legacy: PageRef = serde_json::from_str(r#"{"url":"https://x/s/1-2"}"#).unwrap();
+        assert!(!legacy.viewer);
+        let image = PageRef {
+            url: "https://x/1.jpg".into(),
+            viewer: false,
+            width: None,
+            height: None,
+            anchor: None,
+        };
+        assert!(!serde_json::to_string(&image).unwrap().contains("viewer"));
+        let viewer = PageRef {
+            url: "https://x/s/1-2".into(),
+            viewer: true,
+            width: None,
+            height: None,
+            anchor: None,
+        };
+        let json = serde_json::to_string(&viewer).unwrap();
+        assert!(json.contains(r#""viewer":true"#), "{json}");
+        let round: PageRef = serde_json::from_str(&json).unwrap();
+        assert!(round.viewer);
+    }
+
+    #[test]
     fn page_name_uses_filename_or_index() {
         let p = PageRef {
             url: "https://x/a/001.jpg".into(),
+            viewer: false,
             width: None,
             height: None,
             anchor: None,
@@ -479,6 +531,7 @@ mod tests {
         assert_eq!(page_name(&p, 0), "001.jpg");
         let p = PageRef {
             url: "https://x/".into(),
+            viewer: false,
             width: None,
             height: None,
             anchor: None,
@@ -691,6 +744,20 @@ mod tests {
         assert!(err.contains("JSON="), "{err}");
         assert!(err.contains("HTML="), "{err}");
         assert_eq!(t.calls(), 1);
+    }
+
+    #[test]
+    fn resolve_html_failure_drops_json_noise_and_reports_filter_reasons() {
+        let t = StubTransport::ok(
+            br#"<html><body><header><img src="/logo.png" class="logo"></header></body></html>"#,
+        );
+        let err = resolve(&t, "http://example.com/chapter")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("页面不是 JSON 清单"), "{err}");
+        assert!(err.contains("原因 chrome"), "{err}");
+        assert!(err.contains("online-html-no-content"), "{err}");
+        assert!(!err.contains("expected value"), "{err}");
     }
 
     #[test]

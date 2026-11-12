@@ -542,7 +542,9 @@ impl Drop for PartialFileGuard {
             return;
         }
         if let Some(path) = self.path.take() {
-            let _ = tauri::async_runtime::spawn_blocking(move || remove_file_quiet(&path));
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                remove_file_quiet(&path)
+            }));
         }
     }
 }
@@ -1122,6 +1124,23 @@ fn update_dir() -> Result<PathBuf, String> {
     prepare_update_dir(&std::env::temp_dir())
 }
 
+/// 更新下载的最低剩余空间余量（不含制品本身）。
+const TEMP_MIN_FREE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// 下载前空间预检（纯函数）。
+///
+/// `free == None` 表示探测失败：放行，不把探测失败伪装成磁盘耗尽。
+/// `artifact_size == 0`（清单未提供大小）时只要求最低余量。
+fn ensure_temp_space(free: Option<u64>, artifact_size: u64) -> Result<(), String> {
+    if let Some(free) = free {
+        let needed = TEMP_MIN_FREE_BYTES.saturating_add(artifact_size);
+        if free < needed {
+            return Err("系统临时目录剩余空间不足（update-disk-space-low）".to_string());
+        }
+    }
+    Ok(())
+}
+
 const STALE_UPDATE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// 删除更新临时目录里超过 24h 的遗留文件；不创建目录、不跟随符号链接。
@@ -1573,6 +1592,13 @@ async fn perform_download(
     let dir = tokio::task::spawn_blocking(update_dir)
         .await
         .map_err(|_| "更新目录后台任务失败（blocking-task-failed）".to_string())??;
+    // 下载前确认临时目录能容纳制品 + 安全余量：前端预检可被跳过
+    // （旧 UI / 直接 IPC），这里是无条件兜底。目录探测本身也在阻塞池。
+    let free = tokio::task::spawn_blocking(|| crate::platform::free_bytes(&std::env::temp_dir()))
+        .await
+        .ok()
+        .flatten();
+    ensure_temp_space(free, artifact.size)?;
     let file_name = artifact_file_name(&artifact, &manifest.version_raw, session.generation);
     let path = dir.join(&file_name);
     if path.parent().map(|parent| parent == dir.as_path()) != Some(true) {
@@ -2721,6 +2747,33 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
         let error = prepare_update_dir(&base).expect_err("同名文件必须拒绝");
         assert!(error.contains("不是目录"), "{error}");
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn temp_space_precheck_accepts_enough_space() {
+        // 最低余量 + 制品大小正好够用：必须放行。
+        assert!(ensure_temp_space(Some(TEMP_MIN_FREE_BYTES), 0).is_ok());
+        assert!(ensure_temp_space(Some(TEMP_MIN_FREE_BYTES + 1024), 1024).is_ok());
+        assert!(ensure_temp_space(Some(u64::MAX), 4 * 1024 * 1024 * 1024).is_ok());
+    }
+
+    #[test]
+    fn temp_space_precheck_rejects_insufficient_space() {
+        let error =
+            ensure_temp_space(Some(TEMP_MIN_FREE_BYTES - 1), 0).expect_err("低于最低余量必须拒绝");
+        assert!(error.contains("update-disk-space-low"), "{error}");
+        assert!(error.contains("剩余空间不足"), "{error}");
+        // 剩余空间够最低余量但放不下制品本身：同样拒绝。
+        let error = ensure_temp_space(Some(TEMP_MIN_FREE_BYTES + 512), 1024)
+            .expect_err("制品超出剩余空间必须拒绝");
+        assert!(error.contains("update-disk-space-low"), "{error}");
+    }
+
+    #[test]
+    fn temp_space_precheck_allows_unknown_free_space() {
+        // 探测失败（None）不拦截：不把探测失败伪装成磁盘耗尽。
+        assert!(ensure_temp_space(None, 0).is_ok());
+        assert!(ensure_temp_space(None, u64::MAX).is_ok());
     }
 
     #[test]

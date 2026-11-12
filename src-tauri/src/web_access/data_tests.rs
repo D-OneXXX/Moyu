@@ -334,6 +334,64 @@ async fn all_read_routes_leave_book_progress_and_log_unchanged() {
 }
 
 #[tokio::test]
+async fn cover_img_requests_pass_with_only_the_session_cookie() {
+    use crate::read_service::WEB_THUMB_EDGE;
+
+    let fixture = Fixture::new();
+    let id = id_for('a');
+    let path = format!("/api/books/{id}/thumb?v=3");
+
+    // 浏览器原生 <img> 不会带 Origin / X-Moyu-Request，Sec-Fetch-Dest 为
+    // image。只要会话 Cookie 有效就必须放行，不能把封面误判成跨站写入。
+    let cover_request = || {
+        let mut request = fixture.get(&path);
+        request
+            .headers_mut()
+            .insert("sec-fetch-dest", HeaderValue::from_static("image"));
+        request
+            .headers_mut()
+            .insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        request
+            .headers_mut()
+            .insert("sec-fetch-mode", HeaderValue::from_static("no-cors"));
+        request
+    };
+
+    let first = fixture.router.handle(cover_request(), SOURCE_IP).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        first
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("image/jpeg")
+    );
+    let body = BodyExt::collect(first.into_body())
+        .await
+        .expect("cover body")
+        .to_bytes();
+    assert!(!body.is_empty(), "cover bytes must not be empty");
+    assert!(
+        fixture
+            .state
+            .render
+            .get_cover(&id, WEB_THUMB_EDGE)
+            .is_some(),
+        "on-demand cover generation must populate render_cache"
+    );
+
+    // 桌面端从未滚动到该书、缓存被清理后，Web 端请求仍应实时生成而不是 404。
+    fixture.state.render.remove_cover(&id, WEB_THUMB_EDGE);
+    let second = fixture.router.handle(cover_request(), SOURCE_IP).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(fixture
+        .state
+        .render
+        .get_cover(&id, WEB_THUMB_EDGE)
+        .is_some());
+}
+
+#[tokio::test]
 async fn conditional_page_304_does_not_write_any_state() {
     let fixture = Fixture::new();
     let id = id_for('a');

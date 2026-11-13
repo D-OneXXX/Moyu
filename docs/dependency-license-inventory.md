@@ -2,6 +2,8 @@
 
 Declared metadata, including development and target-specific dependencies; inclusion in a distributed binary is not established by this list. Missing metadata is marked [TO CONFIRM]. Consult upstream license texts for obligations.
 
+Lockfile SHA-256: npm `bd2edd5dfaa12c082393842b57967170585f110b406702d710404dd49413226e`; Cargo `ec5dc7eeadce976c4b04b425bcbd111e67f9e2a3c614ec446cf78882808141f4`.
+
 ## Cargo
 
 | Package | Version | Declared license |
@@ -270,7 +272,7 @@ Declared metadata, including development and target-specific dependencies; inclu
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | lru | 0.19.0 | MIT |
 | lru-slab | 0.1.3 | MIT OR Apache-2.0 OR Zlib |
-| lzma-rust2 | 0.24.0 | Apache-2.0 |
+| lzma-rust2 | 0.25.0 | Apache-2.0 |
 | manga-reader-tauri | 0.20.1 | MIT |
 | markup5ever | 0.39.0 | MIT OR Apache-2.0 |
 | memchr | 2.8.3 | Unlicense OR MIT |
@@ -278,7 +280,6 @@ Declared metadata, including development and target-specific dependencies; inclu
 | memoffset | 0.9.1 | MIT |
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
-| minisign-verify | 0.2.5 | MIT |
 | minisign-verify | 0.3.0 | MIT |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
@@ -531,7 +532,7 @@ Declared metadata, including development and target-specific dependencies; inclu
 | unicode-normalization | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 |
-| unrar-rs | 0.15.1 | [TO CONFIRM] Cargo license field absent; see [bundled license text](licenses/unrar-rs.txt) |
+| unrar-rs | 0.15.3 | [TO CONFIRM] Cargo license field absent; see [bundled license text](licenses/unrar-rs.txt) |
 | untrusted | 0.9.0 | ISC |
 | ureq | 2.12.1 | MIT OR Apache-2.0 |
 | url | 2.5.8 | MIT OR Apache-2.0 |
@@ -644,7 +645,7 @@ Declared metadata, including development and target-specific dependencies; inclu
 | zerotrie | 0.2.5 | Unicode-3.0 |
 | zerovec | 0.11.8 | Unicode-3.0 |
 | zerovec-derive | 0.11.6 | Unicode-3.0 |
-| zip | 9.2.3 | MIT |
+| zip | 9.5.0 | MIT |
 | zlib-rs | 0.6.8 | Zlib |
 | zmij | 1.0.23 | MIT |
 | zopfli | 0.8.3 | Apache-2.0 |
@@ -793,27 +794,27 @@ Declared metadata, including development and target-specific dependencies; inclu
 | `node_modules/@shadcn/registry` | 0.2.1 | MIT |
 | `node_modules/@shadcn/registry/node_modules/cn` | 0.2.6 | MIT |
 | `node_modules/@sindresorhus/merge-streams` | 4.0.0 | MIT |
-| `node_modules/@tailwindcss/node` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-android-arm64` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-darwin-arm64` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-darwin-x64` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-freebsd-x64` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-linux-arm-gnueabihf` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-linux-arm64-gnu` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-linux-arm64-musl` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-linux-x64-gnu` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-linux-x64-musl` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-wasm32-wasi` | 4.3.4 | MIT |
+| `node_modules/@tailwindcss/node` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-android-arm64` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-darwin-arm64` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-darwin-x64` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-freebsd-x64` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-linux-arm-gnueabihf` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-linux-arm64-gnu` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-linux-arm64-musl` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-linux-x64-gnu` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-linux-x64-musl` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-wasm32-wasi` | 4.3.5 | MIT |
 | `node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/@emnapi/core` | 1.11.3 | MIT |
 | `node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/@emnapi/runtime` | 1.11.3 | MIT |
 | `node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/@emnapi/wasi-threads` | 1.2.3 | MIT |
 | `node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/@napi-rs/wasm-runtime` | 1.2.2 | MIT |
 | `node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/@tybys/wasm-util` | 0.10.3 | MIT |
 | `node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/tslib` | 2.8.1 | 0BSD |
-| `node_modules/@tailwindcss/oxide-win32-arm64-msvc` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/oxide-win32-x64-msvc` | 4.3.4 | MIT |
-| `node_modules/@tailwindcss/vite` | 4.3.4 | MIT |
+| `node_modules/@tailwindcss/oxide-win32-arm64-msvc` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/oxide-win32-x64-msvc` | 4.3.5 | MIT |
+| `node_modules/@tailwindcss/vite` | 4.3.5 | MIT |
 | `node_modules/@tauri-apps/api` | 2.12.4 | Apache-2.0 OR MIT |
 | `node_modules/@tauri-apps/cli` | 2.12.4 | Apache-2.0 OR MIT |
 | `node_modules/@tauri-apps/cli-darwin-arm64` | 2.12.4 | Apache-2.0 OR MIT |
@@ -882,7 +883,7 @@ Declared metadata, including development and target-specific dependencies; inclu
 | `node_modules/dotenv` | 17.4.2 | BSD-2-Clause |
 | `node_modules/electron-to-chromium` | 1.5.444 | ISC |
 | `node_modules/emoji-regex` | 10.6.0 | MIT |
-| `node_modules/enhanced-resolve` | 5.26.0 | MIT |
+| `node_modules/enhanced-resolve` | 5.26.1 | MIT |
 | `node_modules/enquirer` | 2.4.1 | MIT |
 | `node_modules/env-paths` | 2.2.1 | MIT |
 | `node_modules/esbuild` | 0.25.12 | MIT |
@@ -947,7 +948,7 @@ Declared metadata, including development and target-specific dependencies; inclu
 | `node_modules/log-symbols` | 6.0.0 | MIT |
 | `node_modules/log-symbols/node_modules/is-unicode-supported` | 1.3.0 | MIT |
 | `node_modules/lru-cache` | 5.1.1 | ISC |
-| `node_modules/lucide-react` | 1.67.0 | ISC |
+| `node_modules/lucide-react` | 1.70.0 | ISC |
 | `node_modules/magic-string` | 1.4.5 | MIT |
 | `node_modules/merge-stream` | 2.0.0 | MIT |
 | `node_modules/merge2` | 1.4.1 | MIT |
@@ -1026,7 +1027,7 @@ Declared metadata, including development and target-specific dependencies; inclu
 | `node_modules/strip-bom` | 3.0.0 | MIT |
 | `node_modules/strip-final-newline` | 4.0.0 | MIT |
 | `node_modules/systeminformation` | 5.33.19 | MIT |
-| `node_modules/tailwindcss` | 4.3.4 | MIT |
+| `node_modules/tailwindcss` | 4.3.5 | MIT |
 | `node_modules/tapable` | 2.3.3 | MIT |
 | `node_modules/tiny-invariant` | 1.3.3 | MIT |
 | `node_modules/tinyglobby` | 0.2.17 | MIT |

@@ -53,7 +53,7 @@ url = "2"
 quick-xml = "0.42"
 percent-encoding = "2"
 ureq = { version = "2", features = ["json", "socks-proxy"] }
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 # 在线源：单页 HTML 图集解析
 regex = "1"
 # 在线 HTML 图集：按 charset 正确解码（GBK/Shift_JIS 等）。

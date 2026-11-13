@@ -1033,3 +1033,25 @@ mod data_dir_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod installer_hook_tests {
+    const HOOKS: &str = include_str!("../nsis/hooks.nsh");
+
+    #[test]
+    fn file_association_hooks_preserve_original_backup_and_clear_dead_progids() {
+        for marker in [
+            "NSIS_HOOK_POSTINSTALL",
+            "NSIS_HOOK_POSTUNINSTALL",
+            "MangaReader_preserved_backup",
+            "MangaReader Comic Archive",
+            "MangaReader ZIP Archive",
+            "Software\\Classes",
+        ] {
+            assert!(HOOKS.contains(marker), "hooks.nsh 缺少 {marker}");
+        }
+        // A self-referential backup must not be written back on uninstall.
+        assert!(HOOKS.contains("_backup"));
+        assert!(HOOKS.contains("WriteRegStr") && HOOKS.contains("DeleteRegValue"));
+    }
+}

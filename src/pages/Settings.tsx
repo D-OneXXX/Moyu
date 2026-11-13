@@ -1701,7 +1701,7 @@ export default function SettingsPage() {
                   variant="secondary"
                   className="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium"
                 >
-                  {t("settings.about.nonCommercial")}
+                  {t("settings.about.license")}
                 </Badge>
                 <span className="text-xs font-medium text-muted-foreground">
                   {t("settings.about.buildOriginLabel")}
@@ -1795,7 +1795,7 @@ function AboutBuildOriginCell() {
   );
 }
 
-/** 构建来源指纹值（非商用徽章行右侧）。 */
+/** 构建来源指纹值（许可证徽章行右侧）。 */
 function AboutBuildOriginValue() {
   const { t } = useI18n();
   const origin = useBuildOrigin();

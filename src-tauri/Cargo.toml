@@ -3,6 +3,7 @@ name = "manga-reader-tauri"
 version = "0.20.1"
 description = "Moyu - a free desktop application for manga reading and library management (Tauri 2 + React)"
 authors = ["manga-reader"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.90"
 # Windows 基线：只支持 NT 10.0 (Build 10240)+。安装器由 nsis/hooks.nsh
@@ -46,13 +47,13 @@ dirs = "5"
 thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # 更新包签名校验（minisign / Ed25519，Tauri 更新器同款格式）。
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 # 在线源：同步阻塞 HTTP + URL 规范化 + 文件名解码
 url = "2"
 quick-xml = "0.42"
 percent-encoding = "2"
 ureq = { version = "2", features = ["json", "socks-proxy"] }
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 # 在线源：单页 HTML 图集解析
 regex = "1"
 # 在线 HTML 图集：按 charset 正确解码（GBK/Shift_JIS 等）。

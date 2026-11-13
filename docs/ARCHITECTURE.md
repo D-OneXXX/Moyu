@@ -225,3 +225,7 @@ browser WebView
 | `scripts/` | Version, build, and release helpers |
 
 Verification commands are listed under **Development** in the README.
+
+## Entry points
+
+`index.html` starts the main application. `recovery.html` starts the separate recovery surface, and `web.html` starts the web reader. All three are Vite build inputs in `vite.config.ts`; they must remain at their configured paths unless all references are updated.

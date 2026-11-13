@@ -29,8 +29,10 @@
   },
   "bundle": {
     "active": true,
+    "license": "MIT",
+    "licenseFile": "../LICENSE",
     "shortDescription": "Moyu - a free desktop application for manga reading and library management.",
-    "longDescription": "Moyu is a free desktop application for manga reading and library management. Libraries, reading progress and statistics stay on the local device; commercial use is not granted under the project license.",
+    "longDescription": "Moyu is a free desktop application for manga reading and library management. Libraries, reading progress and statistics stay on the local device.",
     "targets": ["nsis", "deb", "rpm", "appimage"],
     "icon": [
       "icons/32x32.png",

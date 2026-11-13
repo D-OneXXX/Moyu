@@ -2708,7 +2708,7 @@ dependencies = [
  "unrar-rs",
  "ureq",
  "url",
- "webpki-roots 0.26.11",
+ "webpki-roots 1.0.11",
  "windows 0.62.2",
  "x509-parser",
  "zeroize",

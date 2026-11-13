@@ -33,7 +33,7 @@ jobs:
       # 工具链检出：只为拿到解析脚本与 git 远端配置。
       # 真正的证据来源是下面那次「按解析结果检出」的提交。
       - name: Checkout tooling ref
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref }}
           persist-credentials: false
@@ -57,7 +57,7 @@ jobs:
           '
 
       - name: Checkout requested source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.resolve.outputs.ref }}
           persist-credentials: false

@@ -47,7 +47,7 @@ dirs = "5"
 thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # 更新包签名校验（minisign / Ed25519，Tauri 更新器同款格式）。
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 # 在线源：同步阻塞 HTTP + URL 规范化 + 文件名解码
 url = "2"
 quick-xml = "0.42"

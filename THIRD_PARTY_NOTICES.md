@@ -35,9 +35,11 @@ third-party manga artwork is bundled.
 
 ### PDF.js runtime assets
 
-- **Used for:** rendering local PDF documents inside the application window.
+- **Used for:** rendering local PDF documents inside the application window and in the
+  paired LAN Web Reader (mobile browser).
 - **Components:** the `pdfjs-dist` legacy build (`pdf.min.mjs`, `pdf.worker.min.mjs`), plus the
-  `cmaps/` and `standard_fonts/` data directories copied into the application bundle.
+  `cmaps/` and `standard_fonts/` data directories copied into the application bundle and
+  embedded in the desktop binary for the Web Reader's same-origin asset routes.
 - **Copyright:** Copyright Mozilla Foundation and PDF.js contributors.
 - **License:** Apache-2.0.
 - **Full text:** [docs/licenses/Apache-2.0.txt](docs/licenses/Apache-2.0.txt).

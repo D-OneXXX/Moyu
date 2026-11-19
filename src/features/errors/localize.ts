@@ -82,6 +82,10 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "pdf-encrypted", key: "error.pdfEncrypted" },
   { code: "pdf-too-large", key: "error.pdfTooLarge" },
   { code: "pdf-source-unsupported", key: "error.pdfSourceUnsupported" },
+  // D4 Web Reader byte ranges: the requested interval is outside the file or
+  // the response would exceed the 4 MiB cap. The mobile reader retries with a
+  // freshly probed length, so the desktop wording is the closest fit.
+  { code: "range-not-satisfiable", key: "error.pdfNotValid" },
   { code: "source-unsupported", key: "error.sourceUnsupported" },
   { code: "source-page-too-large", key: "error.sourcePageTooLarge" },
   { code: "online-metadata-write", key: "error.onlineMetadataWrite" },

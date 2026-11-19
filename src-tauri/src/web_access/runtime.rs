@@ -32,6 +32,7 @@ use super::clock::SystemClock;
 use super::data::WebDataAccess;
 use super::error::WebAccessError;
 use super::pairing::PairingStore;
+use super::pdf_http::WebPdfAccess;
 use super::plain::{start_plain_server, PlainServerHandle};
 use super::progress_write::WebProgressWrite;
 use super::router::PairingHttp;
@@ -428,6 +429,7 @@ pub(crate) struct WebAccessRuntime {
     events: Option<Arc<dyn WebAccessEventSink>>,
     allow_loopback: bool,
     data: Option<Arc<dyn WebDataAccess>>,
+    pdf: Option<Arc<dyn WebPdfAccess>>,
     progress: Option<Arc<dyn WebProgressWrite>>,
     /// Serializes start/stop/pairing-start. Approval/denial only touch the
     /// in-memory service and may overlap with a snapshot read.
@@ -455,6 +457,14 @@ impl WebAccessRuntime {
         self
     }
 
+    /// Attach the PDF byte-stream provider. Like the write plane it is only
+    /// stored here; `start_inner` mounts it on the same router/authority after
+    /// the explicit user start.
+    pub(crate) fn with_pdf(mut self, pdf: Arc<dyn WebPdfAccess>) -> Self {
+        self.pdf = Some(pdf);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(ca_root: PathBuf) -> Self {
         Self::with_events(ca_root, None, true, None)
@@ -476,6 +486,7 @@ impl WebAccessRuntime {
             events,
             allow_loopback,
             data,
+            pdf: None,
             progress: None,
             operation: AsyncMutex::new(()),
             state: AsyncMutex::new(RunningState::default()),
@@ -684,6 +695,7 @@ impl WebAccessRuntime {
             service.set_change_hook(Arc::new(move || events.emit_devices_changed()));
         }
         let factory_data = self.data.clone();
+        let factory_pdf = self.pdf.clone();
         let factory_progress = self.progress.clone();
         let factory_service = Arc::clone(&service);
         let factory: HandlerFactory = Arc::new(move |addr| {
@@ -695,6 +707,9 @@ impl WebAccessRuntime {
                 )?,
                 None => PairingHttp::new(Arc::clone(&factory_service), addr)?,
             };
+            if let Some(pdf) = factory_pdf.as_ref() {
+                router.with_pdf(Arc::clone(pdf));
+            }
             if let Some(progress) = factory_progress.as_ref() {
                 router.with_progress(Arc::clone(progress));
             }
@@ -794,6 +809,7 @@ impl WebAccessRuntime {
             service.set_change_hook(Arc::new(move || events.emit_devices_changed()));
         }
         let factory_data = self.data.clone();
+        let factory_pdf = self.pdf.clone();
         let factory_progress = self.progress.clone();
         let factory_service = Arc::clone(&service);
         let factory: HandlerFactory = Arc::new(move |addr| {
@@ -805,6 +821,9 @@ impl WebAccessRuntime {
                 )?,
                 None => PairingHttp::new_with_scheme(Arc::clone(&factory_service), addr, true)?,
             };
+            if let Some(pdf) = factory_pdf.as_ref() {
+                router.with_pdf(Arc::clone(pdf));
+            }
             if let Some(progress) = factory_progress.as_ref() {
                 router.with_progress(Arc::clone(progress));
             }

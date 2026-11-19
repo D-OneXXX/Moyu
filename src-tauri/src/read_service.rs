@@ -785,9 +785,34 @@ fn assembled_asset(
     })
 }
 
+/// Built-in PDF cover shown when the desktop has not rendered one yet (or the
+/// cached cover is corrupt). A self-contained SVG keeps the browser library
+/// free of broken-image icons without reading the PDF or writing any cache.
+const PDF_PLACEHOLDER_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="683" viewBox="0 0 512 683" role="img" aria-label="PDF">
+<rect width="512" height="683" fill="#151F32"/>
+<rect x="92" y="148" width="328" height="400" rx="26" fill="#1E293B" stroke="#38A8F8" stroke-width="6"/>
+<path d="M300 148h56l48 48v52" fill="none" stroke="#38A8F8" stroke-width="12" stroke-linejoin="round"/>
+<path d="M300 148v48h48" fill="none" stroke="#38A8F8" stroke-width="12" stroke-linejoin="round"/>
+<text x="256" y="372" fill="#EFF8FF" font-family="system-ui, sans-serif" font-size="76" font-weight="700" text-anchor="middle" letter-spacing="4">PDF</text>
+<rect x="178" y="414" width="156" height="10" rx="5" fill="#334155"/>
+<rect x="204" y="444" width="104" height="10" rx="5" fill="#334155"/>
+</svg>"##;
+
+fn pdf_placeholder_asset() -> ImageAsset {
+    ImageAsset {
+        bytes: PDF_PLACEHOLDER_SVG.to_vec(),
+        mime: "image/svg+xml",
+        width: 512,
+        height: 683,
+        orig_width: 512,
+        orig_height: 683,
+        data_url: None,
+    }
+}
+
 fn pdf_thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataError> {
     let Some(bytes) = state.render.get_cover_raw(id, pdf::PDF_COVER_EDGE) else {
-        return Err(DataError::ThumbMissing);
+        return Ok(pdf_placeholder_asset());
     };
     match pdf::validate_pdf_cover_read(&bytes) {
         Ok((width, height)) => {
@@ -808,7 +833,7 @@ fn pdf_thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataEr
         }
         Err(_) => {
             state.render.remove_cover(id, pdf::PDF_COVER_EDGE);
-            Err(DataError::ThumbMissing)
+            Ok(pdf_placeholder_asset())
         }
     }
 }
@@ -1755,6 +1780,13 @@ mod tests {
         assert!(thumb.bytes.starts_with(&[0xFF, 0xD8]));
         assert_eq!(thumb.width, 40);
 
+        // A PDF that the desktop has not opened yet has no cached cover. The
+        // Web library still gets a usable placeholder instead of a 404.
+        let placeholder = thumb_asset(&state, &pdf).expect("pdf placeholder");
+        assert_eq!(placeholder.mime, "image/svg+xml");
+        assert!(placeholder.bytes.starts_with(b"<svg"));
+        assert_eq!((placeholder.width, placeholder.height), (512, 683));
+
         state.render.put_cover(
             &pdf,
             crate::pdf::PDF_COVER_EDGE,
@@ -1781,7 +1813,8 @@ mod tests {
         state
             .render
             .put_cover(&pdf, crate::pdf::PDF_COVER_EDGE, b"not an image");
-        assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
+        let corrupt = thumb_asset(&state, &pdf).expect("corrupt cover placeholder");
+        assert_eq!(corrupt.mime, "image/svg+xml");
         assert!(state
             .render
             .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)
@@ -1792,7 +1825,8 @@ mod tests {
             crate::pdf::PDF_COVER_EDGE,
             &crate::pdf::fixtures::png_header(5000, 5000),
         );
-        assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
+        let oversized = thumb_asset(&state, &pdf).expect("oversized cover placeholder");
+        assert_eq!(oversized.mime, "image/svg+xml");
         assert!(state
             .render
             .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)

@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -46,7 +48,6 @@ import {
   useTheme,
   type ThemeMode,
 } from "@/features/theme/ThemeProvider";
-import { updateApi } from "@/features/update/api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -84,7 +85,6 @@ import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
 import WebAccessSummaryCard from "@/components/settings/WebAccessSummaryCard";
 import WebAccessPanel from "@/components/settings/WebAccessPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
-import SkinGallery from "@/components/settings/SkinGallery";
 import DeveloperFeaturePanel, {
   FeatureDisabledNotice,
 } from "@/components/settings/DeveloperFeaturePanel";
@@ -105,6 +105,13 @@ import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { recordBreadcrumb } from "@/features/resilience";
 import { useSkin } from "@/features/skin/SkinProvider";
 import { skinDisplayName } from "@/features/skin/registry";
+
+/**
+ * 皮肤工坊仅在居中弹窗打开时挂载（SettingsDialog 关闭即卸载），
+ * 因此把整个展厅与 `.moyuskin` 导入/自制逻辑拆成独立异步 chunk，
+ * 不进入设置页首屏包。
+ */
+const SkinGallery = lazy(() => import("@/components/settings/SkinGallery"));
 
 const DEFAULT_FORM: Settings = {
   theme: "system",
@@ -969,7 +976,18 @@ export default function SettingsPage() {
                 testId: "skin-open",
               }}
             >
-              <SkinGallery />
+              <Suspense
+                fallback={
+                  <div className="grid min-h-40 place-items-center">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-xs text-muted-foreground shadow-hard-sm">
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      {t("common.loading")}
+                    </span>
+                  </div>
+                }
+              >
+                <SkinGallery />
+              </Suspense>
             </SettingsSection>
 
             <SettingsSection
@@ -1713,21 +1731,16 @@ export default function SettingsPage() {
                       {t("settings.about.dataFlowValue")}
                     </dd>
                   </div>
-                  <AboutBuildOriginCell />
                 </dl>
               }
             >
-              <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+              <div className="flex flex-wrap items-center gap-2 px-1">
                 <Badge
                   variant="secondary"
                   className="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium"
                 >
                   {t("settings.about.license")}
                 </Badge>
-                <span className="text-xs font-medium text-muted-foreground">
-                  {t("settings.about.buildOriginLabel")}
-                </span>
-                <AboutBuildOriginValue />
               </div>
               <p className="px-1 text-xs leading-5 text-muted-foreground">
                 {t("settings.about.note")}
@@ -1768,63 +1781,5 @@ export default function SettingsPage() {
         </Tabs>
       )}
     </div>
-  );
-}
-
-/**
- * 构建来源指纹：官方 CI 注入 `MR_BUILD_ORIGIN=official` → Official
- * Release；否则按社区构建展示。拉取失败回落 community。
- */
-let buildOriginCache: Promise<string> | null = null;
-function fetchBuildOrigin(): Promise<string> {
-  buildOriginCache ??= updateApi
-    .getAppInfo()
-    .then((info) => (info.buildOrigin === "official" ? "official" : "community"))
-    .catch(() => "community");
-  return buildOriginCache;
-}
-
-function useBuildOrigin(): string | null {
-  const [origin, setOrigin] = useState<string | null>(null);
-  useEffect(() => {
-    let alive = true;
-    fetchBuildOrigin().then((value) => {
-      if (alive) setOrigin(value);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return origin;
-}
-
-/** 构建来源指纹格子（关于分区 dl 的最后一格）。 */
-function AboutBuildOriginCell() {
-  const { t } = useI18n();
-  const origin = useBuildOrigin();
-  return (
-    <div className="min-w-0 rounded-lg border border-border/60 bg-card/50 px-3 py-2">
-      <dt className="text-[11px] font-medium text-muted-foreground">
-        {t("settings.about.buildOrigin")}
-      </dt>
-      <dd className="mt-0.5 truncate text-xs font-semibold">
-        {origin === "official"
-          ? t("settings.about.buildOriginOfficial")
-          : t("settings.about.buildOriginCommunity")}
-      </dd>
-    </div>
-  );
-}
-
-/** 构建来源指纹值（许可证徽章行右侧）。 */
-function AboutBuildOriginValue() {
-  const { t } = useI18n();
-  const origin = useBuildOrigin();
-  return (
-    <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-      {origin === "official"
-        ? t("settings.about.buildOriginOfficial")
-        : t("settings.about.buildOriginCommunity")}
-    </span>
   );
 }

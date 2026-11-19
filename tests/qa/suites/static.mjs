@@ -1476,7 +1476,6 @@ export function checkReleaseSurface(root, report) {
   for (const marker of [
     "TAURI_SIGNING_PRIVATE_KEY",
     "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-    "MR_BUILD_ORIGIN: official",
     "npx tsc --noEmit",
     "cargo test --lib",
     "npm run build",
@@ -1551,7 +1550,6 @@ export function checkReleaseSurface(root, report) {
     "TAURI_SIGNING_PRIVATE_KEY",
     "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
     "latest-linux-critical.json",
-    "MR_BUILD_ORIGIN: official",
     "make-linux-critical-manifest.mjs",
     "npx tsc --noEmit",
     "cargo test --lib",

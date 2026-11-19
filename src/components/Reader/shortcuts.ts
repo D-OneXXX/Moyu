@@ -10,6 +10,7 @@ export const READER_SHORTCUTS: {
   { keys: "Space", actionKey: "reader.nav.next" },
   { keys: "Shift + Space", actionKey: "reader.nav.prev" },
   { keys: "f", actionKey: "reader.shortcut.mode" },
+  { keys: "p", actionKey: "reader.shortcut.spread" },
   { keys: "Ctrl + 1…9", actionKey: "reader.shortcut.tabs" },
   { keys: "Ctrl + W", actionKey: "reader.shortcut.closeTab" },
   { keysKey: "reader.shortcut.keys.zoom", actionKey: "reader.shortcut.zoom" },

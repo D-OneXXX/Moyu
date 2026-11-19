@@ -914,6 +914,9 @@ try {
   assert.equal(canvasMetrics.format, "pdf");
   assert.equal(canvasMetrics.modeHidden, true, "PDF has no webtoon mode toggle");
   await shot("mobile-web-reader-pdf.png");
+  // Task 21-4 acceptance frame: PDF canvas plus visible HUD/pager state.
+  await wait("document.querySelector('.hud-top').dataset.hidden === 'false'");
+  await shot("mobile-web-pdf-reader.png");
 
   const writesBeforePdf = writes;
   await page.eval(`document.querySelector('.tapzones .zone[data-row="1"][data-col="2"]').click()`);

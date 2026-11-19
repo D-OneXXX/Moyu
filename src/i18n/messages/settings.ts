@@ -260,10 +260,6 @@ const zhCN = {
   "settings.backup.restored": "已从备份恢复：{books} 本 · {days} 天阅读记录",
   "settings.backup.applied": "已应用备份中的主题、语言与阅读器偏好",
   "settings.backup.error": "备份操作失败，请重试",
-  "settings.about.buildOrigin": "构建来源",
-  "settings.about.buildOriginLabel": "构建来源指纹（Build Origin）",
-  "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build",
   "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "以下本地书未恢复",
   "settings.backup.skippedHint":
@@ -697,10 +693,6 @@ const zhTW: SettingsMessages = {
   "settings.backup.restored": "已從備份還原：{books} 本 · {days} 天閱讀記錄",
   "settings.backup.applied": "已套用備份中的主題、語言與閱讀器偏好",
   "settings.backup.error": "備份操作失敗，請再試一次",
-  "settings.about.buildOrigin": "構建來源",
-  "settings.about.buildOriginLabel": "構建來源指紋（Build Origin）",
-  "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build",
   "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "以下本機書籍未還原",
   "settings.backup.skippedHint":
@@ -1136,10 +1128,6 @@ const en: SettingsMessages = {
   "settings.backup.applied":
     "Theme, language and reader preferences from the backup were applied",
   "settings.backup.error": "Backup operation failed. Please try again.",
-  "settings.about.buildOrigin": "Build origin",
-  "settings.about.buildOriginLabel": "Build origin fingerprint",
-  "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build",
   "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "Some local books were not restored",
   "settings.backup.skippedHint":
@@ -1596,10 +1584,6 @@ const es: SettingsMessages = {
     "Se aplicaron el tema, el idioma y las preferencias de lectura de la copia",
   "settings.backup.error":
     "La operación de copia falló. Inténtalo de nuevo.",
-  "settings.about.buildOrigin": "Origen de compilación",
-  "settings.about.buildOriginLabel": "Huella de origen de compilación",
-  "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build",
   "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "Algunos libros locales no se restauraron",
   "settings.backup.skippedHint":
@@ -2061,10 +2045,6 @@ const ja: SettingsMessages = {
     "バックアップのテーマ、言語、リーダー設定を適用しました",
   "settings.backup.error":
     "バックアップ操作に失敗しました。もう一度お試しください。",
-  "settings.about.buildOrigin": "ビルド由来",
-  "settings.about.buildOriginLabel": "ビルド由来フィンガープリント",
-  "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build",
   "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "一部のローカル書籍を復元できませんでした",
   "settings.backup.skippedHint":
@@ -2518,10 +2498,6 @@ const ko: SettingsMessages = {
   "settings.backup.applied":
     "백업의 테마, 언어, 리더 환경설정을 적용했습니다",
   "settings.backup.error": "백업 작업에 실패했습니다. 다시 시도하세요.",
-  "settings.about.buildOrigin": "빌드 출처",
-  "settings.about.buildOriginLabel": "빌드 출처 지문",
-  "settings.about.buildOriginOfficial": "Official Release",
-  "settings.about.buildOriginCommunity": "Community Modified Build",
   "settings.about.license": "MIT License",
   "settings.backup.skippedTitle": "일부 로컬 책을 복원하지 못했습니다",
   "settings.backup.skippedHint":

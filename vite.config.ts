@@ -88,6 +88,45 @@ function pdfAssetsPlugin(): Plugin {
 }
 
 /**
+ * 构建期 chunk 预算（Task 21-4）。
+ *
+ * Vite 的 500 kB 警告以 chunk 为单位，PDF.js 单文件魔改不动（pdf.min 约
+ * 0.55 MB，worker 是异步资产），不足以指导首屏优化。这里直接把所有
+ * 非 PDF 的 JS chunk 卡在 500 kB 以内：主入口、Settings、Browser、Reader
+ * 与 UI vendor 超限都会让构建失败，而不是只打一行 warning。
+ */
+function chunkBudgetPlugin(): Plugin {
+  const budget = 500 * 1024;
+  return {
+    name: "moyu:chunk-budget",
+    apply: "build",
+    // generateBundle 里的 code 仍是预压缩产物；用 writeBundle 读取落盘后的
+    // 真实字节数，避免“账面 560 kB、实际 745 kB”的假通过。
+    writeBundle(options, bundle) {
+      const outDir =
+        options.dir ?? fileURLToPath(new URL("./dist", import.meta.url));
+      const offenders: string[] = [];
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        // PDF.js 是异步懒加载的第三方单文件构建，单独预算。
+        if (/pdf/i.test(output.fileName)) continue;
+        const bytes = statSync(resolve(outDir, output.fileName)).size;
+        if (bytes > budget) {
+          offenders.push(
+            `${output.fileName} ${(bytes / 1024).toFixed(1)} kB`,
+          );
+        }
+      }
+      if (offenders.length > 0) {
+        this.error(
+          `非 PDF chunk 超过 500 kB 预算：${offenders.join(", ")}。请拆分路由或 manualChunks。`,
+        );
+      }
+    },
+  };
+}
+
+/**
  * QA-only seam for the Web Access pairing harness.
  *
  * The QA suite must exercise the real React panel and timers without replacing
@@ -224,6 +263,7 @@ export default defineConfig(() => ({
     react(),
     tailwindcss(),
     pdfAssetsPlugin(),
+    chunkBudgetPlugin(),
   ],
   resolve: {
     alias: {
@@ -231,6 +271,9 @@ export default defineConfig(() => ({
     },
   },
   build: {
+    // PDF.js 单个 bundle 约 0.55 MB，且永远异步加载；非 PDF chunk 由
+    // chunkBudgetPlugin 单独按 500 kB 强制校验，不依赖 Vite 的软警告。
+    chunkSizeWarningLimit: 700,
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
@@ -238,6 +281,42 @@ export default defineConfig(() => ({
         // Web Access 独立入口（W2 / BLK-2 验证原型）。
         // 刻意与桌面入口分离：不共享 Provider 栈，不引入任何 Tauri IPC 依赖。
         web: fileURLToPath(new URL("./web.html", import.meta.url)),
+      },
+      output: {
+        // 路由级 lazy 之外，把跨入口共享的框架/图标/PDF 拆成稳定缓存组：
+        // 首屏主入口只保留书库与壳层，冷启动不必下载设置/浏览器/阅读器。
+        manualChunks(id) {
+          const path = id.replace(/\\/g, "/");
+          // 六语字典体积大且几乎全部页面都会用到。按消息域拆成稳定缓存组，
+          // 避免单个 i18n chunk 超过预算；类型导入会在编译期擦除，不增加包体。
+          if (path.includes("/src/i18n/messages/")) {
+            const domain =
+              path.split("/src/i18n/messages/")[1]?.replace(/\.ts$/, "") ??
+              "misc";
+            return `messages-${domain}`;
+          }
+          if (path.includes("/src/i18n/locales/")) return "i18n-locales";
+          if (!path.includes("node_modules")) return;
+          if (path.includes("/pdfjs-dist/")) return "pdfjs";
+          if (path.includes("/lucide-react/")) return "lucide";
+          if (
+            path.includes("/@base-ui/") ||
+            path.includes("/@floating-ui/") ||
+            path.includes("/@radix-ui/")
+          ) {
+            return "ui-vendor";
+          }
+          if (
+            path.includes("/react-dom/") ||
+            path.includes("/react/") ||
+            path.includes("/scheduler/") ||
+            path.includes("/react-router") ||
+            path.includes("/@remix-run/")
+          ) {
+            return "react-vendor";
+          }
+          return;
+        },
       },
     },
   },

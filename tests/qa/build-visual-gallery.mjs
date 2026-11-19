@@ -54,6 +54,30 @@ const sections = [
     ],
   },
   {
+    title: "桌面端 · 收藏与标签（21-1）",
+    note: "星标收藏、卡片标签胶囊、收藏置顶与标签筛选栏",
+    items: [
+      ["desktop/library-tags-favorites-light", "Light", "desktop/desktop-library-tags-favorites-light.png"],
+      ["desktop/library-tags-favorites-dark", "Dark", "desktop/desktop-library-tags-favorites-dark.png"],
+    ],
+  },
+  {
+    title: "桌面端 · 皮肤工坊居中弹窗（21-3）",
+    note: "内置预设与本地皮肤展厅；点击即切换并自动保存，无侧滑与底栏",
+    items: [
+      ["desktop/skin-gallery-dialog-light", "Light", "desktop/desktop-skin-gallery-dialog-light.png"],
+      ["desktop/skin-gallery-dialog-dark", "Dark", "desktop/desktop-skin-gallery-dialog-dark.png"],
+    ],
+  },
+  {
+    title: "桌面端 · 画框皮肤真实视窗（21-3）",
+    note: "整页画布 + 内嵌视窗留白、毛玻璃与硬描边；无漂浮挂件",
+    items: [
+      ["desktop/library-framed-skin-light", "Light", "desktop/desktop-library-framed-skin-light.png"],
+      ["desktop/library-framed-skin-dark", "Dark", "desktop/desktop-library-framed-skin-dark.png"],
+    ],
+  },
+  {
     title: "桌面端 · 设置总览（五分区 + 即时保存）",
     note: "居中弹窗与即时落盘；无底部保存栏",
     items: [
@@ -91,6 +115,13 @@ const sections = [
     items: [
       ["mobile/reader-hud-open", "HUD 展开", "mobile/mobile-web-reader-hud-open.png"],
       ["mobile/reader-clean", "纯享", "mobile/mobile-web-reader-clean.png"],
+    ],
+  },
+  {
+    title: "手机端 · 局域网 PDF 阅读（21-2）",
+    note: "PDF.js 字节流渲染、HUD 页码与状态；无原生 PDF 依赖",
+    items: [
+      ["mobile/pdf-reader", "PDF", "mobile/mobile-web-pdf-reader.png"],
     ],
   },
 ];
@@ -137,7 +168,7 @@ const cards = sections
   .join("");
 
 const desktopCount = desktopManifest?.desktop?.length ?? 0;
-const mobileCount = mobileMetrics ? 4 : 0;
+const mobileCount = mobileMetrics ? 5 : 0;
 const html = `<!doctype html>
 <html lang="zh-CN">
 <head>

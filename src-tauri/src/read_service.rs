@@ -1151,8 +1151,8 @@ mod tests {
         assert!(!first.items[0].updated_at.contains(' '));
         assert!(first.items[0].updated_at[19..].starts_with('+'));
 
-        let second =
-            list_books_page_compat(&state, None, first.next_cursor.as_deref(), 2).expect("second page");
+        let second = list_books_page_compat(&state, None, first.next_cursor.as_deref(), 2)
+            .expect("second page");
         assert_eq!(second.items[0].id, a);
         assert!(second.next_cursor.is_none());
     }
@@ -1236,14 +1236,16 @@ mod tests {
         let first = list_books_page_compat(&state, None, None, 1).expect("first");
         assert_eq!(first.items[0].id, normal);
         let normal_cursor = first.next_cursor.clone().expect("normal cursor");
-        let second = list_books_page_compat(&state, None, Some(&normal_cursor), 1).expect("first empty");
+        let second =
+            list_books_page_compat(&state, None, Some(&normal_cursor), 1).expect("first empty");
         assert_eq!(second.items[0].id, id_for('a'));
         let empty_cursor = second.next_cursor.clone().expect("empty cursor");
-        let third = list_books_page_compat(&state, None, Some(&empty_cursor), 1).expect("second empty");
+        let third =
+            list_books_page_compat(&state, None, Some(&empty_cursor), 1).expect("second empty");
         assert_eq!(third.items[0].id, id_for('b'));
         assert_ne!(third.items[0].id, normal);
-        let fourth =
-            list_books_page_compat(&state, None, third.next_cursor.as_deref(), 1).expect("third empty");
+        let fourth = list_books_page_compat(&state, None, third.next_cursor.as_deref(), 1)
+            .expect("third empty");
         assert_eq!(fourth.items[0].id, id_for('c'));
         assert!(fourth.next_cursor.is_none());
     }
@@ -1308,9 +1310,11 @@ mod tests {
             1,
         );
 
-        let by_title = list_books_page_compat(&state, Some("Alpha"), None, 10).expect("title search");
+        let by_title =
+            list_books_page_compat(&state, Some("Alpha"), None, 10).expect("title search");
         assert_eq!(by_title.items.len(), 1);
-        let by_path = list_books_page_compat(&state, Some("secret"), None, 10).expect("path search");
+        let by_path =
+            list_books_page_compat(&state, Some("secret"), None, 10).expect("path search");
         assert!(by_path.items.is_empty(), "path must not be searchable");
         let injected =
             list_books_page_compat(&state, Some("' OR 1=1 --"), None, 10).expect("injection query");
@@ -1409,8 +1413,7 @@ mod tests {
             })
             .expect("seed tags");
 
-        let favorites =
-            list_books_page(&state, None, None, 10, true, None).expect("favorites");
+        let favorites = list_books_page(&state, None, None, 10, true, None).expect("favorites");
         assert_eq!(
             favorites
                 .items
@@ -1422,8 +1425,8 @@ mod tests {
         assert!(favorites.items[0].is_favorite);
         assert!(favorites.items[0].tags.is_empty());
 
-        let tagged = list_books_page(&state, None, None, 10, false, Some(tag_id))
-            .expect("tag filter");
+        let tagged =
+            list_books_page(&state, None, None, 10, false, Some(tag_id)).expect("tag filter");
         assert_eq!(
             tagged
                 .items

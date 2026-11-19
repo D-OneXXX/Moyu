@@ -79,6 +79,23 @@ pub struct BookInfo {
     /// 本地书源路径当前已不存在（在线书恒为 false）。前端据此显示
     /// 「文件位置已变更」状态并提供无损重定位，不以崩溃或丢进度处理。
     pub missing: bool,
+    /// 21-1：收藏星标；老客户端/老备份缺失时回落 false。
+    #[serde(default)]
+    pub is_favorite: bool,
+    /// 21-1：书籍标签（列表页批量装配；无标签为空数组）。
+    #[serde(default)]
+    pub tags: Vec<TagInfo>,
+}
+
+/// 21-1：标签元数据（`bookCount` 为未软删书籍计数）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    pub id: i64,
+    pub name: String,
+    /// 空串或 `#RRGGBB`（后端统一大写）。
+    pub color: String,
+    pub book_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -676,6 +693,8 @@ pub fn run() {
                     std::io::Error::other(format!("缓存状态初始化后台任务失败：{error}"))
                 })?;
             app.manage(app_state);
+            // 皮肤包管理：仅进程内 LRU（≤3 个 bundle），绝不落 localStorage/SQLite。
+            app.manage(skin::SkinCache::default());
             // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
             let ca_root = ca::resolve_ca_root(None, Some(data_dir.as_path()))
                 .unwrap_or_else(|_| data_dir.join("security").join("ca"));
@@ -687,6 +706,9 @@ pub fn run() {
             // 两者都只在显式 start 后由 start_inner 挂载，库初始化绝不监听。
             let app_state = app.state::<Arc<AppState>>().inner().clone();
             let web_data = Arc::new(web_access::AppData::new(Arc::clone(&app_state)));
+            // D4: the PDF stream provider is mounted on the same listener; the
+            // library still never starts listening on its own.
+            let web_pdf = Arc::new(web_access::AppPdf::new(Arc::clone(&app_state)));
             let web_progress = Arc::new(web_access::AppProgress::new(app_state));
             app.manage(Arc::new(
                 web_access::WebAccessRuntime::new(
@@ -694,6 +716,7 @@ pub fn run() {
                     Arc::new(web_access::TauriEventSink::new(app.handle().clone())),
                     web_data,
                 )
+                .with_pdf(web_pdf)
                 .with_progress(web_progress),
             ));
             cache_health::install(app.handle().clone());
@@ -751,6 +774,16 @@ pub fn run() {
             commands::remove_books,
             commands::list_books,
             commands::list_books_page,
+            // 21-1：收藏与自定义标签（全部走 spawn_blocking）。
+            commands::set_book_favorite,
+            commands::set_books_favorite,
+            commands::list_tags,
+            commands::create_tag,
+            commands::rename_tag,
+            commands::delete_tag,
+            commands::set_book_tags,
+            commands::batch_add_tag,
+            commands::batch_remove_tag,
             commands::library_stats,
             commands::get_last_read,
             commands::get_book,
@@ -835,8 +868,15 @@ pub fn run() {
             // 检查/安装都必须经这两个命令先过 FeatureId::Updates 门卫。
             updater_gate::check_native_update,
             updater_gate::install_native_update,
-            // Task 7：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变。
+            // Task 7/21-3：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变；
+            // 正式皮肤包落 <app_data_dir>/skins，localStorage 只保存 mr-skin id。
             skin::skin_import_asset,
+            skin::list_installed_skins,
+            skin::get_skin_bundle,
+            skin::import_skin_pack,
+            skin::export_skin_pack,
+            skin::delete_skin_pack,
+            skin::create_custom_skin_from_image,
             security::security_audit,
             security::clear_online_traces,
             // G1：仅根 CA 初始化/导出/短时分发；不含 D1b 配对或数据路由。

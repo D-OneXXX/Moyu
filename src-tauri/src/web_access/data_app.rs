@@ -37,8 +37,10 @@ impl WebDataAccess for AppData {
         q: Option<&str>,
         cursor: Option<&str>,
         limit: u32,
+        favorite_only: bool,
+        tag_id: Option<i64>,
     ) -> Result<WebBookPage, DataError> {
-        read_service::list_books_page(self.state.as_ref(), q, cursor, limit)
+        read_service::list_books_page(self.state.as_ref(), q, cursor, limit, favorite_only, tag_id)
     }
     fn book(&self, id: &str) -> Result<WebBookDetail, DataError> {
         read_service::book_detail(self.state.as_ref(), id)
@@ -145,7 +147,9 @@ mod tests {
         let data = AppData::new(Arc::clone(&state));
         let before = book_row_snapshot(state.as_ref());
 
-        let page = data.list_books(None, None, 40).expect("list books");
+        let page = data
+            .list_books(None, None, 40, false, None)
+            .expect("list books");
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].title, "Web");
         assert!(page.items[0].thumb_url.is_some());

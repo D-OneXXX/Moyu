@@ -11,6 +11,7 @@ import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
 import { settingsDetailMessages } from "../messages/settingsDetail";
 import { featureGateMessages } from "../messages/featureGate";
+import { tagMessages } from "../messages/tags";
 import type { Messages } from "./zh-CN";
 
 export const zhTW = {
@@ -26,5 +27,6 @@ export const zhTW = {
   ...opdsMessages["zh-TW"],
   ...settingsDetailMessages["zh-TW"],
   ...featureGateMessages["zh-TW"],
+  ...tagMessages["zh-TW"],
   ...resilienceMessages["zh-TW"],
 } satisfies Messages;

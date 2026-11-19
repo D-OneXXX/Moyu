@@ -39,7 +39,23 @@ export interface BookInfo {
   chapterIndex?: number | null;
   /** 下一话来源 URL；无则 null/缺省。 */
   nextUrl?: string | null;
+  /** 21-1：收藏星标。 */
+  isFavorite: boolean;
+  /** 21-1：书籍标签（列表页批量装配）。 */
+  tags: TagInfo[];
 }
+
+/** 21-1：标签元数据（bookCount 为未软删书籍计数）。 */
+export interface TagInfo {
+  id: number;
+  name: string;
+  /** 空串或 #RRGGBB（后端统一大写）。 */
+  color: string;
+  bookCount: number;
+}
+
+/** 书库排序方式（与后端 sortBy 参数一致）。 */
+export type BooksSortBy = "recentOpened" | "recentRead" | "favoritesFirst";
 
 /** ADR-018 冻结契约：桌面书库分页结果（游标 =(last_opened_at,id) base64url）。 */
 export interface BooksPage {
@@ -486,18 +502,40 @@ export const api = {
     invoke<RemoveResult>("remove_books", { ids, deleteSourceFiles }),
   listBooks: (query?: string) =>
     invoke<BookInfo[]>("list_books", { query: query ?? null }),
-  // ADR-018：桌面书库分页，保持 last_opened_at 排序与 title+path 搜索。
-  // 后端实现由 WS2 提供；此处仅冻结 invoke 参数与 limit 默认值。
+  // ADR-018 + 21-1：桌面书库分页；支持仅收藏、单标签筛选与收藏置顶排序。
   listBooksPage: (args: {
     query?: string | null;
     cursor?: string | null;
     limit?: number;
+    favoriteOnly?: boolean;
+    tagId?: number | null;
+    sortBy?: BooksSortBy;
   } = {}) =>
     invoke<BooksPage>("list_books_page", {
       query: args.query ?? null,
       cursor: args.cursor ?? null,
       limit: args.limit ?? 60,
+      favoriteOnly: args.favoriteOnly ?? false,
+      tagId: args.tagId ?? null,
+      sortBy: args.sortBy ?? "recentOpened",
     }),
+  // 21-1：收藏与自定义标签。
+  setBookFavorite: (bookId: string, favorite: boolean) =>
+    invoke<void>("set_book_favorite", { bookId, favorite }),
+  setBooksFavorite: (bookIds: string[], favorite: boolean) =>
+    invoke<number>("set_books_favorite", { bookIds, favorite }),
+  listTags: () => invoke<TagInfo[]>("list_tags"),
+  createTag: (name: string, color?: string | null) =>
+    invoke<TagInfo>("create_tag", { name, color: color ?? null }),
+  renameTag: (tagId: number, name: string, color?: string | null) =>
+    invoke<TagInfo>("rename_tag", { tagId, name, color: color ?? null }),
+  deleteTag: (tagId: number) => invoke<void>("delete_tag", { tagId }),
+  setBookTags: (bookId: string, tagIds: number[]) =>
+    invoke<void>("set_book_tags", { bookId, tagIds }),
+  batchAddTag: (bookIds: string[], tagId: number) =>
+    invoke<number>("batch_add_tag", { bookIds, tagId }),
+  batchRemoveTag: (bookIds: string[], tagId: number) =>
+    invoke<number>("batch_remove_tag", { bookIds, tagId }),
   // ADR-032：合集计数聚合（seriesId -> 章节数），替代搜索态全量 listBooks()。
   libraryStats: () => invoke<LibraryStats>("library_stats"),
   // ADR-034：「继续阅读」轻量查询（最近打开、已开始且未读完的一本）。

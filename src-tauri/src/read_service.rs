@@ -13,9 +13,7 @@ use base64::Engine as _;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde::Serialize;
 
-use crate::commands::{
-    get_next_book_snapshot_from_current, is_safe_library_source_path, to_book_info,
-};
+use crate::commands::{get_next_book_snapshot_from_current, is_safe_library_source_path};
 use crate::db::{self, BookRow};
 use crate::pdf;
 use crate::pipeline;
@@ -76,6 +74,10 @@ pub(crate) struct WebBook {
     pub source_type: String,
     pub missing: bool,
     pub updated_at: String,
+    /// 21-1：收藏星标（Web 只读视图）。
+    pub is_favorite: bool,
+    /// 21-1：标签（不含路径等本地隐私信息）。
+    pub tags: Vec<crate::TagInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb_url: Option<String>,
 }
@@ -143,12 +145,16 @@ pub(crate) struct TileImage {
 
 /// Read a stable `(updated_at, id)` page, newest first. Search is title-only;
 /// path is never a search field. `limit` is validated again here even though
-/// the HTTP layer will also enforce 1..=100.
+/// the HTTP layer will also enforce 1..=100. 21-1 adds `favorite_only` /
+/// `tag_id` filters and batch tag hydration inside the same DbSlot window.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn list_books_page(
     state: &AppState,
     q: Option<&str>,
     cursor: Option<&str>,
     limit: u32,
+    favorite_only: bool,
+    tag_id: Option<i64>,
 ) -> Result<WebBookPage, DataError> {
     if !(1..=100).contains(&limit) {
         return Err(DataError::InvalidParameter);
@@ -166,11 +172,26 @@ pub(crate) fn list_books_page(
         None => (None, None),
     };
 
-    let mut rows = state
+    let (mut rows, mut tags_by_book) = state
         .db
         .with(|conn| {
-            db::list_books_page(conn, q, cursor_updated, cursor_id, limit)
-                .map_err(|e| e.to_string())
+            let rows = db::list_books_page(
+                conn,
+                q,
+                cursor_updated,
+                cursor_id,
+                limit,
+                favorite_only,
+                tag_id,
+            )
+            .map_err(|e| e.to_string())?;
+            let ids: Vec<String> = rows
+                .iter()
+                .take(limit as usize)
+                .map(|row| row.id.clone())
+                .collect();
+            let tags = db::tags_for_books(conn, &ids).map_err(|e| e.to_string())?;
+            Ok((rows, tags))
         })
         .map_err(|_| DataError::DbUnavailable)?;
     let has_more = rows.len() > limit as usize;
@@ -182,7 +203,20 @@ pub(crate) fn list_books_page(
     };
     let items = rows
         .into_iter()
-        .map(|row| web_book(to_book_info(row)))
+        .map(|row| {
+            let tags = tags_by_book
+                .remove(&row.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|tag| crate::TagInfo {
+                    id: tag.id,
+                    name: tag.name,
+                    color: tag.color,
+                    book_count: tag.book_count,
+                })
+                .collect();
+            web_book(crate::commands::to_book_info_with_tags(row, tags))
+        })
         .collect();
     Ok(WebBookPage { items, next_cursor })
 }
@@ -198,10 +232,15 @@ pub(crate) fn book_detail(state: &AppState, id: &str) -> Result<WebBookDetail, D
             };
             let snapshot = get_next_book_snapshot_from_current(conn, row.clone())
                 .map_err(|e| e.to_string())?;
-            Ok(Some((row, snapshot)))
+            // 21-1：详情同样带标签，同一 DbSlot 窗口内一次查询。
+            let tags = db::tags_for_books(conn, std::slice::from_ref(&row.id))
+                .map_err(|e| e.to_string())?
+                .remove(&row.id)
+                .unwrap_or_default();
+            Ok(Some((row, snapshot, tags)))
         })
         .map_err(|_| DataError::DbUnavailable)?;
-    let Some((row, next_snapshot)) = result else {
+    let Some((row, next_snapshot, tags)) = result else {
         return Err(DataError::NotFound);
     };
     let candidate_next_id = next_snapshot.resolve_next_row().map(|next| next.id);
@@ -220,7 +259,17 @@ pub(crate) fn book_detail(state: &AppState, id: &str) -> Result<WebBookDetail, D
             .ok()
             .flatten()
     });
-    let info = to_book_info(row);
+    let info = crate::commands::to_book_info_with_tags(
+        row,
+        tags.into_iter()
+            .map(|tag| crate::TagInfo {
+                id: tag.id,
+                name: tag.name,
+                color: tag.color,
+                book_count: tag.book_count,
+            })
+            .collect(),
+    );
     let series_title = info.series_title.clone();
     let chapter_index = info.chapter_index;
     Ok(WebBookDetail {
@@ -785,9 +834,34 @@ fn assembled_asset(
     })
 }
 
+/// Built-in PDF cover shown when the desktop has not rendered one yet (or the
+/// cached cover is corrupt). A self-contained SVG keeps the browser library
+/// free of broken-image icons without reading the PDF or writing any cache.
+const PDF_PLACEHOLDER_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="683" viewBox="0 0 512 683" role="img" aria-label="PDF">
+<rect width="512" height="683" fill="#151F32"/>
+<rect x="92" y="148" width="328" height="400" rx="26" fill="#1E293B" stroke="#38A8F8" stroke-width="6"/>
+<path d="M300 148h56l48 48v52" fill="none" stroke="#38A8F8" stroke-width="12" stroke-linejoin="round"/>
+<path d="M300 148v48h48" fill="none" stroke="#38A8F8" stroke-width="12" stroke-linejoin="round"/>
+<text x="256" y="372" fill="#EFF8FF" font-family="system-ui, sans-serif" font-size="76" font-weight="700" text-anchor="middle" letter-spacing="4">PDF</text>
+<rect x="178" y="414" width="156" height="10" rx="5" fill="#334155"/>
+<rect x="204" y="444" width="104" height="10" rx="5" fill="#334155"/>
+</svg>"##;
+
+fn pdf_placeholder_asset() -> ImageAsset {
+    ImageAsset {
+        bytes: PDF_PLACEHOLDER_SVG.to_vec(),
+        mime: "image/svg+xml",
+        width: 512,
+        height: 683,
+        orig_width: 512,
+        orig_height: 683,
+        data_url: None,
+    }
+}
+
 fn pdf_thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataError> {
     let Some(bytes) = state.render.get_cover_raw(id, pdf::PDF_COVER_EDGE) else {
-        return Err(DataError::ThumbMissing);
+        return Ok(pdf_placeholder_asset());
     };
     match pdf::validate_pdf_cover_read(&bytes) {
         Ok((width, height)) => {
@@ -808,7 +882,7 @@ fn pdf_thumb_asset(state: &Arc<AppState>, id: &str) -> Result<ImageAsset, DataEr
         }
         Err(_) => {
             state.render.remove_cover(id, pdf::PDF_COVER_EDGE);
-            Err(DataError::ThumbMissing)
+            Ok(pdf_placeholder_asset())
         }
     }
 }
@@ -848,6 +922,8 @@ fn web_book(info: crate::BookInfo) -> WebBook {
         source_type: info.source_type,
         missing: info.missing,
         updated_at: iso_local(&info.updated_at),
+        is_favorite: info.is_favorite,
+        tags: info.tags,
         thumb_url: Some(format!("/api/books/{id}/thumb?v={}", rev.max(0))),
     }
 }
@@ -902,6 +978,16 @@ mod tests {
         /// Per-test-thread render root. `TempTree` removes it when the test
         /// thread exits, so L2 renders never touch the real user cache.
         static TEST_RENDER_TREE: TempTree = TempTree::new("read-service-render");
+    }
+
+    /// 兼容旧测试的 4 参数包装（21-1 新增收藏/标签筛选参数）。
+    fn list_books_page_compat(
+        state: &AppState,
+        q: Option<&str>,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<WebBookPage, DataError> {
+        list_books_page(state, q, cursor, limit, false, None)
     }
 
     fn state_with_db() -> AppState {
@@ -1074,7 +1160,7 @@ mod tests {
             1,
         );
 
-        let first = list_books_page(&state, None, None, 2).expect("first page");
+        let first = list_books_page_compat(&state, None, None, 2).expect("first page");
         assert_eq!(
             first
                 .items
@@ -1090,8 +1176,8 @@ mod tests {
         assert!(!first.items[0].updated_at.contains(' '));
         assert!(first.items[0].updated_at[19..].starts_with('+'));
 
-        let second =
-            list_books_page(&state, None, first.next_cursor.as_deref(), 2).expect("second page");
+        let second = list_books_page_compat(&state, None, first.next_cursor.as_deref(), 2)
+            .expect("second page");
         assert_eq!(second.items[0].id, a);
         assert!(second.next_cursor.is_none());
     }
@@ -1115,7 +1201,7 @@ mod tests {
             );
         }
 
-        let first = list_books_page(&state, None, None, 2).expect("first page");
+        let first = list_books_page_compat(&state, None, None, 2).expect("first page");
         assert_eq!(
             first
                 .items
@@ -1127,7 +1213,7 @@ mod tests {
         let cursor = first.next_cursor.clone().expect("cursor");
         assert!(cursor.len() <= 64);
 
-        let second = list_books_page(&state, None, Some(&cursor), 2).expect("second page");
+        let second = list_books_page_compat(&state, None, Some(&cursor), 2).expect("second page");
         assert_eq!(
             second
                 .items
@@ -1172,17 +1258,19 @@ mod tests {
             );
         }
 
-        let first = list_books_page(&state, None, None, 1).expect("first");
+        let first = list_books_page_compat(&state, None, None, 1).expect("first");
         assert_eq!(first.items[0].id, normal);
         let normal_cursor = first.next_cursor.clone().expect("normal cursor");
-        let second = list_books_page(&state, None, Some(&normal_cursor), 1).expect("first empty");
+        let second =
+            list_books_page_compat(&state, None, Some(&normal_cursor), 1).expect("first empty");
         assert_eq!(second.items[0].id, id_for('a'));
         let empty_cursor = second.next_cursor.clone().expect("empty cursor");
-        let third = list_books_page(&state, None, Some(&empty_cursor), 1).expect("second empty");
+        let third =
+            list_books_page_compat(&state, None, Some(&empty_cursor), 1).expect("second empty");
         assert_eq!(third.items[0].id, id_for('b'));
         assert_ne!(third.items[0].id, normal);
-        let fourth =
-            list_books_page(&state, None, third.next_cursor.as_deref(), 1).expect("third empty");
+        let fourth = list_books_page_compat(&state, None, third.next_cursor.as_deref(), 1)
+            .expect("third empty");
         assert_eq!(fourth.items[0].id, id_for('c'));
         assert!(fourth.next_cursor.is_none());
     }
@@ -1205,7 +1293,7 @@ mod tests {
                 1,
             );
         }
-        let first = list_books_page(&state, None, None, 1).expect("first");
+        let first = list_books_page_compat(&state, None, None, 1).expect("first");
         let cursor = first.next_cursor.expect("cursor");
         let bytes = URL_SAFE_NO_PAD.decode(&cursor).expect("cursor bytes");
 
@@ -1213,19 +1301,19 @@ mod tests {
         bad_flag[0] = 2;
         let bad_flag = URL_SAFE_NO_PAD.encode(bad_flag);
         assert!(matches!(
-            list_books_page(&state, None, Some(&bad_flag), 1),
+            list_books_page_compat(&state, None, Some(&bad_flag), 1),
             Err(DataError::InvalidParameter)
         ));
 
         let bad_length = URL_SAFE_NO_PAD.encode(&bytes[..32]);
         assert!(matches!(
-            list_books_page(&state, None, Some(&bad_length), 1),
+            list_books_page_compat(&state, None, Some(&bad_length), 1),
             Err(DataError::InvalidParameter)
         ));
 
         let padded = format!("{cursor}==");
         assert!(matches!(
-            list_books_page(&state, None, Some(&padded), 1),
+            list_books_page_compat(&state, None, Some(&padded), 1),
             Err(DataError::InvalidParameter)
         ));
     }
@@ -1247,31 +1335,33 @@ mod tests {
             1,
         );
 
-        let by_title = list_books_page(&state, Some("Alpha"), None, 10).expect("title search");
+        let by_title =
+            list_books_page_compat(&state, Some("Alpha"), None, 10).expect("title search");
         assert_eq!(by_title.items.len(), 1);
-        let by_path = list_books_page(&state, Some("secret"), None, 10).expect("path search");
+        let by_path =
+            list_books_page_compat(&state, Some("secret"), None, 10).expect("path search");
         assert!(by_path.items.is_empty(), "path must not be searchable");
         let injected =
-            list_books_page(&state, Some("' OR 1=1 --"), None, 10).expect("injection query");
+            list_books_page_compat(&state, Some("' OR 1=1 --"), None, 10).expect("injection query");
         assert!(injected.items.is_empty());
 
         for invalid in ["not-a-cursor", "", "AAAA", &"a".repeat(65)] {
             assert!(matches!(
-                list_books_page(&state, None, Some(invalid), 10),
+                list_books_page_compat(&state, None, Some(invalid), 10),
                 Err(DataError::InvalidParameter)
             ));
         }
         assert!(matches!(
-            list_books_page(&state, None, None, 0),
+            list_books_page_compat(&state, None, None, 0),
             Err(DataError::InvalidParameter)
         ));
         assert!(matches!(
-            list_books_page(&state, None, None, 101),
+            list_books_page_compat(&state, None, None, 101),
             Err(DataError::InvalidParameter)
         ));
         let long_query = "x".repeat(129);
         assert!(matches!(
-            list_books_page(&state, Some(&long_query), None, 10),
+            list_books_page_compat(&state, Some(&long_query), None, 10),
             Err(DataError::InvalidParameter)
         ));
     }
@@ -1279,7 +1369,7 @@ mod tests {
     #[test]
     fn empty_library_returns_empty_page() {
         let state = state_with_db();
-        let page = list_books_page(&state, None, None, 40).expect("empty page");
+        let page = list_books_page_compat(&state, None, None, 40).expect("empty page");
         assert!(page.items.is_empty());
         assert!(page.next_cursor.is_none());
     }
@@ -1300,7 +1390,7 @@ mod tests {
             "{}",
             12,
         );
-        let page = list_books_page(&state, None, None, 10).expect("page");
+        let page = list_books_page_compat(&state, None, None, 10).expect("page");
         let value = serde_json::to_value(&page.items[0]).expect("json");
         assert!(value.get("path").is_none());
         assert!(value.get("metaJson").is_none());
@@ -1309,7 +1399,70 @@ mod tests {
         assert!(value.get("lastOpenedAt").is_none());
         assert_eq!(value["sourceType"], "local");
         assert_eq!(value["pageCount"], 12);
+        assert_eq!(value["isFavorite"], false);
+        assert_eq!(value["tags"], serde_json::json!([]));
         assert!(value["thumbUrl"].is_string());
+    }
+
+    /// 21-1：Web 只读列表支持仅收藏与标签筛选，并透出标签。
+    #[test]
+    fn web_list_filters_by_favorite_and_tag() {
+        let state = state_with_db();
+        let a = id_for('a');
+        let b = id_for('b');
+        for (id, title, ts) in [
+            (&a, "Alpha", "2026-11-03 10:00:00"),
+            (&b, "Beta", "2026-11-03 09:00:00"),
+        ] {
+            insert_book(
+                &state,
+                id,
+                title,
+                ts,
+                &format!("C:/library/{title}.cbz"),
+                0,
+                "local",
+                "image",
+                "{}",
+                5,
+            );
+        }
+        let tag_id = state
+            .db
+            .with(|conn| {
+                crate::db::set_book_favorite(conn, &a, true).map_err(|e| e.to_string())?;
+                let tag = crate::db::create_tag(conn, "Reading", Some("#38A8F8"))
+                    .map_err(|e| e.to_string())?;
+                crate::db::set_book_tags(conn, &b, &[tag.id]).map_err(|e| e.to_string())?;
+                Ok(tag.id)
+            })
+            .expect("seed tags");
+
+        let favorites = list_books_page(&state, None, None, 10, true, None).expect("favorites");
+        assert_eq!(
+            favorites
+                .items
+                .iter()
+                .map(|book| book.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alpha"]
+        );
+        assert!(favorites.items[0].is_favorite);
+        assert!(favorites.items[0].tags.is_empty());
+
+        let tagged =
+            list_books_page(&state, None, None, 10, false, Some(tag_id)).expect("tag filter");
+        assert_eq!(
+            tagged
+                .items
+                .iter()
+                .map(|book| book.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Beta"]
+        );
+        assert_eq!(tagged.items[0].tags.len(), 1);
+        assert_eq!(tagged.items[0].tags[0].name, "Reading");
+        assert_eq!(tagged.items[0].tags[0].color, "#38A8F8");
     }
 
     #[test]
@@ -1584,7 +1737,7 @@ mod tests {
             .expect("seed progress");
 
         let before = row_snapshot(&state, &a);
-        let _ = list_books_page(&state, None, None, 10).expect("list");
+        let _ = list_books_page_compat(&state, None, None, 10).expect("list");
         let _ = book_detail(&state, &a).expect("detail");
         let _ = pages_manifest(&state, &a).expect("manifest");
         let _ = progress(&state, &a).expect("progress");
@@ -1755,6 +1908,13 @@ mod tests {
         assert!(thumb.bytes.starts_with(&[0xFF, 0xD8]));
         assert_eq!(thumb.width, 40);
 
+        // A PDF that the desktop has not opened yet has no cached cover. The
+        // Web library still gets a usable placeholder instead of a 404.
+        let placeholder = thumb_asset(&state, &pdf).expect("pdf placeholder");
+        assert_eq!(placeholder.mime, "image/svg+xml");
+        assert!(placeholder.bytes.starts_with(b"<svg"));
+        assert_eq!((placeholder.width, placeholder.height), (512, 683));
+
         state.render.put_cover(
             &pdf,
             crate::pdf::PDF_COVER_EDGE,
@@ -1781,7 +1941,8 @@ mod tests {
         state
             .render
             .put_cover(&pdf, crate::pdf::PDF_COVER_EDGE, b"not an image");
-        assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
+        let corrupt = thumb_asset(&state, &pdf).expect("corrupt cover placeholder");
+        assert_eq!(corrupt.mime, "image/svg+xml");
         assert!(state
             .render
             .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)
@@ -1792,7 +1953,8 @@ mod tests {
             crate::pdf::PDF_COVER_EDGE,
             &crate::pdf::fixtures::png_header(5000, 5000),
         );
-        assert_eq!(thumb_asset(&state, &pdf), Err(DataError::ThumbMissing));
+        let oversized = thumb_asset(&state, &pdf).expect("oversized cover placeholder");
+        assert_eq!(oversized.mime, "image/svg+xml");
         assert!(state
             .render
             .get_cover_raw(&pdf, crate::pdf::PDF_COVER_EDGE)

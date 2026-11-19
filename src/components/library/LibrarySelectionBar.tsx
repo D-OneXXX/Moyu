@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { BookX, Trash2, X } from "lucide-react";
+import { BookX, Star, Tags, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,10 @@ interface Props {
   onRemove: () => void;
   onDelete: () => void;
   onCancel: () => void;
+  /** 21-1：批量收藏 / 批量打标签。 */
+  onFavorite: () => void;
+  onTag: () => void;
+  favoriteBusy?: boolean;
 }
 
 /** 多选浮动胶囊条：portal 到 body，固定底部居中，不占据网格布局。 */
@@ -20,11 +24,14 @@ export default function LibrarySelectionBar({
   onRemove,
   onDelete,
   onCancel,
+  onFavorite,
+  onTag,
+  favoriteBusy,
 }: Props) {
   const { t } = useI18n();
   // 批量操作条固定在底部：把 toast 抬到它上方，避免文字与按钮互相遮挡。
   useEffect(() => {
-    document.body.style.setProperty("--mr-toast-bottom", "6.5rem");
+    document.body.style.setProperty("--mr-toast-bottom", "9.5rem");
     return () => {
       document.body.style.removeProperty("--mr-toast-bottom");
     };
@@ -45,6 +52,24 @@ export default function LibrarySelectionBar({
           </span>
           <span className="whitespace-nowrap">{t("library.selected")}</span>
         </span>
+        <Button
+          variant="pill"
+          size="pill-sm"
+          disabled={count === 0 || favoriteBusy}
+          onClick={onFavorite}
+        >
+          <Star />
+          {t("tags.batchFavoriteAction")}
+        </Button>
+        <Button
+          variant="pill"
+          size="pill-sm"
+          disabled={count === 0}
+          onClick={onTag}
+        >
+          <Tags />
+          {t("tags.batchTitle")}
+        </Button>
         <Button
           variant="pill"
           size="pill-sm"

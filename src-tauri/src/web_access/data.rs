@@ -95,7 +95,7 @@ impl DataRoute {
             [id] => Some(Self::Book {
                 id: parse_book_id(id)?,
             }),
-            [id, "thumb"] => Some(Self::Thumb {
+            [id, "thumb"] | [id, "thumbnail"] => Some(Self::Thumb {
                 id: parse_book_id(id)?,
             }),
             [id, "pages"] => Some(Self::Pages {
@@ -144,8 +144,14 @@ impl DataRoute {
     fn into_call(self, query: Option<&str>) -> Result<DataCall, DataError> {
         match self {
             Self::Books => {
-                let (q, cursor, limit) = parse_books_query(query)?;
-                Ok(DataCall::Books { q, cursor, limit })
+                let query = parse_books_query(query)?;
+                Ok(DataCall::Books {
+                    q: query.q,
+                    cursor: query.cursor,
+                    limit: query.limit,
+                    favorite_only: query.favorite_only,
+                    tag_id: query.tag_id,
+                })
             }
             Self::Book { id } => Ok(DataCall::Book(id)),
             Self::Thumb { id } => Ok(DataCall::Thumb(id)),
@@ -186,6 +192,8 @@ pub(crate) trait WebDataAccess: Send + Sync {
         q: Option<&str>,
         cursor: Option<&str>,
         limit: u32,
+        favorite_only: bool,
+        tag_id: Option<i64>,
     ) -> Result<WebBookPage, DataError>;
     fn book(&self, id: &str) -> Result<WebBookDetail, DataError>;
     fn thumb(&self, id: &str) -> Result<ImageAsset, DataError>;
@@ -357,6 +365,8 @@ enum DataCall {
         q: Option<String>,
         cursor: Option<String>,
         limit: u32,
+        favorite_only: bool,
+        tag_id: Option<i64>,
     },
     Book(String),
     Thumb(String),
@@ -435,8 +445,20 @@ impl DataCall {
 
     fn run(self, provider: &dyn WebDataAccess) -> Result<Payload, DataError> {
         match self {
-            Self::Books { q, cursor, limit } => provider
-                .list_books(q.as_deref(), cursor.as_deref(), limit)
+            Self::Books {
+                q,
+                cursor,
+                limit,
+                favorite_only,
+                tag_id,
+            } => provider
+                .list_books(
+                    q.as_deref(),
+                    cursor.as_deref(),
+                    limit,
+                    favorite_only,
+                    tag_id,
+                )
                 .map(Payload::Books),
             Self::Book(id) => provider.book(&id).map(Payload::Book),
             Self::Thumb(id) => provider.thumb(&id).map(Payload::Thumb),
@@ -811,15 +833,26 @@ fn retry_after_millis(retry_after: Duration) -> u64 {
     u64::try_from(retry_after.as_millis().max(1)).unwrap_or(u64::MAX)
 }
 
-type BooksQuery = (Option<String>, Option<String>, u32);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BooksQuery {
+    q: Option<String>,
+    cursor: Option<String>,
+    limit: u32,
+    favorite_only: bool,
+    tag_id: Option<i64>,
+}
 
-/// Parse `q`/`cursor`/`limit`. Duplicates of a known key are a client error;
-/// unknown keys are ignored so the route remains forward-compatible.
+/// Parse `q`/`cursor`/`limit`/`favorite`/`tag`. Duplicates of a known key are a
+/// client error; unknown keys are ignored so the route remains
+/// forward-compatible. `favorite` accepts only `1`/`0`; `tag` is a positive id.
 fn parse_books_query(raw: Option<&str>) -> Result<BooksQuery, DataError> {
     let mut q: Option<String> = None;
     let mut cursor: Option<String> = None;
     let mut limit = 40u32;
     let mut limit_seen = false;
+    let mut favorite_only = false;
+    let mut favorite_seen = false;
+    let mut tag_id: Option<i64> = None;
 
     for (key, value) in url::form_urlencoded::parse(raw.unwrap_or("").as_bytes()) {
         match key.as_ref() {
@@ -848,11 +881,42 @@ fn parse_books_query(raw: Option<&str>) -> Result<BooksQuery, DataError> {
                     return Err(DataError::InvalidParameter);
                 }
             }
+            "favorite" => {
+                if favorite_seen {
+                    return Err(DataError::InvalidParameter);
+                }
+                favorite_seen = true;
+                favorite_only = match value.as_ref() {
+                    "1" => true,
+                    "0" => false,
+                    _ => return Err(DataError::InvalidParameter),
+                };
+            }
+            "tag" => {
+                if tag_id.is_some()
+                    || value.is_empty()
+                    || value.len() > 19
+                    || !value.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    return Err(DataError::InvalidParameter);
+                }
+                let parsed: i64 = value.parse().map_err(|_| DataError::InvalidParameter)?;
+                if parsed <= 0 {
+                    return Err(DataError::InvalidParameter);
+                }
+                tag_id = Some(parsed);
+            }
             _ => {}
         }
     }
 
-    Ok((q.filter(|value| !value.is_empty()), cursor, limit))
+    Ok(BooksQuery {
+        q: q.filter(|value| !value.is_empty()),
+        cursor,
+        limit,
+        favorite_only,
+        tag_id,
+    })
 }
 
 /// Parse `w`, default 1080, clamp 320..=2160. A non-integer, empty, or
@@ -997,6 +1061,7 @@ mod tests {
             ("/api/books".to_owned(), true),
             (format!("/api/books/{id}"), true),
             (format!("/api/books/{id}/thumb"), true),
+            (format!("/api/books/{id}/thumbnail"), true),
             (format!("/api/books/{id}/pages"), true),
             (page, true),
             (format!("/api/books/{id}/layout"), true),
@@ -1033,15 +1098,51 @@ mod tests {
 
     #[test]
     fn books_query_validates_and_normalizes() {
-        assert_eq!(parse_books_query(None).unwrap(), (None, None, 40));
+        assert_eq!(
+            parse_books_query(None).unwrap(),
+            BooksQuery {
+                q: None,
+                cursor: None,
+                limit: 40,
+                favorite_only: false,
+                tag_id: None,
+            }
+        );
         assert_eq!(
             parse_books_query(Some("q=abc&limit=5")).unwrap(),
-            (Some("abc".to_owned()), None, 5)
+            BooksQuery {
+                q: Some("abc".to_owned()),
+                cursor: None,
+                limit: 5,
+                favorite_only: false,
+                tag_id: None,
+            }
         );
         assert_eq!(
             parse_books_query(Some("q=&cursor=abc")).unwrap(),
-            (None, Some("abc".to_owned()), 40)
+            BooksQuery {
+                q: None,
+                cursor: Some("abc".to_owned()),
+                limit: 40,
+                favorite_only: false,
+                tag_id: None,
+            }
         );
+        assert_eq!(
+            parse_books_query(Some("favorite=1&tag=7")).unwrap(),
+            BooksQuery {
+                q: None,
+                cursor: None,
+                limit: 40,
+                favorite_only: true,
+                tag_id: Some(7),
+            }
+        );
+        assert!(parse_books_query(Some("favorite=2")).is_err());
+        assert!(parse_books_query(Some("favorite=1&favorite=0")).is_err());
+        assert!(parse_books_query(Some("tag=0")).is_err());
+        assert!(parse_books_query(Some("tag=-1")).is_err());
+        assert!(parse_books_query(Some("tag=1&tag=2")).is_err());
         assert!(parse_books_query(Some("q=a&q=b")).is_err());
         assert!(parse_books_query(Some("limit=1&limit=2")).is_err());
         assert!(parse_books_query(Some("limit=0")).is_err());

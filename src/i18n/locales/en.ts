@@ -11,6 +11,7 @@ import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
 import { settingsDetailMessages } from "../messages/settingsDetail";
 import { featureGateMessages } from "../messages/featureGate";
+import { tagMessages } from "../messages/tags";
 import type { Messages } from "./zh-CN";
 
 export const en = {
@@ -26,5 +27,6 @@ export const en = {
   ...opdsMessages.en,
   ...settingsDetailMessages.en,
   ...featureGateMessages.en,
+  ...tagMessages.en,
   ...resilienceMessages.en,
 } satisfies Messages;

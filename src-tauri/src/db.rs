@@ -115,8 +115,13 @@ pub fn find_book_id_by_path(conn: &Connection, path: &str) -> Result<Option<Stri
 ///
 /// 1 = 0.17.0 起：reading_log 可空外键 + 表达式唯一索引 + source_stats。
 /// 2 = PDF-1：books.format 记录书籍来源格式（image / pdf），增量 ALTER，老库默认 image。
+/// 3 = W3（方案 C）：books.last_opened_at / progress_rev。
+/// 4 = 21-1：books.is_favorite（默认 0）+ tags / book_tags 与收藏联合索引。
 /// 只增不减；前向库（更高版本）保持原值，绝不降级。
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 4;
+
+/// 标签名上限（按 Unicode 字符计，trim 后 1..=32）。
+pub const TAG_NAME_MAX_CHARS: usize = 32;
 
 /// 书籍来源格式：图片（目录 / `.zip` / `.cbz` / 在线书）。
 pub const BOOK_FORMAT_IMAGE: &str = "image";
@@ -152,7 +157,23 @@ pub fn init_schema(conn: &Connection) -> Result<(), BackendError> {
             meta_json TEXT NOT NULL DEFAULT '{}',
             format TEXT NOT NULL DEFAULT 'image',
             last_opened_at TEXT NOT NULL DEFAULT '',
-            progress_rev INTEGER NOT NULL DEFAULT 0
+            progress_rev INTEGER NOT NULL DEFAULT 0,
+            is_favorite INTEGER NOT NULL DEFAULT 0
+        );
+        -- 21-1：自定义标签元数据（名称大小写不敏感唯一；颜色为空或 #RRGGBB）。
+        CREATE TABLE IF NOT EXISTS tags(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            color TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        -- 21-1：书籍 ↔ 标签关联；随书删除/重定位级联，绝不留下孤儿关联。
+        CREATE TABLE IF NOT EXISTS book_tags(
+            book_id TEXT NOT NULL
+                REFERENCES books(id) ON DELETE CASCADE ON UPDATE CASCADE,
+            tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (book_id, tag_id)
         );
         CREATE TABLE IF NOT EXISTS source_stats(
             book_id TEXT PRIMARY KEY
@@ -225,7 +246,13 @@ pub fn init_schema(conn: &Connection) -> Result<(), BackendError> {
          -- 方案 C：默认书库排序按「最近打开」（last_opened_at），
          -- 「最近阅读」排序仍走 updated_at（上面的索引）。
          CREATE INDEX IF NOT EXISTS idx_books_list_opened
-             ON books(removed, last_opened_at DESC);",
+             ON books(removed, last_opened_at DESC);
+         -- 21-1：收藏置顶 + 最近打开排序（桌面书库「收藏优先」）。
+         CREATE INDEX IF NOT EXISTS idx_books_favorite
+             ON books(removed, is_favorite DESC, last_opened_at DESC, id ASC);
+         -- 21-1：按标签反查书籍（标签筛选）。
+         CREATE INDEX IF NOT EXISTS idx_book_tags_tag
+             ON book_tags(tag_id, book_id);",
     )?;
     if schema_version(conn)? < SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -455,6 +482,18 @@ fn migrate_book_columns(conn: &Connection) -> Result<(), BackendError> {
             [],
         )?;
     }
+    // 21-1：收藏标记。老库/老备份一律回落 0（未收藏），不改变任何既有语义。
+    let books_has_favorite: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('books') WHERE name='is_favorite'",
+        [],
+        |r| r.get(0),
+    )?;
+    if books_has_favorite == 0 {
+        conn.execute(
+            "ALTER TABLE books ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     // 回填：迁移前 updated_at 会被「打开」动作刷新，它的实际语义就是"最近打开"；
     // 回填后默认书库排序与迁移前完全一致（观感不变）。
     // 带 WHERE 保证幂等；只在确有待回填行时才写，避免每次启动都产生写事务。
@@ -490,6 +529,8 @@ pub struct BookRow {
     pub last_opened_at: String,
     /// 进度修订号：进度每次变化 +1，供未来的乐观并发控制。
     pub progress_rev: i64,
+    /// 21-1：书库收藏星标（默认 false；软删书同样保留该标记）。
+    pub is_favorite: bool,
 }
 
 fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookRow> {
@@ -510,6 +551,8 @@ fn row_to_book(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookRow> {
         // 同样容忍缺失：这两列由 W3 迁移补齐，但历史脏行/外部导入库仍可能没有。
         last_opened_at: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
         progress_rev: row.get::<_, Option<i64>>(11)?.unwrap_or(0),
+        // 21-1：老库/老备份没有该列时按未收藏处理。
+        is_favorite: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
     })
 }
 
@@ -764,6 +807,19 @@ fn relocate_book_inner(
     // id 变更会短暂让 reading_log 旧子行指向不存在的父行；延迟到事务提交
     // 前校验，等下面把子行合并/迁移到新 id 后再统一验证。
     tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
+    if old_id != new_id {
+        // 21-1：标签关联必须先合并去重、再删旧行，**然后**才改 books.id。
+        // 外键 `ON UPDATE CASCADE` 会改写 book_tags.book_id；若新旧 id 共享
+        // 同一标签，级联更新会直接撞 (book_id, tag_id) 主键，导致整次重定位
+        // 失败、标签丢失。INSERT OR IGNORE + 先删旧行可以无损去重。
+        // defer_foreign_keys 已开启：新关联在事务提交前才校验父行。
+        tx.execute(
+            "INSERT OR IGNORE INTO book_tags(book_id, tag_id, created_at)
+             SELECT ?2, tag_id, created_at FROM book_tags WHERE book_id=?1",
+            params![old_id, new_id],
+        )?;
+        tx.execute("DELETE FROM book_tags WHERE book_id=?1", params![old_id])?;
+    }
     // format=None 时**不碰** format 列：沿用原书的来源格式，绝不静默重置。
     //
     // 页数语义（两个分支一致）：
@@ -816,7 +872,7 @@ fn relocate_book_inner(
 
 pub fn get_book(conn: &Connection, id: &str) -> Result<Option<BookRow>, BackendError> {
     let mut stmt = conn.prepare(
-        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev FROM books WHERE id=?1",
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev, is_favorite FROM books WHERE id=?1",
     )?;
     let mut rows = stmt.query(params![id])?;
     if let Some(r) = rows.next()? {
@@ -830,7 +886,7 @@ pub fn get_book(conn: &Connection, id: &str) -> Result<Option<BookRow>, BackendE
 /// nonexistent so every `{id}` route can return the same `book-not-found`.
 pub fn get_active_book(conn: &Connection, id: &str) -> Result<Option<BookRow>, BackendError> {
     let mut stmt = conn.prepare(
-        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev, is_favorite
          FROM books WHERE id=?1 AND removed=0",
     )?;
     let mut rows = stmt.query(params![id])?;
@@ -893,19 +949,25 @@ pub fn book_is_removed(conn: &Connection, id: &str) -> Result<bool, BackendError
 ///
 /// Path 不参与搜索，避免把本地目录布局变成可探测的 oracle；调用方传入
 /// `limit + 1` 行用于判断 `nextCursor`。桌面 `list_books` 行为不变。
+/// 21-1：支持仅收藏（`favorite_only`）与单标签（`tag_id`）筛选。
 pub fn list_books_page(
     conn: &Connection,
     query: Option<&str>,
     cursor_updated: Option<&str>,
     cursor_id: Option<&str>,
     limit: u32,
+    favorite_only: bool,
+    tag_id: Option<i64>,
 ) -> Result<Vec<BookRow>, BackendError> {
     let like = query.map(|q| format!("%{}%", q.trim()));
     let mut stmt = conn.prepare(
-        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev, is_favorite
          FROM books
          WHERE removed=0
            AND (?1 IS NULL OR title LIKE ?1)
+           AND (?5 = 0 OR is_favorite = 1)
+           AND (?6 IS NULL OR EXISTS(
+                 SELECT 1 FROM book_tags bt WHERE bt.book_id=books.id AND bt.tag_id=?6))
            AND (
              ?2 IS NULL
              OR (?2 = '' AND updated_at = '' AND id > ?3)
@@ -916,43 +978,126 @@ pub fn list_books_page(
          LIMIT ?4",
     )?;
     let rows = stmt.query_map(
-        params![like, cursor_updated, cursor_id, i64::from(limit) + 1],
+        params![
+            like,
+            cursor_updated,
+            cursor_id,
+            i64::from(limit) + 1,
+            if favorite_only { 1i64 } else { 0 },
+            tag_id
+        ],
         row_to_book,
     )?;
     rows.map(|row| row.map_err(BackendError::from)).collect()
 }
 
-/// 桌面书库分页（ADR-018）：按 `(last_opened_at, id)` 稳定游标，搜索 title+path。
+/// 桌面书库排序方式（21-1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BooksSort {
+    /// 最近打开（默认，方案 C）。
+    RecentOpened,
+    /// 最近阅读进度变化。
+    RecentRead,
+    /// 收藏置顶，其余按最近打开。
+    FavoritesFirst,
+}
+
+/// 桌面书库分页查询（ADR-018 + 21-1 筛选/排序扩展）。
 ///
-/// 与 Web [`list_books_page`] 镜像同一套「空时间戳边界」处理，但排序字段改为
-/// `last_opened_at`、搜索字段补上 `path`，保持桌面 `list_books` 既有语义不变。
-/// 调用方取 `limit + 1` 行用于判断 `nextCursor`；参数校验在命令层完成。
+/// 游标键随排序方式变化：`RecentOpened`/`FavoritesFirst` 用
+/// `last_opened_at`，`RecentRead` 用 `updated_at`；`FavoritesFirst` 的游标
+/// 额外携带收藏位，避免收藏组与普通组之间漏页/重复。
+#[derive(Debug, Clone)]
+pub struct DesktopBooksQuery<'a> {
+    pub query: Option<&'a str>,
+    pub cursor_timestamp: Option<&'a str>,
+    pub cursor_id: Option<&'a str>,
+    pub cursor_favorite: Option<bool>,
+    pub limit: u32,
+    pub favorite_only: bool,
+    pub tag_id: Option<i64>,
+    pub sort: BooksSort,
+}
+
+/// 桌面书库分页：按排序键稳定游标，搜索 title+path。
+///
+/// 与 Web [`list_books_page`] 镜像同一套「空时间戳边界」处理，但搜索字段
+/// 补上 `path`，保持桌面 `list_books` 既有语义不变。调用方取 `limit + 1`
+/// 行用于判断 `nextCursor`；参数校验在命令层完成。
 pub fn list_books_page_desktop(
     conn: &Connection,
-    query: Option<&str>,
-    cursor_last_opened: Option<&str>,
-    cursor_id: Option<&str>,
-    limit: u32,
+    query: &DesktopBooksQuery<'_>,
 ) -> Result<Vec<BookRow>, BackendError> {
-    let like = query.map(|q| format!("%{}%", q.trim()));
-    let mut stmt = conn.prepare(
-        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+    let like = query.query.map(|q| format!("%{}%", q.trim()));
+    let column = match query.sort {
+        BooksSort::RecentRead => "updated_at",
+        BooksSort::RecentOpened | BooksSort::FavoritesFirst => "last_opened_at",
+    };
+    let order = match query.sort {
+        BooksSort::RecentRead => "updated_at DESC, id ASC",
+        BooksSort::RecentOpened => "last_opened_at DESC, id ASC",
+        BooksSort::FavoritesFirst => "is_favorite DESC, last_opened_at DESC, id ASC",
+    };
+    // 排序键列名来自上面的静态枚举，不接受外部字符串拼接。
+    let cursor = if query.sort == BooksSort::FavoritesFirst {
+        format!(
+            "(?2 IS NULL
+              OR is_favorite < ?7
+              OR (is_favorite = ?7 AND (
+                    {column} < ?2 OR ({column} = ?2 AND id > ?3))))"
+        )
+    } else {
+        format!(
+            "(?2 IS NULL
+              OR (?2 = '' AND {column} = '' AND id > ?3)
+              OR {column} < ?2
+              OR ({column} = ?2 AND id > ?3))"
+        )
+    };
+    let sql = format!(
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev, is_favorite
          FROM books
          WHERE removed=0
            AND (?1 IS NULL OR title LIKE ?1 OR path LIKE ?1)
-           AND (
-             ?2 IS NULL
-             OR (?2 = '' AND last_opened_at = '' AND id > ?3)
-             OR last_opened_at < ?2
-             OR (last_opened_at = ?2 AND id > ?3)
-           )
-         ORDER BY last_opened_at DESC, id ASC
-         LIMIT ?4",
-    )?;
-    let rows = stmt.query_map(
-        params![like, cursor_last_opened, cursor_id, i64::from(limit) + 1],
-        row_to_book,
-    )?;
+           AND (?5 = 0 OR is_favorite = 1)
+           AND (?6 IS NULL OR EXISTS(
+                 SELECT 1 FROM book_tags bt WHERE bt.book_id=books.id AND bt.tag_id=?6))
+           AND {cursor}
+         ORDER BY {order}
+         LIMIT ?4"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    // 收藏优先排序需要第 7 个参数（游标收藏位）；其余排序只绑定 6 个。
+    let rows = if query.sort == BooksSort::FavoritesFirst {
+        stmt.query_map(
+            params![
+                like,
+                query.cursor_timestamp,
+                query.cursor_id,
+                i64::from(query.limit) + 1,
+                if query.favorite_only { 1i64 } else { 0 },
+                query.tag_id,
+                if query.cursor_favorite.unwrap_or(false) {
+                    1i64
+                } else {
+                    0
+                }
+            ],
+            row_to_book,
+        )?
+    } else {
+        stmt.query_map(
+            params![
+                like,
+                query.cursor_timestamp,
+                query.cursor_id,
+                i64::from(query.limit) + 1,
+                if query.favorite_only { 1i64 } else { 0 },
+                query.tag_id
+            ],
+            row_to_book,
+        )?
+    };
     rows.map(|row| row.map_err(BackendError::from)).collect()
 }
 
@@ -960,34 +1105,56 @@ pub fn list_books_page_desktop(
 ///
 /// `timestamp` 由调用方指定排序字段（Web 用 `updated_at`，桌面用 `last_opened_at`）；
 /// 空时间戳是「新导入未打开」的真实状态，必须保留独立分支，不能塌缩成 epoch 键。
+/// 21-1：标志位 bit1 承载「收藏优先」排序下的收藏位（bit0 = 时间戳存在），
+/// 旧游标（flag 0/1）解码为未收藏，保持向后兼容且不扩大解码面。
 pub(crate) fn encode_book_cursor(timestamp: &str, id: &str) -> Option<String> {
+    encode_book_cursor_with_favorite(timestamp, id, false)
+}
+
+pub(crate) fn encode_book_cursor_with_favorite(
+    timestamp: &str,
+    id: &str,
+    favorite: bool,
+) -> Option<String> {
     let id_bytes = hex::decode(id).ok()?;
     if id_bytes.len() != 32 {
         return None;
     }
     let mut raw = Vec::with_capacity(41);
+    let favorite_bit = if favorite { 2 } else { 0 };
     if timestamp.is_empty() {
-        raw.push(0);
+        raw.push(favorite_bit);
     } else {
         let seconds = NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")
             .ok()
             .and_then(|naive| Local.from_local_datetime(&naive).earliest())
             .map(|value| value.timestamp())
             .unwrap_or(0);
-        raw.push(1);
+        raw.push(favorite_bit | 1);
         raw.extend_from_slice(&seconds.to_be_bytes());
     }
     raw.extend_from_slice(&id_bytes);
     Some(URL_SAFE_NO_PAD.encode(raw))
 }
 
-/// 解码游标为 `(timestamp, id)`；拒绝 >64 字符、错误标志位、错误长度、非法 id 与填充变体。
+/// 解码游标为 `(timestamp, id)`（丢弃收藏位，供 Web 只读分页使用）。
 pub(crate) fn decode_book_cursor(raw: &str) -> Option<(String, String)> {
+    decode_book_cursor_full(raw).map(|(timestamp, id, _)| (timestamp, id))
+}
+
+/// 解码游标为 `(timestamp, id, is_favorite)`；拒绝 >64 字符、错误标志位、
+/// 错误长度、非法 id 与填充变体。
+pub(crate) fn decode_book_cursor_full(raw: &str) -> Option<(String, String, bool)> {
     if raw.len() > 64 {
         return None;
     }
     let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
-    let (timestamp, id_bytes) = match (bytes.first().copied()?, bytes.len()) {
+    let flag = bytes.first().copied()?;
+    if flag > 3 {
+        return None;
+    }
+    let favorite = flag & 2 != 0;
+    let (timestamp, id_bytes) = match (flag & 1, bytes.len()) {
         (0, 33) => (String::new(), &bytes[1..]),
         (1, 41) => {
             let seconds = i64::from_be_bytes(bytes[1..9].try_into().ok()?);
@@ -1004,19 +1171,19 @@ pub(crate) fn decode_book_cursor(raw: &str) -> Option<(String, String)> {
     {
         return None;
     }
-    Some((timestamp, id))
+    Some((timestamp, id, favorite))
 }
 
 /// 书库列表（不含已移除的软删书）。
 pub fn list_books(conn: &Connection, query: Option<&str>) -> Result<Vec<BookRow>, BackendError> {
     let (sql, param): (&str, Option<String>) = match query {
         Some(q) if !q.trim().is_empty() => (
-            "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev FROM books
+            "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev, is_favorite FROM books
              WHERE removed=0 AND (title LIKE ?1 OR path LIKE ?1) ORDER BY last_opened_at DESC",
             Some(format!("%{}%", q.trim())),
         ),
         _ => (
-            "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev FROM books
+            "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev, is_favorite FROM books
              WHERE removed=0 ORDER BY last_opened_at DESC",
             None,
         ),
@@ -1031,6 +1198,377 @@ pub fn list_books(conn: &Connection, query: Option<&str>) -> Result<Vec<BookRow>
         out.push(r?);
     }
     Ok(out)
+}
+
+/// 标签元数据 + 未软删书籍计数（21-1）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagRow {
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    pub created_at: String,
+    pub book_count: u32,
+}
+
+const TAG_INVALID_NAME: &str = "tag-invalid-name";
+const TAG_INVALID_COLOR: &str = "tag-invalid-color";
+const TAG_ALREADY_EXISTS: &str = "tag-already-exists";
+const TAG_NOT_FOUND: &str = "tag-not-found";
+
+fn tag_invalid_name() -> BackendError {
+    BackendError::Msg(format!(
+        "标签名无效：需为 1..=32 个字符（{TAG_INVALID_NAME}）"
+    ))
+}
+
+fn tag_invalid_color() -> BackendError {
+    BackendError::Msg(format!(
+        "标签颜色无效：需为 #RRGGBB 或留空（{TAG_INVALID_COLOR}）"
+    ))
+}
+
+fn tag_already_exists() -> BackendError {
+    BackendError::Msg(format!("标签名已存在（{TAG_ALREADY_EXISTS}）"))
+}
+
+fn tag_not_found() -> BackendError {
+    BackendError::Msg(format!("标签不存在（{TAG_NOT_FOUND}）"))
+}
+
+/// trim 后 1..=32 个 Unicode 字符；不允许控制字符，避免不可见重名。
+fn normalize_tag_name(name: &str) -> Result<String, BackendError> {
+    let trimmed = name.trim();
+    let length = trimmed.chars().count();
+    if !(1..=TAG_NAME_MAX_CHARS).contains(&length) || trimmed.chars().any(|ch| ch.is_control()) {
+        return Err(tag_invalid_name());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 颜色只接受空串或 `#RRGGBB`：前端预设色板之外的值一律拒绝，
+/// 避免任意 CSS 注入到标签胶囊的 `style`。
+fn normalize_tag_color(color: Option<&str>) -> Result<Option<String>, BackendError> {
+    let Some(raw) = color else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(Some(String::new()));
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() == 7
+        && bytes[0] == b'#'
+        && bytes[1..].iter().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Ok(Some(value.to_ascii_uppercase()));
+    }
+    Err(tag_invalid_color())
+}
+
+fn tag_row(row: &rusqlite::Row<'_>, count_index: usize) -> rusqlite::Result<TagRow> {
+    Ok(TagRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        color: row.get(2)?,
+        created_at: row.get(3)?,
+        book_count: row
+            .get::<_, i64>(count_index)
+            .map(|value| value.clamp(0, u32::MAX as i64) as u32)?,
+    })
+}
+
+fn get_tag(conn: &Connection, id: i64) -> Result<TagRow, BackendError> {
+    conn.query_row(
+        "SELECT t.id, t.name, t.color, t.created_at,
+                (SELECT COUNT(*) FROM book_tags bt
+                   JOIN books b ON b.id = bt.book_id
+                  WHERE bt.tag_id = t.id AND b.removed = 0)
+         FROM tags t WHERE t.id=?1",
+        params![id],
+        |row| tag_row(row, 4),
+    )
+    .optional()?
+    .ok_or_else(tag_not_found)
+}
+
+fn tag_name_taken(
+    conn: &Connection,
+    name: &str,
+    excluding: Option<i64>,
+) -> Result<bool, BackendError> {
+    let count: i64 = match excluding {
+        Some(id) => conn.query_row(
+            "SELECT COUNT(*) FROM tags WHERE name=?1 AND id<>?2",
+            params![name, id],
+            |row| row.get(0),
+        )?,
+        None => conn.query_row(
+            "SELECT COUNT(*) FROM tags WHERE name=?1",
+            params![name],
+            |row| row.get(0),
+        )?,
+    };
+    Ok(count > 0)
+}
+
+/// 全部标签 + 未软删书籍计数；按名称大小写不敏感排序。
+pub fn list_tags(conn: &Connection) -> Result<Vec<TagRow>, BackendError> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.name, t.color, t.created_at,
+                (SELECT COUNT(*) FROM book_tags bt
+                   JOIN books b ON b.id = bt.book_id
+                  WHERE bt.tag_id = t.id AND b.removed = 0)
+         FROM tags t
+         ORDER BY t.name COLLATE NOCASE ASC, t.id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| tag_row(row, 4))?;
+    rows.map(|row| row.map_err(BackendError::from)).collect()
+}
+
+/// 批量装配书籍标签（一次 `IN (...)`，避免 N+1）。
+///
+/// 返回 `book_id -> [TagRow]`；每行的 `book_count` 是该标签的全局未软删计数。
+/// 没有标签的书籍不会出现在映射中。
+pub fn tags_for_books(
+    conn: &Connection,
+    book_ids: &[String],
+) -> Result<BTreeMap<String, Vec<TagRow>>, BackendError> {
+    let mut out: BTreeMap<String, Vec<TagRow>> = BTreeMap::new();
+    if book_ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders = (1..=book_ids.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT bt.book_id, t.id, t.name, t.color, t.created_at,
+                (SELECT COUNT(*) FROM book_tags x
+                   JOIN books b ON b.id = x.book_id
+                  WHERE x.tag_id = t.id AND b.removed = 0)
+         FROM book_tags bt
+         JOIN tags t ON t.id = bt.tag_id
+         WHERE bt.book_id IN ({placeholders})
+         ORDER BY bt.book_id ASC, t.name COLLATE NOCASE ASC, t.id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(book_ids.iter()))?;
+    while let Some(row) = rows.next()? {
+        let book_id: String = row.get(0)?;
+        let tag = TagRow {
+            id: row.get(1)?,
+            name: row.get(2)?,
+            color: row.get(3)?,
+            created_at: row.get(4)?,
+            book_count: row
+                .get::<_, i64>(5)
+                .map(|value| value.clamp(0, u32::MAX as i64) as u32)?,
+        };
+        out.entry(book_id).or_default().push(tag);
+    }
+    Ok(out)
+}
+
+/// 新建标签；名称大小写不敏感去重，颜色只允许空串或 `#RRGGBB`。
+pub fn create_tag(
+    conn: &Connection,
+    name: &str,
+    color: Option<&str>,
+) -> Result<TagRow, BackendError> {
+    let name = normalize_tag_name(name)?;
+    let color = normalize_tag_color(color)?.unwrap_or_default();
+    if tag_name_taken(conn, &name, None)? {
+        return Err(tag_already_exists());
+    }
+    let inserted = conn.execute(
+        "INSERT INTO tags(name, color, created_at) VALUES(?1, ?2, ?3)",
+        params![name, color, now_str()],
+    );
+    match inserted {
+        Ok(_) => get_tag(conn, conn.last_insert_rowid()),
+        // 并发下仍可能撞 UNIQUE：统一折叠成稳定码。
+        Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            Err(tag_already_exists())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 重命名/改色；`color=None` 保留原颜色。
+pub fn rename_tag(
+    conn: &Connection,
+    id: i64,
+    name: &str,
+    color: Option<&str>,
+) -> Result<TagRow, BackendError> {
+    let name = normalize_tag_name(name)?;
+    let color = normalize_tag_color(color)?;
+    get_tag(conn, id)?;
+    if tag_name_taken(conn, &name, Some(id))? {
+        return Err(tag_already_exists());
+    }
+    let updated = match color {
+        Some(color) => conn.execute(
+            "UPDATE tags SET name=?2, color=?3 WHERE id=?1",
+            params![id, name, color],
+        ),
+        None => conn.execute("UPDATE tags SET name=?2 WHERE id=?1", params![id, name]),
+    };
+    match updated {
+        Ok(0) => Err(tag_not_found()),
+        Ok(_) => get_tag(conn, id),
+        Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            Err(tag_already_exists())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 删除标签（关联行由外键级联删除，不留孤儿）。
+pub fn delete_tag(conn: &Connection, id: i64) -> Result<(), BackendError> {
+    let deleted = conn.execute("DELETE FROM tags WHERE id=?1", params![id])?;
+    if deleted == 0 {
+        return Err(tag_not_found());
+    }
+    Ok(())
+}
+
+fn ensure_book_exists(conn: &Connection, book_id: &str) -> Result<(), BackendError> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM books WHERE id=?1",
+        params![book_id],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Err(BackendError::Msg("书籍不存在".into()));
+    }
+    Ok(())
+}
+
+fn ensure_tag_exists(conn: &Connection, tag_id: i64) -> Result<(), BackendError> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tags WHERE id=?1",
+        params![tag_id],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Err(tag_not_found());
+    }
+    Ok(())
+}
+
+/// 覆盖式设置一本书的标签（去重；未知标签 id → `tag-not-found`）。
+pub fn set_book_tags(
+    conn: &Connection,
+    book_id: &str,
+    tag_ids: &[i64],
+) -> Result<(), BackendError> {
+    ensure_book_exists(conn, book_id)?;
+    let mut unique: Vec<i64> = tag_ids.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    let tx = conn.unchecked_transaction()?;
+    for tag_id in &unique {
+        ensure_tag_exists(&tx, *tag_id)?;
+    }
+    tx.execute("DELETE FROM book_tags WHERE book_id=?1", params![book_id])?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR IGNORE INTO book_tags(book_id, tag_id, created_at)
+             VALUES(?1, ?2, ?3)",
+        )?;
+        let now = now_str();
+        for tag_id in &unique {
+            stmt.execute(params![book_id, tag_id, now])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// 批量追加标签；返回实际新增的关联数（已存在的不重复计数）。
+pub fn batch_add_tag(
+    conn: &Connection,
+    book_ids: &[String],
+    tag_id: i64,
+) -> Result<u32, BackendError> {
+    ensure_tag_exists(conn, tag_id)?;
+    let tx = conn.unchecked_transaction()?;
+    let mut added = 0u32;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR IGNORE INTO book_tags(book_id, tag_id, created_at)
+             SELECT id, ?1, ?2 FROM books WHERE id=?3",
+        )?;
+        let now = now_str();
+        for book_id in book_ids {
+            added = added.saturating_add(
+                u32::try_from(stmt.execute(params![tag_id, now, book_id])?).unwrap_or(0),
+            );
+        }
+    }
+    tx.commit()?;
+    Ok(added)
+}
+
+/// 批量移除标签；返回实际删除的关联数。
+pub fn batch_remove_tag(
+    conn: &Connection,
+    book_ids: &[String],
+    tag_id: i64,
+) -> Result<u32, BackendError> {
+    ensure_tag_exists(conn, tag_id)?;
+    let tx = conn.unchecked_transaction()?;
+    let mut removed = 0u32;
+    {
+        let mut stmt = tx.prepare("DELETE FROM book_tags WHERE book_id=?1 AND tag_id=?2")?;
+        for book_id in book_ids {
+            removed = removed.saturating_add(
+                u32::try_from(stmt.execute(params![book_id, tag_id])?).unwrap_or(0),
+            );
+        }
+    }
+    tx.commit()?;
+    Ok(removed)
+}
+
+/// 设置单本收藏；书籍必须存在（软删书也允许，恢复后标记仍在）。
+pub fn set_book_favorite(
+    conn: &Connection,
+    book_id: &str,
+    favorite: bool,
+) -> Result<(), BackendError> {
+    ensure_book_exists(conn, book_id)?;
+    conn.execute(
+        "UPDATE books SET is_favorite=?2 WHERE id=?1",
+        params![book_id, if favorite { 1i64 } else { 0 }],
+    )?;
+    Ok(())
+}
+
+/// 批量设置收藏；返回实际命中行数（不存在的 id 静默跳过）。
+pub fn set_books_favorite(
+    conn: &Connection,
+    book_ids: &[String],
+    favorite: bool,
+) -> Result<u32, BackendError> {
+    let tx = conn.unchecked_transaction()?;
+    let mut updated = 0u32;
+    {
+        let mut stmt = tx.prepare("UPDATE books SET is_favorite=?1 WHERE id=?2")?;
+        for book_id in book_ids {
+            updated = updated.saturating_add(
+                u32::try_from(stmt.execute(params![if favorite { 1i64 } else { 0 }, book_id])?)
+                    .unwrap_or(0),
+            );
+        }
+    }
+    tx.commit()?;
+    Ok(updated)
 }
 
 /// 书库合集计数聚合结果（ADR-032 数据层）。
@@ -1099,7 +1637,7 @@ pub fn last_read_book(
     local_only: bool,
 ) -> Result<Option<BookRow>, BackendError> {
     let mut stmt = conn.prepare(
-        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev
+        "SELECT id, path, title, page_count, current_page, updated_at, scroll_pct, source_type, meta_json, format, last_opened_at, progress_rev, is_favorite
          FROM books
          WHERE removed=0
            AND current_page > 0
@@ -1460,6 +1998,21 @@ pub fn set_book_page_count(
         return Err(BackendError::Msg("书籍不存在".into()));
     }
     Ok(())
+}
+
+/// D4 first-open PDF backfill: only a PDF row whose count is still 0 adopts a
+/// client-detected page count. Returns `true` when this call performed the
+/// one-time write; a concurrent desktop rescan or reader wins exactly once.
+pub fn set_book_page_count_if_zero(
+    conn: &Connection,
+    id: &str,
+    page_count: u32,
+) -> Result<bool, BackendError> {
+    let updated = conn.execute(
+        "UPDATE books SET page_count=?2 WHERE id=?1 AND page_count=0 AND format='pdf'",
+        params![id, page_count as i64],
+    )?;
+    Ok(updated > 0)
 }
 
 /// 窗口起点（含当天）：days=1 → 只看今天；days=7 → 近 7 天。
@@ -2894,6 +3447,295 @@ mod tests {
         assert!(get_book(&conn, "x").unwrap().is_none());
     }
 
+    // ---------- 21-1：收藏 / 标签 / schema v4 ----------
+
+    #[test]
+    fn schema_v3_database_migrates_to_v4_without_data_loss() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE books(
+                id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                current_page INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT '',
+                removed INTEGER NOT NULL DEFAULT 0,
+                scroll_pct REAL NOT NULL DEFAULT -1,
+                source_type TEXT NOT NULL DEFAULT 'local',
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                format TEXT NOT NULL DEFAULT 'image',
+                last_opened_at TEXT NOT NULL DEFAULT '',
+                progress_rev INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE reading_log(
+                date TEXT NOT NULL,
+                book_id TEXT REFERENCES books(id) ON DELETE CASCADE,
+                pages INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE UNIQUE INDEX idx_reading_log_book_date
+                ON reading_log(date, COALESCE(book_id, ''));
+            CREATE TABLE settings(k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '');
+            INSERT INTO books(id, path, title, page_count, current_page)
+                VALUES('b1', 'C:/lib/v3.cbz', 'V3 Book', 12, 4);
+            INSERT INTO reading_log(date, book_id, pages) VALUES('2026-11-01', 'b1', 4);
+            PRAGMA user_version = 3;",
+        )
+        .unwrap();
+
+        init_schema(&conn).expect("v3 -> v4");
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&conn).unwrap(), 4);
+        let favorite: i64 = conn
+            .query_row("SELECT is_favorite FROM books WHERE id='b1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(favorite, 0, "老行必须回落为未收藏");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM books", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "迁移不得丢书"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM reading_log", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "迁移不得丢阅读历史"
+        );
+        assert!(table_exists(&conn, "tags").unwrap());
+        assert!(table_exists(&conn, "book_tags").unwrap());
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name IN ('idx_books_favorite', 'idx_book_tags_tag')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 2, "收藏联合索引与标签反查索引必须存在");
+        assert!(!get_book(&conn, "b1").unwrap().unwrap().is_favorite);
+    }
+
+    #[test]
+    fn favorites_and_tags_roundtrip_filters_and_counts() {
+        let conn = mem();
+        upsert_book(&conn, "b1", "C:/lib/one.cbz", "One", 10).unwrap();
+        upsert_book(&conn, "b2", "C:/lib/two.cbz", "Two", 10).unwrap();
+
+        set_book_favorite(&conn, "b1", true).unwrap();
+        assert!(get_book(&conn, "b1").unwrap().unwrap().is_favorite);
+        assert!(!get_book(&conn, "b2").unwrap().unwrap().is_favorite);
+
+        let reading = create_tag(&conn, "  Reading  ", Some("#aabbcc")).unwrap();
+        assert_eq!(reading.name, "Reading", "标签名必须 trim");
+        assert_eq!(reading.color, "#AABBCC", "颜色统一存大写");
+        assert_eq!(reading.book_count, 0);
+        let classic = create_tag(&conn, "Classic", None).unwrap();
+        assert_eq!(classic.color, "");
+
+        set_book_tags(&conn, "b1", &[reading.id, classic.id, classic.id]).unwrap();
+        let map = tags_for_books(&conn, &["b1".to_string(), "b2".to_string()]).unwrap();
+        assert_eq!(map.get("b1").map(Vec::len), Some(2), "重复 tagId 必须去重");
+        assert!(!map.contains_key("b2"), "无标签书不进入映射");
+
+        let tags = list_tags(&conn).unwrap();
+        let reading_row = tags.iter().find(|tag| tag.id == reading.id).unwrap();
+        assert_eq!(reading_row.book_count, 1, "未软删书计数");
+
+        let favorite_page = list_books_page_desktop(
+            &conn,
+            &DesktopBooksQuery {
+                query: None,
+                cursor_timestamp: None,
+                cursor_id: None,
+                cursor_favorite: None,
+                limit: 10,
+                favorite_only: true,
+                tag_id: None,
+                sort: BooksSort::RecentOpened,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            favorite_page
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b1"],
+            "仅看收藏必须只返回收藏书"
+        );
+
+        let tag_page = list_books_page_desktop(
+            &conn,
+            &DesktopBooksQuery {
+                query: None,
+                cursor_timestamp: None,
+                cursor_id: None,
+                cursor_favorite: None,
+                limit: 10,
+                favorite_only: false,
+                tag_id: Some(classic.id),
+                sort: BooksSort::FavoritesFirst,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            tag_page
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b1"],
+            "标签筛选必须只返回关联书"
+        );
+
+        assert_eq!(
+            batch_add_tag(&conn, &["b2".to_string()], reading.id).unwrap(),
+            1
+        );
+        assert_eq!(
+            batch_add_tag(&conn, &["b2".to_string()], reading.id).unwrap(),
+            0
+        );
+        assert_eq!(
+            list_tags(&conn)
+                .unwrap()
+                .into_iter()
+                .find(|tag| tag.id == reading.id)
+                .unwrap()
+                .book_count,
+            2
+        );
+        assert_eq!(
+            batch_remove_tag(&conn, &["b1".to_string()], reading.id).unwrap(),
+            1
+        );
+        delete_tag(&conn, classic.id).unwrap();
+        let remaining = tags_for_books(&conn, &["b1".to_string()]).unwrap();
+        assert!(!remaining.contains_key("b1"), "删除标签必须级联清关联");
+    }
+
+    #[test]
+    fn tag_validation_returns_stable_error_codes() {
+        let conn = mem();
+        create_tag(&conn, "Reading", None).unwrap();
+        let duplicate = create_tag(&conn, "  reading  ", None).unwrap_err();
+        assert!(
+            duplicate.to_string().contains("tag-already-exists"),
+            "重名必须返回稳定码：{duplicate}"
+        );
+        for invalid in ["", "   ", &"x".repeat(33)] {
+            let error = create_tag(&conn, invalid, None).unwrap_err();
+            assert!(
+                error.to_string().contains("tag-invalid-name"),
+                "越界标签名必须返回 tag-invalid-name：{error}"
+            );
+        }
+        let bad_color = create_tag(&conn, "Blue", Some("blue")).unwrap_err();
+        assert!(
+            bad_color.to_string().contains("tag-invalid-color"),
+            "非法颜色必须被拒绝：{bad_color}"
+        );
+        create_tag(&conn, "Other", None).unwrap();
+        let renamed = rename_tag(&conn, 1, "Favorites", Some("#38A8F8")).unwrap();
+        assert_eq!(renamed.name, "Favorites");
+        assert_eq!(renamed.color, "#38A8F8");
+        let conflict = rename_tag(&conn, 1, "other", None).unwrap_err();
+        assert!(conflict.to_string().contains("tag-already-exists"));
+        let missing = delete_tag(&conn, 9999).unwrap_err();
+        assert!(missing.to_string().contains("tag-not-found"));
+    }
+
+    #[test]
+    fn relocate_book_preserves_favorite_and_tags() {
+        let conn = mem();
+        upsert_book(&conn, "old", "C:/lib/old.cbz", "Old", 30).unwrap();
+        set_book_favorite(&conn, "old", true).unwrap();
+        let one = create_tag(&conn, "One", None).unwrap();
+        let two = create_tag(&conn, "Two", Some("#FDE68A")).unwrap();
+        set_book_tags(&conn, "old", &[one.id, two.id]).unwrap();
+
+        let row = relocate_book(&conn, "old", "new", "C:/lib/new.cbz", "New", 30).unwrap();
+        assert!(row.is_favorite, "重定位后收藏必须保留");
+        let tags = tags_for_books(&conn, &["new".to_string()]).unwrap();
+        assert_eq!(
+            tags.get("new").map(|list| list.len()),
+            Some(2),
+            "重定位后全部标签必须保留"
+        );
+        assert!(tags_for_books(&conn, &["old".to_string()])
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            list_tags(&conn)
+                .unwrap()
+                .iter()
+                .find(|tag| tag.id == one.id)
+                .unwrap()
+                .book_count,
+            1,
+            "标签计数不得因重定位重复"
+        );
+    }
+
+    #[test]
+    fn favorites_first_cursor_pagination_has_no_gaps_or_duplicates() {
+        let conn = mem();
+        let id = |n: u8| format!("{:064x}", n);
+        for (n, favorite, opened) in [
+            (1u8, true, "2026-11-03 12:00:00"),
+            (2, true, "2026-11-03 11:00:00"),
+            (3, false, "2026-11-03 13:00:00"),
+            (4, false, "2026-11-03 10:00:00"),
+            (5, true, ""),
+        ] {
+            upsert_book(
+                &conn,
+                &id(n),
+                &format!("C:/lib/{n}.cbz"),
+                &format!("B{n}"),
+                5,
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE books SET is_favorite=?2, last_opened_at=?3 WHERE id=?1",
+                params![id(n), if favorite { 1i64 } else { 0 }, opened],
+            )
+            .unwrap();
+        }
+        let mut cursor: Option<(String, String, bool)> = None;
+        let mut seen = Vec::new();
+        loop {
+            let query = DesktopBooksQuery {
+                query: None,
+                cursor_timestamp: cursor.as_ref().map(|value| value.0.as_str()),
+                cursor_id: cursor.as_ref().map(|value| value.1.as_str()),
+                cursor_favorite: cursor.as_ref().map(|value| value.2),
+                limit: 2,
+                favorite_only: false,
+                tag_id: None,
+                sort: BooksSort::FavoritesFirst,
+            };
+            let mut rows = list_books_page_desktop(&conn, &query).unwrap();
+            let has_more = rows.len() > 2;
+            rows.truncate(2);
+            seen.extend(rows.iter().map(|row| row.id.clone()));
+            if !has_more {
+                break;
+            }
+            cursor = rows
+                .last()
+                .map(|row| (row.last_opened_at.clone(), row.id.clone(), row.is_favorite));
+            assert!(cursor.is_some());
+        }
+        assert_eq!(
+            seen,
+            vec![id(1), id(2), id(5), id(3), id(4)],
+            "收藏组按最近打开在前，非收藏组随后；翻页必须无重无漏"
+        );
+    }
+
     /// 页数未知（`page_count == 0`）时重定位**不得**清零页数与阅读进度。
     ///
     /// PDF 重定位恒传 `page_count = 0`（后端不解析 PDF 页数），
@@ -3247,11 +4089,11 @@ mod tests {
         );
     }
 
-    /// schema 版本：PDF-1 起必须是 2；v1 库升级后 user_version 变成 2。
+    /// schema 版本：21-1 起必须是 4；v1 库升级后 user_version 变成 4。
     #[test]
-    fn schema_version_is_three_and_v1_database_is_upgraded() {
-        assert_eq!(SCHEMA_VERSION, 3, "W3（方案 C）起 schema 版本必须是 3");
-        let path = unique_temp_db("schema-v3");
+    fn schema_version_is_four_and_v1_database_is_upgraded() {
+        assert_eq!(SCHEMA_VERSION, 4, "21-1 起 schema 版本必须是 4");
+        let path = unique_temp_db("schema-v4");
         {
             let conn = open(&path).expect("打开临时库");
             conn.pragma_update(None, "user_version", 1).unwrap();
@@ -3261,12 +4103,12 @@ mod tests {
             init_schema(&conn).expect("迁移");
             assert_eq!(
                 schema_version(&conn).unwrap(),
-                3,
-                "v1 库升级后 user_version 必须变成 3"
+                4,
+                "v1 库升级后 user_version 必须变成 4"
             );
             // 幂等：重复 init 不得改写版本。
             init_schema(&conn).expect("重复迁移");
-            assert_eq!(schema_version(&conn).unwrap(), 3);
+            assert_eq!(schema_version(&conn).unwrap(), 4);
         }
         cleanup_db_files(&path);
     }
@@ -3544,7 +4386,11 @@ mod tests {
         assert_eq!(row.page_count, 10, "页数必须保留");
         assert_eq!(row.title, "旧书", "书库数据必须保留");
         assert_eq!(reading_log_total(&conn, "b1"), 5, "阅读历史必须保留");
-        assert_eq!(schema_version(&conn).unwrap(), 3, "版本号必须推进到 3");
+        assert_eq!(
+            schema_version(&conn).unwrap(),
+            SCHEMA_VERSION,
+            "版本号必须推进到当前 schema（W3 之后为 4）"
+        );
         assert_eq!(row.progress_rev, 0, "新列初始值必须是 0");
         assert_eq!(
             row.last_opened_at, "2026-01-02 03:04:05",
@@ -3567,7 +4413,11 @@ mod tests {
             row.last_opened_at, "2026-02-01 00:00:00",
             "第二次迁移不得覆盖已回填的值"
         );
-        assert_eq!(schema_version(&conn).unwrap(), 3, "版本号必须稳定在 3");
+        assert_eq!(
+            schema_version(&conn).unwrap(),
+            SCHEMA_VERSION,
+            "版本号必须稳定在当前 schema（W3 之后为 4）"
+        );
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('books')
@@ -4152,6 +5002,25 @@ mod tests {
         );
     }
 
+    /// 默认桌面分页查询（最近打开、无筛选），测试用。
+    fn desktop_page<'a>(
+        query: Option<&'a str>,
+        cursor_ts: Option<&'a str>,
+        cursor_id: Option<&'a str>,
+        limit: u32,
+    ) -> DesktopBooksQuery<'a> {
+        DesktopBooksQuery {
+            query,
+            cursor_timestamp: cursor_ts,
+            cursor_id,
+            cursor_favorite: None,
+            limit,
+            favorite_only: false,
+            tag_id: None,
+            sort: BooksSort::RecentOpened,
+        }
+    }
+
     /// 模拟命令层：游标编解码 + 逐页翻页，收集全部 id。
     fn books_window_collect(conn: &Connection, query: Option<&str>, limit: u32) -> Vec<String> {
         let mut cursor: Option<String> = None;
@@ -4159,17 +5028,14 @@ mod tests {
         loop {
             let (cursor_ts, cursor_id) = match &cursor {
                 Some(raw) => {
-                    let (ts, id) = decode_book_cursor(raw).expect("游标必须可解码");
+                    let (ts, id, _) = decode_book_cursor_full(raw).expect("游标必须可解码");
                     (Some(ts), Some(id))
                 }
                 None => (None, None),
             };
             let mut rows = list_books_page_desktop(
                 conn,
-                query,
-                cursor_ts.as_deref(),
-                cursor_id.as_deref(),
-                limit,
+                &desktop_page(query, cursor_ts.as_deref(), cursor_id.as_deref(), limit),
             )
             .expect("分页查询");
             let has_more = rows.len() > limit as usize;
@@ -4194,7 +5060,8 @@ mod tests {
         books_window_seed(&conn);
 
         // limit=3 → 返回 limit+1=4 行，第 4 行仅供 has_more 判定。
-        let rows = list_books_page_desktop(&conn, None, None, None, 3).expect("首页");
+        let rows =
+            list_books_page_desktop(&conn, &desktop_page(None, None, None, 3)).expect("首页");
         assert_eq!(rows.len(), 4, "须多取一行用于判断 nextCursor");
         assert_eq!(
             rows.iter()
@@ -4284,12 +5151,13 @@ mod tests {
         let (path, conn) = books_window_db("books-window-search");
         books_window_seed(&conn);
 
-        let by_title =
-            list_books_page_desktop(&conn, Some("Alpha"), None, None, 10).expect("title");
+        let by_title = list_books_page_desktop(&conn, &desktop_page(Some("Alpha"), None, None, 10))
+            .expect("title");
         assert_eq!(by_title.len(), 1);
         assert_eq!(by_title[0].id, books_window_id('a'));
 
-        let by_path = list_books_page_desktop(&conn, Some("secret"), None, None, 10).expect("path");
+        let by_path = list_books_page_desktop(&conn, &desktop_page(Some("secret"), None, None, 10))
+            .expect("path");
         assert_eq!(by_path.len(), 1);
         assert_eq!(
             by_path[0].id,
@@ -4298,7 +5166,8 @@ mod tests {
         );
 
         let injection =
-            list_books_page_desktop(&conn, Some("' OR 1=1 --"), None, None, 10).expect("injection");
+            list_books_page_desktop(&conn, &desktop_page(Some("' OR 1=1 --"), None, None, 10))
+                .expect("injection");
         assert!(injection.is_empty(), "LIKE 参数化不得扩大结果集");
         cleanup_db_files(&path);
     }
@@ -4308,7 +5177,8 @@ mod tests {
         let (path, conn) = books_window_db("books-window-limit");
         books_window_seed(&conn);
 
-        let rows = list_books_page_desktop(&conn, None, None, None, 100).expect("大 limit");
+        let rows =
+            list_books_page_desktop(&conn, &desktop_page(None, None, None, 100)).expect("大 limit");
         assert_eq!(rows.len(), 5, "无更多数据时不得凭空多出 probe 行");
         cleanup_db_files(&path);
     }

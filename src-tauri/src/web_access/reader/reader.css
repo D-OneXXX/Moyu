@@ -311,6 +311,60 @@ button:disabled {
   color: var(--sh-muted-foreground);
 }
 
+.filterbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 14px;
+}
+
+.filter-toggle {
+  display: inline-flex;
+  min-height: 44px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--sh-border);
+  background: var(--sh-card);
+  color: var(--sh-foreground);
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 2px 0 0 var(--sh-border);
+}
+
+.filter-toggle[aria-pressed="true"] {
+  background: var(--sh-primary);
+  color: var(--sh-primary-foreground);
+}
+
+.filter-star {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tags-filter {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  max-width: 260px;
+}
+
+.tags-select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--sh-border);
+  background: var(--sh-card);
+  color: var(--sh-foreground);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 0 0 var(--sh-border);
+  text-overflow: ellipsis;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(clamp(98px, 28vw, 160px), 1fr));
@@ -412,6 +466,16 @@ button:disabled {
 
 .badge-done {
   background: rgba(4, 120, 87, 0.86);
+}
+
+.badge-fav {
+  left: 6px;
+  top: 6px;
+  bottom: auto;
+  background: rgba(245, 158, 11, 0.94);
+  color: #09090b;
+  padding: 1px 7px;
+  font-size: 12px;
 }
 
 .badge-missing {
@@ -645,6 +709,56 @@ button:disabled {
   min-height: 0;
 }
 
+/*
+ * PDF is a paged format but its canvas may be taller than the viewport at
+ * fit-width (and wider than it when zoomed), so this variant scrolls on both
+ * axes. `pan-x pan-y` deliberately omits pinch-zoom: the reader owns pinch and
+ * calls preventDefault in the two-finger handler.
+ */
+.reader[data-format="pdf"] .stage {
+  display: block;
+  overflow: auto;
+  touch-action: pan-x pan-y;
+}
+
+.reader[data-format="pdf"] .view {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  height: auto;
+  min-height: 100%;
+}
+
+.pdf-shell {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  min-height: 100%;
+  padding: 2px 0 calc(var(--r-safe-bottom) + 8px);
+}
+
+.pdf-page {
+  width: calc(var(--r-pdf-width, 100%) * var(--r-zoom));
+  max-width: none;
+  margin: 0 auto;
+  transition: none;
+}
+
+.pdf-page canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #ffffff;
+  box-shadow: 0 2px 18px rgba(0, 0, 0, 0.35);
+}
+
+.pdf-skeleton {
+  width: min(94vw, 720px);
+  aspect-ratio: 3 / 4;
+  margin-top: 4px;
+}
+
 .tiles {
   width: calc(var(--r-zoom) * 100%);
   max-width: none;
@@ -770,6 +884,14 @@ button:disabled {
   border: 0;
   border-radius: 0;
   touch-action: pan-y;
+}
+
+/*
+ * PDF owns pan/pinch in JS (see bindPdfScrollGestures): the overlay sits above
+ * the scrolling stage, so `none` is required for preventDefault to work.
+ */
+.reader[data-format="pdf"] .zone {
+  touch-action: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -995,6 +1117,10 @@ button:disabled {
 
 .hud-action:disabled {
   opacity: 0.4;
+}
+
+.hud-action[hidden] {
+  display: none;
 }
 
 .hud-action[aria-pressed="true"] {

@@ -26,6 +26,7 @@ import {
   type BookInfo,
   type Dashboard,
   type LibraryStats,
+  type TagInfo,
 } from "@/lib/tauri";
 import { sourceDisplay } from "@/lib/sourceDisplay";
 import { LIBRARY_REFRESH_EVENT } from "@/lib/events";
@@ -58,6 +59,8 @@ import LibrarySelectionBar from "@/components/library/LibrarySelectionBar";
 import LibrarySkeleton from "@/components/library/LibrarySkeleton";
 import RelocateDialog from "@/components/library/RelocateDialog";
 import OpdsBrowserDialog from "@/components/library/OpdsBrowserDialog";
+import TagManagerDialog from "@/components/library/TagManagerDialog";
+import BatchTagDialog from "@/components/library/BatchTagDialog";
 
 const GROUP_KEY = "mr-library-group-series";
 const FILTER_KEY = "mr-library-source-filter";
@@ -65,7 +68,7 @@ const FILTER_KEY = "mr-library-source-filter";
 const PAGE_SIZE = 60;
 /** 网格列间距（与 grid gap-4 一致）与卡片非封面部分的估算高度。 */
 const GRID_GAP = 16;
-const CARD_CHROME = 88;
+const CARD_CHROME = 112;
 const FALLBACK_ROW_HEIGHT = 320;
 /** 视口上下各多渲染的行数，吸收行高估算误差与快速滚动。 */
 const OVERSCAN_ROWS = 3;
@@ -175,6 +178,13 @@ export default function LibraryPage() {
   const [sortMode, setSortMode] = useState<SortMode>("recentOpened");
   const [sourceFilter, setSourceFilter] = useState(readSourceFilter);
   const [readingFilter, setReadingFilter] = useState<ReadingFilter>("all");
+  // 21-1：收藏/标签筛选由后端执行（跨分页完整），标签定义全局共享。
+  const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [tagFilter, setTagFilter] = useState<number | null>(null);
+  const [tags, setTags] = useState<TagInfo[]>([]);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [batchTagOpen, setBatchTagOpen] = useState(false);
+  const [favoriteBusy, setFavoriteBusy] = useState(false);
   const [dash, setDash] = useState<Dashboard | null>(null);
   // ADR-032：后端聚合的合集计数；命令失败时为 null，回落本地已加载页计数。
   const [stats, setStats] = useState<LibraryStats | null>(null);
@@ -246,11 +256,13 @@ export default function LibraryPage() {
     try {
       const [d, page, libraryStats] = await Promise.all([
         api.getDashboard(),
-        api.listBooksPage(
-          q.length > 0
-            ? { query: q, limit: PAGE_SIZE }
-            : { limit: PAGE_SIZE },
-        ),
+        api.listBooksPage({
+          query: q.length > 0 ? q : null,
+          limit: PAGE_SIZE,
+          favoriteOnly,
+          tagId: tagFilter,
+          sortBy: sortMode,
+        }),
         // ADR-032：合集计数走一次分组聚合，搜索态不再取全库列表。
         api.libraryStats().catch(() => null),
       ]);
@@ -269,11 +281,31 @@ export default function LibraryPage() {
     } finally {
       if (seq === loadSeqRef.current) setLoading(false);
     }
-  }, []);
+  }, [favoriteOnly, sortMode, tagFilter]);
 
   useEffect(() => {
     void reload(debounced);
   }, [debounced, reload]);
+
+  // 21-1：标签定义全局共享（筛选下拉、详情面板与批量对话框）。
+  const refreshTags = useCallback(async () => {
+    try {
+      setTags(await api.listTags());
+    } catch {
+      /* 非致命：保留上一次已知标签，书库仍可正常阅读。 */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshTags();
+  }, [refreshTags]);
+
+  // 选中的标签被删除后立刻回落「全部标签」，避免空白筛选。
+  useEffect(() => {
+    if (tagFilter !== null && !tags.some((tag) => tag.id === tagFilter)) {
+      setTagFilter(null);
+    }
+  }, [tags, tagFilter]);
 
   // 卸载即作废在途请求，避免组件销毁后仍写入状态。
   useEffect(() => () => {
@@ -298,17 +330,12 @@ export default function LibraryPage() {
             (book) =>
               (book.sourceType === "local") === (sourceFilter === "local"),
           );
-    const byReading =
-      readingFilter === "all"
-        ? filtered
-        : filtered.filter((book) => matchesReadingFilter(book, readingFilter));
-    // 方案 C：后端默认按「最近打开」（last_opened_at）排序；
-    // 「最近阅读」需要按 updated_at 重排（后端只提供一种顺序）。
-    if (sortMode !== "recentRead") return byReading;
-    return [...byReading].sort((a, b) =>
-      b.updatedAt.localeCompare(a.updatedAt),
-    );
-  }, [books, readingFilter, sourceFilter, safeMode, sortMode]);
+    // 方案 C + 21-1：排序（最近打开 / 最近阅读 / 收藏置顶）全部由后端
+    // 游标排序完成，前端只做来源与阅读状态的本地叠加筛选。
+    return readingFilter === "all"
+      ? filtered
+      : filtered.filter((book) => matchesReadingFilter(book, readingFilter));
+  }, [books, readingFilter, sourceFilter, safeMode]);
 
   const accessibleAllBooks = useMemo(
     () =>
@@ -350,8 +377,13 @@ export default function LibraryPage() {
 
     // 方案 C：代表卡取「当前排序键最大」的那本——最近打开模式看
     // lastOpenedAt，最近阅读模式看 updatedAt。
-    const rank = (b: BookInfo) =>
-      sortMode === "recentRead" ? b.updatedAt : b.lastOpenedAt || b.updatedAt;
+    const rank = (b: BookInfo) => {
+      const base =
+        sortMode === "recentRead" ? b.updatedAt : b.lastOpenedAt || b.updatedAt;
+      return sortMode === "favoritesFirst"
+        ? `${b.isFavorite ? "1" : "0"}:${base}`
+        : base;
+    };
     const groups = new Map<string, { book: BookInfo; filteredCount: number }>();
     for (const book of visibleBooks) {
       const sid = book.seriesId?.trim();
@@ -385,6 +417,9 @@ export default function LibraryPage() {
         query: debounced.length > 0 ? debounced : null,
         cursor,
         limit: PAGE_SIZE,
+        favoriteOnly,
+        tagId: tagFilter,
+        sortBy: sortMode,
       });
       // 期间发生过搜索/刷新：这一页属于旧查询，追加会污染新列表。
       if (seq !== loadSeqRef.current) return;
@@ -398,7 +433,7 @@ export default function LibraryPage() {
       loadingMoreRef.current = false;
       setLoadingMore(false);
     }
-  }, [cursor, debounced]);
+  }, [cursor, debounced, favoriteOnly, sortMode, tagFilter]);
 
   // 网格列数与单行高度：ResizeObserver 读实际宽度，按 3:4 封面估算行高；
   // overscan 吸收估算误差，避免硬编码响应式断点。
@@ -581,6 +616,127 @@ export default function LibraryPage() {
     [books, allBooks],
   );
 
+  /** 21-1：同步更新所有书籍快照（分页列表、合集代表与详情面板）。 */
+  const patchBook = useCallback(
+    (bookId: string, updater: (book: BookInfo) => BookInfo) => {
+      setBooks((prev) =>
+        prev.map((item) => (item.id === bookId ? updater(item) : item)),
+      );
+      setAllBooks((prev) =>
+        prev.map((item) => (item.id === bookId ? updater(item) : item)),
+      );
+      setSelectedBook((prev) =>
+        prev && prev.id === bookId ? updater(prev) : prev,
+      );
+    },
+    [],
+  );
+
+  // 收藏星标：点击即乐观更新，失败回滚并提示。
+  const toggleFavorite = useCallback(
+    async (bookId: string, favorite: boolean) => {
+      const previous = findBook(bookId)?.isFavorite ?? false;
+      patchBook(bookId, (book) => ({ ...book, isFavorite: favorite }));
+      try {
+        await api.setBookFavorite(bookId, favorite);
+      } catch (e) {
+        patchBook(bookId, (book) => ({ ...book, isFavorite: previous }));
+        notifyError("set_book_favorite", e);
+      }
+    },
+    [findBook, patchBook],
+  );
+
+  // 详情面板：勾选/取消标签，即时自动保存。
+  const setBookTagsFor = useCallback(
+    async (bookId: string, tagIds: number[]) => {
+      const byId = new Map(tags.map((tag) => [tag.id, tag]));
+      patchBook(bookId, (book) => ({
+        ...book,
+        tags: tagIds
+          .map((id) => byId.get(id))
+          .filter((tag): tag is TagInfo => tag !== undefined),
+      }));
+      try {
+        await api.setBookTags(bookId, tagIds);
+        void refreshTags();
+      } catch (e) {
+        notifyError("set_book_tags", e);
+        try {
+          const fresh = await api.getBook(bookId);
+          patchBook(bookId, () => fresh);
+        } catch {
+          /* 回读失败时保留乐观值，下次刷新会纠正。 */
+        }
+      }
+    },
+    [tags, patchBook, refreshTags],
+  );
+
+  // 详情面板：输入名称回车创建并绑定（同名标签直接复用）。
+  const createTagForBook = useCallback(
+    async (bookId: string, name: string) => {
+      const trimmed = name.trim();
+      const existing = tags.find(
+        (tag) =>
+          tag.name.localeCompare(trimmed, undefined, {
+            sensitivity: "base",
+          }) === 0,
+      );
+      if (existing) {
+        const current = findBook(bookId)?.tags.map((tag) => tag.id) ?? [];
+        if (!current.includes(existing.id)) {
+          await setBookTagsFor(bookId, [...current, existing.id]);
+        }
+        return;
+      }
+      try {
+        const tag = await api.createTag(trimmed);
+        const current = findBook(bookId)?.tags.map((item) => item.id) ?? [];
+        await api.setBookTags(bookId, [...current, tag.id]);
+        patchBook(bookId, (book) => ({
+          ...book,
+          tags: [...book.tags.filter((item) => item.id !== tag.id), tag],
+        }));
+        await refreshTags();
+      } catch (e) {
+        notifyError("create_tag", e);
+      }
+    },
+    [tags, findBook, setBookTagsFor, patchBook, refreshTags],
+  );
+
+  const batchFavorite = useCallback(async () => {
+    const targets = checkedBooks.filter((book) => !book.isFavorite);
+    if (targets.length === 0 || favoriteBusy) return;
+    const ids = targets.map((book) => book.id);
+    setFavoriteBusy(true);
+    try {
+      const changed = await api.setBooksFavorite(ids, true);
+      for (const book of targets) {
+        patchBook(book.id, (item) => ({ ...item, isFavorite: true }));
+      }
+      toast(
+        t("tags.batchFavoriteDone", {
+          count: formatNumber(changed),
+        }),
+      );
+    } catch (e) {
+      notifyError("set_books_favorite", e);
+    } finally {
+      setFavoriteBusy(false);
+    }
+  }, [checkedBooks, favoriteBusy, formatNumber, patchBook, t]);
+
+  const onBatchTagsChanged = useCallback(async () => {
+    await Promise.all([reload(debounced), refreshTags()]);
+  }, [debounced, refreshTags, reload]);
+
+  const onTagManagerChanged = useCallback(async () => {
+    await refreshTags();
+    await reload(debounced);
+  }, [debounced, refreshTags, reload]);
+
   const openRelocate = useCallback((book: BookInfo) => {
     setSheetOpen(false);
     setSelectedBook(null);
@@ -726,7 +882,7 @@ export default function LibraryPage() {
       }
       node = node.parentElement;
     }
-  }, [readingFilter]);
+  }, [readingFilter, favoriteOnly, tagFilter, sortMode]);
 
   const toggleCheck = useCallback((bookId: string) => {
     setCheckedIds((prev) => {
@@ -910,11 +1066,13 @@ export default function LibraryPage() {
   const emptyMessage =
     debounced.length > 0
       ? t("library.emptySearch")
-      : readingFilter !== "all"
-        ? t("library.emptyReadingFilter")
-        : sourceFilter !== "all"
-          ? t("library.emptyFilter")
-          : t("library.emptyLibrary");
+      : favoriteOnly || tagFilter !== null
+        ? t("tags.filterEmpty")
+        : readingFilter !== "all"
+          ? t("library.emptyReadingFilter")
+          : sourceFilter !== "all"
+            ? t("library.emptyFilter")
+            : t("library.emptyLibrary");
 
   return (
     <div className="mx-auto w-full min-w-0 max-w-[1500px] px-5 pb-24 pt-4 sm:px-8">
@@ -1018,6 +1176,12 @@ export default function LibraryPage() {
           onGroupSeriesChange={setGroupSeries}
           sortMode={sortMode}
           onSortModeChange={setSortMode}
+          favoriteOnly={favoriteOnly}
+          onFavoriteOnlyChange={setFavoriteOnly}
+          tags={tags}
+          tagId={tagFilter}
+          onTagIdChange={setTagFilter}
+          onManageTags={() => setTagManagerOpen(true)}
         />
         <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
           {loading ? (
@@ -1093,6 +1257,9 @@ export default function LibraryPage() {
                     const book = findBook(bookId);
                     if (book) openRelocate(book);
                   }}
+                  onToggleFavorite={(bookId, favorite) => {
+                    void toggleFavorite(bookId, favorite);
+                  }}
                   deferSelect
                 />
               ))}
@@ -1132,7 +1299,7 @@ export default function LibraryPage() {
         )}
       </section>
 
-      {selectMode && (
+      {selectMode && !batchTagOpen && (
         <LibrarySelectionBar
           count={checkedBooks.length}
           deleteLabel={batchDeleteLabel}
@@ -1141,6 +1308,9 @@ export default function LibraryPage() {
           }
           onDelete={() => setConfirmDelete(checkedBooks)}
           onCancel={exitSelectMode}
+          onFavorite={() => void batchFavorite()}
+          onTag={() => setBatchTagOpen(true)}
+          favoriteBusy={favoriteBusy}
         />
       )}
 
@@ -1245,6 +1415,15 @@ export default function LibraryPage() {
         onRelocate={openRelocate}
         // Destructive source deletion goes through the shared confirm dialog.
         onDelete={(book) => setConfirmDelete([book])}
+        allTags={tags}
+        onSetBookTags={(bookId, tagIds) => void setBookTagsFor(bookId, tagIds)}
+        onCreateTagForBook={(bookId, name) =>
+          void createTagForBook(bookId, name)
+        }
+        onManageTags={() => {
+          setSheetOpen(false);
+          setTagManagerOpen(true);
+        }}
       />
 
       <RelocateDialog
@@ -1262,6 +1441,21 @@ export default function LibraryPage() {
         onOpenChange={setOpdsOpen}
         onOpenBook={(book) => openReader(book.id)}
         onGoSettings={() => nav("/settings?tab=network")}
+      />
+
+      <TagManagerDialog
+        open={tagManagerOpen}
+        onOpenChange={setTagManagerOpen}
+        tags={tags}
+        onChanged={onTagManagerChanged}
+      />
+
+      <BatchTagDialog
+        open={batchTagOpen}
+        onOpenChange={setBatchTagOpen}
+        bookIds={checkedBooks.map((book) => book.id)}
+        tags={tags}
+        onChanged={onBatchTagsChanged}
       />
 
     </div>

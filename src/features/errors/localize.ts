@@ -82,6 +82,10 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "pdf-encrypted", key: "error.pdfEncrypted" },
   { code: "pdf-too-large", key: "error.pdfTooLarge" },
   { code: "pdf-source-unsupported", key: "error.pdfSourceUnsupported" },
+  // D4 Web Reader byte ranges: the requested interval is outside the file or
+  // the response would exceed the 4 MiB cap. The mobile reader retries with a
+  // freshly probed length, so the desktop wording is the closest fit.
+  { code: "range-not-satisfiable", key: "error.pdfNotValid" },
   { code: "source-unsupported", key: "error.sourceUnsupported" },
   { code: "source-page-too-large", key: "error.sourcePageTooLarge" },
   { code: "online-metadata-write", key: "error.onlineMetadataWrite" },
@@ -172,12 +176,41 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "invalid-page-limit", key: "error.pageInvalidLimit" },
   { code: "invalid-page-query", key: "error.pageInvalidQuery" },
   { code: "invalid-page-cursor", key: "error.pageInvalidCursor" },
-  // 皮肤素材导入（Rust 侧校验图片头与尺寸）。
+  // 21-1：收藏与标签。
+  { code: "tag-already-exists", key: "error.tagAlreadyExists" },
+  { code: "tag-invalid-name", key: "error.tagInvalidName" },
+  { code: "tag-invalid-color", key: "error.tagInvalidColor" },
+  { code: "tag-not-found", key: "error.tagNotFound" },
+  { code: "invalid-page-sort", key: "error.pageInvalidSort" },
+  { code: "invalid-page-tag", key: "error.pageInvalidTag" },
+  { code: "invalid-batch-size", key: "error.invalidBatchSize" },
+  // 皮肤素材导入与 .moyuskin 皮肤包（Rust 侧校验图片头、归档结构与 CSS token）。
   { code: "skin-read-failed", key: "settings.skin.errorRead" },
   { code: "skin-empty", key: "settings.skin.errorRead" },
   { code: "skin-too-large", key: "settings.skin.errorSize" },
   { code: "skin-unsupported-format", key: "settings.skin.errorFormat" },
   { code: "skin-dimension-too-large", key: "settings.skin.errorDimension" },
+  { code: "skin-not-zip", key: "settings.skin.errorPack" },
+  { code: "skin-pack-too-large", key: "settings.skin.errorPackSize" },
+  { code: "skin-too-many-entries", key: "settings.skin.errorPackSize" },
+  { code: "skin-unsafe-entry", key: "settings.skin.errorPack" },
+  { code: "skin-encrypted", key: "settings.skin.errorPack" },
+  { code: "skin-manifest-invalid", key: "settings.skin.errorPack" },
+  { code: "skin-manifest-too-large", key: "settings.skin.errorPackSize" },
+  { code: "skin-asset-missing", key: "settings.skin.errorPack" },
+  { code: "skin-id-invalid", key: "settings.skin.errorPack" },
+  { code: "skin-id-reserved", key: "settings.skin.errorPack" },
+  { code: "skin-already-installed", key: "settings.skin.errorExists" },
+  { code: "skin-token-invalid", key: "settings.skin.errorPack" },
+  { code: "skin-write-failed", key: "settings.skin.errorWrite" },
+  { code: "skin-not-installed", key: "settings.skin.errorWrite" },
+  { code: "skin-delete-failed", key: "settings.skin.errorWrite" },
+  { code: "skin-export-failed", key: "settings.skin.errorWrite" },
+  { code: "skin-name-invalid", key: "settings.skin.errorName" },
+  { code: "skin-inset-invalid", key: "settings.skin.errorRange" },
+  { code: "skin-opacity-invalid", key: "settings.skin.errorRange" },
+  { code: "skin-frame-png-required", key: "settings.skin.errorFrame" },
+  { code: "skin-data-dir-unavailable", key: "settings.skin.errorWrite" },
 ];
 
 /**

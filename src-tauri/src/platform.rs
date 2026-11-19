@@ -149,6 +149,27 @@ fn decide_dmabuf_disable(
     force || safe_mode || (wayland && nvidia)
 }
 
+/// Pure predicate shared by the runtime probe and unit tests. On any host it
+/// answers the Linux DMABUF rule: only the literal `1` disables the renderer.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+pub fn dmabuf_renderer_disabled(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Whether this process is known to be on the WebKit software raster path.
+/// Linux reads the effective `WEBKIT_DISABLE_DMABUF_RENDERER` value (including
+/// a user-set override); every other platform returns false.
+pub fn software_webview_renderer() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        dmabuf_renderer_disabled(std::env::var(DMABUF_ENV).ok().as_deref())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 #[cfg(target_os = "linux")]
 const DMABUF_ENV: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 
@@ -314,6 +335,18 @@ fn path_has_mount_prefix(path: &std::path::Path, mount: &std::path::Path) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dmabuf_env_predicate_covers_linux_branches_on_any_host() {
+        assert!(dmabuf_renderer_disabled(Some("1")));
+        assert!(!dmabuf_renderer_disabled(Some("0")));
+        assert!(!dmabuf_renderer_disabled(Some("true")));
+        assert!(!dmabuf_renderer_disabled(Some("")));
+        assert!(!dmabuf_renderer_disabled(None));
+        if !cfg!(target_os = "linux") {
+            assert!(!software_webview_renderer());
+        }
+    }
 
     #[test]
     fn dmabuf_decision_table() {

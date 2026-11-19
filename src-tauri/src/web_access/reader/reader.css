@@ -361,6 +361,7 @@ button:disabled {
   color: var(--sh-foreground);
   font-size: 13px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   box-shadow: 0 2px 0 0 var(--sh-border);
   text-overflow: ellipsis;
 }

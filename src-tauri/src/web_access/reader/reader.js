@@ -249,10 +249,11 @@ let libSeq = 0;
 let libQuery = "";
 let libCursor = null;
 let libLoading = false;
-// 21-1：收藏 / 标签筛选（只读；标签索引由已加载页面累积）。
+// 21-1：收藏 / 标签筛选（只读）。21-1.1 优先使用 /api/tags 全量索引；
+// 接口失败时继续由已加载页面的书籍标签累积，保证筛选栏仍可用。
 let libFavoriteOnly = false;
 let libTagId = "";
-const libTagIndex = new Map();
+const libTagIndex = new Map(); // id -> { name, count }
 let libSentinelObserver = null;
 let libScrollY = 0;
 
@@ -728,10 +729,15 @@ function clearReader() {
 function tagFilterOptions(select) {
   if (!select) return;
   const items = [...libTagIndex.entries()].sort((a, b) =>
-    a[1].localeCompare(b[1], locale, { sensitivity: "base" }),
+    a[1].name.localeCompare(b[1].name, locale, { sensitivity: "base" }),
   );
   const options = [el("option", { value: "", text: t("allTags") })].concat(
-    items.map(([id, name]) => el("option", { value: String(id), text: name })),
+    items.map(([id, tag]) =>
+      el("option", {
+        value: String(id),
+        text: tag.count > 0 ? `${tag.name} (${tag.count})` : tag.name,
+      }),
+    ),
   );
   select.replaceChildren(...options);
   select.value = libTagId;
@@ -739,6 +745,30 @@ function tagFilterOptions(select) {
     // 选中的标签已从索引消失：平滑回落全部标签。
     libTagId = "";
     select.value = "";
+  }
+}
+
+/**
+ * Fetch the complete tag index. This runs in parallel with the first books
+ * page and never blocks it; on failure the accumulated per-book tags remain
+ * the fallback. Counts use the backend's non-removed aggregate.
+ */
+async function loadTagIndex() {
+  try {
+    const result = await api("/api/tags");
+    const tags = Array.isArray(result && result.tags) ? result.tags : [];
+    if (!tags.length) return;
+    libTagIndex.clear();
+    for (const tag of tags) {
+      if (!tag || !Number.isInteger(tag.id)) continue;
+      const name = String(tag.name || "").trim();
+      if (!name) continue;
+      const count = Number.isInteger(tag.bookCount) ? tag.bookCount : 0;
+      libTagIndex.set(String(tag.id), { name, count });
+    }
+    tagFilterOptions(document.querySelector(".tags-select"));
+  } catch {
+    // Read-only enhancement: keep the already-loaded book tags as fallback.
   }
 }
 
@@ -995,7 +1025,15 @@ async function loadLibrary({ reset = false } = {}) {
       target.append(bookCard(book));
       for (const tag of book.tags || []) {
         if (tag && Number.isInteger(tag.id)) {
-          libTagIndex.set(String(tag.id), String(tag.name || ""));
+          const name = String(tag.name || "").trim();
+          if (!name) continue;
+          const previous = libTagIndex.get(String(tag.id));
+          const count = Number.isInteger(tag.bookCount)
+            ? tag.bookCount
+            : previous
+              ? previous.count
+              : 0;
+          libTagIndex.set(String(tag.id), { name, count });
         }
       }
     }
@@ -1056,7 +1094,10 @@ async function library({ restoreScroll = false } = {}) {
     );
     libSentinelObserver.observe(sentinel);
   }
+  // 全量标签与首屏书籍并行；标签接口慢或失败不能拖住书库。
+  const tagIndexRequest = loadTagIndex();
   await loadLibrary({ reset: true });
+  await tagIndexRequest;
   if (restoreScroll) {
     requestAnimationFrame(() => window.scrollTo(0, libScrollY));
   }

@@ -3539,13 +3539,20 @@ export function checkAntiMockGuards(root, report) {
       errors.push("data.rs 使用字符串方法比较，可能绕过 GET 门");
     }
 
-    // 2. Exactly the eight frozen GET shapes (Books + seven segment arms).
+    // 2. The seven frozen /api/books segment shapes plus the exact /api/tags
+    // aggregate. Tags must reject query strings before any provider call.
     const dataFlat = dataSource.replace(/\s+/g, " ");
     if (
       !dataFlat.includes('strip_prefix("/api/books")') ||
       !dataFlat.includes("if rest.is_empty()")
     ) {
       errors.push("data.rs 缺少 /api/books 根路由解析");
+    }
+    if (
+      !dataFlat.includes('path == "/api/tags"') ||
+      !dataFlat.includes("query.is_none().then_some(Self::Tags)")
+    ) {
+      errors.push("data.rs 缺少精确 /api/tags 且无查询串的路由形状");
     }
     for (const arm of [
       '[id] => Some(Self::Book',
@@ -3572,9 +3579,10 @@ export function checkAntiMockGuards(root, report) {
       }
     }
 
-    // 3. Only /api/books may appear as a data route literal.
+    // 3. Only /api/books and the exact /api/tags aggregate may appear as data
+    // route literals.
     for (const match of dataSource.matchAll(/"([^"]*\/api\/[^"]*)"/g)) {
-      if (match[1] !== "/api/books") {
+      if (match[1] !== "/api/books" && match[1] !== "/api/tags") {
         errors.push(`data.rs 出现未批准路由字面量：${match[1]}`);
       }
     }
@@ -3779,23 +3787,23 @@ export function checkAntiMockGuards(root, report) {
         id: "static:d2-data-routes",
         suite: "static",
         layer: "static",
-        title: "D2 数据面仅八条只读 GET、会话认证、无文件/SQL/CORS/Range/写路由",
+        title: "D2 数据面九条只读 GET、会话认证、无文件/SQL/CORS/Range/写路由",
         severity: "P1",
         details: errors.join(" | "),
         location:
           "src-tauri/src/web_access/{data,data_app,session_auth,router,runtime,tls}.rs + src-tauri/src/{read_service,commands,lib}.rs",
         expected:
-          "data.rs 只暴露八条 GET 形状且仅在 authenticate_request 之后探测缓存；数据面不触文件/SQL/CORS/Referer/Range/写路由；Web layout 不落盘；tls keep_alive(false) 且连接上限 32/8 以 TCP 断开；runtime 默认 Disabled 且只在 start_inner 挂载一次数据面",
+          "data.rs 暴露书库根 + 七段形状 + 精确 /api/tags（无查询串）九条 GET，且仅在 authenticate_request 之后探测缓存；数据面不触文件/SQL/CORS/Referer/Range/写路由；Web layout 不落盘；tls keep_alive(false) 且连接上限 32/8 以 TCP 断开；runtime 默认 Disabled 且只在 start_inner 挂载一次数据面",
         actual: errors.join(" | "),
         rootCause: "D2 只读数据面边界被破坏",
-        fix: "恢复八条只读 GET 路由、认证先于条件探测与 read_service-only 的读写分工",
+        fix: "恢复九条只读 GET 路由、认证先于条件探测与 read_service-only 的读写分工",
       });
     } else {
       ok(report, {
         id: "static:d2-data-routes",
         suite: "static",
         layer: "static",
-        title: "D2 数据面仅八条只读 GET、会话认证、无文件/SQL/CORS/Range/写路由",
+        title: "D2 数据面九条只读 GET、会话认证、无文件/SQL/CORS/Range/写路由",
       });
     }
   } catch (error) {

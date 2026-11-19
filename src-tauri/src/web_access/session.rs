@@ -615,6 +615,7 @@ mod tests {
         );
 
         for (method, path) in [
+            ("GET", "/api/tags"),
             ("GET", "/api/books"),
             ("GET", "/api/books/abc"),
             ("GET", "/api/books/abc/pages"),

@@ -54,16 +54,18 @@ const RENDER_GATE: usize = 2;
 const MAX_SESSION_BUCKETS: usize = 1024;
 
 const PRIVATE_NO_CACHE: &str = "private, no-cache";
+const PRIVATE_NO_STORE: &str = "private, no-store";
 const NO_STORE: &str = "no-store";
 
 const X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 const X_TILE_COUNT: &str = "x-tile-count";
 const X_TILE_HEIGHT: &str = "x-tile-height";
 
-/// The eight data routes. Query parsing happens after authentication; the
-/// shape itself is derived only from the raw path (no percent decoding).
+/// The data routes. Query parsing happens after authentication; the shape
+/// itself is derived only from the raw path (no percent decoding).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DataRoute {
+    Tags,
     Books,
     Book { id: String },
     Thumb { id: String },
@@ -75,12 +77,17 @@ pub(crate) enum DataRoute {
 }
 
 impl DataRoute {
-    /// Match exactly one of the eight GET shapes. Any other method, path,
+    /// Match exactly one of the GET shapes. Any other method, path, query,
     /// trailing slash, ID encoding, or extra segment returns `None` so the
     /// caller answers the same `404` as an unknown path.
-    pub(crate) fn parse(method: &Method, path: &str, _query: Option<&str>) -> Option<Self> {
+    pub(crate) fn parse(method: &Method, path: &str, query: Option<&str>) -> Option<Self> {
         if method != Method::GET {
             return None;
+        }
+        if path == "/api/tags" {
+            // The aggregate is tiny and permission-uniform; accepting a query
+            // would create unkeyed response variants for no product benefit.
+            return query.is_none().then_some(Self::Tags);
         }
         let rest = path.strip_prefix("/api/books")?;
         if rest.is_empty() {
@@ -124,7 +131,8 @@ impl DataRoute {
         match self {
             Self::Thumb { .. } | Self::Page { .. } => DataClass::Image,
             Self::Tile { .. } => DataClass::Tile,
-            Self::Books
+            Self::Tags
+            | Self::Books
             | Self::Book { .. }
             | Self::Pages { .. }
             | Self::Layout { .. }
@@ -143,6 +151,7 @@ impl DataRoute {
 
     fn into_call(self, query: Option<&str>) -> Result<DataCall, DataError> {
         match self {
+            Self::Tags => Ok(DataCall::Tags),
             Self::Books => {
                 let query = parse_books_query(query)?;
                 Ok(DataCall::Books {
@@ -187,6 +196,9 @@ pub(crate) fn parse_book_id(value: &str) -> Option<String> {
 /// The provider boundary. Implementations are synchronous and are always
 /// invoked from `spawn_blocking`; they must not depend on a runtime handle.
 pub(crate) trait WebDataAccess: Send + Sync {
+    /// Every tag with a positive count of non-removed books, ordered exactly
+    /// like the desktop tag manager (`name COLLATE NOCASE ASC, id ASC`).
+    fn tags(&self) -> Result<Vec<crate::TagInfo>, DataError>;
     fn list_books(
         &self,
         q: Option<&str>,
@@ -246,7 +258,7 @@ impl DataHttp {
         }
     }
 
-    /// Handle one request. `None` means the path is not one of the eight data
+    /// Handle one request. `None` means the path is not one of the data
     /// routes; the caller keeps its own 404 response.
     pub(crate) async fn handle<B>(
         &self,
@@ -361,6 +373,7 @@ impl DataHttp {
 /// A provider call after query parsing. Values are owned so the blocking
 /// closure can move them without borrowing the request.
 enum DataCall {
+    Tags,
     Books {
         q: Option<String>,
         cursor: Option<String>,
@@ -445,6 +458,7 @@ impl DataCall {
 
     fn run(self, provider: &dyn WebDataAccess) -> Result<Payload, DataError> {
         match self {
+            Self::Tags => provider.tags().map(Payload::Tags),
             Self::Books {
                 q,
                 cursor,
@@ -490,6 +504,7 @@ impl DataCall {
 }
 
 enum Payload {
+    Tags(Vec<crate::TagInfo>),
     Books(WebBookPage),
     Book(WebBookDetail),
     Thumb(ImageAsset),
@@ -512,6 +527,12 @@ enum Payload {
 impl Payload {
     fn into_response<B>(self, request: &Request<B>, request_id: &str) -> Response<Full<Bytes>> {
         match self {
+            Self::Tags(tags) => json_response(
+                &TagsBody { tags: &tags },
+                PRIVATE_NO_STORE,
+                request,
+                request_id,
+            ),
             Self::Books(page) => json_response(&page, PRIVATE_NO_CACHE, request, request_id),
             Self::Book(book) => json_response(&book, PRIVATE_NO_CACHE, request, request_id),
             Self::Pages(manifest) => {
@@ -587,6 +608,11 @@ impl Payload {
             }
         }
     }
+}
+
+#[derive(Serialize)]
+struct TagsBody<'a> {
+    tags: &'a [crate::TagInfo],
 }
 
 #[derive(Serialize)]
@@ -1058,6 +1084,10 @@ mod tests {
         let page = format!("/api/books/{id}/pages/0");
         let tile = format!("/api/books/{id}/pages/0/tiles/0");
         let cases = vec![
+            ("/api/tags".to_owned(), true),
+            ("/api/tags/".to_owned(), false),
+            ("/api/tags/extra".to_owned(), false),
+            ("/api/tags?x=1".to_owned(), false),
             ("/api/books".to_owned(), true),
             (format!("/api/books/{id}"), true),
             (format!("/api/books/{id}/thumb"), true),
@@ -1081,6 +1111,12 @@ mod tests {
             let parsed = DataRoute::parse(&Method::GET, &path, None);
             assert_eq!(parsed.is_some(), expected, "{path}");
         }
+        assert!(DataRoute::parse(&Method::GET, "/api/tags", Some("x=1")).is_none());
+        assert!(DataRoute::parse(&Method::POST, "/api/tags", None).is_none());
+        assert_eq!(
+            DataRoute::parse(&Method::GET, "/api/tags", None),
+            Some(DataRoute::Tags)
+        );
         assert!(DataRoute::parse(&Method::POST, "/api/books", None).is_none());
         assert!(DataRoute::parse(&Method::HEAD, "/api/books", None).is_none());
         assert!(DataRoute::parse(&Method::OPTIONS, "/api/books", None).is_none());

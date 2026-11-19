@@ -13,4 +13,9 @@ export interface AppInfo {
    * 空串 = 非 Linux（前端跳过 Linux 更新策略提示）。
    */
   linuxInstall: string;
+  /**
+   * Linux WebKitGTK 已退化到软件光栅化（DMABUF 被禁用）。为 true 时皮肤
+   * 层关闭 backdrop blur，避免 WebKitGTK 明显掉帧。
+   */
+  softwareWebviewRenderer: boolean;
 }

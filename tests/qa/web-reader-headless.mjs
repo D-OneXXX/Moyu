@@ -36,6 +36,8 @@ const demoArt = {
 };
 const id = "a".repeat(64);
 const pdfId = "c".repeat(64);
+const deepId = "9".repeat(64);
+const deepTagId = 9001;
 // Larger than one 256 KiB client range so the harness proves real chunking
 // (header chunk + tail/xref chunk) instead of a single full-file read.
 const pdfBytes = makePdf({
@@ -332,6 +334,21 @@ const server = http.createServer(async (req, res) => {
     res.end(pdfBytes.subarray(start, end + 1));
     return;
   }
+  if (url.pathname === "/api/tags" && req.method === "GET") {
+    assert.equal(paired, true, "the full tag index requires the paired session");
+    assert.equal(req.headers["x-moyu-request"], undefined);
+    json(200, {
+      tags: [
+        {
+          id: deepTagId,
+          name: "Deep Shelf",
+          color: "#38A8F8",
+          bookCount: 1,
+        },
+      ],
+    });
+    return;
+  }
   if (url.pathname === "/api/books") {
     const base = {
       pageCount: 3,
@@ -342,6 +359,28 @@ const server = http.createServer(async (req, res) => {
       sourceType: "local",
       missing: false,
     };
+    if (url.searchParams.get("tag") === String(deepTagId)) {
+      json(200, {
+        items: [
+          {
+            ...base,
+            id: deepId,
+            title: "Deep Book",
+            format: "image",
+            tags: [
+              {
+                id: deepTagId,
+                name: "Deep Shelf",
+                color: "#38A8F8",
+                bookCount: 1,
+              },
+            ],
+          },
+        ],
+        nextCursor: null,
+      });
+      return;
+    }
     json(200, {
       items: [
         { ...base, id, title: "Demo", format: "image", thumbUrl: `/api/books/${id}/thumb` },
@@ -576,6 +615,35 @@ try {
   await shot("mobile-web-library-dark.png");
   await page.eval("document.querySelector('[data-testid=theme-cycle]').click()");
   await wait("!document.documentElement.dataset.theme");
+
+  /* ------------------------------------------- full tag index (unloaded book) */
+  // Deep Shelf belongs only to a book outside the initially loaded page: the
+  // first-page books carry no such tag. It must still be in the filter bar.
+  await wait(
+    "[...document.querySelectorAll('[data-testid=filter-tags] option')].some((option) => option.textContent.includes('Deep Shelf (1)'))",
+  );
+  await page.eval(`(() => {
+    const select = document.querySelector('[data-testid=filter-tags]');
+    select.value = '${deepTagId}';
+    select.dispatchEvent(new Event('change'));
+  })()`);
+  await wait("[...document.querySelectorAll('.card')].some((card) => card.textContent.includes('Deep Book'))");
+  assert.equal(
+    await page.eval("document.querySelectorAll('.grid .card').length"),
+    1,
+    "the full tag index filters to the unloaded book",
+  );
+  await page.eval(`(() => {
+    const select = document.querySelector('[data-testid=filter-tags]');
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+  })()`);
+  await wait("[...document.querySelectorAll('.card')].some((card) => card.textContent.includes('Demo'))");
+  assert.equal(
+    await page.eval("document.querySelectorAll('.grid .card').length"),
+    5,
+    "clearing the tag filter restores the first page",
+  );
 
   /* ------------------------------------------------------------ open reader */
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('Demo')).click()");
@@ -1081,7 +1149,7 @@ try {
   );
 
   console.log(
-    `VERIFIED D4 web reader: pairing claim/consume, device list → revoke → 401, 40px HUD targets, nine-grid taps, CLS=0 during webtoon scroll, last-page page_count-1 (paged + webtoon), CAS conflict, scroll restore, 6 locales, PDF HEAD=${pdfHeadRequests} ranges=${pdfRangeRequests} maxChunk=${pdfMaxRangeSpan}B canvas=${canvasMetrics.width}×${canvasMetrics.height}, detectedPageCount backfill, centre double-tap zoom, image failure surfaces.`,
+    `VERIFIED D4 web reader: pairing claim/consume, device list → revoke → 401, full tag index (unloaded-book filter), 40px HUD targets, nine-grid taps, CLS=0 during webtoon scroll, last-page page_count-1 (paged + webtoon), CAS conflict, scroll restore, 6 locales, PDF HEAD=${pdfHeadRequests} ranges=${pdfRangeRequests} maxChunk=${pdfMaxRangeSpan}B canvas=${canvasMetrics.width}×${canvasMetrics.height}, detectedPageCount backfill, centre double-tap zoom, image failure surfaces.`,
   );
 } finally {
   if (page?.socket) page.socket.close();

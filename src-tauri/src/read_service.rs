@@ -143,6 +143,21 @@ pub(crate) struct TileImage {
     pub tile_height: u32,
 }
 
+/// Tags visible to the Web Reader filter bar: positive counts only, ordered
+/// exactly like the desktop tag manager. The whole aggregate is one query on
+/// the existing DbSlot; the HTTP layer invokes this from `spawn_blocking`.
+pub(crate) fn tags_for_web(state: &AppState) -> Result<Vec<crate::TagInfo>, DataError> {
+    let tags = state
+        .db
+        .with(|conn| db::list_tags(conn).map_err(|error| error.to_string()))
+        .map_err(|_| DataError::DbUnavailable)?;
+    Ok(tags
+        .into_iter()
+        .filter(|tag| tag.book_count > 0)
+        .map(crate::commands::to_tag_info)
+        .collect())
+}
+
 /// Read a stable `(updated_at, id)` page, newest first. Search is title-only;
 /// path is never a search field. `limit` is validated again here even though
 /// the HTTP layer will also enforce 1..=100. 21-1 adds `favorite_only` /

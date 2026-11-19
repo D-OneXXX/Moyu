@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { sanitizeStorage } from "../src/lib/storageSanitizer.ts";
 import { BUILTIN_SKINS } from "../src/features/skin/registry.ts";
+import { skinNoBlurEnabled } from "../src/features/skin/noBlur.ts";
 import { messages as webReaderMessages } from "../src/i18n/messages/webReader.ts";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -71,6 +72,31 @@ test("built-in skins and the shortcut switch survive startup sanitization", () =
   legacy.setItem("mr-skin-custom", JSON.stringify({ id: "custom-123" }));
   sanitizeStorage(legacy);
   assert.equal(legacy.getItem("mr-skin-custom"), null);
+});
+
+test("software renderer and reduced transparency disable skin blur", () => {
+  assert.equal(skinNoBlurEnabled(false, false), false);
+  assert.equal(skinNoBlurEnabled(true, false), true);
+  assert.equal(skinNoBlurEnabled(false, true), true);
+  assert.equal(skinNoBlurEnabled(true, true), true);
+
+  const provider = read("src/features/skin/SkinProvider.tsx");
+  assert.match(provider, /skinNoBlurEnabled\(/);
+  assert.match(provider, /dataset\.skinNoBlur = "1"/);
+  assert.match(provider, /prefers-reduced-transparency: reduce/);
+  const css = read("src/index.css");
+  assert.match(css, /html\[data-skin-no-blur="1"\]/);
+  assert.match(css, /--mr-skin-surface-blur: 0px !important/);
+  assert.match(css, /max\(var\(--mr-skin-surface-opacity\), 0\.95\)/);
+});
+
+test("retired runtime brand icon preference is removed at startup", () => {
+  const storage = new MemoryStorage();
+  storage.setItem("mr-skin", BUILTIN_SKINS[0].id);
+  storage.setItem("mr-brand-icon", JSON.stringify({ kind: "preset", preset: "moon" }));
+  sanitizeStorage(storage);
+  assert.equal(storage.getItem("mr-brand-icon"), null);
+  assert.equal(storage.getItem("mr-skin"), BUILTIN_SKINS[0].id);
 });
 
 test("built-in presets are framed without floating artwork", () => {

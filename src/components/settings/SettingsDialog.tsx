@@ -17,8 +17,8 @@ interface SettingsDialogProps {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  /** md = 520px 普通配置弹窗；lg = 640px 规则/快捷键列表弹窗。 */
-  width?: "md" | "lg";
+  /** md = 520px 普通配置弹窗；lg = 640px 列表弹窗；3xl = 768px 展厅弹窗。 */
+  width?: "md" | "lg" | "3xl";
   children: ReactNode;
   className?: string;
 }
@@ -49,6 +49,7 @@ export function SettingsDialog({
         className={cn(
           "max-h-[calc(100vh-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[520px]",
           width === "lg" && "sm:max-w-[640px]",
+          width === "3xl" && "sm:max-w-3xl",
           className,
         )}
       >

@@ -8,3 +8,8 @@
 export function hasStableCode(raw: string, code: string): boolean {
   return raw.includes(`(${code})`) || raw.includes(`（${code}）`);
 }
+
+/** Legacy commands sometimes return only the kebab id, without a sentence. */
+export function isBareStableCode(raw: string, code: string): boolean {
+  return raw.trim() === code;
+}

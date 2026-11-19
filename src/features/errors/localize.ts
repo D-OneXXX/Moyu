@@ -1,5 +1,5 @@
 import { currentLocale, translate, type MessageKey } from "@/i18n";
-import { hasStableCode } from "./stableCodes";
+import { hasStableCode, isBareStableCode } from "./stableCodes";
 
 const CJK = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
 
@@ -176,12 +176,32 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "invalid-page-limit", key: "error.pageInvalidLimit" },
   { code: "invalid-page-query", key: "error.pageInvalidQuery" },
   { code: "invalid-page-cursor", key: "error.pageInvalidCursor" },
-  // 皮肤素材导入（Rust 侧校验图片头与尺寸）。
+  // 皮肤素材导入与 .moyuskin 皮肤包（Rust 侧校验图片头、归档结构与 CSS token）。
   { code: "skin-read-failed", key: "settings.skin.errorRead" },
   { code: "skin-empty", key: "settings.skin.errorRead" },
   { code: "skin-too-large", key: "settings.skin.errorSize" },
   { code: "skin-unsupported-format", key: "settings.skin.errorFormat" },
   { code: "skin-dimension-too-large", key: "settings.skin.errorDimension" },
+  { code: "skin-not-zip", key: "settings.skin.errorPack" },
+  { code: "skin-pack-too-large", key: "settings.skin.errorPackSize" },
+  { code: "skin-too-many-entries", key: "settings.skin.errorPackSize" },
+  { code: "skin-unsafe-entry", key: "settings.skin.errorPack" },
+  { code: "skin-encrypted", key: "settings.skin.errorPack" },
+  { code: "skin-manifest-invalid", key: "settings.skin.errorPack" },
+  { code: "skin-manifest-too-large", key: "settings.skin.errorPackSize" },
+  { code: "skin-asset-missing", key: "settings.skin.errorPack" },
+  { code: "skin-id-invalid", key: "settings.skin.errorPack" },
+  { code: "skin-already-installed", key: "settings.skin.errorExists" },
+  { code: "skin-token-invalid", key: "settings.skin.errorPack" },
+  { code: "skin-write-failed", key: "settings.skin.errorWrite" },
+  { code: "skin-not-installed", key: "settings.skin.errorWrite" },
+  { code: "skin-delete-failed", key: "settings.skin.errorWrite" },
+  { code: "skin-export-failed", key: "settings.skin.errorWrite" },
+  { code: "skin-name-invalid", key: "settings.skin.errorName" },
+  { code: "skin-inset-invalid", key: "settings.skin.errorRange" },
+  { code: "skin-opacity-invalid", key: "settings.skin.errorRange" },
+  { code: "skin-frame-png-required", key: "settings.skin.errorFrame" },
+  { code: "skin-data-dir-unavailable", key: "settings.skin.errorWrite" },
 ];
 
 /**
@@ -211,6 +231,14 @@ export function localizeBackendError(
 ): string {
   const raw = typeof input === "string" ? input.trim() : "";
   if (!raw) return translate("error.backendGeneric");
+  // Some legacy commands (for example the single-image skin picker) return a
+  // bare stable code without an accompanying sentence. Localize that exact
+  // form in every language, including zh-CN, instead of leaking the kebab id.
+  for (const entry of STABLE_ERROR_CODES) {
+    if (isBareStableCode(raw, entry.code)) {
+      return translate(entry.key as MessageKey);
+    }
+  }
   // Simplified Chinese backend strings can be shown verbatim; zh-TW must use
   // the Traditional code table instead of inheriting Simplified text.
   if (locale === "zh-CN" || locale.startsWith("zh-Hans")) return raw;

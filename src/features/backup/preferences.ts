@@ -14,8 +14,8 @@ import { sanitizeStorage } from "@/lib/storageSanitizer";
 export const BACKUP_PREFERENCE_KEYS = [
   "mr-theme",
   "mr-locale",
-  // 界面风格 id 属于可跨设备迁移的纯外观偏好；
-  // 自定义皮肤背景的数据 URL 体积与隐私风险更高，明确不迁移。
+  // 只迁移轻量皮肤 id；.moyuskin 的图片资源留在本机 app_data/skins/，
+  // 绝不把数 MB 二进制打包进 .mrbackup。
   "mr-skin",
   "mr-shortcuts-enabled",
   "mr-reader-mode",

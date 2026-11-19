@@ -13,8 +13,8 @@ export interface SettingsDisclosure {
   triggerLabel: string;
   /** 一级入口行右侧的状态摘要文本。 */
   triggerHint?: string;
-  /** 弹窗宽度：md=520px 配置弹窗；lg=640px 规则/快捷键列表弹窗。 */
-  width?: "md" | "lg";
+  /** 弹窗宽度：md=520px 配置弹窗；lg=640px 列表弹窗；3xl=768px 展厅弹窗。 */
+  width?: "md" | "lg" | "3xl";
   testId?: string;
 }
 

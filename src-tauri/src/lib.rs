@@ -676,6 +676,8 @@ pub fn run() {
                     std::io::Error::other(format!("缓存状态初始化后台任务失败：{error}"))
                 })?;
             app.manage(app_state);
+            // 皮肤包管理：仅进程内 LRU（≤3 个 bundle），绝不落 localStorage/SQLite。
+            app.manage(skin::SkinCache::default());
             // G1：CA 公钥分发运行时只托管，不启动；只有显式命令才 bind。
             let ca_root = ca::resolve_ca_root(None, Some(data_dir.as_path()))
                 .unwrap_or_else(|_| data_dir.join("security").join("ca"));
@@ -839,8 +841,15 @@ pub fn run() {
             // 检查/安装都必须经这两个命令先过 FeatureId::Updates 门卫。
             updater_gate::check_native_update,
             updater_gate::install_native_update,
-            // Task 7：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变。
+            // Task 7/21-3：皮肤素材只走「后端校验 → data: URL」通道，CSP 不变；
+            // 正式皮肤包落 <app_data_dir>/skins，localStorage 只保存 mr-skin id。
             skin::skin_import_asset,
+            skin::list_installed_skins,
+            skin::get_skin_bundle,
+            skin::import_skin_pack,
+            skin::export_skin_pack,
+            skin::delete_skin_pack,
+            skin::create_custom_skin_from_image,
             security::security_audit,
             security::clear_online_traces,
             // G1：仅根 CA 初始化/导出/短时分发；不含 D1b 配对或数据路由。

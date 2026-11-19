@@ -277,6 +277,22 @@ const aspectHints = new Map();
 let pagedCache = new Map();
 let pageToken = 0;
 
+/* --------------------------------------------------------------- web pdf */
+const PDF_RANGE_CHUNK = 256 * 1024;
+// Mobile memory guard: a single canvas stays <= 2048 px per side and
+// <= 4.5 Mpx; at most three canvases (current ± 1) are retained.
+const PDF_MAX_SIDE = 2048;
+const PDF_MAX_PIXELS = 4_500_000;
+const PDF_WINDOW_RADIUS = 1;
+let pdfState = null;
+let pdfDetectedPageCount = 0;
+let pdfTapTimer = 0;
+let pdfTapPending = null;
+
+function isPdf() {
+  return !!(activeBook && activeBook.format === "pdf");
+}
+
 let hudTimer = 0;
 let hudVisible = true;
 let zoom = 1;
@@ -334,7 +350,10 @@ async function apiError(response) {
 
 function errorText(error) {
   const code = error && error.code;
-  if (code === "pdf-source-unsupported") return t("pdfUnsupported");
+  if (code === "pdf-source-unsupported" || code === "range-not-satisfiable") {
+    return t("pdfLoadFailed");
+  }
+  if (code === "pdf-page-failed") return t("pdfPageFailed");
   if (code === "source-unsupported") return t("sourceUnsupported");
   if (code === "unauthorized") return t("connectionFailed");
   if (code === "image-failed") return t("imageFailed");
@@ -421,6 +440,8 @@ function tilesEl() {
 }
 
 function effectiveMode() {
+  // PDF is a single-page format: never route it through image tiles.
+  if (isPdf()) return "paged";
   if (prefs.mode === "paged" || prefs.mode === "webtoon") return prefs.mode;
   const dim = layoutDims && layoutDims[page];
   const ratio = dim ? dim.height / dim.width : aspectHints.get(page);
@@ -508,6 +529,12 @@ function queueProgressWrite(nextPage, scrollPct, baseRev, token) {
   if (Number.isFinite(scrollPct) && scrollPct >= 0 && scrollPct <= 1) {
     body.scrollPct = scrollPct;
   }
+  // A PDF opened on the Web before the desktop has ever read it stores
+  // page_count=0. The first write carries PDF.js's real count; the server only
+  // adopts it while the stored count is still 0.
+  if (isPdf() && pdfDetectedPageCount > 0) {
+    body.detectedPageCount = pdfDetectedPageCount;
+  }
   const write = progressWriteChain.catch(() => {}).then(async () => {
     if (token !== generation || !activeBook || conflict) return;
     body.baseRev = Number.isInteger(baseRev) ? baseRev : revision;
@@ -524,6 +551,7 @@ function queueProgressWrite(nextPage, scrollPct, baseRev, token) {
       revision = result.rev;
       savedScrollPct = body.scrollPct ?? -1;
       lastScrollSaveAt = Date.now();
+      if (body.detectedPageCount) pdfDetectedPageCount = 0;
       conflict = null;
       return result;
     } catch (error) {
@@ -581,17 +609,21 @@ function scheduleScrollProgress() {
 /* Best-effort flush when the phone closes the tab mid-scroll. */
 window.addEventListener("pagehide", () => {
   if (!activeBook || pendingScrollPct == null || conflict) return;
+  const body = {
+    page,
+    scrollPct: pendingScrollPct,
+    baseRev: revision,
+  };
+  if (isPdf() && pdfDetectedPageCount > 0) {
+    body.detectedPageCount = pdfDetectedPageCount;
+  }
   try {
     fetch(`/api/books/${activeBook.id}/progress`, {
       method: "PUT",
       keepalive: true,
       credentials: "same-origin",
       headers: { "X-Moyu-Request": "1", "Content-Type": "application/json" },
-      body: JSON.stringify({
-        page,
-        scrollPct: pendingScrollPct,
-        baseRev: revision,
-      }),
+      body: JSON.stringify(body),
     });
   } catch {
     /* The page is going away; nothing else to do. */
@@ -641,6 +673,10 @@ function closeSheets(force = false) {
 function clearReader() {
   generation += 1;
   busy = false;
+  destroyPdfDocument();
+  if (pdfTapTimer) clearTimeout(pdfTapTimer);
+  pdfTapTimer = 0;
+  pdfTapPending = null;
   if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
   scrollSaveTimer = 0;
   if (scrollRestoreFrame) cancelAnimationFrame(scrollRestoreFrame);
@@ -835,9 +871,7 @@ function bookCard(book) {
   const label = readLabel(book);
   const pdfBook = book.format === "pdf";
   if (pdfBook) {
-    poster.append(
-      el("span", { class: "badge badge-pdf", text: t("pdfDesktopOnly") }),
-    );
+    poster.append(el("span", { class: "badge badge-pdf", text: "PDF" }));
   } else if (book.missing) {
     poster.append(el("span", { class: "badge badge-missing", text: t("missing") }));
   } else if (label && label !== t("readUnread")) {
@@ -849,20 +883,13 @@ function bookCard(book) {
     );
   }
 
-  const progressText = pdfBook ? t("pdfDesktopOnly") : label || t("readUnread");
+  const progressText = label || t("readUnread");
   const card = el("button", {
-    class: "card" + (pdfBook ? " card-disabled" : ""),
+    class: "card",
     type: "button",
-    "aria-disabled": pdfBook ? "true" : undefined,
     "aria-label": `${book.title}, ${progressText}`,
   }, [poster, el("span", { class: "card-title", text: book.title })]);
   card.addEventListener("click", () => {
-    if (pdfBook) {
-      // Mobile browsers cannot render PDF (the API answers 415); stop here
-      // instead of letting users land on a blank error screen.
-      toast(t("pdfDesktopHint"));
-      return;
-    }
     void openBook(book);
   });
   return card;
@@ -1149,6 +1176,7 @@ function updateHud() {
   if (nextButton) nextButton.disabled = busy || !!conflict || page >= pageCount - 1;
   if (modeButton) {
     const mode = effectiveMode();
+    modeButton.hidden = isPdf();
     modeButton.replaceChildren(icon(mode === "webtoon" ? "scroll" : "book"));
     modeButton.append(el("span", { text: mode === "webtoon" ? t("modeWebtoon") : t("modePaged") }));
     modeButton.setAttribute(
@@ -1233,6 +1261,7 @@ function buildHud() {
     "data-testid": "mode-toggle",
   });
   modeButton.addEventListener("click", () => {
+    if (isPdf()) return;
     keepHudAlive();
     prefs.mode = effectiveMode() === "webtoon" ? "paged" : "webtoon";
     savePrefs();
@@ -1290,7 +1319,7 @@ function buildTapZones() {
       event.stopPropagation();
     }
     lastActivation = { zone, at: Date.now() };
-    onZone(row, col);
+    onZone(row, col, event);
   };
   for (let row = 0; row < 3; row += 1) {
     for (let col = 0; col < 3; col += 1) {
@@ -1339,7 +1368,7 @@ function buildTapZones() {
   }
 }
 
-function onZone(row, col) {
+function onZone(row, col, event) {
   if (!activeBook) return;
   if (effectiveMode() === "webtoon") {
     // Scrolling already moves through the strip; a tap only reveals the HUD.
@@ -1347,6 +1376,12 @@ function onZone(row, col) {
     return;
   }
   if (row === 1 && col === 1) {
+    // PDF offers double-tap zoom in the centre only: side zones keep an
+    // immediate page turn, which is the dominant gesture on a phone.
+    if (isPdf()) {
+      pdfCentreTap(event);
+      return;
+    }
     toggleHud();
     return;
   }
@@ -1367,13 +1402,47 @@ function onZone(row, col) {
   }
 }
 
+function pdfCentreTap(event) {
+  const now = Date.now();
+  const hasPoint =
+    event &&
+    Number.isFinite(event.clientX) &&
+    Number.isFinite(event.clientY) &&
+    (event.clientX > 0 || event.clientY > 0);
+  const x = hasPoint ? event.clientX : window.innerWidth / 2;
+  const y = hasPoint ? event.clientY : window.innerHeight / 2;
+  if (
+    pdfTapPending &&
+    now - pdfTapPending.at < 320 &&
+    Math.hypot(x - pdfTapPending.x, y - pdfTapPending.y) < 48
+  ) {
+    if (pdfTapTimer) clearTimeout(pdfTapTimer);
+    pdfTapTimer = 0;
+    pdfTapPending = null;
+    // A double tap must not also toggle the HUD after the zoom.
+    applyZoom(zoom > 1.05 ? 1 : 2, y, x);
+    return;
+  }
+  if (pdfTapTimer) clearTimeout(pdfTapTimer);
+  pdfTapPending = { at: now, x, y };
+  pdfTapTimer = window.setTimeout(() => {
+    pdfTapTimer = 0;
+    pdfTapPending = null;
+    toggleHud();
+  }, 260);
+}
+
 /* ================================================================= reader */
 
 function mountReader() {
   screen = "reader";
   document.documentElement.classList.add("reader-open");
   app.replaceChildren();
-  readerEl = el("section", { class: "reader", "data-mode": "paged" });
+  readerEl = el("section", {
+    class: "reader",
+    "data-mode": "paged",
+    "data-format": isPdf() ? "pdf" : "image",
+  });
   stageEl = el("div", { class: "stage", "data-testid": "stage" });
   viewEl = el("div", { class: "view" });
   stageEl.append(viewEl);
@@ -1385,6 +1454,7 @@ function mountReader() {
   app.append(readerEl);
   readerEl.style.setProperty("--r-zoom", String(zoom));
   bindStageGestures();
+  bindPdfScrollGestures();
   bindScrollIntent();
   updateHud();
   setHud(true);
@@ -1424,7 +1494,7 @@ function bindStageGestures() {
     "touchmove",
     (event) => {
       if (!pinch || event.touches.length !== 2) return;
-      if (effectiveMode() !== "webtoon") return;
+      if (effectiveMode() !== "webtoon" && !isPdf()) return;
       event.preventDefault();
       const [a, b] = event.touches;
       const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -1444,6 +1514,9 @@ function bindStageGestures() {
       const now = Date.now();
       if (now - lastTapAt < 300 && Math.hypot(touch.clientX - lastTapX, touch.clientY - lastTapY) < 44) {
         lastTapAt = 0;
+        // PDF double-tap is owned by the centre tap-zone handler so the
+        // side zones can keep an immediate page turn.
+        if (isPdf()) return;
         if (effectiveMode() === "webtoon") {
           applyZoom(zoom > 1.05 ? 1 : 2, touch.clientY, touch.clientX);
         }
@@ -1456,6 +1529,58 @@ function bindStageGestures() {
     { passive: true },
   );
 
+}
+
+/**
+ * The nine tap zones are siblings above the stage, so a PDF page taller than
+ * the viewport (or a zoomed page) could not be panned by the browser default.
+ * Drive the one-finger pan and wheel from the overlay while keeping taps.
+ */
+function bindPdfScrollGestures() {
+  let pan = null;
+  zonesEl.addEventListener(
+    "touchstart",
+    (event) => {
+      if (!isPdf() || event.touches.length !== 1 || !stageEl) {
+        pan = null;
+        return;
+      }
+      const touch = event.touches[0];
+      pan = {
+        x: touch.clientX,
+        y: touch.clientY,
+        top: stageEl.scrollTop,
+        left: stageEl.scrollLeft,
+      };
+    },
+    { passive: true },
+  );
+  zonesEl.addEventListener(
+    "touchmove",
+    (event) => {
+      if (!pan || event.touches.length !== 1 || !stageEl) return;
+      event.preventDefault();
+      const touch = event.touches[0];
+      stageEl.scrollTop = Math.max(0, pan.top - (touch.clientY - pan.y));
+      stageEl.scrollLeft = Math.max(0, pan.left - (touch.clientX - pan.x));
+    },
+    { passive: false },
+  );
+  const clearPan = () => {
+    pan = null;
+  };
+  zonesEl.addEventListener("touchend", clearPan, { passive: true });
+  zonesEl.addEventListener("touchcancel", clearPan, { passive: true });
+  zonesEl.addEventListener(
+    "wheel",
+    (event) => {
+      if (!isPdf() || !stageEl) return;
+      event.preventDefault();
+      stageEl.scrollTop += event.deltaY;
+      stageEl.scrollLeft += event.deltaX;
+    },
+    { passive: false },
+  );
 }
 
 function onKeyDown(event) {
@@ -1481,6 +1606,7 @@ function onKeyDown(event) {
       break;
     case "m":
     case "M":
+      if (isPdf()) break;
       prefs.mode = effectiveMode() === "webtoon" ? "paged" : "webtoon";
       savePrefs();
       resetZoom();
@@ -1533,6 +1659,11 @@ function renderPageView() {
   readerEl.dataset.mode = mode;
   viewEl.dataset.mode = mode;
   updateHud();
+  if (isPdf()) {
+    pdfTrimWindow();
+    void mountPdfPage(token);
+    return;
+  }
   const dim = layoutDims && layoutDims[page];
   if (mode === "webtoon") mountTiles(token, dim);
   else mountPagedPage(token);
@@ -2068,10 +2199,21 @@ async function useOtherDevice() {
   try {
     const current = await api(`/api/books/${activeBook.id}/progress`);
     if (token !== generation) return;
-    page = Math.min(current.page, current.pageCount - 1);
-    pageCount = current.pageCount;
-    clampedProgressNotice = current.page >= current.pageCount;
+    // PDF.js already knows the authoritative page count even when the stored
+    // count is still 0; never shrink the UI to an un-probed 0.
+    const knownCount =
+      isPdf() && pdfState ? pdfState.doc.numPages : current.pageCount;
+    pageCount = Math.max(1, knownCount);
+    const storedPage = Math.max(0, Number(current.page) || 0);
+    page = Math.min(storedPage, pageCount - 1);
+    clampedProgressNotice = storedPage >= pageCount;
     revision = current.rev;
+    if (isPdf() && pdfState) {
+      // Keep the one-time backfill pending while the stored count is still 0.
+      pdfDetectedPageCount = current.pageCount > 0 ? 0 : pdfState.doc.numPages;
+    } else {
+      pdfDetectedPageCount = 0;
+    }
     savedScrollPct =
       clampedProgressNotice || !Number.isFinite(current.scrollPct) ? -1 : current.scrollPct;
     conflict = null;
@@ -2097,30 +2239,19 @@ async function openBook(book) {
   clearReader();
   const token = generation;
   activeBook = book;
+  page = 0;
   pageCount = 0;
+  revision = 0;
   conflict = null;
   clampedProgressNotice = false;
   libScrollY = window.scrollY;
   app.replaceChildren(el("p", { class: "notice", text: t("loading") }));
 
-  if (book.format === "pdf") {
-    app.replaceChildren(
-      el("div", { class: "pair" }, [
-        el("section", { class: "pair-card" }, [
-          el("h1", { text: t("pdfUnsupported") }),
-          el("button", {
-            class: "btn btn-primary btn-block",
-            type: "button",
-            text: t("backToLibrary"),
-            onclick: () => void library({ restoreScroll: true }),
-          }),
-        ]),
-      ]),
-    );
-    return;
-  }
-
   try {
+    if (book.format === "pdf") {
+      await openPdfBook(book, token);
+      return;
+    }
     const progress = await api(`/api/books/${book.id}/progress`);
     if (token !== generation) return;
     if (!Number.isInteger(progress.pageCount) || progress.pageCount < 1) {
@@ -2155,6 +2286,7 @@ async function openBook(book) {
     if (clampedProgressNotice) toast(t("clampedNotice"));
   } catch (error) {
     if (token !== generation) return;
+    destroyPdfDocument();
     activeBook = null;
     app.replaceChildren(
       el("div", { class: "pair" }, [
@@ -2169,6 +2301,398 @@ async function openBook(book) {
         ]),
       ]),
     );
+  }
+}
+
+/* --------------------------------------------------------------- pdf book */
+
+async function openPdfBook(book, token) {
+  const progress = await api(`/api/books/${book.id}/progress`);
+  if (token !== generation) return;
+  const pdf = await openPdfDocument(book);
+  if (token !== generation) {
+    destroyPdfState(pdf);
+    return;
+  }
+  pdfState = pdf;
+  const count = pdf.doc.numPages;
+  if (!Number.isInteger(count) || count < 1) {
+    destroyPdfDocument();
+    throw Object.assign(new Error("empty pdf"), { code: "pdf-source-unsupported" });
+  }
+  pageCount = count;
+  const storedCount =
+    Number.isInteger(progress.pageCount) && progress.pageCount > 0 ? progress.pageCount : 0;
+  // Only a PDF the desktop has never opened needs the one-time backfill.
+  pdfDetectedPageCount = storedCount > 0 ? 0 : count;
+  const storedPage =
+    Number.isInteger(progress.page) && progress.page >= 0 ? progress.page : 0;
+  page = Math.min(storedPage, count - 1);
+  revision = Number.isInteger(progress.rev) && progress.rev >= 0 ? progress.rev : 0;
+  clampedProgressNotice = storedCount > 0 && storedPage >= count;
+  layoutDims = null;
+  layoutGeometryCache = null;
+  savedScrollPct = -1;
+  mountReader();
+  renderPageView();
+  if (!pushedReader) {
+    pushedReader = true;
+    history.pushState({ mr: "reader" }, "");
+  }
+  if (clampedProgressNotice) toast(t("clampedNotice"));
+}
+
+function abortError() {
+  const error = new Error("stale pdf render");
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * Open the document through bounded HTTP ranges. PDF.js parses only the bytes
+ * it asks for; the whole file never enters memory at once.
+ */
+async function openPdfDocument(book) {
+  const pdfjs = await import("/pdfjs/pdf.min.mjs");
+  const head = await fetch(`/api/books/${book.id}/pdf`, {
+    method: "HEAD",
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!head.ok) {
+    throw Object.assign(new Error("pdf-head"), {
+      status: head.status,
+      code: head.status === 401 ? "unauthorized" : "pdf-source-unsupported",
+    });
+  }
+  const total = Number(head.headers.get("Content-Length") || "0");
+  if (!Number.isFinite(total) || total <= 0) {
+    throw Object.assign(new Error("pdf-size"), { code: "pdf-source-unsupported" });
+  }
+
+  const port = new Worker("/pdfjs/pdf.worker.min.mjs", { type: "module" });
+  let worker;
+  try {
+    worker = new pdfjs.PDFWorker({ port });
+  } catch (error) {
+    port.terminate();
+    throw error;
+  }
+
+  const controllers = new Set();
+  let transportError = null;
+  const documentId = book.id;
+  class MoyuPdfRangeTransport extends pdfjs.PDFDataRangeTransport {
+    constructor() {
+      super(total, null);
+    }
+    requestDataRange(begin, end) {
+      const size = Math.max(0, end - begin);
+      if (size === 0) {
+        this.onDataRange(begin, null);
+        return;
+      }
+      const controller = new AbortController();
+      controllers.add(controller);
+      fetch(`/api/books/${documentId}/pdf`, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Range: `bytes=${begin}-${end - 1}` },
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            const error = new Error("pdf-range");
+            error.status = response.status;
+            error.code =
+              response.status === 401 ? "unauthorized" : "pdf-source-unsupported";
+            throw error;
+          }
+          const buffer = await response.arrayBuffer();
+          if (buffer.byteLength !== size) throw new Error("pdf-range-size");
+          if (!controller.signal.aborted) {
+            this.onDataRange(begin, new Uint8Array(buffer));
+          }
+        })
+        .catch((error) => {
+          if (controller.signal.aborted) return;
+          transportError = transportError || error;
+          // PDF.js only waits for the requested interval; an equal-length
+          // zero fill surfaces a render error instead of hanging forever.
+          this.onDataRange(begin, new Uint8Array(size));
+        })
+        .finally(() => controllers.delete(controller));
+    }
+  }
+
+  const transport = new MoyuPdfRangeTransport();
+  let loadingTask;
+  try {
+    loadingTask = pdfjs.getDocument({
+      range: transport,
+      rangeChunkSize: PDF_RANGE_CHUNK,
+      disableAutoFetch: true,
+      disableStream: true,
+      cMapUrl: "/pdf-assets/cmaps/",
+      cMapPacked: true,
+      standardFontDataUrl: "/pdf-assets/standard_fonts/",
+      useSystemFonts: false,
+      isEvalSupported: false,
+      worker,
+    });
+  } catch (error) {
+    for (const controller of controllers) controller.abort();
+    controllers.clear();
+    try {
+      void Promise.resolve(worker.destroy()).catch(() => {});
+    } catch {
+      /* already destroyed */
+    }
+    try {
+      port.terminate();
+    } catch {
+      /* already terminated */
+    }
+    throw error;
+  }
+
+  let doc;
+  try {
+    doc = await loadingTask.promise;
+  } catch (error) {
+    for (const controller of controllers) controller.abort();
+    controllers.clear();
+    try {
+      void Promise.resolve(loadingTask.destroy()).catch(() => {});
+    } catch {
+      /* already destroyed */
+    }
+    try {
+      void Promise.resolve(worker.destroy()).catch(() => {});
+    } catch {
+      /* already destroyed */
+    }
+    try {
+      port.terminate();
+    } catch {
+      /* already terminated */
+    }
+    throw transportError || error;
+  }
+
+  return {
+    pdfjs,
+    doc,
+    worker,
+    port,
+    loadingTask,
+    transport,
+    controllers,
+    total,
+    cache: new Map(),
+    rendering: new Map(),
+  };
+}
+
+function destroyPdfState(pdf) {
+  if (!pdf) return;
+  for (const controller of pdf.controllers) {
+    try {
+      controller.abort();
+    } catch {
+      /* already aborted */
+    }
+  }
+  pdf.controllers.clear();
+  for (const record of pdf.rendering.values()) {
+    try {
+      record.task?.cancel();
+    } catch {
+      /* already finished */
+    }
+  }
+  pdf.rendering.clear();
+  for (const entry of pdf.cache.values()) {
+    entry.canvas.width = 0;
+    entry.canvas.height = 0;
+  }
+  pdf.cache.clear();
+  try {
+    void Promise.resolve(pdf.loadingTask?.destroy()).catch(() => {});
+  } catch {
+    /* already destroyed */
+  }
+  try {
+    void Promise.resolve(pdf.doc?.destroy()).catch(() => {});
+  } catch {
+    /* already destroyed */
+  }
+  try {
+    void Promise.resolve(pdf.worker?.destroy()).catch(() => {});
+  } catch {
+    /* already destroyed */
+  }
+  try {
+    pdf.port?.terminate();
+  } catch {
+    /* already terminated */
+  }
+}
+
+function destroyPdfDocument() {
+  const pdf = pdfState;
+  pdfState = null;
+  destroyPdfState(pdf);
+  pdfDetectedPageCount = 0;
+}
+
+function pdfRenderSignature() {
+  const width = Math.round(stageEl ? stageEl.clientWidth : window.innerWidth);
+  const dpr = Math.round((window.devicePixelRatio || 1) * 100);
+  return `${width}:${dpr}`;
+}
+
+function pdfTrimWindow() {
+  const pdf = pdfState;
+  if (!pdf) return;
+  const keep = new Set();
+  for (let offset = -PDF_WINDOW_RADIUS; offset <= PDF_WINDOW_RADIUS; offset += 1) {
+    const index = page + offset;
+    if (index >= 0 && index < pageCount) keep.add(index);
+  }
+  for (const [index, entry] of pdf.cache) {
+    if (keep.has(index)) continue;
+    entry.canvas.width = 0;
+    entry.canvas.height = 0;
+    pdf.cache.delete(index);
+  }
+  for (const [index, record] of pdf.rendering) {
+    if (keep.has(index)) continue;
+    try {
+      record.task?.cancel();
+    } catch {
+      /* already finished */
+    }
+    pdf.rendering.delete(index);
+  }
+}
+
+function renderPdfEntry(pdf, index, token, myToken) {
+  const signature = pdfRenderSignature();
+  const cached = pdf.cache.get(index);
+  if (cached && cached.signature === signature) return Promise.resolve(cached);
+  if (cached) {
+    cached.canvas.width = 0;
+    cached.canvas.height = 0;
+    pdf.cache.delete(index);
+  }
+  const inflight = pdf.rendering.get(index);
+  if (inflight && inflight.signature === signature) return inflight.promise;
+  if (inflight) {
+    try {
+      inflight.task?.cancel();
+    } catch {
+      /* already finished */
+    }
+    pdf.rendering.delete(index);
+  }
+
+  const record = { signature, task: null, promise: null };
+  record.promise = (async () => {
+    const pageProxy = await pdf.doc.getPage(index + 1);
+    if (token !== generation || myToken !== pageToken || pdfState !== pdf) {
+      throw abortError();
+    }
+    const base = pageProxy.getViewport({ scale: 1 });
+    if (!(base.width > 0) || !(base.height > 0)) throw new Error("pdf-viewport");
+    const stageWidth = Math.max(
+      240,
+      (stageEl ? stageEl.clientWidth : window.innerWidth) - 12,
+    );
+    const cssScale = stageWidth / base.width;
+    const dpr = Math.min(4, Math.max(1, window.devicePixelRatio || 1));
+    // Three independent bounds: DPR floor, 2048 px per side, 4.5 Mpx total.
+    const maxSide = Math.min(PDF_MAX_SIDE / base.width, PDF_MAX_SIDE / base.height);
+    const maxPixels = Math.sqrt(PDF_MAX_PIXELS / (base.width * base.height));
+    const scale = Math.max(0.05, Math.min(cssScale * dpr, maxSide, maxPixels));
+    const viewport = pageProxy.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-canvas";
+    canvas.width = Math.max(1, Math.floor(viewport.width));
+    canvas.height = Math.max(1, Math.floor(viewport.height));
+    canvas.setAttribute("aria-hidden", "true");
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("pdf-canvas");
+    const task = pageProxy.render({ canvasContext: context, viewport });
+    record.task = task;
+    try {
+      await task.promise;
+    } catch (error) {
+      canvas.width = 0;
+      canvas.height = 0;
+      throw error;
+    }
+    if (token !== generation || myToken !== pageToken || pdfState !== pdf) {
+      canvas.width = 0;
+      canvas.height = 0;
+      throw abortError();
+    }
+    const entry = {
+      canvas,
+      signature,
+      cssWidth: Math.max(1, Math.round(base.width * cssScale)),
+      cssHeight: Math.max(1, Math.round(base.height * cssScale)),
+    };
+    pdf.cache.set(index, entry);
+    pdfTrimWindow();
+    return entry;
+  })();
+  pdf.rendering.set(index, record);
+  return record.promise.finally(() => {
+    if (pdf.rendering.get(index) === record) pdf.rendering.delete(index);
+  });
+}
+
+function preloadPdfNeighbour(index, token, myToken) {
+  const pdf = pdfState;
+  if (!pdf || index < 0 || index >= pageCount) return;
+  if (pdf.cache.has(index)) return;
+  void renderPdfEntry(pdf, index, token, myToken).catch(() => {});
+}
+
+async function mountPdfPage(token) {
+  const pdf = pdfState;
+  if (!pdf || !viewEl) return;
+  const myToken = pageToken;
+  const shell = el("div", { class: "page-shell pdf-shell", "data-testid": "pdf-stage" });
+  const skeleton = el("div", {
+    class: "page-skeleton pdf-skeleton skeleton",
+    "aria-hidden": "true",
+  });
+  shell.append(skeleton);
+  viewEl.append(shell);
+  try {
+    const entry = await renderPdfEntry(pdf, page, token, myToken);
+    if (token !== generation || myToken !== pageToken || !viewEl || pdfState !== pdf) {
+      return;
+    }
+    viewEl.style.setProperty("--r-pdf-width", `${entry.cssWidth}px`);
+    shell.replaceChildren(el("div", { class: "pdf-page" }, [entry.canvas]));
+    scrollReady = true;
+    updateHud();
+    window.setTimeout(() => {
+      if (token !== generation || myToken !== pageToken || pdfState !== pdf) return;
+      preloadPdfNeighbour(page + 1, token, myToken);
+    }, 160);
+    window.setTimeout(() => {
+      if (token !== generation || myToken !== pageToken || pdfState !== pdf) return;
+      preloadPdfNeighbour(page - 1, token, myToken);
+    }, 420);
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    if (token !== generation || myToken !== pageToken) return;
+    shell.replaceChildren();
+    shell.append(errorNotice({ code: "pdf-page-failed" }, () => renderPageView()));
   }
 }
 

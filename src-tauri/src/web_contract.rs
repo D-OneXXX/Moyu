@@ -146,6 +146,9 @@ pub fn touched_columns(action: &ProgressAction) -> &'static [&'static str] {
             "updated_at",
             "progress_rev",
             "reading_log",
+            // D4: the first Web write of an un-probed PDF may backfill the
+            // real page count once; it is never written afterwards.
+            "page_count",
         ],
     }
 }
@@ -174,6 +177,9 @@ pub fn observed_changes(
     }
     if before.last_opened_at != after.last_opened_at {
         changed.insert("last_opened_at");
+    }
+    if before.page_count != after.page_count {
+        changed.insert("page_count");
     }
     if log_before != log_after {
         changed.insert("reading_log");

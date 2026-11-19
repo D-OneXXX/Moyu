@@ -478,6 +478,9 @@ pub(crate) fn refresh_trigger_for(
         ("GET", ["api", "books", _, "pages", page]) if strict_u32(page).is_some() => {
             Some(RefreshTrigger::PageRead)
         }
+        // D4 PDF byte ranges are page-read activity. HEAD is deliberately not
+        // classified: only an actual document read extends the session.
+        ("GET", ["api", "books", _, "pdf"]) => Some(RefreshTrigger::PageRead),
         ("GET", ["api", "books", _, "pages", page, "tiles", tile])
             if strict_u32(page).is_some() && strict_u32(tile).is_some() =>
         {
@@ -590,6 +593,15 @@ mod tests {
             Some(RefreshTrigger::PageRead)
         );
         assert_eq!(
+            refresh_trigger_for("GET", "/api/books/abc/pdf", false),
+            Some(RefreshTrigger::PageRead)
+        );
+        assert_eq!(
+            refresh_trigger_for("HEAD", "/api/books/abc/pdf", false),
+            None,
+            "HEAD probes the length only and must not extend the session"
+        );
+        assert_eq!(
             refresh_trigger_for("GET", "/api/books/abc/pages/3/tiles/1", false),
             Some(RefreshTrigger::TileRead)
         );
@@ -609,6 +621,7 @@ mod tests {
             ("GET", "/api/books/abc/layout"),
             ("GET", "/api/books/abc/progress"),
             ("GET", "/api/books/abc/thumb"),
+            ("GET", "/api/books/abc/pdf/0"),
             ("GET", "/api/health"),
             ("GET", "/api/session"),
             ("DELETE", "/api/session"),

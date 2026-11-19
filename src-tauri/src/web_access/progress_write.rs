@@ -57,6 +57,7 @@ pub(crate) trait WebProgressWrite: Send + Sync {
         page: u32,
         scroll_pct: Option<f64>,
         base_rev: i64,
+        detected_page_count: Option<u32>,
     ) -> Result<ProgressOutcome, DataError>;
 }
 
@@ -91,6 +92,10 @@ struct ProgressPayload {
     base_rev: i64,
     #[serde(default)]
     scroll_pct: Option<f64>,
+    /// D4: PDF.js knows the real page count before the desktop has ever opened
+    /// the document. Only a PDF whose stored count is still 0 may adopt it.
+    #[serde(default)]
+    detected_page_count: Option<u32>,
 }
 
 pub(crate) struct ProgressHttp {
@@ -193,6 +198,7 @@ impl ProgressHttp {
         let page = payload.page;
         let scroll_pct = payload.scroll_pct;
         let base_rev = payload.base_rev;
+        let detected_page_count = payload.detected_page_count;
         let write = Arc::clone(&self.write);
         let service = Arc::clone(&self.service);
         let session_id = session.view.id.clone();
@@ -204,7 +210,7 @@ impl ProgressHttp {
             tokio::task::spawn_blocking(move || {
                 let _session_permit = session_permit;
                 service.with_live_progress(&session_id, token.as_str(), || {
-                    write.write_progress(&id, page, scroll_pct, base_rev)
+                    write.write_progress(&id, page, scroll_pct, base_rev, detected_page_count)
                 })
             }),
         )
@@ -599,6 +605,7 @@ mod tests {
             _page: u32,
             _scroll_pct: Option<f64>,
             _base_rev: i64,
+            _detected_page_count: Option<u32>,
         ) -> Result<ProgressOutcome, DataError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.result.clone()
@@ -614,6 +621,7 @@ mod tests {
             _page: u32,
             _scroll_pct: Option<f64>,
             _base_rev: i64,
+            _detected_page_count: Option<u32>,
         ) -> Result<ProgressOutcome, DataError> {
             panic!("provider panic is a join error, not a client error")
         }
@@ -1376,7 +1384,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pdf_is_415_and_removed_is_404() {
+    async fn pdf_progress_writes_and_removed_is_404() {
         let pdf_state = state_with_pdf(5);
         let clock = FakeClock::shared();
         let pdf_service = service(clock.clone());
@@ -1396,9 +1404,10 @@ mod tests {
                 .expect("response"),
         )
         .await;
-        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        assert_eq!(error_code(&body), "pdf-source-unsupported");
-        assert_eq!(row(&pdf_state).current_page, 0);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["page"], 1);
+        assert_eq!(row(&pdf_state).current_page, 1);
+        assert_eq!(log_total(&pdf_state), 1);
 
         let removed_state = state_with_removed_book();
         let removed_service = service(clock);
@@ -1423,6 +1432,53 @@ mod tests {
         assert_eq!(error_code(&body), "book-not-found");
         assert_eq!(row(&removed_state).current_page, before.current_page);
         assert_eq!(log_total(&removed_state), 0);
+    }
+
+    /// D4: the JSON `detectedPageCount` reaches the provider and backfills a
+    /// zero-count PDF exactly once through the real HTTP handler.
+    #[tokio::test]
+    async fn pdf_first_write_carries_detected_page_count() {
+        let state = state_with_pdf(0);
+        let clock = FakeClock::shared();
+        let service = service(clock);
+        let issued = service.issue_session_for_test("Pixel");
+        let http = real_http(&state, service);
+
+        let (status, body) = status_and_json(
+            http.handle(
+                request(
+                    &path(),
+                    Some(issued.token.as_str()),
+                    json_body(json!({"page": 2, "baseRev": 0, "detectedPageCount": 5})),
+                ),
+                SOURCE_IP,
+            )
+            .await
+            .expect("response"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["page"], 2);
+        assert_eq!(row(&state).page_count, 5);
+        assert_eq!(row(&state).current_page, 2);
+
+        let (status, body) = status_and_json(
+            http.handle(
+                request(
+                    &path(),
+                    Some(issued.token.as_str()),
+                    json_body(json!({"page": 3, "baseRev": 1, "detectedPageCount": 9})),
+                ),
+                SOURCE_IP,
+            )
+            .await
+            .expect("response"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["page"], 3);
+        assert_eq!(row(&state).page_count, 5, "detection must not overwrite");
+        assert_eq!(log_total(&state), 3);
     }
 
     #[tokio::test]

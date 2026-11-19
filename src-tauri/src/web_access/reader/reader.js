@@ -249,6 +249,10 @@ let libSeq = 0;
 let libQuery = "";
 let libCursor = null;
 let libLoading = false;
+// 21-1：收藏 / 标签筛选（只读；标签索引由已加载页面累积）。
+let libFavoriteOnly = false;
+let libTagId = "";
+const libTagIndex = new Map();
 let libSentinelObserver = null;
 let libScrollY = 0;
 
@@ -721,6 +725,59 @@ function clearReader() {
 
 /* ================================================================= library */
 
+function tagFilterOptions(select) {
+  if (!select) return;
+  const items = [...libTagIndex.entries()].sort((a, b) =>
+    a[1].localeCompare(b[1], locale, { sensitivity: "base" }),
+  );
+  const options = [el("option", { value: "", text: t("allTags") })].concat(
+    items.map(([id, name]) => el("option", { value: String(id), text: name })),
+  );
+  select.replaceChildren(...options);
+  select.value = libTagId;
+  if (select.value !== libTagId) {
+    // 选中的标签已从索引消失：平滑回落全部标签。
+    libTagId = "";
+    select.value = "";
+  }
+}
+
+function mountFilterBar() {
+  const favorite = el("button", {
+    class: "filter-toggle",
+    type: "button",
+    "aria-pressed": libFavoriteOnly ? "true" : "false",
+    "data-testid": "filter-favorites",
+  }, [
+    el("span", { class: "filter-star", "aria-hidden": "true", text: "★" }),
+    el("span", { text: t("favoriteOnly") }),
+  ]);
+  favorite.addEventListener("click", () => {
+    libFavoriteOnly = !libFavoriteOnly;
+    favorite.setAttribute("aria-pressed", libFavoriteOnly ? "true" : "false");
+    void loadLibrary({ reset: true });
+  });
+
+  const select = el("select", {
+    class: "tags-select",
+    "aria-label": t("allTags"),
+    "data-testid": "filter-tags",
+  });
+  tagFilterOptions(select);
+  select.addEventListener("change", () => {
+    libTagId = select.value;
+    void loadLibrary({ reset: true });
+  });
+
+  return el("div", { class: "filterbar", role: "group", "aria-label": t("tags") }, [
+    favorite,
+    el("label", { class: "tags-filter" }, [
+      el("span", { class: "sr-only", text: t("allTags") }),
+      select,
+    ]),
+  ]);
+}
+
 function mountLibraryShell() {
   const bar = el("div", { class: "bar" }, [
     el("div", { class: "bar-brand" }, [
@@ -825,7 +882,10 @@ function mountLibraryShell() {
     input.blur();
   });
 
-  app.replaceChildren(el("div", { class: "lib" }, [bar, searchForm, grid, sentinel]));
+  const filterBar = mountFilterBar();
+  app.replaceChildren(
+    el("div", { class: "lib" }, [bar, searchForm, filterBar, grid, sentinel]),
+  );
   return { grid, sentinel, barSub: bar.querySelector(".bar-sub") };
 }
 
@@ -866,6 +926,17 @@ function bookCard(book) {
     img.addEventListener("error", () => img.remove());
     img.src = book.thumbUrl;
     poster.append(img);
+  }
+
+  if (book.isFavorite) {
+    poster.append(
+      el("span", {
+        class: "badge badge-fav",
+        text: "★",
+        title: t("favoriteBadge"),
+        "aria-label": t("favoriteBadge"),
+      }),
+    );
   }
 
   const label = readLabel(book);
@@ -913,17 +984,31 @@ async function loadLibrary({ reset = false } = {}) {
     const params = new URLSearchParams({ limit: "40" });
     if (libQuery) params.set("q", libQuery);
     if (libCursor) params.set("cursor", libCursor);
+    if (libFavoriteOnly) params.set("favorite", "1");
+    if (libTagId) params.set("tag", libTagId);
     const result = await api(`/api/books?${params}`);
     if (token !== libSeq) return;
     if (reset && grid) grid.replaceChildren();
     const target = document.getElementById("books");
     if (!target) return;
-    for (const book of result.items) target.append(bookCard(book));
+    for (const book of result.items) {
+      target.append(bookCard(book));
+      for (const tag of book.tags || []) {
+        if (tag && Number.isInteger(tag.id)) {
+          libTagIndex.set(String(tag.id), String(tag.name || ""));
+        }
+      }
+    }
+    tagFilterOptions(document.querySelector(".tags-select"));
     libCursor = result.nextCursor || null;
     if (barSub) barSub.textContent = t("totalBooks", { count: target.children.length });
     if (!target.children.length) {
+      const filtered = libFavoriteOnly || libTagId !== "";
       target.append(
-        el("div", { class: "empty" }, [icon("image"), el("p", { text: t("noBooks") })]),
+        el("div", { class: "empty" }, [
+          icon("image"),
+          el("p", { text: filtered ? t("noFilteredBooks") : t("noBooks") }),
+        ]),
       );
     }
     if (sentinel) {

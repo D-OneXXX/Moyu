@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, BookOpen, Check, Layers } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, Layers, Star } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { api, type BookInfo } from "@/lib/tauri";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import TagChip from "@/components/library/TagChip";
 import { cn } from "@/lib/utils";
 import { readPagesRead, readProgressPercent } from "@/lib/progress";
 import { useAppVisible } from "@/features/performance/visibility";
@@ -22,6 +23,8 @@ interface Props {
   /** 源文件丢失：单击/双击/Enter 一律转去「重新指定位置」，绝不进入阅读。 */
   onMissing?: (bookId: string) => void;
   onContextMenu?: (e: React.MouseEvent, bookId: string) => void;
+  /** 21-1：收藏星标（乐观更新由上层负责）。 */
+  onToggleFavorite?: (bookId: string, favorite: boolean) => void;
   /** 延迟单击，留出双击判定窗口，避免详情 sheet 抢走第二次点击。 */
   deferSelect?: boolean;
 }
@@ -43,6 +46,7 @@ export default function BookCard({
   onOpen,
   onMissing,
   onContextMenu,
+  onToggleFavorite,
   deferSelect,
 }: Props) {
   const { t, formatNumber } = useI18n();
@@ -276,6 +280,39 @@ export default function BookCard({
           </span>
         )}
 
+        {/* 21-1：收藏星标。未收藏时 hover/focus 浮现，已收藏常驻高亮；
+            伪元素把热区扩到 >=44px，且 stopPropagation 不触发详情/阅读。 */}
+        {!selectMode && (
+          <button
+            type="button"
+            aria-pressed={book.isFavorite}
+            aria-label={t(
+              book.isFavorite ? "tags.favoriteAriaRemove" : "tags.favoriteAriaAdd",
+              { title: book.title },
+            )}
+            title={t(
+              book.isFavorite ? "tags.unfavoriteAction" : "tags.favoriteAction",
+            )}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleFavorite?.(book.id, !book.isFavorite);
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+            className={cn(
+              "absolute right-2 top-2 z-20 grid size-8 place-items-center rounded-full border border-border bg-card/95 shadow-hard-sm outline-none transition-all before:absolute before:-inset-1.5 before:content-[''] hover:scale-105 focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+              book.isFavorite
+                ? "text-warning opacity-100"
+                : "text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+            )}
+          >
+            <Star
+              className={cn("size-4", book.isFavorite && "fill-current")}
+              strokeWidth={2}
+            />
+          </button>
+        )}
+
         {isSeries && (
           <Badge
             variant="outline"
@@ -289,7 +326,10 @@ export default function BookCard({
         {book.sourceType !== "local" && (
           <Badge
             variant="default"
-            className="absolute right-2 top-2 z-10 shrink-0 whitespace-nowrap px-2 py-0.5 text-[10px] font-bold tracking-wide shadow-hard-sm"
+            className={cn(
+              "absolute right-2 z-10 shrink-0 whitespace-nowrap px-2 py-0.5 text-[10px] font-bold tracking-wide shadow-hard-sm",
+              selectMode ? "top-2" : "top-11",
+            )}
           >
             {t("source.url")}
           </Badge>
@@ -324,6 +364,23 @@ export default function BookCard({
             {t("card.progress", { percent: formatNumber(pct) })}
           </span>
         </div>
+
+        {/* 21-1：最多 2 个标签微胶囊 + 余量提示。 */}
+        {book.tags.length > 0 && (
+          <div
+            className="mt-1.5 flex min-w-0 items-center gap-1 overflow-hidden"
+            aria-label={t("tags.cardAria")}
+          >
+            {book.tags.slice(0, 2).map((tag) => (
+              <TagChip key={tag.id} tag={tag} compact />
+            ))}
+            {book.tags.length > 2 && (
+              <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold tabular-nums text-muted-foreground">
+                {t("tags.more", { count: formatNumber(book.tags.length - 2) })}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

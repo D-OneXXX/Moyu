@@ -9,11 +9,13 @@ import {
   Loader2,
   MapPin,
   Play,
+  Plus,
   RotateCcw,
+  Tags,
   Trash2,
   X,
 } from "lucide-react";
-import { api, type BookInfo, type HeatDay } from "@/lib/tauri";
+import { api, type BookInfo, type HeatDay, type TagInfo } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { sourceDisplay } from "@/lib/sourceDisplay";
 import { readPagesRead, readProgressPercent } from "@/lib/progress";
@@ -30,6 +32,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import PageToc from "@/components/library/PageToc";
+import TagChip from "@/components/library/TagChip";
+import { Input } from "@/components/ui/input";
 
 export interface BookDetailSheetProps {
   book: BookInfo | null;
@@ -41,6 +45,11 @@ export interface BookDetailSheetProps {
   onDelete: (book: BookInfo) => void;
   /** 文件位置失效：打开重定位引导。 */
   onRelocate?: (book: BookInfo) => void;
+  /** 21-1：标签（全局定义）与即时写回。 */
+  allTags?: TagInfo[];
+  onSetBookTags?: (bookId: string, tagIds: number[]) => void | Promise<void>;
+  onCreateTagForBook?: (bookId: string, name: string) => void | Promise<void>;
+  onManageTags?: () => void;
 }
 
 function sortChapters(list: BookInfo[], locale: string): BookInfo[] {
@@ -71,6 +80,10 @@ export default function BookDetailSheet({
   onRemove,
   onDelete,
   onRelocate,
+  allTags,
+  onSetBookTags,
+  onCreateTagForBook,
+  onManageTags,
 }: BookDetailSheetProps) {
   return (
     <Sheet open={open && book !== null} onOpenChange={onOpenChange}>
@@ -85,6 +98,10 @@ export default function BookDetailSheet({
           onRemove={onRemove}
           onDelete={onDelete}
           onRelocate={onRelocate}
+          allTags={allTags}
+          onSetBookTags={onSetBookTags}
+          onCreateTagForBook={onCreateTagForBook}
+          onManageTags={onManageTags}
         />
       ) : null}
     </Sheet>
@@ -100,6 +117,10 @@ function BookDetailSheetBody({
   onRemove,
   onDelete,
   onRelocate,
+  allTags,
+  onSetBookTags,
+  onCreateTagForBook,
+  onManageTags,
 }: {
   book: BookInfo;
   active: boolean;
@@ -109,6 +130,10 @@ function BookDetailSheetBody({
   onRemove: (book: BookInfo) => void;
   onDelete: (book: BookInfo) => void;
   onRelocate?: (book: BookInfo) => void;
+  allTags?: TagInfo[];
+  onSetBookTags?: (bookId: string, tagIds: number[]) => void | Promise<void>;
+  onCreateTagForBook?: (bookId: string, name: string) => void | Promise<void>;
+  onManageTags?: () => void;
 }) {
   const { t } = useI18n();
   const [cover, setCover] = useState<string | null>(null);
@@ -362,6 +387,14 @@ function BookDetailSheetBody({
             </>
           )}
 
+          <TagSection
+            book={book}
+            allTags={allTags ?? []}
+            onSetBookTags={onSetBookTags}
+            onCreateTagForBook={onCreateTagForBook}
+            onManageTags={onManageTags}
+          />
+
           <ActivitySection book={book} active={active} />
         </div>
       </div>
@@ -395,6 +428,129 @@ function BookDetailSheetBody({
         </p>
       </SheetFooter>
     </SheetContent>
+  );
+}
+
+/**
+ * 21-1：详情面板标签区。点击即时写回（自动保存），输入名称回车创建并绑定。
+ * 标签定义与管理器来自书库页；本组件不直接发 IPC，便于上层统一刷新。
+ */
+function TagSection({
+  book,
+  allTags,
+  onSetBookTags,
+  onCreateTagForBook,
+  onManageTags,
+}: {
+  book: BookInfo;
+  allTags: TagInfo[];
+  onSetBookTags?: (bookId: string, tagIds: number[]) => void | Promise<void>;
+  onCreateTagForBook?: (bookId: string, name: string) => void | Promise<void>;
+  onManageTags?: () => void;
+}) {
+  const { t, formatNumber } = useI18n();
+  const [selected, setSelected] = useState<number[]>(() =>
+    book.tags.map((tag) => tag.id),
+  );
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setSelected(book.tags.map((tag) => tag.id));
+  }, [book.id, book.tags]);
+
+  const toggle = (tagId: number) => {
+    const next = selected.includes(tagId)
+      ? selected.filter((id) => id !== tagId)
+      : [...selected, tagId];
+    setSelected(next);
+    void onSetBookTags?.(book.id, next);
+  };
+
+  const create = async () => {
+    const value = name.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    try {
+      await onCreateTagForBook?.(book.id, value);
+      setName("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const canEdit = !!onSetBookTags;
+
+  return (
+    <section className="flex flex-col gap-2 border-t border-border pt-4">
+      <div className="flex items-center gap-2">
+        <Tags className="size-4 shrink-0 text-muted-foreground" />
+        <h3 className="text-sm font-bold text-foreground">
+          {t("tags.sectionTitle")}
+        </h3>
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {t("tags.selectedCount", {
+            count: formatNumber(selected.length),
+          })}
+        </span>
+        <Button
+          variant="pill-ghost"
+          size="pill-sm"
+          className="ml-auto shrink-0 whitespace-nowrap"
+          onClick={onManageTags}
+          disabled={!onManageTags}
+          title={t("tags.manageTitle")}
+        >
+          <Tags />
+          {t("tags.manage")}
+        </Button>
+      </div>
+
+      {allTags.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {allTags.map((tag) => (
+            <TagChip
+              key={tag.id}
+              tag={tag}
+              selected={selected.includes(tag.id)}
+              onClick={canEdit ? () => toggle(tag.id) : undefined}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">{t("tags.sectionHint")}</p>
+      )}
+
+      {canEdit ? (
+        <div className="flex items-center gap-2">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void create();
+              }
+            }}
+            placeholder={t("tags.assignPlaceholder")}
+            aria-label={t("tags.create")}
+            maxLength={32}
+            className="h-9 flex-1 text-sm"
+          />
+          <Button
+            variant="pill"
+            size="pill-icon-sm"
+            className="size-9 shrink-0"
+            aria-label={t("tags.create")}
+            title={t("tags.create")}
+            disabled={busy || name.trim().length === 0}
+            onClick={() => void create()}
+          >
+            <Plus />
+          </Button>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

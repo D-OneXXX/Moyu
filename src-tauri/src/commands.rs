@@ -73,7 +73,21 @@ fn local_source_missing(r: &db::BookRow) -> bool {
     }
 }
 
+pub(crate) fn to_tag_info(tag: db::TagRow) -> crate::TagInfo {
+    crate::TagInfo {
+        id: tag.id,
+        name: tag.name,
+        color: tag.color,
+        book_count: tag.book_count,
+    }
+}
+
 pub(crate) fn to_book_info(r: db::BookRow) -> BookInfo {
+    to_book_info_with_tags(r, Vec::new())
+}
+
+/// 21-1：带标签装配的 `BookInfo`（标签由调用方批量查询后传入，绝不 N+1）。
+pub(crate) fn to_book_info_with_tags(r: db::BookRow, tags: Vec<crate::TagInfo>) -> BookInfo {
     // meta_json 每次列表都会解析：只解析一次，供条漫能力与系列字段共用。
     let stored = serde_json::from_str::<crate::online::StoredMeta>(&r.meta_json).ok();
     let webtoon_ready = webtoon_ready(&r, stored.as_ref());
@@ -96,7 +110,20 @@ pub(crate) fn to_book_info(r: db::BookRow) -> BookInfo {
         chapter_index: stored.as_ref().and_then(|m| m.chapter_index),
         next_url: stored.and_then(|m| m.next_url),
         missing,
+        is_favorite: r.is_favorite,
+        tags,
     }
+}
+
+/// 批量读取一组书籍的标签（一次 `IN (...)`）。
+pub(crate) fn tags_for_books(
+    conn: &rusqlite::Connection,
+    book_ids: &[String],
+) -> Result<std::collections::BTreeMap<String, Vec<crate::TagInfo>>, BackendError> {
+    Ok(db::tags_for_books(conn, book_ids)?
+        .into_iter()
+        .map(|(book_id, tags)| (book_id, tags.into_iter().map(to_tag_info).collect()))
+        .collect())
 }
 
 fn natural_segments(s: &str) -> Vec<(bool, &str)> {
@@ -957,25 +984,35 @@ pub struct BooksPage {
 const ERR_INVALID_PAGE_LIMIT: &str = "invalid-page-limit";
 const ERR_INVALID_PAGE_QUERY: &str = "invalid-page-query";
 const ERR_INVALID_PAGE_CURSOR: &str = "invalid-page-cursor";
+const ERR_INVALID_PAGE_SORT: &str = "invalid-page-sort";
+const ERR_INVALID_PAGE_TAG: &str = "invalid-page-tag";
+const ERR_INVALID_BATCH_SIZE: &str = "invalid-batch-size";
 
 const BOOKS_PAGE_DEFAULT_LIMIT: u32 = 60;
 const BOOKS_PAGE_MAX_LIMIT: u32 = 100;
 const BOOKS_PAGE_MAX_QUERY_CHARS: usize = 128;
+/// 批量收藏/打标签单次上限：防止一次 IPC 传超大数组拖住 DbSlot。
+const BOOKS_BATCH_MAX: usize = 500;
 
 #[derive(Debug)]
 struct BooksPageParams {
     query: Option<String>,
-    cursor_last_opened: Option<String>,
+    cursor_timestamp: Option<String>,
     cursor_id: Option<String>,
+    cursor_favorite: Option<bool>,
     limit: u32,
+    favorite_only: bool,
+    tag_id: Option<i64>,
+    sort: db::BooksSort,
 }
 
-/// 命令层参数校验（纯函数，可单测）：limit 默认 60 / 1..=100，query ≤128 字符，
-/// 游标 ≤64 字符且可解码；失败返回带稳定错误码的中文文案。
-fn validate_books_page_params(
+fn validate_books_page_params_full(
     query: Option<&str>,
     cursor: Option<&str>,
     limit: Option<u32>,
+    favorite_only: bool,
+    tag_id: Option<i64>,
+    sort_by: Option<&str>,
 ) -> Result<BooksPageParams, String> {
     let limit = limit.unwrap_or(BOOKS_PAGE_DEFAULT_LIMIT);
     if !(1..=BOOKS_PAGE_MAX_LIMIT).contains(&limit) {
@@ -995,33 +1032,64 @@ fn validate_books_page_params(
             "书库分页参数无效：query 不得超过 128 字符（{ERR_INVALID_PAGE_QUERY}）"
         ));
     }
-    let (cursor_last_opened, cursor_id) = match cursor {
+    let (cursor_timestamp, cursor_id, cursor_favorite) = match cursor {
         Some(raw) => {
-            let (timestamp, id) = db::decode_book_cursor(raw).ok_or_else(|| {
+            let (timestamp, id, favorite) = db::decode_book_cursor_full(raw).ok_or_else(|| {
                 format!("书库分页参数无效：游标非法（{ERR_INVALID_PAGE_CURSOR}）")
             })?;
-            (Some(timestamp), Some(id))
+            (Some(timestamp), Some(id), Some(favorite))
         }
-        None => (None, None),
+        None => (None, None, None),
+    };
+    if let Some(tag_id) = tag_id {
+        if tag_id <= 0 {
+            return Err(format!(
+                "书库分页参数无效：tagId 非法（{ERR_INVALID_PAGE_TAG}）"
+            ));
+        }
+    }
+    let sort = match sort_by.unwrap_or("recentOpened") {
+        "recentOpened" => db::BooksSort::RecentOpened,
+        "recentRead" => db::BooksSort::RecentRead,
+        "favoritesFirst" => db::BooksSort::FavoritesFirst,
+        _ => {
+            return Err(format!(
+                "书库分页参数无效：sortBy 非法（{ERR_INVALID_PAGE_SORT}）"
+            ))
+        }
     };
     Ok(BooksPageParams {
         query,
-        cursor_last_opened,
+        cursor_timestamp,
         cursor_id,
+        cursor_favorite,
         limit,
+        favorite_only,
+        tag_id,
+        sort,
     })
 }
 
-/// 桌面书库分页（ADR-018）：`last_opened_at DESC, id ASC`，title+path 搜索，
-/// `(last_opened_at, id)` base64url 游标；阻塞工作整体移入 `spawn_blocking`。
+/// 桌面书库分页（ADR-018 + 21-1）：`last_opened_at`/`updated_at` 稳定游标，
+/// 支持仅收藏、单标签筛选与「收藏置顶」排序；阻塞工作整体移入 `spawn_blocking`。
 #[tauri::command]
 pub async fn list_books_page(
     state: State<'_, Arc<AppState>>,
     query: Option<String>,
     cursor: Option<String>,
     limit: Option<u32>,
+    favorite_only: Option<bool>,
+    tag_id: Option<i64>,
+    sort_by: Option<String>,
 ) -> Result<BooksPage, String> {
-    let params = validate_books_page_params(query.as_deref(), cursor.as_deref(), limit)?;
+    let params = validate_books_page_params_full(
+        query.as_deref(),
+        cursor.as_deref(),
+        limit,
+        favorite_only.unwrap_or(false),
+        tag_id,
+        sort_by.as_deref(),
+    )?;
     let st = state.inner().clone();
     blocking(move || {
         // 只把 SQL 放在 DbSlot 锁内；symlink_metadata 与 meta_json 解析在锁外。
@@ -1030,26 +1098,206 @@ pub async fn list_books_page(
             .with(|conn| {
                 db::list_books_page_desktop(
                     conn,
-                    params.query.as_deref(),
-                    params.cursor_last_opened.as_deref(),
-                    params.cursor_id.as_deref(),
-                    params.limit,
+                    &db::DesktopBooksQuery {
+                        query: params.query.as_deref(),
+                        cursor_timestamp: params.cursor_timestamp.as_deref(),
+                        cursor_id: params.cursor_id.as_deref(),
+                        cursor_favorite: params.cursor_favorite,
+                        limit: params.limit,
+                        favorite_only: params.favorite_only,
+                        tag_id: params.tag_id,
+                        sort: params.sort,
+                    },
                 )
                 .map_err(err)
             })
             .map_err(BackendError::Msg)?;
         let has_more = rows.len() > params.limit as usize;
         rows.truncate(params.limit as usize);
+        let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+        // 21-1：一次 IN (...) 批量装配标签，不做逐书查询。
+        let mut tags_by_book = st
+            .db
+            .with(|conn| tags_for_books(conn, &ids).map_err(err))
+            .map_err(BackendError::Msg)?;
         let next_cursor = if has_more {
-            rows.last()
-                .and_then(|row| db::encode_book_cursor(&row.last_opened_at, &row.id))
+            rows.last().and_then(|row| match params.sort {
+                db::BooksSort::RecentRead => db::encode_book_cursor(&row.updated_at, &row.id),
+                db::BooksSort::RecentOpened => db::encode_book_cursor(&row.last_opened_at, &row.id),
+                db::BooksSort::FavoritesFirst => db::encode_book_cursor_with_favorite(
+                    &row.last_opened_at,
+                    &row.id,
+                    row.is_favorite,
+                ),
+            })
         } else {
             None
         };
         Ok(BooksPage {
-            items: rows.into_iter().map(to_book_info).collect(),
+            items: rows
+                .into_iter()
+                .map(|row| {
+                    let tags = tags_by_book.remove(&row.id).unwrap_or_default();
+                    to_book_info_with_tags(row, tags)
+                })
+                .collect(),
             next_cursor,
         })
+    })
+    .await
+}
+
+/// 21-1：设置单本书收藏。
+#[tauri::command]
+pub async fn set_book_favorite(
+    state: State<'_, Arc<AppState>>,
+    book_id: String,
+    favorite: bool,
+) -> Result<(), String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::set_book_favorite(conn, &book_id, favorite).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
+}
+
+/// 21-1：批量设置收藏；返回实际更新的书籍数。
+#[tauri::command]
+pub async fn set_books_favorite(
+    state: State<'_, Arc<AppState>>,
+    book_ids: Vec<String>,
+    favorite: bool,
+) -> Result<u32, String> {
+    if book_ids.len() > BOOKS_BATCH_MAX {
+        return Err(format!(
+            "批量操作数量过大：最多 {BOOKS_BATCH_MAX} 本（{ERR_INVALID_BATCH_SIZE}）"
+        ));
+    }
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::set_books_favorite(conn, &book_ids, favorite).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
+}
+
+/// 21-1：全部标签及其未软删书籍计数。
+#[tauri::command]
+pub async fn list_tags(state: State<'_, Arc<AppState>>) -> Result<Vec<crate::TagInfo>, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::list_tags(conn).map_err(err))
+            .map_err(BackendError::Msg)
+            .map(|rows| rows.into_iter().map(to_tag_info).collect())
+    })
+    .await
+}
+
+/// 21-1：创建标签（名称 trim 后 1..=32 字符，大小写不敏感去重）。
+#[tauri::command]
+pub async fn create_tag(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    color: Option<String>,
+) -> Result<crate::TagInfo, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::create_tag(conn, &name, color.as_deref()).map_err(err))
+            .map_err(BackendError::Msg)
+            .map(to_tag_info)
+    })
+    .await
+}
+
+/// 21-1：重命名/改色标签（`color=None` 保留原颜色）。
+#[tauri::command]
+pub async fn rename_tag(
+    state: State<'_, Arc<AppState>>,
+    tag_id: i64,
+    name: String,
+    color: Option<String>,
+) -> Result<crate::TagInfo, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::rename_tag(conn, tag_id, &name, color.as_deref()).map_err(err))
+            .map_err(BackendError::Msg)
+            .map(to_tag_info)
+    })
+    .await
+}
+
+/// 21-1：删除标签（关联由外键级联清理）。
+#[tauri::command]
+pub async fn delete_tag(state: State<'_, Arc<AppState>>, tag_id: i64) -> Result<(), String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::delete_tag(conn, tag_id).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
+}
+
+/// 21-1：覆盖式设置一本书的全部标签。
+#[tauri::command]
+pub async fn set_book_tags(
+    state: State<'_, Arc<AppState>>,
+    book_id: String,
+    tag_ids: Vec<i64>,
+) -> Result<(), String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::set_book_tags(conn, &book_id, &tag_ids).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
+}
+
+/// 21-1：批量给书籍追加同一标签。
+#[tauri::command]
+pub async fn batch_add_tag(
+    state: State<'_, Arc<AppState>>,
+    book_ids: Vec<String>,
+    tag_id: i64,
+) -> Result<u32, String> {
+    if book_ids.len() > BOOKS_BATCH_MAX {
+        return Err(format!(
+            "批量操作数量过大：最多 {BOOKS_BATCH_MAX} 本（{ERR_INVALID_BATCH_SIZE}）"
+        ));
+    }
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::batch_add_tag(conn, &book_ids, tag_id).map_err(err))
+            .map_err(BackendError::Msg)
+    })
+    .await
+}
+
+/// 21-1：批量移除书籍的同一标签。
+#[tauri::command]
+pub async fn batch_remove_tag(
+    state: State<'_, Arc<AppState>>,
+    book_ids: Vec<String>,
+    tag_id: i64,
+) -> Result<u32, String> {
+    if book_ids.len() > BOOKS_BATCH_MAX {
+        return Err(format!(
+            "批量操作数量过大：最多 {BOOKS_BATCH_MAX} 本（{ERR_INVALID_BATCH_SIZE}）"
+        ));
+    }
+    let st = state.inner().clone();
+    blocking(move || {
+        st.db
+            .with(|conn| db::batch_remove_tag(conn, &book_ids, tag_id).map_err(err))
+            .map_err(BackendError::Msg)
     })
     .await
 }
@@ -1129,12 +1377,20 @@ pub async fn get_book(
 ) -> Result<BookInfo, String> {
     let st = state.inner().clone();
     blocking(move || {
-        let row = st
+        let (row, tags) = st
             .db
-            .with(|conn| db::get_book(conn, &book_id).map_err(err))
-            .map_err(BackendError::Msg)?
-            .ok_or_else(|| BackendError::Msg("书籍不存在".into()))?;
-        Ok(to_book_info(row))
+            .with(|conn| {
+                let row = db::get_book(conn, &book_id)
+                    .map_err(err)?
+                    .ok_or_else(|| "书籍不存在".to_string())?;
+                let tags = tags_for_books(conn, std::slice::from_ref(&book_id))
+                    .map_err(err)?
+                    .remove(&book_id)
+                    .unwrap_or_default();
+                Ok((row, tags))
+            })
+            .map_err(BackendError::Msg)?;
+        Ok(to_book_info_with_tags(row, tags))
     })
     .await
 }
@@ -6109,6 +6365,7 @@ mod tests {
             source_type: "local".into(),
             meta_json: "{}".into(),
             format: db::BOOK_FORMAT_IMAGE.into(),
+            is_favorite: false,
         };
         assert!(to_book_info(local).webtoon_ready);
 
@@ -6119,6 +6376,7 @@ mod tests {
             scroll_pct: -1.0, source_type: "generic_manga".into(),
             meta_json: r#"{"schema":1,"manifestHash":"h","fetchedAt":"t","pages":[{"url":"http://x/1.jpg","width":800,"height":1200},{"url":"http://x/2.jpg"}]}"#.into(),
             format: db::BOOK_FORMAT_IMAGE.into(),
+            is_favorite: false,
         };
         // 缺尺寸不再永久关闭条漫：进入条漫时按页探测并回写。
         assert!(to_book_info(online).webtoon_ready);
@@ -6130,6 +6388,7 @@ mod tests {
             scroll_pct: -1.0, source_type: "generic_manga".into(),
             meta_json: r#"{"schema":1,"manifestHash":"h","fetchedAt":"t","pages":[{"url":"http://x/1.jpg","width":800,"height":1200}]}"#.into(),
             format: db::BOOK_FORMAT_IMAGE.into(),
+            is_favorite: false,
         };
         assert!(to_book_info(online_ok).webtoon_ready);
 
@@ -6147,6 +6406,7 @@ mod tests {
             source_type: "generic_manga".into(),
             meta_json: "{not-json".into(),
             format: db::BOOK_FORMAT_IMAGE.into(),
+            is_favorite: false,
         };
         assert!(!to_book_info(corrupt).webtoon_ready);
     }
@@ -6675,6 +6935,7 @@ mod tests {
             source_type: source_type.into(),
             meta_json: "{}".into(),
             format: db::BOOK_FORMAT_IMAGE.into(),
+            is_favorite: false,
         }
     }
 
@@ -7012,14 +7273,17 @@ mod tests {
     #[test]
     fn books_page_limit_defaults_to_60_and_rejects_zero_and_101() {
         assert_eq!(
-            validate_books_page_params(None, None, None).unwrap().limit,
+            validate_books_page_params_full(None, None, None, false, None, None)
+                .unwrap()
+                .limit,
             60,
             "limit 缺省必须是 60"
         );
-        assert!(validate_books_page_params(None, None, Some(1)).is_ok());
-        assert!(validate_books_page_params(None, None, Some(100)).is_ok());
+        assert!(validate_books_page_params_full(None, None, Some(1), false, None, None).is_ok());
+        assert!(validate_books_page_params_full(None, None, Some(100), false, None, None).is_ok());
         for bad in [0u32, 101] {
-            let err = validate_books_page_params(None, None, Some(bad)).unwrap_err();
+            let err = validate_books_page_params_full(None, None, Some(bad), false, None, None)
+                .unwrap_err();
             assert!(
                 err.contains("invalid-page-limit"),
                 "limit {bad} 必须返回稳定错误码，实际：{err}"
@@ -7030,16 +7294,20 @@ mod tests {
     #[test]
     fn books_page_query_over_128_chars_is_rejected() {
         let at_limit = "a".repeat(128);
-        assert!(validate_books_page_params(Some(&at_limit), None, None).is_ok());
+        assert!(
+            validate_books_page_params_full(Some(&at_limit), None, None, false, None, None).is_ok()
+        );
         let over = "a".repeat(129);
-        let err = validate_books_page_params(Some(&over), None, None).unwrap_err();
+        let err = validate_books_page_params_full(Some(&over), None, None, false, None, None)
+            .unwrap_err();
         assert!(err.contains("invalid-page-query"), "实际：{err}");
     }
 
     #[test]
     fn books_page_invalid_cursor_returns_stable_code() {
         for invalid in ["not-a-cursor", "", "AAAA", &"a".repeat(65)] {
-            let err = validate_books_page_params(None, Some(invalid), None).unwrap_err();
+            let err = validate_books_page_params_full(None, Some(invalid), None, false, None, None)
+                .unwrap_err();
             assert!(
                 err.contains("invalid-page-cursor"),
                 "游标 {invalid:?} 必须返回稳定错误码，实际：{err}"
@@ -7050,7 +7318,8 @@ mod tests {
     /// ADR-018 裁定 limit 为「校验拒绝」而非「钳制」：连 u32::MAX 也必须带稳定码拒绝。
     #[test]
     fn books_page_limit_rejects_u32_max_with_stable_code() {
-        let err = validate_books_page_params(None, None, Some(u32::MAX)).unwrap_err();
+        let err = validate_books_page_params_full(None, None, Some(u32::MAX), false, None, None)
+            .unwrap_err();
         assert!(err.contains("invalid-page-limit"), "实际：{err}");
     }
 
@@ -7059,10 +7328,52 @@ mod tests {
     #[test]
     fn books_page_query_counts_chars_not_bytes() {
         let at_limit = "漫".repeat(128);
-        assert!(validate_books_page_params(Some(&at_limit), None, None).is_ok());
+        assert!(
+            validate_books_page_params_full(Some(&at_limit), None, None, false, None, None).is_ok()
+        );
         let over = "漫".repeat(129);
-        let err = validate_books_page_params(Some(&over), None, None).unwrap_err();
+        let err = validate_books_page_params_full(Some(&over), None, None, false, None, None)
+            .unwrap_err();
         assert!(err.contains("invalid-page-query"), "实际：{err}");
+    }
+
+    /// 21-1：收藏/标签/排序参数校验必须 fail-closed 并带稳定码。
+    #[test]
+    fn books_page_new_filters_validate_with_stable_codes() {
+        let favorite = validate_books_page_params_full(
+            None,
+            None,
+            None,
+            true,
+            Some(7),
+            Some("favoritesFirst"),
+        )
+        .unwrap();
+        assert!(favorite.favorite_only);
+        assert_eq!(favorite.tag_id, Some(7));
+        assert_eq!(favorite.sort, db::BooksSort::FavoritesFirst);
+
+        for (sort, expected) in [
+            (Some("recentRead"), db::BooksSort::RecentRead),
+            (Some("recentOpened"), db::BooksSort::RecentOpened),
+            (None, db::BooksSort::RecentOpened),
+        ] {
+            assert_eq!(
+                validate_books_page_params_full(None, None, None, false, None, sort)
+                    .unwrap()
+                    .sort,
+                expected
+            );
+        }
+        let bad_sort =
+            validate_books_page_params_full(None, None, None, false, None, Some("random"))
+                .unwrap_err();
+        assert!(bad_sort.contains("invalid-page-sort"), "实际：{bad_sort}");
+        for bad_tag in [Some(0i64), Some(-1)] {
+            let err = validate_books_page_params_full(None, None, None, false, bad_tag, None)
+                .unwrap_err();
+            assert!(err.contains("invalid-page-tag"), "实际：{err}");
+        }
     }
 
     /// 契约级回归守卫：WS5 的 api.listBooksPage 消费 `nextCursor`，字段名漂移

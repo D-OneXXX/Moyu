@@ -386,6 +386,8 @@ mod tests {
             _q: Option<&str>,
             _cursor: Option<&str>,
             _limit: u32,
+            _favorite_only: bool,
+            _tag_id: Option<i64>,
         ) -> Result<WebBookPage, DataError> {
             self.record();
             Ok(WebBookPage {
@@ -408,6 +410,8 @@ mod tests {
                     source_type: "local".to_owned(),
                     missing: false,
                     updated_at: "2026-11-03T10:00:00+08:00".to_owned(),
+                    is_favorite: false,
+                    tags: vec![],
                     thumb_url: Some(format!("/api/books/{id}/thumb?v=0")),
                 },
                 series_title: None,
@@ -520,6 +524,8 @@ mod tests {
             _q: Option<&str>,
             _cursor: Option<&str>,
             _limit: u32,
+            _favorite_only: bool,
+            _tag_id: Option<i64>,
         ) -> Result<WebBookPage, DataError> {
             Err(self.0)
         }

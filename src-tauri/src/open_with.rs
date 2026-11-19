@@ -256,6 +256,8 @@ mod tests {
             chapter_index: None,
             next_url: None,
             missing: false,
+            is_favorite: false,
+            tags: vec![],
         };
         let items = vec![
             ImportItemResult {

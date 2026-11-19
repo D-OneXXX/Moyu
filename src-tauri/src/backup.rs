@@ -95,6 +95,9 @@ const BOOK_COLUMNS: &[&str] = &[
     // 不进 BOOK_COLUMNS_REQUIRED —— 老备份没有这两列，进了就不可恢复。
     "last_opened_at",
     "progress_rev",
+    // 21-1：收藏。同样不进 BOOK_COLUMNS_REQUIRED：
+    // v0.16–v0.20 的备份没有该列，恢复时必须回落 DEFAULT 0。
+    "is_favorite",
 ];
 
 /// 备份校验所需的**最小**列集合（不含 PDF-1 新增的 `format`）。
@@ -202,6 +205,11 @@ struct ValidatedBackup {
     /// `last_opened_at` 与 `progress_rev`。两列由同一次迁移加入，
     /// 因此备份要么都有、要么都没有——一个 bool 即可。
     backup_has_progress_columns: bool,
+    /// 备份库的 books 表是否带 21-1 的 `is_favorite` 列。
+    backup_has_favorite_column: bool,
+    /// 备份库是否同时带 `tags` 与 `book_tags`（21-1）。
+    /// 老备份缺表时平滑跳过标签恢复，绝不因此拒绝整包。
+    backup_has_tags: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -754,6 +762,17 @@ fn sanitize_snapshot(conn: &Connection) -> Result<(), String> {
         conn.execute("DELETE FROM online_filter_events", [])
             .map_err(|e| format!("净化备份浏览痕迹失败：{e}"))?;
     }
+    // 21-1：标签定义随快照导出；只保留仍指向真实书籍/真实标签的关联，
+    // 绝不把孤儿关联带进备份（恢复端还会按白名单再过滤一次）。
+    if table_exists(conn, "book_tags")? {
+        conn.execute(
+            "DELETE FROM book_tags
+              WHERE book_id NOT IN (SELECT id FROM books)
+                 OR tag_id NOT IN (SELECT id FROM tags)",
+            [],
+        )
+        .map_err(|e| format!("净化备份标签关联失败：{e}"))?;
+    }
     if table_exists(conn, "app_meta")? {
         conn.execute("DELETE FROM app_meta", [])
             .map_err(|e| format!("净化备份内部标记失败：{e}"))?;
@@ -936,6 +955,8 @@ fn restore_backup_blocking(
         &validated.allowed_books,
         validated.backup_has_format,
         validated.backup_has_progress_columns,
+        validated.backup_has_favorite_column,
+        validated.backup_has_tags,
     )?;
     let restored_counts = count_live_core_rows(db_path)?;
 
@@ -1064,6 +1085,9 @@ fn validate_restored_db(path: &Path, manifest: &BackupManifest) -> Result<Valida
     // 否则 `SELECT ... last_opened_at FROM backup_db.books` 会 no such column，
     // **全部历史备份**恢复失败（活库不损坏，但恢复功能整体失效）。
     let backup_has_progress_columns = backup_has_progress_columns_column(&conn)?;
+    // 21-1：收藏列与标签表同样在**备份库自身连接**上探测。
+    let backup_has_favorite_column = table_has_column(&conn, "books", "is_favorite")?;
+    let backup_has_tags = table_exists(&conn, "tags")? && table_exists(&conn, "book_tags")?;
 
     let counts = count_core_rows(&conn)?;
     if counts != manifest.counts {
@@ -1119,15 +1143,20 @@ fn validate_restored_db(path: &Path, manifest: &BackupManifest) -> Result<Valida
         skipped_books,
         backup_has_format,
         backup_has_progress_columns,
+        backup_has_favorite_column,
+        backup_has_tags,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_restore(
     db_path: &Path,
     backup_db: &Path,
     allowed_books: &[String],
     backup_has_format: bool,
     backup_has_progress_columns: bool,
+    backup_has_favorite_column: bool,
+    backup_has_tags: bool,
 ) -> Result<Option<PathBuf>, String> {
     let backup = backup_db
         .to_str()
@@ -1147,6 +1176,8 @@ fn apply_restore(
         allowed_books,
         backup_has_format,
         backup_has_progress_columns,
+        backup_has_favorite_column,
+        backup_has_tags,
     );
     let detached = conn
         .execute("DETACH DATABASE backup_db", [])
@@ -1204,11 +1235,14 @@ fn prune_restore_snapshots(db_path: &Path, keep: usize) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_from_backup(
     conn: &Connection,
     allowed_books: &[String],
     backup_has_format: bool,
     backup_has_progress_columns: bool,
+    backup_has_favorite_column: bool,
+    backup_has_tags: bool,
 ) -> Result<(), String> {
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| format!("开始恢复事务失败：{e}"))?;
@@ -1217,6 +1251,8 @@ fn copy_from_backup(
         allowed_books,
         backup_has_format,
         backup_has_progress_columns,
+        backup_has_favorite_column,
+        backup_has_tags,
     ) {
         Ok(()) => match conn.execute_batch("COMMIT") {
             Ok(()) => Ok(()),
@@ -1232,11 +1268,14 @@ fn copy_from_backup(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_all_tables(
     conn: &Connection,
     allowed_books: &[String],
     backup_has_format: bool,
     backup_has_progress_columns: bool,
+    backup_has_favorite_column: bool,
+    backup_has_tags: bool,
 ) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TEMP TABLE IF NOT EXISTS restore_allowed_books(id TEXT PRIMARY KEY);
@@ -1267,7 +1306,11 @@ fn copy_all_tables(
     // 备份库可能来自更早的版本（books 表没有 `format` / `last_opened_at` /
     // `progress_rev` 列）：这些列不写进复制语句，活库表的 DEFAULT 生效。
     // **少剔除一列就会让全部历史备份恢复失败**（no such column → 事务回滚）。
-    let book_columns = book_columns_for_backup(backup_has_format, backup_has_progress_columns);
+    let book_columns = book_columns_for_backup(
+        backup_has_format,
+        backup_has_progress_columns,
+        backup_has_favorite_column,
+    );
     sql.push_str(&copy_sql_where(
         "books",
         &book_columns,
@@ -1281,6 +1324,22 @@ fn copy_all_tables(
          WHERE book_id IS NULL OR book_id='' OR book_id IN
                (SELECT id FROM restore_allowed_books);\n",
     );
+    // 21-1：标签仅从带表的备份恢复（老备份平滑跳过）。
+    // 先整体替换标签定义，再只恢复白名单书籍的关联；双 IN 过滤保证
+    // 不引入孤儿关联（书籍被跳过、标签不存在的一律不落库）。
+    if backup_has_tags {
+        sql.push_str(
+            "DELETE FROM book_tags;
+             DELETE FROM tags;
+             INSERT INTO tags(id, name, color, created_at)
+                SELECT id, name, color, created_at FROM backup_db.tags;
+             INSERT OR IGNORE INTO book_tags(book_id, tag_id, created_at)
+                SELECT book_id, tag_id, created_at FROM backup_db.book_tags
+                WHERE book_id IN (SELECT id FROM restore_allowed_books)
+                  AND tag_id IN (SELECT id FROM tags);
+",
+        );
+    }
     sql.push_str(&copy_sql("online_filter_profiles", PROFILE_COLUMNS));
     sql.push_str(&copy_sql("online_filter_rules", RULE_COLUMNS));
     conn.execute_batch(&sql)
@@ -1350,11 +1409,24 @@ fn require_columns(conn: &Connection, table: &str, columns: &[&str]) -> Result<(
     Ok(())
 }
 
+/// 单列存在性探测（在备份库自身连接上调用，裸表名命中备份库）。
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let count: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?1"),
+            params![column],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("读取备份表结构失败：{e}"))?;
+    Ok(count > 0)
+}
+
 /// 备份库缺哪些可选列，复制语句就**不带**哪些列。
 ///
-/// 可选列有三批，按"引入它们的版本"分组：
+/// 可选列按"引入它们的版本"分组：
 /// - `format`（PDF-1 引入）
 /// - `last_opened_at` / `progress_rev`（W3 方案 C 引入，两列同时存在）
+/// - `is_favorite`（21-1 引入）
 ///
 /// 活库表的 DEFAULT 负责补上被剔除的列，因此**老备份必须仍然能恢复**。
 /// 反过来，漏剔除一列就会让恢复报 `no such column` 并整体回滚——
@@ -1362,12 +1434,14 @@ fn require_columns(conn: &Connection, table: &str, columns: &[&str]) -> Result<(
 fn book_columns_for_backup(
     backup_has_format: bool,
     backup_has_progress_columns: bool,
+    backup_has_favorite_column: bool,
 ) -> Vec<&'static str> {
     let mut columns: Vec<&'static str> = BOOK_COLUMNS.to_vec();
     for (present, column) in [
         (backup_has_format, "format"),
         (backup_has_progress_columns, "last_opened_at"),
         (backup_has_progress_columns, "progress_rev"),
+        (backup_has_favorite_column, "is_favorite"),
     ] {
         if !present {
             columns.retain(|c| *c != column);
@@ -2797,13 +2871,14 @@ mod tests {
     /// 并整体回滚 ⇒ **全部历史备份不可恢复**。故逐列钉死。
     #[test]
     fn book_columns_exclude_missing_optional_columns() {
-        let full = book_columns_for_backup(true, true);
+        let full = book_columns_for_backup(true, true, true);
         assert!(full.contains(&"format"));
         assert!(full.contains(&"last_opened_at"));
         assert!(full.contains(&"progress_rev"));
+        assert!(full.contains(&"is_favorite"));
 
         // PDF-1 之后 / W3 之前：真实历史备份的常见形态。
-        let mid = book_columns_for_backup(true, false);
+        let mid = book_columns_for_backup(true, false, false);
         assert!(mid.contains(&"format"), "PDF-1 之后的备份带 format 列");
         assert!(
             !mid.contains(&"last_opened_at"),
@@ -2813,14 +2888,19 @@ mod tests {
             !mid.contains(&"progress_rev"),
             "W3 之前的备份不得带 progress_rev 列"
         );
+        assert!(
+            !mid.contains(&"is_favorite"),
+            "21-1 之前的备份不得带 is_favorite 列"
+        );
         assert!(mid.contains(&"updated_at"), "必需列必须始终保留");
         assert!(mid.contains(&"current_page"));
 
         // PDF-1 之前：连 format 都没有。
-        let oldest = book_columns_for_backup(false, false);
+        let oldest = book_columns_for_backup(false, false, false);
         assert!(!oldest.contains(&"format"));
         assert!(!oldest.contains(&"last_opened_at"));
         assert!(!oldest.contains(&"progress_rev"));
+        assert!(!oldest.contains(&"is_favorite"));
         assert!(oldest.contains(&"id"));
         assert!(oldest.contains(&"path"));
     }
@@ -2903,6 +2983,115 @@ mod tests {
         assert_eq!(row.progress_rev, 1, "progress_rev 必须原值保留");
         assert_eq!(row.current_page, 12, "页码必须原值保留");
         assert_eq!(row.scroll_pct, 0.5, "条漫百分比必须原值保留");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 21-1：v0.20 备份（无 is_favorite / tags / book_tags）必须仍可恢复，
+    /// 收藏回落 0，且不会因为建表/列探测失败而拒绝整包。
+    #[test]
+    fn restore_accepts_v020_backup_without_favorite_or_tags() {
+        let dir = temp_dir("v020-shape");
+        let backup_db = dir.join("v020.db");
+        let book_dir = dir.join("books/legacy");
+        fs::create_dir_all(&book_dir).unwrap();
+        {
+            let conn = Connection::open(&backup_db).unwrap();
+            db::init_schema(&conn).unwrap();
+            db::upsert_book(&conn, "b1", &book_dir.to_string_lossy(), "Legacy", 8).unwrap();
+            // 退回 21-1 之前的形态：删列、删表、版本回落。
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS idx_books_favorite;
+                 ALTER TABLE books DROP COLUMN is_favorite;
+                 DROP TABLE book_tags;
+                 DROP TABLE tags;
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+        let counts = {
+            let conn = Connection::open(&backup_db).unwrap();
+            count_core_rows(&conn).unwrap()
+        };
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "format": BACKUP_FORMAT,
+            "schema": 1,
+            "appVersion": "0.20.1",
+            "createdAt": "2026-11-12 10:00:00",
+            "counts": counts,
+            "excludes": ["online_headers"],
+        }))
+        .unwrap();
+        let db_bytes = fs::read(&backup_db).unwrap();
+        let backup = dir.join("v020.mrbackup");
+        write_raw_zip(
+            &backup,
+            &[
+                ("manifest.json", manifest.as_slice()),
+                ("library.db", db_bytes.as_slice()),
+            ],
+        );
+
+        let live = dir.join("live.db");
+        {
+            let conn = db::open(&live).unwrap();
+            db::init_schema(&conn).unwrap();
+        }
+        let result = restore_backup_blocking(&live, &backup, true).unwrap();
+        assert_eq!(result.books, 1);
+        let conn = db::open(&live).unwrap();
+        let row = db::get_book(&conn, "b1").unwrap().unwrap();
+        assert_eq!(row.title, "Legacy");
+        assert!(!row.is_favorite, "老备份没有收藏列时必须回落未收藏");
+        assert!(db::tags_for_books(&conn, &["b1".to_string()])
+            .unwrap()
+            .is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 21-1：v4 备份完整导出/恢复收藏 + 标签 + 关联。
+    #[test]
+    fn export_then_restore_preserves_favorites_and_tags() {
+        let dir = temp_dir("roundtrip-tags");
+        let db_path = dir.join("library.db");
+        let first = dir.join("books/one");
+        let second = dir.join("books/two");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let (tag_one, tag_two);
+        {
+            let conn = db::open(&db_path).unwrap();
+            db::init_schema(&conn).unwrap();
+            db::upsert_book(&conn, "b1", &first.to_string_lossy(), "One", 10).unwrap();
+            db::upsert_book(&conn, "b2", &second.to_string_lossy(), "Two", 10).unwrap();
+            db::set_book_favorite(&conn, "b1", true).unwrap();
+            tag_one = db::create_tag(&conn, "Reading", Some("#38A8F8")).unwrap();
+            tag_two = db::create_tag(&conn, "Classic", Some("#FDE68A")).unwrap();
+            db::set_book_tags(&conn, "b1", &[tag_one.id, tag_two.id]).unwrap();
+            db::set_book_tags(&conn, "b2", &[tag_two.id]).unwrap();
+        }
+        let backup = dir.join("tags.mrbackup");
+        export_backup_blocking(&db_path, &backup, None, "9.9.9").unwrap();
+        {
+            let conn = db::open(&db_path).unwrap();
+            conn.execute("DELETE FROM books", []).unwrap();
+            conn.execute("DELETE FROM reading_log", []).unwrap();
+        }
+        restore_backup_blocking(&db_path, &backup, true).unwrap();
+
+        let conn = db::open(&db_path).unwrap();
+        let one = db::get_book(&conn, "b1").unwrap().unwrap();
+        assert!(one.is_favorite, "收藏必须完整往返");
+        let map = db::tags_for_books(&conn, &["b1".to_string(), "b2".to_string()]).unwrap();
+        assert_eq!(map.get("b1").map(Vec::len), Some(2), "标签关联必须完整往返");
+        assert_eq!(map.get("b2").map(Vec::len), Some(1));
+        let tags = db::list_tags(&conn).unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(
+            tags.iter()
+                .find(|tag| tag.name == "Reading")
+                .map(|tag| (tag.color.as_str(), tag.book_count)),
+            Some(("#38A8F8", 1))
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }

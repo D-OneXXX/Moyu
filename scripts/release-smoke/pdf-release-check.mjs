@@ -82,8 +82,8 @@ export const RESULT_KIND = "manga-reader.pdf-release-check";
 export const PDF_PAGE_COUNT = 4;
 /** 阅读器目标页（1 基）。落库 current_page = 2。 */
 export const TARGET_READER_PAGE = 3;
-/** 后端 `db::SCHEMA_VERSION`（W3 起为 3；与 `src-tauri/src/db.rs` 一致）。 */
-export const SCHEMA_VERSION = 3;
+/** 后端 `db::SCHEMA_VERSION`（21-1 起为 4；与 `src-tauri/src/db.rs` 一致）。 */
+export const SCHEMA_VERSION = 4;
 export const BACKUP_FORMAT = "mangareader-backup";
 export const BACKUP_SCHEMA = 1;
 /** 与 `src-tauri/src/pdf.rs::PDF_COVER_EDGE` 一致。 */

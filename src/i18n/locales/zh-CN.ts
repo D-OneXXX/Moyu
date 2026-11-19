@@ -11,6 +11,7 @@ import { onlineMessages } from "../messages/online";
 import { opdsMessages } from "../messages/opds";
 import { settingsDetailMessages } from "../messages/settingsDetail";
 import { featureGateMessages } from "../messages/featureGate";
+import { tagMessages } from "../messages/tags";
 
 export const zhCN = {
   ...commonMessages["zh-CN"],
@@ -25,6 +26,7 @@ export const zhCN = {
   ...opdsMessages["zh-CN"],
   ...settingsDetailMessages["zh-CN"],
   ...featureGateMessages["zh-CN"],
+  ...tagMessages["zh-CN"],
   ...resilienceMessages["zh-CN"],
 } as const;
 

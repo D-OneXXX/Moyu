@@ -79,6 +79,23 @@ pub struct BookInfo {
     /// 本地书源路径当前已不存在（在线书恒为 false）。前端据此显示
     /// 「文件位置已变更」状态并提供无损重定位，不以崩溃或丢进度处理。
     pub missing: bool,
+    /// 21-1：收藏星标；老客户端/老备份缺失时回落 false。
+    #[serde(default)]
+    pub is_favorite: bool,
+    /// 21-1：书籍标签（列表页批量装配；无标签为空数组）。
+    #[serde(default)]
+    pub tags: Vec<TagInfo>,
+}
+
+/// 21-1：标签元数据（`bookCount` 为未软删书籍计数）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    pub id: i64,
+    pub name: String,
+    /// 空串或 `#RRGGBB`（后端统一大写）。
+    pub color: String,
+    pub book_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -757,6 +774,16 @@ pub fn run() {
             commands::remove_books,
             commands::list_books,
             commands::list_books_page,
+            // 21-1：收藏与自定义标签（全部走 spawn_blocking）。
+            commands::set_book_favorite,
+            commands::set_books_favorite,
+            commands::list_tags,
+            commands::create_tag,
+            commands::rename_tag,
+            commands::delete_tag,
+            commands::set_book_tags,
+            commands::batch_add_tag,
+            commands::batch_remove_tag,
             commands::library_stats,
             commands::get_last_read,
             commands::get_book,

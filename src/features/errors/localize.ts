@@ -176,6 +176,14 @@ const STABLE_ERROR_CODES: ReadonlyArray<{ code: string; key: string }> = [
   { code: "invalid-page-limit", key: "error.pageInvalidLimit" },
   { code: "invalid-page-query", key: "error.pageInvalidQuery" },
   { code: "invalid-page-cursor", key: "error.pageInvalidCursor" },
+  // 21-1：收藏与标签。
+  { code: "tag-already-exists", key: "error.tagAlreadyExists" },
+  { code: "tag-invalid-name", key: "error.tagInvalidName" },
+  { code: "tag-invalid-color", key: "error.tagInvalidColor" },
+  { code: "tag-not-found", key: "error.tagNotFound" },
+  { code: "invalid-page-sort", key: "error.pageInvalidSort" },
+  { code: "invalid-page-tag", key: "error.pageInvalidTag" },
+  { code: "invalid-batch-size", key: "error.invalidBatchSize" },
   // 皮肤素材导入与 .moyuskin 皮肤包（Rust 侧校验图片头、归档结构与 CSS token）。
   { code: "skin-read-failed", key: "settings.skin.errorRead" },
   { code: "skin-empty", key: "settings.skin.errorRead" },

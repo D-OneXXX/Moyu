@@ -311,6 +311,60 @@ button:disabled {
   color: var(--sh-muted-foreground);
 }
 
+.filterbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 14px;
+}
+
+.filter-toggle {
+  display: inline-flex;
+  min-height: 44px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--sh-border);
+  background: var(--sh-card);
+  color: var(--sh-foreground);
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 2px 0 0 var(--sh-border);
+}
+
+.filter-toggle[aria-pressed="true"] {
+  background: var(--sh-primary);
+  color: var(--sh-primary-foreground);
+}
+
+.filter-star {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tags-filter {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  max-width: 260px;
+}
+
+.tags-select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--sh-border);
+  background: var(--sh-card);
+  color: var(--sh-foreground);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 0 0 var(--sh-border);
+  text-overflow: ellipsis;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(clamp(98px, 28vw, 160px), 1fr));
@@ -412,6 +466,16 @@ button:disabled {
 
 .badge-done {
   background: rgba(4, 120, 87, 0.86);
+}
+
+.badge-fav {
+  left: 6px;
+  top: 6px;
+  bottom: auto;
+  background: rgba(245, 158, 11, 0.94);
+  color: #09090b;
+  padding: 1px 7px;
+  font-size: 12px;
 }
 
 .badge-missing {

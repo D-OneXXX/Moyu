@@ -264,7 +264,8 @@ export async function runPrivacySuite(ctx, report) {
   const updatePanel = await page.eval(`(() => {
     const button = document.getElementById('update-check');
     if (!button) return null;
-    const card = button.closest('section');
+    const card =
+      button.closest('[data-settings-section-card]') || button.closest('section');
     const style = getComputedStyle(button);
     const rect = button.getBoundingClientRect();
     return {

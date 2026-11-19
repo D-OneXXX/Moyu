@@ -7,9 +7,26 @@ use hyper::header::{
 use hyper::{Method, Request, Response, StatusCode};
 use std::sync::OnceLock;
 
+use super::pdf_assets;
+
+/// Reader CSP. `worker-src 'self'` lets the PDF.js worker load from the same
+/// embedded origin; `font-src 'self'` covers same-origin standard-font data.
+/// No `unsafe-eval`, `wasm-unsafe-eval`, blob worker or external origin.
+const READER_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
+     img-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; \
+     base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 pub(crate) fn handle<B>(request: &Request<B>) -> Option<Response<Full<Bytes>>> {
     if request.method() != Method::GET {
         return None;
+    }
+    if let Some(name) = pdf_asset_name(request.uri().path()) {
+        let (bytes, mime) = pdf_assets::lookup(name)?;
+        return Some(static_response(
+            mime,
+            Bytes::from_static(bytes),
+            "private, max-age=3600",
+        ));
     }
     let (content_type, body) = match request.uri().path() {
         "/" => (
@@ -43,13 +60,34 @@ pub(crate) fn handle<B>(request: &Request<B>) -> Option<Response<Full<Bytes>>> {
         ),
         _ => return None,
     };
-    Some(Response::builder().status(StatusCode::OK)
+    Some(static_response(content_type, body, "no-store"))
+}
+
+fn static_response(
+    content_type: &'static str,
+    body: Bytes,
+    cache_control: &'static str,
+) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::OK)
         .header(CONTENT_TYPE, content_type)
-        .header(CACHE_CONTROL, "no-store")
+        .header(CACHE_CONTROL, cache_control)
         .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(REFERRER_POLICY, "no-referrer")
-        .header(CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
-        .body(Full::new(body)).expect("static response"))
+        .header(CONTENT_SECURITY_POLICY, READER_CSP)
+        .body(Full::new(body))
+        .expect("static response")
+}
+
+/// Map the two reader-visible PDF.js namespaces onto the embedded table. Only
+/// exact allow-listed names resolve; the table lookup itself is exact-match, so
+/// `..`/percent-encoded traversal can never escape the approved set.
+fn pdf_asset_name(path: &str) -> Option<&str> {
+    match path {
+        "/pdfjs/pdf.min.mjs" => Some("pdf.min.mjs"),
+        "/pdfjs/pdf.worker.min.mjs" => Some("pdf.worker.min.mjs"),
+        _ => path.strip_prefix("/pdf-assets/"),
+    }
 }
 
 /// Reuse the desktop stylesheet's authoritative theme tokens instead of

@@ -709,6 +709,56 @@ button:disabled {
   min-height: 0;
 }
 
+/*
+ * PDF is a paged format but its canvas may be taller than the viewport at
+ * fit-width (and wider than it when zoomed), so this variant scrolls on both
+ * axes. `pan-x pan-y` deliberately omits pinch-zoom: the reader owns pinch and
+ * calls preventDefault in the two-finger handler.
+ */
+.reader[data-format="pdf"] .stage {
+  display: block;
+  overflow: auto;
+  touch-action: pan-x pan-y;
+}
+
+.reader[data-format="pdf"] .view {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  height: auto;
+  min-height: 100%;
+}
+
+.pdf-shell {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  min-height: 100%;
+  padding: 2px 0 calc(var(--r-safe-bottom) + 8px);
+}
+
+.pdf-page {
+  width: calc(var(--r-pdf-width, 100%) * var(--r-zoom));
+  max-width: none;
+  margin: 0 auto;
+  transition: none;
+}
+
+.pdf-page canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #ffffff;
+  box-shadow: 0 2px 18px rgba(0, 0, 0, 0.35);
+}
+
+.pdf-skeleton {
+  width: min(94vw, 720px);
+  aspect-ratio: 3 / 4;
+  margin-top: 4px;
+}
+
 .tiles {
   width: calc(var(--r-zoom) * 100%);
   max-width: none;
@@ -834,6 +884,14 @@ button:disabled {
   border: 0;
   border-radius: 0;
   touch-action: pan-y;
+}
+
+/*
+ * PDF owns pan/pinch in JS (see bindPdfScrollGestures): the overlay sits above
+ * the scrolling stage, so `none` is required for preventDefault to work.
+ */
+.reader[data-format="pdf"] .zone {
+  touch-action: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1059,6 +1117,10 @@ button:disabled {
 
 .hud-action:disabled {
   opacity: 0.4;
+}
+
+.hud-action[hidden] {
+  display: none;
 }
 
 .hud-action[aria-pressed="true"] {

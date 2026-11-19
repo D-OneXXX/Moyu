@@ -37,6 +37,7 @@ use super::http::{
     DATA_HANDLER_TIMEOUT, PAIR_HANDLER_TIMEOUT, X_REQUEST_ID,
 };
 use super::pairing::{ClaimIssued, ClaimState, PairingError};
+use super::pdf_http::{PdfHttp, WebPdfAccess};
 use super::progress_write::{ProgressHttp, WebProgressWrite};
 use super::secret::random_hex;
 use super::session::SessionIssued;
@@ -161,6 +162,7 @@ pub(crate) struct PairingHttp {
     poll_interval: Duration,
     limiter: RateLimiter,
     data: Option<Arc<DataHttp>>,
+    pdf: Option<Arc<PdfHttp>>,
     progress: Option<Arc<ProgressHttp>>,
 }
 
@@ -205,6 +207,7 @@ impl PairingHttp {
             poll_interval: DEFAULT_POLL_INTERVAL,
             limiter: RateLimiter::new(RATE_WINDOW),
             data: None,
+            pdf: None,
             progress: None,
         })
     }
@@ -217,6 +220,16 @@ impl PairingHttp {
             self.guard.clone(),
             Arc::clone(&self.service),
             write,
+        )));
+    }
+
+    /// Mount the bounded PDF byte-stream plane. It shares the same authority
+    /// guard and session service as the data and write planes.
+    pub(crate) fn with_pdf(&mut self, pdf: Arc<dyn WebPdfAccess>) {
+        self.pdf = Some(Arc::new(PdfHttp::new(
+            self.guard.clone(),
+            Arc::clone(&self.service),
+            pdf,
         )));
     }
 
@@ -356,6 +369,16 @@ impl PairingHttp {
         }
         if let Some(data) = self.data.as_ref() {
             match tokio::time::timeout(DATA_HANDLER_TIMEOUT, data.handle(&request, source_ip)).await
+            {
+                Ok(Some(response)) => return response,
+                Ok(None) => {}
+                Err(_) => return timeout_response(),
+            }
+        }
+        // PDF byte ranges are a separate, bounded plane: the data plane never
+        // renders PDF pages and the path does not match its eight route shapes.
+        if let Some(pdf) = self.pdf.as_ref() {
+            match tokio::time::timeout(DATA_HANDLER_TIMEOUT, pdf.handle(&request, source_ip)).await
             {
                 Ok(Some(response)) => return response,
                 Ok(None) => {}

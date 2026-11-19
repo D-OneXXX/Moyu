@@ -26,8 +26,25 @@ impl WebProgressWrite for AppProgress {
         page: u32,
         scroll_pct: Option<f64>,
         base_rev: i64,
+        detected_page_count: Option<u32>,
     ) -> Result<ProgressOutcome, DataError> {
-        progress_service::write_progress(self.state.as_ref(), id, page, scroll_pct, base_rev)
+        match detected_page_count {
+            Some(detected) => progress_service::write_progress_with_detected(
+                self.state.as_ref(),
+                id,
+                page,
+                scroll_pct,
+                base_rev,
+                Some(detected),
+            ),
+            None => progress_service::write_progress(
+                self.state.as_ref(),
+                id,
+                page,
+                scroll_pct,
+                base_rev,
+            ),
+        }
     }
 }
 
@@ -53,7 +70,9 @@ mod tests {
         state.db.set(conn);
 
         let write: Arc<dyn WebProgressWrite> = Arc::new(AppProgress::new(Arc::clone(&state)));
-        let outcome = write.write_progress(ID, 2, Some(0.5), 0).expect("write");
+        let outcome = write
+            .write_progress(ID, 2, Some(0.5), 0, None)
+            .expect("write");
         assert!(matches!(
             outcome,
             crate::db::ProgressOutcome::Applied {

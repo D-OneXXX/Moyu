@@ -5,6 +5,7 @@ import path from "node:path";
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { makePdf } from "./lib/pdf-fixtures.mjs";
 
 /**
  * D4 Web Reader end-to-end QA (headless Chrome over CDP).
@@ -12,8 +13,10 @@ import { fileURLToPath } from "node:url";
  * Covers the mobile-first rebuild: library grid + progress capsules, nine-grid
  * tap zones, HUD show/hide, paged/webtoon switching, tile skeletons, pinch
  * zoom, conflict resolution, throttled CAS progress writes, scroll restore
- * across a width change, six locales, and the three failure surfaces
- * (PDF / bad tile / oversized webtoon).
+ * across a width change, six locales, D4 PDF byte-range rendering (HEAD +
+ * 256 KiB ranges, bounded canvas, detected page count backfill, centre
+ * double-tap zoom), and the two image failure surfaces (bad tile / oversized
+ * webtoon).
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const reader = path.join(root, "src-tauri/src/web_access/reader");
@@ -32,12 +35,26 @@ const demoArt = {
   ),
 };
 const id = "a".repeat(64);
+const pdfId = "c".repeat(64);
+// Larger than one 256 KiB client range so the harness proves real chunking
+// (header chunk + tail/xref chunk) instead of a single full-file read.
+const pdfBytes = makePdf({
+  pageCount: 3,
+  label: "Moyu Web QA",
+  fillerBytes: 700 * 1024,
+});
+const pdfRoot = path.join(root, "node_modules/pdfjs-dist");
 let paired = false;
 let sessionRequests = 0;
 let localClaimRequests = 0;
 let writes = 0;
 let lastWrite = null;
 let progressState = { page: 0, pageCount: 3, scrollPct: -1, rev: 4 };
+let pdfProgress = { page: 0, pageCount: 0, scrollPct: -1, rev: 50 };
+let pdfPageCount = 0;
+let pdfHeadRequests = 0;
+let pdfRangeRequests = 0;
+let pdfMaxRangeSpan = 0;
 let allowPairing = true;
 let devices = [];
 let conflictSent = false;
@@ -155,11 +172,40 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, {
       "content-type": type,
       "content-security-policy":
-        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "referrer-policy": "no-referrer",
       "cache-control": "no-store",
     });
     res.end(await fs.readFile(file));
+    return;
+  }
+  if (url.pathname === "/pdfjs/pdf.min.mjs" || url.pathname === "/pdfjs/pdf.worker.min.mjs") {
+    const name = url.pathname.slice("/pdfjs/".length);
+    res.writeHead(200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    res.end(await fs.readFile(path.join(pdfRoot, "legacy/build", name)));
+    return;
+  }
+  if (url.pathname.startsWith("/pdf-assets/")) {
+    const relative = decodeURIComponent(url.pathname.slice("/pdf-assets/".length));
+    const allowed =
+      relative.startsWith("cmaps/") || relative.startsWith("standard_fonts/");
+    const target = path.resolve(pdfRoot, relative);
+    const contained = !path.relative(pdfRoot, target).startsWith("..");
+    if (!allowed || !contained) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const type = target.endsWith(".ttf")
+      ? "font/ttf"
+      : target.endsWith(".txt")
+        ? "text/plain; charset=utf-8"
+        : "application/octet-stream";
+    res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
+    res.end(await fs.readFile(target));
     return;
   }
   if (url.pathname === "/reader-theme.css") {
@@ -240,6 +286,52 @@ const server = http.createServer(async (req, res) => {
     else json(401, { error: { code: "unauthorized" } });
     return;
   }
+  if (url.pathname === `/api/books/${pdfId}/pdf`) {
+    const total = pdfBytes.length;
+    const headers = {
+      "content-type": "application/pdf",
+      "accept-ranges": "bytes",
+      "cache-control": "private, no-store",
+      etag: `"pdf-qa-${total}"`,
+    };
+    if (req.method === "HEAD") {
+      pdfHeadRequests += 1;
+      res.writeHead(200, { ...headers, "content-length": String(total) });
+      res.end();
+      return;
+    }
+    assert.equal(req.method, "GET");
+    assert.equal(paired, true, "PDF ranges require the paired session");
+    const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || "");
+    const totalNumber = pdfBytes.length;
+    let start = match ? Number(match[1]) : NaN;
+    let end = match && match[2] ? Number(match[2]) : totalNumber - 1;
+    if (
+      !match ||
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start >= totalNumber ||
+      start > end
+    ) {
+      res.writeHead(416, {
+        ...headers,
+        "content-type": "application/json",
+        "content-range": `bytes */${totalNumber}`,
+      });
+      res.end(JSON.stringify({ error: { code: "range-not-satisfiable" } }));
+      return;
+    }
+    end = Math.min(end, totalNumber - 1, start + 4 * 1024 * 1024 - 1);
+    pdfRangeRequests += 1;
+    pdfMaxRangeSpan = Math.max(pdfMaxRangeSpan, end - start + 1);
+    res.writeHead(206, {
+      ...headers,
+      "content-range": `bytes ${start}-${end}/${totalNumber}`,
+      "content-length": String(end - start + 1),
+    });
+    res.end(pdfBytes.subarray(start, end + 1));
+    return;
+  }
   if (url.pathname === "/api/books") {
     const base = {
       pageCount: 3,
@@ -253,7 +345,14 @@ const server = http.createServer(async (req, res) => {
     json(200, {
       items: [
         { ...base, id, title: "Demo", format: "image", thumbUrl: `/api/books/${id}/thumb` },
-        { ...base, id: "c".repeat(64), title: "PDF demo", format: "pdf" },
+        {
+          ...base,
+          id: pdfId,
+          title: "PDF demo",
+          format: "pdf",
+          pageCount: pdfPageCount,
+          thumbUrl: `/api/books/${pdfId}/thumb?v=0`,
+        },
         { ...base, id: "e".repeat(64), title: "Faulty", format: "image" },
         { ...base, id: "f".repeat(64), title: "Shorter", format: "image", currentPage: 2 },
         { ...base, id: "b".repeat(64), title: "Large", format: "image" },
@@ -281,6 +380,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname.endsWith("/progress") && req.method === "GET") {
+    if (url.pathname.includes(pdfId)) {
+      json(200, { ...pdfProgress });
+      return;
+    }
     json(
       200,
       url.pathname.includes("f".repeat(64))
@@ -295,6 +398,19 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) raw += chunk;
     lastWrite = JSON.parse(raw);
     writes += 1;
+    if (url.pathname.includes(pdfId)) {
+      if (Number.isInteger(lastWrite.detectedPageCount)) {
+        pdfPageCount = lastWrite.detectedPageCount;
+      }
+      pdfProgress = {
+        page: lastWrite.page,
+        pageCount: pdfPageCount,
+        scrollPct: -1,
+        rev: pdfProgress.rev + 1,
+      };
+      json(200, { page: pdfProgress.page, rev: pdfProgress.rev });
+      return;
+    }
     if (!conflictSent) {
       conflictSent = true;
       progressState = { page: 2, pageCount: 3, scrollPct: 0.4, rev: 7 };
@@ -746,12 +862,107 @@ try {
   })()`);
   await wait("document.documentElement.lang === 'en' && document.querySelectorAll('.card').length > 0");
 
-  /* -------------------------------------------------------------- failures */
+  /* ---------------------------------------------------------- mobile PDF */
   await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('PDF demo'))");
+  const pdfCard = await page.eval(`(() => {
+    const card = [...document.querySelectorAll('.card')].find(x => x.textContent.includes('PDF demo'));
+    return {
+      disabled: card.classList.contains('card-disabled'),
+      ariaDisabled: card.getAttribute('aria-disabled'),
+      badge: card.querySelector('.badge-pdf')?.textContent.trim() ?? null,
+    };
+  })()`);
+  assert.equal(pdfCard.disabled, false, "PDF cards must be tappable");
+  assert.equal(pdfCard.ariaDisabled, null, "PDF cards must not advertise aria-disabled");
+  assert.equal(pdfCard.badge, "PDF", "PDF cards keep the format badge");
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('PDF demo')).click()");
-  await wait(
-    "document.querySelector('.toast')?.textContent.includes('Please read PDF documents')",
+  await wait("document.querySelector('.pdf-page canvas') && document.querySelector('.pager').textContent.trim() === '1 / 3'", 20_000);
+  assert.ok(pdfHeadRequests >= 1, "the reader probes the PDF length with HEAD");
+  assert.ok(pdfRangeRequests >= 2, `PDF.js fetches multiple byte ranges (${pdfRangeRequests})`);
+  assert.ok(
+    pdfMaxRangeSpan <= 256 * 1024,
+    `each request stays within the 256 KiB chunk budget (${pdfMaxRangeSpan})`,
   );
+  const canvasMetrics = await page.eval(`(() => {
+    const canvas = document.querySelector('.pdf-page canvas');
+    const context = canvas.getContext('2d');
+    const width = Math.min(canvas.width, 128);
+    const height = Math.min(canvas.height, 128);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    let painted = false;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i] || pixels[i + 1] || pixels[i + 2]) {
+        painted = true;
+        break;
+      }
+    }
+    return {
+      width: canvas.width,
+      height: canvas.height,
+      pixels: canvas.width * canvas.height,
+      painted,
+      maxSide: Math.max(canvas.width, canvas.height),
+      mode: document.querySelector('.reader').dataset.mode,
+      format: document.querySelector('.reader').dataset.format,
+      modeHidden: document.querySelector('[data-testid=mode-toggle]').hidden,
+    };
+  })()`);
+  assert.equal(canvasMetrics.painted, true, "the first PDF page paints real pixels");
+  assert.ok(canvasMetrics.width <= 2048 && canvasMetrics.height <= 2048, JSON.stringify(canvasMetrics));
+  assert.ok(canvasMetrics.pixels <= 4_500_000, JSON.stringify(canvasMetrics));
+  assert.equal(canvasMetrics.mode, "paged");
+  assert.equal(canvasMetrics.format, "pdf");
+  assert.equal(canvasMetrics.modeHidden, true, "PDF has no webtoon mode toggle");
+  await shot("mobile-web-reader-pdf.png");
+
+  const writesBeforePdf = writes;
+  await page.eval(`document.querySelector('.tapzones .zone[data-row="1"][data-col="2"]').click()`);
+  await wait("document.querySelector('.pager').textContent.trim() === '2 / 3'");
+  {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && lastWrite?.detectedPageCount !== 3) {
+      await sleep(120);
+    }
+  }
+  assert.equal(writes, writesBeforePdf + 1, "a PDF tap-zone page turn writes progress");
+  assert.equal(lastWrite.page, 1);
+  assert.equal(lastWrite.detectedPageCount, 3, "the first PDF write carries the detected page count");
+  assert.equal(pdfPageCount, 3, "the server adopts the detected page count");
+
+  await page.eval(`document.querySelector('.tapzones .zone[data-row="1"][data-col="0"]').click()`);
+  await wait("document.querySelector('.pager').textContent.trim() === '1 / 3'");
+  {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && lastWrite?.page !== 0) await sleep(100);
+  }
+  assert.equal(lastWrite.page, 0, "the left tap zone returns to the first page");
+  assert.equal(lastWrite.detectedPageCount, undefined, "detection is only sent until adopted");
+
+  // Centre double-tap zooms without turning the page.
+  await page.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, x: 195, y: 422 });
+  await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, x: 195, y: 422 });
+  await sleep(60);
+  await page.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 2, x: 195, y: 422 });
+  await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 2, x: 195, y: 422 });
+  await wait("parseFloat(getComputedStyle(document.querySelector('.reader')).getPropertyValue('--r-zoom')) > 1.3");
+  assert.equal(
+    await page.eval("document.querySelector('.pager').textContent.trim()"),
+    "1 / 3",
+    "double-tap zoom must not turn the page",
+  );
+  const pdfConsoleErrors = page.events.filter(
+    (event) =>
+      event.method === "Log.entryAdded" &&
+      event.params?.entry?.level === "error" &&
+      /pdf/i.test(event.params?.entry?.text || ""),
+  );
+  assert.deepEqual(
+    pdfConsoleErrors.map((event) => event.params.entry.text),
+    [],
+    "the PDF reader must not log console errors",
+  );
+
+  await page.eval("document.querySelector('.hud-top button').click()");
   await wait("[...document.querySelectorAll('.card')].some(x => x.textContent.includes('Faulty'))");
 
   await page.eval("[...document.querySelectorAll('.card')].find(x => x.textContent.includes('Faulty')).click()");
@@ -831,6 +1042,13 @@ try {
           viewport: "390x844 @2x",
           hudMinTarget,
           cls,
+          pdf: {
+            headRequests: pdfHeadRequests,
+            rangeRequests: pdfRangeRequests,
+            maxRangeSpan: pdfMaxRangeSpan,
+            canvas: `${canvasMetrics.width}x${canvasMetrics.height}`,
+            detectedPageCount: pdfPageCount,
+          },
           devicesSeen: deviceList.items.length,
           revokedSessionStatus: mobileSessionStatus,
           screenshots: [
@@ -860,7 +1078,7 @@ try {
   );
 
   console.log(
-    "VERIFIED D4 web reader: pairing claim/consume, device list → revoke → 401, 40px HUD targets, nine-grid taps, CLS=0 during webtoon scroll, last-page page_count-1 (paged + webtoon), CAS conflict, scroll restore, 6 locales, failure surfaces.",
+    `VERIFIED D4 web reader: pairing claim/consume, device list → revoke → 401, 40px HUD targets, nine-grid taps, CLS=0 during webtoon scroll, last-page page_count-1 (paged + webtoon), CAS conflict, scroll restore, 6 locales, PDF HEAD=${pdfHeadRequests} ranges=${pdfRangeRequests} maxChunk=${pdfMaxRangeSpan}B canvas=${canvasMetrics.width}×${canvasMetrics.height}, detectedPageCount backfill, centre double-tap zoom, image failure surfaces.`,
   );
 } finally {
   if (page?.socket) page.socket.close();

@@ -4,13 +4,16 @@
 //! owns the database-facing rules:
 //!
 //! - only an active (`removed=0`) book may be written;
-//! - PDF books are not writable through the Web API (D3 decision Q1);
+//! - image books follow the D3 page rules; PDF books are writable from D4 and
+//!   may backfill `page_count` exactly once when the stored count is still 0;
 //! - `page` must be explicitly within `0..page_count` — the desktop
 //!   `clamp_reading_page` fallback is deliberately **not** used, because it
 //!   silently rewrites an out-of-range page and can inflate `reading_log`;
 //! - `scrollPct` is either omitted (`None` → -1 sentinel) or a finite value in
 //!   `0.0..=1.0`; `-1` is not a valid way to say "no webtoon record";
 //! - `baseRev` is non-negative;
+//! - `detectedPageCount` is only meaningful for PDF books whose stored count
+//!   is 0; any other format rejects it;
 //! - active state, format, and page bounds are checked under the same
 //!   `BEGIN IMMEDIATE` transaction as the CAS, including against other connections.
 //!
@@ -18,6 +21,7 @@
 //! include a path, SQL text, or book title.
 
 use crate::db::{self, ProgressOutcome};
+use crate::pdf;
 use crate::read_service::DataError;
 use crate::state::AppState;
 
@@ -28,6 +32,21 @@ pub(crate) fn write_progress(
     scroll_pct: Option<f64>,
     base_rev: i64,
 ) -> Result<ProgressOutcome, DataError> {
+    write_progress_with_detected(state, id, page, scroll_pct, base_rev, None)
+}
+
+/// D4 entry point. `detected_page_count` is the PDF.js page count for a PDF
+/// whose `books.page_count` is still 0; it is validated and written inside the
+/// same `BEGIN IMMEDIATE` transaction as the CAS, so a concurrent desktop
+/// rescan or another device can never have its count overwritten.
+pub(crate) fn write_progress_with_detected(
+    state: &AppState,
+    id: &str,
+    page: u32,
+    scroll_pct: Option<f64>,
+    base_rev: i64,
+    detected_page_count: Option<u32>,
+) -> Result<ProgressOutcome, DataError> {
     // Cheap client-side validation before touching the single DB connection.
     if base_rev < 0 {
         return Err(DataError::InvalidParameter);
@@ -36,6 +55,9 @@ pub(crate) fn write_progress(
         if !pct.is_finite() || !(0.0..=1.0).contains(&pct) {
             return Err(DataError::InvalidParameter);
         }
+    }
+    if detected_page_count.is_some_and(|count| count == 0 || count > pdf::MAX_PDF_PAGE_COUNT) {
+        return Err(DataError::InvalidParameter);
     }
 
     // The independent scan connection is serialized by SQLite's write lock,
@@ -46,7 +68,34 @@ pub(crate) fn write_progress(
                 return Ok(Some(DataError::NotFound));
             };
             if row.format == db::BOOK_FORMAT_PDF {
-                return Ok(Some(DataError::PdfUnsupported));
+                let page_count = if row.page_count == 0 {
+                    let Some(detected) = detected_page_count else {
+                        // The Web reader has the real count; without it there
+                        // is no valid page to persist.
+                        return Ok(Some(DataError::InvalidParameter));
+                    };
+                    if pdf::validate_pdf_page_count(&row.format, detected).is_err() {
+                        return Ok(Some(DataError::InvalidParameter));
+                    }
+                    if page >= detected {
+                        return Ok(Some(DataError::InvalidParameter));
+                    }
+                    db::set_book_page_count_if_zero(conn, id, detected)?;
+                    detected
+                } else {
+                    // The stored count is authoritative once set; a later
+                    // detection is ignored rather than overwriting desktop data.
+                    row.page_count
+                };
+                if page >= page_count {
+                    return Ok(Some(DataError::InvalidParameter));
+                }
+                return Ok(None);
+            }
+            // D4 keeps `detectedPageCount` PDF-only. An image book can never
+            // grow its page count through the progress endpoint.
+            if detected_page_count.is_some() {
+                return Ok(Some(DataError::InvalidParameter));
             }
             if row.page_count == 0 || page >= row.page_count {
                 return Ok(Some(DataError::InvalidParameter));
@@ -177,50 +226,100 @@ mod tests {
         );
     }
 
-    /// Q1: PDF is not writable through the Web API, even with a known page count.
-    #[test]
-    fn rejects_pdf_book_even_with_known_pages() {
-        let state = state_with(|conn| {
-            db::upsert_book_with_format(
-                conn,
-                ID,
-                "C:/library/book.pdf",
-                "PDF",
-                5,
-                db::BOOK_FORMAT_PDF,
-            )
-            .expect("seed");
-        });
-        let before = row(&state);
-
-        assert_eq!(
-            write_progress(&state, ID, 1, None, 0).unwrap_err(),
-            DataError::PdfUnsupported
-        );
-        assert_eq!(row(&state).current_page, before.current_page);
-        assert_eq!(row(&state).progress_rev, before.progress_rev);
-        assert_eq!(log_total(&state), 0);
+    fn seed_pdf(conn: &Connection, page_count: u32) {
+        db::upsert_book_with_format(
+            conn,
+            ID,
+            "C:/library/book.pdf",
+            "PDF",
+            page_count,
+            db::BOOK_FORMAT_PDF,
+        )
+        .expect("seed");
     }
 
-    /// PDF takes precedence over the zero-page rule, so a freshly imported PDF
-    /// still reports `pdf-source-unsupported`, not `invalid-parameter`.
+    /// D4: a PDF with a known page count writes progress like any other book.
     #[test]
-    fn rejects_zero_page_pdf_as_pdf() {
-        let state = state_with(|conn| {
-            db::upsert_book_with_format(
-                conn,
-                ID,
-                "C:/library/book.pdf",
-                "PDF",
-                0,
-                db::BOOK_FORMAT_PDF,
-            )
-            .expect("seed");
-        });
+    fn writes_pdf_progress_with_known_page_count() {
+        let state = state_with(|conn| seed_pdf(conn, 5));
+        let outcome = write_progress(&state, ID, 2, None, 0).expect("pdf write");
+        assert!(matches!(
+            outcome,
+            ProgressOutcome::Applied {
+                rev: 1,
+                page: 2,
+                ..
+            }
+        ));
+        let after = row(&state);
+        assert_eq!((after.page_count, after.current_page), (5, 2));
+        assert_eq!(log_total(&state), 2);
+
+        // A detected count on an already-populated PDF is ignored, not an error.
+        write_progress_with_detected(&state, ID, 3, None, 1, Some(9)).expect("ignored detection");
+        let after = row(&state);
+        assert_eq!((after.page_count, after.current_page), (5, 3));
+    }
+
+    /// A freshly imported PDF stores 0 pages. The first Web write must carry
+    /// the PDF.js count; the write happens once and later detections never
+    /// overwrite it.
+    #[test]
+    fn pdf_zero_page_count_adopts_detected_count_once() {
+        let state = state_with(|conn| seed_pdf(conn, 0));
         assert_eq!(
             write_progress(&state, ID, 0, None, 0).unwrap_err(),
-            DataError::PdfUnsupported
+            DataError::InvalidParameter,
+            "without a detected count there is no valid page"
         );
+        assert_eq!(row(&state).page_count, 0);
+
+        for (detected, page) in [(0, 0), (pdf::MAX_PDF_PAGE_COUNT + 1, 0), (5, 5)] {
+            assert_eq!(
+                write_progress_with_detected(&state, ID, page, None, 0, Some(detected))
+                    .unwrap_err(),
+                DataError::InvalidParameter,
+                "detected={detected} page={page}"
+            );
+            assert_eq!(
+                row(&state).page_count,
+                0,
+                "invalid detection must not write"
+            );
+        }
+
+        let outcome =
+            write_progress_with_detected(&state, ID, 2, None, 0, Some(5)).expect("first write");
+        assert!(matches!(
+            outcome,
+            ProgressOutcome::Applied {
+                rev: 1,
+                page: 2,
+                ..
+            }
+        ));
+        let after = row(&state);
+        assert_eq!((after.page_count, after.current_page), (5, 2));
+        assert_eq!(log_total(&state), 2);
+
+        write_progress_with_detected(&state, ID, 3, None, 1, Some(9)).expect("second write");
+        let after = row(&state);
+        assert_eq!((after.page_count, after.current_page), (5, 3));
+        assert_eq!(log_total(&state), 3);
+    }
+
+    /// Detection is a PDF-only compatibility path; image books cannot grow
+    /// their page count through a progress write.
+    #[test]
+    fn image_book_rejects_detected_page_count() {
+        let state = state_with(|conn| seed_image(conn, 10));
+        assert_eq!(
+            write_progress_with_detected(&state, ID, 2, None, 0, Some(20)).unwrap_err(),
+            DataError::InvalidParameter
+        );
+        assert_eq!(row(&state).current_page, 0);
+        assert_eq!(row(&state).progress_rev, 0);
+        assert_eq!(log_total(&state), 0);
     }
 
     /// Q2: an image book with an unknown page count has no valid page.

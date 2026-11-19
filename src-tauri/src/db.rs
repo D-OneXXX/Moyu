@@ -2000,6 +2000,21 @@ pub fn set_book_page_count(
     Ok(())
 }
 
+/// D4 first-open PDF backfill: only a PDF row whose count is still 0 adopts a
+/// client-detected page count. Returns `true` when this call performed the
+/// one-time write; a concurrent desktop rescan or reader wins exactly once.
+pub fn set_book_page_count_if_zero(
+    conn: &Connection,
+    id: &str,
+    page_count: u32,
+) -> Result<bool, BackendError> {
+    let updated = conn.execute(
+        "UPDATE books SET page_count=?2 WHERE id=?1 AND page_count=0 AND format='pdf'",
+        params![id, page_count as i64],
+    )?;
+    Ok(updated > 0)
+}
+
 /// 窗口起点（含当天）：days=1 → 只看今天；days=7 → 近 7 天。
 fn cutoff_date(days: i64) -> String {
     let d = days.max(1) - 1;

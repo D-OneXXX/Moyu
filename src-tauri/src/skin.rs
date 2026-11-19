@@ -1419,7 +1419,15 @@ mod tests {
             .starts_with("data:image/png;base64,"));
         assert_eq!(bundle.tokens["--mr-skin-surface-opacity"], "0.82");
 
-        let export = root.join("exported.moyuskin");
+        // Export must never write inside the live skins root.
+        let blocked = root.join("blocked.moyuskin");
+        assert!(
+            export_blocking(&root, "test-skin", blocked.to_str().unwrap(), &cache)
+                .unwrap_err()
+                .contains("skin-export-failed")
+        );
+        let export_dir = unique_dir("roundtrip-export");
+        let export = export_dir.join("exported.moyuskin");
         export_blocking(&root, "test-skin", export.to_str().unwrap(), &cache).expect("export");
         assert!(export.is_file());
         let fresh_root = unique_dir("roundtrip-fresh");
@@ -1431,6 +1439,7 @@ mod tests {
         assert!(bundle_blocking(&root, "test-skin", &cache).is_err());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&fresh_root);
+        let _ = fs::remove_dir_all(&export_dir);
     }
 
     #[test]

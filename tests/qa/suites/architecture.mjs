@@ -1438,6 +1438,31 @@ async function checkSettingsI18n(ctx, report) {
 /* Task 14-3：装饰层点击穿透与设置二级抽屉遍历                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 前置套件（gallery 等）可能把书库停在任意滚动位置；`ctx.goto("#/")` 在
+ * 已经处于 `#/` 时是 no-op，不会触发 `useScrollRestoration` 的 reset 分支。
+ * 命中测试必须先归一化滚动，并在探测每个目标前确保其中心位于自身滚动
+ * 容器的可见区域；否则被滚到顶栏下方的搜索框会命中 TopBar 拖拽层，把
+ * 单纯的滚动状态误报成「皮肤画布拦截」P1。
+ */
+async function normalizeShellScroll(page) {
+  await page.eval(`new Promise((resolve) => {
+    const main = document.querySelector("main");
+    if (main) main.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+  })`);
+  await page
+    .waitFor(
+      `(() => {
+        const main = document.querySelector("main");
+        return (!main || (main.scrollTop === 0 && main.scrollLeft === 0)) && window.scrollY === 0;
+      })()`,
+      { timeout: 3000, label: "library scroll reset" },
+    )
+    .catch(() => {});
+}
+
 async function checkDecorationLayerHitTest(ctx, report) {
   const page = ctx.page;
   await ctx.goto("#/");
@@ -1447,23 +1472,65 @@ async function checkDecorationLayerHitTest(ctx, report) {
       { timeout: 8000, label: "skin canvas frame" },
     )
     .catch(() => {});
+  await page
+    .waitFor(`!!document.getElementById("library-search-input")`, {
+      timeout: 8000,
+      label: "library search input",
+    })
+    .catch(() => {});
+  // 回归锚点：复现「前置套件把书库滚到搜索框没入顶栏」的状态。缺少滚动
+  // 归一化时该状态会把 TopBar 拖拽层误报成皮肤画布遮挡（run 44498496332）。
+  await page.eval(`(() => {
+    const main = document.querySelector("main");
+    const search = document.getElementById("library-search-input");
+    if (!main || !search) return false;
+    const max = main.scrollHeight - main.clientHeight;
+    if (max <= 0) return false;
+    const delta =
+      search.getBoundingClientRect().top +
+      search.offsetHeight / 2 -
+      main.getBoundingClientRect().top;
+    main.scrollTop = Math.min(max, Math.max(1, main.scrollTop + delta + 16));
+    return true;
+  })()`);
+  await normalizeShellScroll(page);
   const probe = await page.eval(`(() => {
     const visible = ${VISIBLE_FN};
     const canvas = document.querySelector('[data-testid="skin-canvas-frame"]');
     if (!canvas) return { ok: false, reason: "skin-canvas-frame missing" };
     const backdrop = document.querySelector('[data-testid="skin-canvas-backdrop"]');
     const frame = document.querySelector('[data-testid="skin-canvas-frame-overlay"]');
-    const targets = [];
-    const add = (kind, element) => {
-      if (!element) return;
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const centerOf = (element) => {
       const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      targets.push({
-        kind,
-        x: rect.x + rect.width / 2,
-        y: rect.y + rect.height / 2,
-        element,
-      });
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, rect };
+    };
+    // 命中点必须同时落在视口与元素自身滚动容器的可见区域内；否则
+    // elementFromPoint 会指向顶栏拖拽层等无关元素，产生滚动位置误报。
+    const visibleAreaOf = (element) => {
+      let area = { left: 0, top: 0, right: viewport.width, bottom: viewport.height };
+      for (let node = element.parentElement; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (!/(auto|scroll|hidden|clip)/.test(style.overflowY + style.overflowX)) continue;
+        const rect = node.getBoundingClientRect();
+        area = {
+          left: Math.max(area.left, rect.left),
+          top: Math.max(area.top, rect.top),
+          right: Math.min(area.right, rect.right),
+          bottom: Math.min(area.bottom, rect.bottom),
+        };
+      }
+      return area;
+    };
+    const insideArea = (point, area) =>
+      point.x >= area.left &&
+      point.x <= area.right &&
+      point.y >= area.top &&
+      point.y <= area.bottom;
+    const candidates = [];
+    const add = (kind, element) => {
+      if (!element || !visible(element)) return;
+      candidates.push({ kind, element });
     };
     for (const button of [...document.querySelectorAll("header button")].filter(visible).slice(0, 3)) {
       add("topbar-button", button);
@@ -1473,13 +1540,27 @@ async function checkDecorationLayerHitTest(ctx, report) {
       "first-book-card",
       [...document.querySelectorAll('main [role="button"][aria-label]')].filter(visible)[0],
     );
-    if (targets.length < 3) {
-      return { ok: false, reason: "not enough hit-test targets", targets: targets.length };
-    }
-    const hits = targets.map((target) => {
-      const hit = document.elementFromPoint(target.x, target.y);
-      return {
-        kind: target.kind,
+
+    const hits = [];
+    const skipped = [];
+    for (const candidate of candidates) {
+      const area = visibleAreaOf(candidate.element);
+      let geometry = centerOf(candidate.element);
+      if (!insideArea(geometry, area)) {
+        candidate.element.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+        geometry = centerOf(candidate.element);
+      }
+      if (
+        geometry.rect.width <= 0 ||
+        geometry.rect.height <= 0 ||
+        !insideArea(geometry, area)
+      ) {
+        skipped.push({ kind: candidate.kind, reason: "target offscreen after scrollIntoView" });
+        continue;
+      }
+      const hit = document.elementFromPoint(geometry.x, geometry.y);
+      hits.push({
+        kind: candidate.kind,
         hitTag: hit ? hit.tagName : null,
         hitClass: hit ? String(hit.className || "").slice(0, 120) : null,
         inSkinOverlay: !!(
@@ -1489,14 +1570,34 @@ async function checkDecorationLayerHitTest(ctx, report) {
             backdrop?.contains(hit) ||
             frame?.contains(hit))
         ),
-        insideTarget: !!(hit && (hit === target.element || target.element.contains(hit))),
+        insideTarget: !!(hit && (hit === candidate.element || candidate.element.contains(hit))),
+      });
+    }
+    const main = document.querySelector("main");
+    const scroll = {
+      mainTop: main ? Math.round(main.scrollTop) : null,
+      mainLeft: main ? Math.round(main.scrollLeft) : null,
+      windowY: Math.round(window.scrollY),
+    };
+    if (hits.length < 3) {
+      return {
+        ok: false,
+        reason: "not enough hit-test targets",
+        targets: hits.length,
+        candidates: candidates.length,
+        skipped,
+        scroll,
+        viewport,
       };
-    });
+    }
     return {
       ok: true,
       backdropPointer: backdrop ? getComputedStyle(backdrop).pointerEvents : null,
       framePointer: frame ? getComputedStyle(frame).pointerEvents : null,
       hits,
+      skipped,
+      scroll,
+      viewport,
     };
   })()`);
 
@@ -1534,12 +1635,13 @@ async function checkDecorationLayerHitTest(ctx, report) {
       fix: "保持背景层/画框层为 pointer-events:none 的绝对定位层",
     });
   } else {
+    const skippedKinds = (probe.skipped ?? []).map((item) => item.kind);
     ok(report, {
       id: "arch:decoration-hit-test",
       suite: "architecture",
       layer: "e2e",
       title: "皮肤画布点击穿透：顶栏/搜索/书卡命中真实控件",
-      details: `${probe.hits.length} 个命中点全部穿透；背景=${probe.backdropPointer ?? "none"} 画框=${probe.framePointer ?? "none"}`,
+      details: `${probe.hits.length} 个命中点全部穿透；背景=${probe.backdropPointer ?? "none"} 画框=${probe.framePointer ?? "none"}；滚动=${probe.scroll?.mainTop ?? "?"}${skippedKinds.length ? `；跳过不可见候选：${skippedKinds.join(",")}` : ""}`,
     });
   }
 

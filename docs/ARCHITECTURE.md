@@ -199,19 +199,27 @@ browser WebView
     show-main-window, and quit actions, its tooltip starts with `Moyu`, and `close_to_tray`
     hides the window only when a tray host exists.
   Changing one side must never affect the other, and neither side is user-customizable.
-- The skin system is a **reserved (dormant) framed-viewport layout**, not an overlay system:
+- The skin system is a **framed-viewport** layout, not an overlay system:
   - `SkinCanvasFrame` paints the full-window canvas (theme background, artwork, outer frame);
   - `ContentViewport` holds the library, browser, and settings, inset by
     `--mr-skin-viewport-inset` (`top right bottom left`), with radius, glass surface, and shadow;
-  - the reserved state ships with `--mr-skin-viewport-inset: 0px`, no backdrop image, and no
-    frame overlay, so the current build looks exactly like the plain minimal UI;
-  - dormant skin definitions are never activated from the persisted preference; a future art
-    pack is injected explicitly in code (`addSkin` + `setSkin`) and only then applies;
+  - `default` keeps `--mr-skin-viewport-inset: 0px`, no backdrop image, and no frame overlay,
+    so the minimal UI is still the zero-decoration baseline;
+  - three bundled framed presets (Ink Gallery, Midnight Neon, Pastel Canvas) are pure CSS
+    gradients/textures driven by theme-aware `--mr-*` tokens — no external assets, no network;
+  - users can import `.moyuskin` packs (strict ZIP manifest + PNG/JPEG/WebP artwork) or create
+    a pack from local images. Packs live under `<app_data_dir>/skins/<skin_id>/`; only the
+    lightweight `mr-skin` id is in localStorage, and `.mrbackup` never carries image binaries.
+    The Rust validator rejects SVG, path traversal, symlinks, oversized archives/images, and
+    unsafe CSS tokens before anything reaches the webview;
   - there are no floating sprites above the content: artwork belongs to the canvas and is only
-    visible outside the viewport, so it can never cover text or list items;
-  - the immersive reader route drops the viewport entirely and renders full-bleed;
-  - skin assets are either bundled files under `public/skins/` or `data:` URLs produced by the
-    Rust validator, so the production CSP (`img-src 'self' data:`) is never widened.
+    visible outside the viewport, so it can never cover text or list items. The canvas and frame
+    layers are always `pointer-events: none`;
+  - the immersive reader route drops the viewport entirely and overrides the inset to `0px`,
+    rendering full-bleed;
+  - skin artwork reaches the webview either from the bundled `/skins/` path (raster only) or as
+    a Rust-validated `data:image/(png|jpeg|webp)` URL, so the production CSP
+    (`img-src 'self' data:`) is never widened.
 
 ## Repository map
 

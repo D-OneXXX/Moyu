@@ -211,37 +211,6 @@ function jsonRule(
   };
 }
 
-/**
- * 自定义整页背景：与 `features/skin/customSkin.ts` 的 schema 保持一致。
- * 清洗器保持零导入，两处规则需同步维护。
- */
-const CUSTOM_SKIN_ID = /^custom-[a-f0-9]{12}$/;
-const CUSTOM_SKIN_DATA_URL =
-  /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
-const MAX_CUSTOM_SKIN_DATA_URL_CHARS = 1_800_000;
-
-function canonicalCustomSkin(parsed: unknown): unknown | null {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const record = parsed as Record<string, unknown>;
-  if (
-    typeof record.id !== "string" ||
-    !CUSTOM_SKIN_ID.test(record.id) ||
-    typeof record.dataUrl !== "string" ||
-    record.dataUrl.length > MAX_CUSTOM_SKIN_DATA_URL_CHARS ||
-    !CUSTOM_SKIN_DATA_URL.test(record.dataUrl) ||
-    typeof record.width !== "number" ||
-    typeof record.height !== "number"
-  ) {
-    return null;
-  }
-  return {
-    id: record.id,
-    dataUrl: record.dataUrl,
-    width: record.width,
-    height: record.height,
-  };
-}
-
 /** 在线连通性记录：与 lib/onlineLastTest.ts 的 readOnlineLastTest 保持一致。 */
 function canonicalOnlineLastTest(parsed: unknown): unknown | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -291,11 +260,20 @@ function canonicalProbeTicks(parsed: unknown): unknown | null {
 const KEY_RULES: Record<string, Rule> = {
   // 主题：只允许 system|light|dark，旧版 "dark-blue" 之类一律删除，ThemeProvider 回落到 system。
   "mr-theme": enumRule(["system", "light", "dark"], "主题"),
-  // 用户导入的整页背景：{ id, dataUrl, width, height }。
-  "mr-skin-custom": jsonRule("自定义皮肤背景", canonicalCustomSkin),
   // 界面语言：与 i18n/config.ts 的 LOCALES 完全一致。
   "mr-locale": enumRule(["zh-CN", "zh-TW", "en", "es", "ja", "ko"], "界面语言"),
-  "mr-skin": textRule(128, "界面皮肤"),
+  // 皮肤只持久化轻量 id；图片在 <app_data_dir>/skins/<id>/，绝不进 localStorage。
+  // 形状与后端 valid_skin_id 保持一致：小写字母/数字/连字符，≤64，首尾非连字符。
+  "mr-skin": (value) => {
+    if (/^[a-z0-9](?:[a-z0-9-]{0,63})$/.test(value)) {
+      return { action: "keep" };
+    }
+    return {
+      action: "remove",
+      kind: "invalid-enum",
+      reason: "皮肤 id 必须是 1–64 位小写字母、数字或连字符",
+    };
+  },
   // 全局快捷键总开关（features/shortcuts/preferences.ts）。
   "mr-shortcuts-enabled": flagRule("全局快捷键开关"),
   // 实验性开关镜像（lib/tauri.ts）：只认 "1"。

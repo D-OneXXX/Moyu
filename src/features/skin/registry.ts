@@ -1,75 +1,135 @@
-import type { SkinDefinition } from "./types";
+import type { Locale } from "@/i18n/config";
+import type { MessageKey } from "@/i18n";
+import type {
+  SkinBundlePayload,
+  SkinDefinition,
+  SkinText,
+} from "./types";
 
 /**
- * 画框视窗的材质 token。
+ * 内置画框预设（Task 21-3）。
  *
- * 内置「画框包裹」皮肤与用户导入的自定义背景共用同一套视窗材质：
- * 视窗向内收缩、外围留出画布，背景图铺满整片窗口。
+ * 全部由纯 CSS 渐变/纹理构成，零外部素材、零网络依赖，亮暗主题都通过
+ * `--mr-*` 主题变量切换（见 `src/index.css`）。`default` 保持 0px 全屏，
+ * 其余三套是非零内缩的画框视窗。
  */
-export const FRAMED_VIEWPORT_TOKENS: Record<string, string> = {
-  // 视窗内缩：上下 72px、左右 96px，留出画框走位（角色与插画的画布带）。
-  "--mr-skin-viewport-inset": "72px 96px 72px 96px",
-  "--mr-skin-viewport-radius": "22px",
-  "--mr-skin-viewport-border": "2px solid var(--sh-border)",
-  "--mr-skin-viewport-shadow": "0 24px 52px -30px rgb(2 6 23 / 0.62)",
-  // 毛玻璃视窗：底色透明 + 叠加层控制通透度。
+const INK_TOKENS: Record<string, string> = {
+  "--mr-skin-viewport-inset": "28px 36px 28px 36px",
+  "--mr-skin-viewport-radius": "20px",
+  "--mr-skin-viewport-border": "1px solid var(--mr-ink-border)",
+  "--mr-skin-viewport-shadow": "var(--mr-ink-shadow)",
   "--mr-skin-surface-bg": "transparent",
-  "--mr-skin-surface-tint": "var(--sh-card)",
-  "--mr-skin-surface-opacity": "0.72",
-  "--mr-skin-surface-blur": "14px",
-  // 画布底色跟随主题，外围画框因此在深浅两种主题下都成立。
-  "--mr-skin-canvas-bg":
-    "radial-gradient(circle at 16% 8%, rgb(56 168 248 / 0.24), transparent 52%), radial-gradient(circle at 88% 92%, rgb(56 168 248 / 0.18), transparent 55%), var(--sh-background)",
+  "--mr-skin-surface-tint": "var(--mr-ink-surface)",
+  "--mr-skin-surface-opacity": "0.93",
+  "--mr-skin-surface-blur": "10px",
+  "--mr-skin-canvas-bg": "var(--mr-ink-canvas)",
+  "--mr-skin-backdrop-image": "var(--mr-ink-backdrop)",
+  "--mr-skin-frame-overlay": "var(--mr-ink-frame)",
+  "--mr-skin-backdrop-size": "cover",
+  "--mr-skin-backdrop-position": "center",
+  "--mr-skin-frame-size": "cover",
+  "--mr-skin-frame-position": "center",
 };
 
-/**
- * 内置皮肤。
- *
- * 「极简」是默认档：视窗内缩为 0px，全屏铺满，不额外绘制任何东西。
- * 「画框包裹」把整片窗口变成一张主题画布：背景铺满全窗，内容视窗向内
- * 收缩留出外围画框，角色与插画就画在这圈画框上，与视窗严丝合缝。
- *
- * 皮肤是纯数据：token 覆盖 + 素材引用。没有任何组件需要知道皮肤存在。
- */
+const MIDNIGHT_TOKENS: Record<string, string> = {
+  "--mr-skin-viewport-inset": "24px 32px 24px 32px",
+  "--mr-skin-viewport-radius": "18px",
+  "--mr-skin-viewport-border": "1px solid var(--mr-midnight-border)",
+  "--mr-skin-viewport-shadow": "var(--mr-midnight-shadow)",
+  "--mr-skin-surface-bg": "transparent",
+  "--mr-skin-surface-tint": "var(--sh-card)",
+  "--mr-skin-surface-opacity": "0.78",
+  "--mr-skin-surface-blur": "18px",
+  "--mr-skin-canvas-bg": "var(--mr-midnight-canvas)",
+  "--mr-skin-backdrop-image": "var(--mr-midnight-backdrop)",
+  "--mr-skin-frame-overlay": "var(--mr-midnight-frame)",
+  "--mr-skin-backdrop-size": "cover",
+  "--mr-skin-backdrop-position": "center",
+  "--mr-skin-frame-size": "cover",
+  "--mr-skin-frame-position": "center",
+};
+
+const PASTEL_TOKENS: Record<string, string> = {
+  "--mr-skin-viewport-inset": "32px 40px 32px 40px",
+  "--mr-skin-viewport-radius": "30px",
+  "--mr-skin-viewport-border": "1px solid var(--mr-pastel-border)",
+  "--mr-skin-viewport-shadow": "var(--mr-pastel-shadow)",
+  "--mr-skin-surface-bg": "transparent",
+  "--mr-skin-surface-tint": "var(--mr-pastel-surface)",
+  "--mr-skin-surface-opacity": "0.90",
+  "--mr-skin-surface-blur": "12px",
+  "--mr-skin-canvas-bg": "var(--mr-pastel-canvas)",
+  "--mr-skin-backdrop-image": "var(--mr-pastel-backdrop)",
+  "--mr-skin-frame-overlay": "var(--mr-pastel-frame)",
+  "--mr-skin-backdrop-size": "cover",
+  "--mr-skin-backdrop-position": "center",
+  "--mr-skin-frame-size": "cover",
+  "--mr-skin-frame-position": "center",
+};
+
 export const BUILTIN_SKINS: readonly SkinDefinition[] = [
   {
     id: "default",
     nameKey: "settings.skin.defaultName",
     descriptionKey: "settings.skin.defaultDescription",
+    colorScheme: "both",
+    builtin: true,
     tokens: {},
   },
   {
-    id: "framed",
-    nameKey: "settings.skin.framedName",
-    descriptionKey: "settings.skin.framedDescription",
-    // 预留态：默认不生效。启用入口是代码注入美术资源包（addSkin + setSkin）。
-    dormant: true,
-    tokens: FRAMED_VIEWPORT_TOKENS,
-    backdrop: { src: "/skins/framed-backdrop.svg" },
-    frame: { src: "/skins/framed-frame.svg" },
+    id: "ink",
+    nameKey: "settings.skin.inkName",
+    descriptionKey: "settings.skin.inkDescription",
+    colorScheme: "both",
+    builtin: true,
+    tokens: INK_TOKENS,
+  },
+  {
+    id: "midnight",
+    nameKey: "settings.skin.midnightName",
+    descriptionKey: "settings.skin.midnightDescription",
+    colorScheme: "dark",
+    builtin: true,
+    tokens: MIDNIGHT_TOKENS,
+  },
+  {
+    id: "pastel",
+    nameKey: "settings.skin.pastelName",
+    descriptionKey: "settings.skin.pastelDescription",
+    colorScheme: "both",
+    builtin: true,
+    tokens: PASTEL_TOKENS,
   },
 ];
 
 const BUNDLED_SKIN_PREFIX = "/skins/";
 const DATA_IMAGE_PREFIX =
-  /^data:image\/(?:png|jpeg|webp|gif|svg\+xml);base64,[a-z0-9+/=\s]+$/i;
+  /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=\s]+$/i;
+const SAFE_TOKEN_NAME = /^--mr-[a-z0-9-]+$/;
 
 /**
  * The single funnel every skin artwork URL has to pass. Remote origins are
- * rejected outright so a skin can never widen the production CSP.
+ * rejected outright so a skin can never widen the production CSP. SVG is
+ * excluded on purpose: skin packs are raster-only.
  */
 export function resolveSkinAssetUrl(src: string): string | null {
   const value = src.trim();
   if (!value) return null;
   if (value.startsWith(BUNDLED_SKIN_PREFIX)) {
-    if (value.includes("..") || value.includes("\\")) return null;
+    if (
+      value.includes("..") ||
+      value.includes("\\") ||
+      value.includes("//")
+    ) {
+      return null;
+    }
     return value;
   }
   if (DATA_IMAGE_PREFIX.test(value)) return value;
   return null;
 }
 
-/** Runtime registry: a future "install skin pack" flow only needs to push. */
+/** Runtime registry: installed packs are pushed after their bundle loads. */
 const registry = new Map<string, SkinDefinition>(
   BUILTIN_SKINS.map((skin) => [skin.id, skin]),
 );
@@ -84,4 +144,111 @@ export function getSkin(id: string): SkinDefinition | undefined {
 
 export function registerSkin(skin: SkinDefinition): void {
   registry.set(skin.id, skin);
+}
+
+/** Drops a user-installed definition; built-ins are immutable. */
+export function unregisterSkin(id: string): boolean {
+  const existing = registry.get(id);
+  if (!existing || existing.builtin) return false;
+  return registry.delete(id);
+}
+
+/** Maps a backend bundle into the runtime skin definition. */
+export function skinFromBundle(bundle: SkinBundlePayload): SkinDefinition {
+  return {
+    id: bundle.id,
+    name: bundle.name,
+    author: bundle.author,
+    description: bundle.description ?? undefined,
+    colorScheme: bundle.colorScheme,
+    builtin: false,
+    installed: true,
+    tokens: { ...bundle.tokens },
+    backdrop: {
+      src: bundle.backdrop.dataUrl,
+      width: bundle.backdrop.width,
+      height: bundle.backdrop.height,
+    },
+    frame: bundle.frame
+      ? {
+          src: bundle.frame.dataUrl,
+          width: bundle.frame.width,
+          height: bundle.frame.height,
+        }
+      : undefined,
+    preview: bundle.preview
+      ? { src: bundle.preview.dataUrl }
+      : undefined,
+  };
+}
+
+/** Picks the best localized variant from a manifest text value. */
+export function localizedSkinText(
+  value: SkinText | null | undefined,
+  locale: Locale,
+): string | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") return value;
+  const candidates = [value[locale], value.en, value["zh-CN"]];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate;
+  }
+  const first = Object.values(value).find(
+    (candidate): candidate is string =>
+      typeof candidate === "string" && candidate.trim().length > 0,
+  );
+  return first;
+}
+
+export function skinDisplayName(
+  skin: SkinDefinition,
+  locale: Locale,
+  t: (key: MessageKey) => string,
+): string {
+  if (skin.nameKey) return t(skin.nameKey);
+  return localizedSkinText(skin.name, locale) ?? skin.id;
+}
+
+export function skinDescriptionText(
+  skin: SkinDefinition,
+  locale: Locale,
+  t: (key: MessageKey) => string,
+): string | undefined {
+  if (skin.descriptionKey) return t(skin.descriptionKey);
+  return localizedSkinText(skin.description, locale);
+}
+
+/**
+ * `--mr-*` token filtering at the last mile. Installed packs are already
+ * validated by Rust; this guard exists so a future frontend caller cannot
+ * smuggle declarations through a skin object by accident.
+ */
+function safeTokens(tokens: Record<string, string> | undefined): Record<string, string> {
+  const safe: Record<string, string> = {};
+  for (const [name, value] of Object.entries(tokens ?? {})) {
+    if (!SAFE_TOKEN_NAME.test(name)) continue;
+    if (!value || value.length > 320) continue;
+    if (/[;{}]|url\s*\(|@import|\\/i.test(value)) continue;
+    safe[name] = value;
+  }
+  return safe;
+}
+
+/**
+ * 皮肤 token → CSS 自定义属性。
+ *
+ * 素材引用会被折算成 `url("…")`；非法来源（远程地址等）直接丢弃，
+ * 因此皮肤永远无法放宽生产 CSP。
+ */
+export function skinTokens(skin: SkinDefinition): Record<string, string> {
+  const tokens: Record<string, string> = safeTokens(skin.tokens);
+  const backdrop = skin.backdrop ? resolveSkinAssetUrl(skin.backdrop.src) : null;
+  if (backdrop) {
+    tokens["--mr-skin-backdrop-image"] = `url("${backdrop}")`;
+  }
+  const frame = skin.frame ? resolveSkinAssetUrl(skin.frame.src) : null;
+  if (frame) {
+    tokens["--mr-skin-frame-overlay"] = `url("${frame}")`;
+  }
+  return tokens;
 }

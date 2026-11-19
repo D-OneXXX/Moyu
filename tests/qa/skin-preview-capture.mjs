@@ -6,16 +6,14 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 /**
- * Skin preview capture (Task 7 · framed viewport reservation).
+ * Skin preview capture (Task 21-3 · framed viewport gallery).
  *
- * 无头 Chrome 打开真实的 Vite 开发服务器，在**默认（预留态未启用）**皮肤下
- * 截取主界面真机效果：
+ * 无头 Chrome 打开真实的 Vite 开发服务器，截取：
  *
- *   desktop-library-default-dark.png
- *   desktop-library-default-light.png
- *
- * 这两张图就是「零视觉变化」的基准：画框容器已在 DOM 里，但内缩为 0px、
- * 无背景图、无外框装饰，画面与极简默认风格完全一致。
+ *   desktop-library-skin-default-{dark,light}.png   默认零视觉基准
+ *   desktop-library-skin-ink-{dark,light}.png       内置纸墨画廊画框
+ *   desktop-settings-skin-gallery-light.png         768px 展厅弹窗
+ *   desktop-settings-skin-builder-light.png         快速自制 + 实时预览
  *
  * 只读渲染 + 截图：不注入任何输入，不抢焦点，不移动光标。
  */
@@ -48,6 +46,8 @@ const STUB = `
     sourceType: "local",
     format: "image",
     webtoonReady: false,
+    isFavorite: false,
+    tags: [],
   });
   const books = [
     book("a".repeat(64), "星海航线 01", 42),
@@ -90,6 +90,8 @@ const STUB = `
     get_last_read: () => books[2],
     get_book: (args) => books.find((item) => item.id === args.bookId) || books[0],
     list_entries: () => [],
+    list_tags: () => [],
+    list_installed_skins: () => [],
     get_webtoon_layout: () => null,
     get_thumbnail: () => {
       throw new Error("no cover in the preview fixture");
@@ -293,49 +295,133 @@ try {
   });
 
   for (const theme of ["dark", "light"]) {
-    await page.send("Page.navigate", { url: appUrl });
-    // 主题必须在首屏前落到 <html data-theme>，否则会闪白。
-    await page.eval(`(() => {
-      localStorage.setItem("mr-theme", "${theme}");
-      document.documentElement.dataset.theme = "${theme}";
-      return true;
-    })()`);
-    await page.send("Page.reload", { ignoreCache: true });
+    for (const skinId of ["default", "ink"]) {
+      await page.send("Page.navigate", { url: appUrl });
+      // 主题/皮肤必须在首屏前落到 localStorage，否则会闪白或闪回 default。
+      await page.eval(`(() => {
+        localStorage.setItem("mr-theme", "${theme}");
+        ${skinId === "default"
+          ? 'localStorage.removeItem("mr-skin");'
+          : `localStorage.setItem("mr-skin", "${skinId}");`}
+        document.documentElement.dataset.theme = "${theme}";
+        return true;
+      })()`);
+      await page.send("Page.reload", { ignoreCache: true });
 
+      const deadline = Date.now() + 45_000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        ready = await page.eval(`(() => {
+          const viewport = document.querySelector('[data-testid="content-viewport"]');
+          const backdrop = document.querySelector('[data-testid="skin-canvas-backdrop"]');
+          const cards = document.querySelectorAll('[data-testid="library-card"]');
+          if (!viewport || !backdrop || cards.length === 0) return false;
+          const inset = getComputedStyle(document.documentElement)
+            .getPropertyValue("--mr-skin-viewport-inset").trim();
+          const backdropImage = getComputedStyle(backdrop).backgroundImage;
+          const expected = "${skinId}" === "default"
+            ? inset === "0px" && backdropImage === "none"
+            : inset !== "0px" && backdropImage !== "none";
+          return expected && document.documentElement.dataset.theme === "${theme}";
+        })()`);
+        if (ready) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      assert.ok(
+        ready,
+        `${skinId} skin must render in the ${theme} theme`,
+      );
+
+      const capture = await page.send("Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: false,
+      });
+      const target_path = path.join(
+        outputDir,
+        `desktop-library-skin-${skinId}-${theme}.png`,
+      );
+      await fs.writeFile(target_path, Buffer.from(capture.data, "base64"));
+      const stat = await fs.stat(target_path);
+      console.log(
+        `captured ${target_path} (${Math.round(stat.size / 1024)} KiB)`,
+      );
+    }
+  }
+
+  /* 设置 → 皮肤工坊：展厅与快速自制面板也纳入视觉验收。 */
+  await page.send("Page.navigate", { url: appUrl });
+  await page.eval(`(() => {
+    localStorage.setItem("mr-theme", "light");
+    localStorage.removeItem("mr-skin");
+    document.documentElement.dataset.theme = "light";
+    return true;
+  })()`);
+  await page.send("Page.reload", { ignoreCache: true });
+  {
     const deadline = Date.now() + 45_000;
     let ready = false;
     while (Date.now() < deadline) {
-      ready = await page.eval(`(() => {
-        const viewport = document.querySelector('[data-testid="content-viewport"]');
-        const cards = document.querySelectorAll('[data-testid="library-card"]');
-        if (!viewport || cards.length === 0) return false;
-        const inset = getComputedStyle(document.documentElement)
-          .getPropertyValue("--mr-skin-viewport-inset").trim();
-        // 预留态未启用：内缩必须是 0px（透传），这正是基准截图的前提。
-        return inset === "0px" && document.documentElement.dataset.theme === "${theme}";
-      })()`);
+      ready = await page.eval(`(() =>
+        document.querySelectorAll('[data-testid="library-card"]').length > 0
+      )()`);
       if (ready) break;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    assert.ok(ready, `the default (reserved) skin must render in the ${theme} theme`);
-
-    const capture = await page.send("Page.captureScreenshot", {
+    assert.ok(ready, "the library must render before opening settings");
+    await page.eval(`location.hash = "#/settings"; true;`);
+    const galleryDeadline = Date.now() + 30_000;
+    let gallery = false;
+    while (Date.now() < galleryDeadline) {
+      gallery = await page.eval(`(() => {
+        const open = document.querySelector('[data-testid="skin-open"]');
+        if (!open) return false;
+        open.click();
+        return Boolean(document.querySelector('[data-testid="skin-gallery"]'));
+      })()`);
+      if (gallery) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert.ok(gallery, "the skin gallery dialog must render");
+    const galleryShot = await page.send("Page.captureScreenshot", {
       format: "png",
       captureBeyondViewport: false,
     });
-    const target_path = path.join(
+    const galleryPath = path.join(
       outputDir,
-      `desktop-library-default-${theme}.png`,
+      "desktop-settings-skin-gallery-light.png",
     );
-    await fs.writeFile(target_path, Buffer.from(capture.data, "base64"));
-    const stat = await fs.stat(target_path);
-    console.log(
-      `captured ${target_path} (${Math.round(stat.size / 1024)} KiB)`,
+    await fs.writeFile(galleryPath, Buffer.from(galleryShot.data, "base64"));
+    console.log(`captured ${galleryPath}`);
+
+    await page.eval(`(() => {
+      const toggle = document.querySelector('[data-testid="skin-create-custom"]');
+      if (toggle) toggle.click();
+      return true;
+    })()`);
+    const builderDeadline = Date.now() + 10_000;
+    let builder = false;
+    while (Date.now() < builderDeadline) {
+      builder = await page.eval(
+        `Boolean(document.querySelector('[data-testid="skin-builder"]'))`,
+      );
+      if (builder) break;
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    assert.ok(builder, "the quick custom builder must render");
+    const builderShot = await page.send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: false,
+    });
+    const builderPath = path.join(
+      outputDir,
+      "desktop-settings-skin-builder-light.png",
     );
+    await fs.writeFile(builderPath, Buffer.from(builderShot.data, "base64"));
+    console.log(`captured ${builderPath}`);
   }
 
   console.log(
-    "VERIFIED skin preview capture: default (reserved) skin rendered in dark and light themes with inset 0px.",
+    "VERIFIED skin preview capture: default stays at inset 0px; Ink Gallery renders a non-zero framed viewport in dark and light themes; the settings gallery and quick builder render at 768px.",
   );
 } finally {
   if (page?.socket) page.socket.close();

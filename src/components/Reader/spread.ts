@@ -19,6 +19,12 @@ export interface SpreadOptions {
    * 单页（日漫惯例）、LTR 从 [0,1] 起对。
    */
   coverOffset?: boolean;
+  /**
+   * 双页模式奇偶偏移（Task 21-4）：在封面之后插入一张虚拟单页，使后续
+   * 跨页整体移动 ±1 页。用于单行本中段插入单页彩插后后半本全部左右
+   * 错位的情况；只影响当前阅读会话的配对，不改变封面设置，也不落库。
+   */
+  pageShift?: boolean;
 }
 
 /**
@@ -66,6 +72,13 @@ function buildLayout(
   if (coverOffset && n > 1) {
     push([0]);
     i = 1;
+  }
+
+  // 奇偶偏移：插入一张虚拟单页后再继续配对，等效于把当前跨页向
+  // 前/后移动一页。页本身已是横向跨页大图时无需再插虚拟页。
+  if (options.pageShift && i < n && !wide(i)) {
+    push([i]);
+    i += 1;
   }
 
   while (i < n) {

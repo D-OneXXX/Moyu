@@ -285,6 +285,9 @@ export default function Reader() {
   // 双页模式逐页原始尺寸（横向跨页大图独占判定）；按需加载，失败回落空表
   // （退回朴素配对，仅损失宽页独占，不影响阅读）。
   const [pageDims, setPageDims] = useState<PageDims | null>(null);
+  // 双页奇偶偏移（Task 21-4）：只驻留当前 Reader 会话内存，不写 localStorage
+  // 或 SQLite；切书即重置。用于修正单页彩插导致的跨页左右错位。
+  const [spreadShift, setSpreadShift] = useState(false);
   // 按书记忆的版式（webtoon/single/double；null = 跟随全局偏好）。
   const [bookMode, setBookMode] = useState<PageMode | null>(null);
   const [wtSuggest, setWtSuggest] = useState(false);
@@ -406,8 +409,12 @@ export default function Reader() {
   // 双页配对选项：封面偏移（显式设置优先，缺省 RTL 封面单页）+ 宽页独占。
   const coverOffset = prefs.cover ?? prefs.dir === "rtl";
   const spreadOptions: SpreadOptions = useMemo(
-    () => ({ dims: mode === "double" ? pageDims : null, coverOffset }),
-    [mode, pageDims, coverOffset],
+    () => ({
+      dims: mode === "double" ? pageDims : null,
+      coverOffset,
+      pageShift: mode === "double" && spreadShift,
+    }),
+    [mode, pageDims, coverOffset, spreadShift],
   );
   const spreadOptsRef = useRef<SpreadOptions>(spreadOptions);
   spreadOptsRef.current = spreadOptions;
@@ -1248,6 +1255,21 @@ export default function Reader() {
     [bookId, poke, webtoonAllowed, safeMode],
   );
 
+  /**
+   * 从当前跨页切换双页奇偶对齐（Task 21-4）。
+   *
+   * 当前页保持在屏幕上，只把配对方向整体移动 ±1：单行本中段夹入单页
+   * 彩插后，后半本的跨页会全部左右错位，按 P / 点 Dock 按钮即可现场
+   * 修正。只改会话态，不写设置、不改封面模式；再按一次恢复标准对齐。
+   */
+  const toggleSpreadShift = useCallback(() => {
+    if (trackRef.current.mode !== "double") return;
+    setSpreadShift((value) => !value);
+    setPan({ x: 0, y: 0 });
+    recordBreadcrumb("readerMode");
+    poke();
+  }, [poke]);
+
   const toggleMode = useCallback(() => {
     if (safeMode) {
       toast(t("safeMode.readerLocked"));
@@ -1390,6 +1412,14 @@ export default function Reader() {
         case "F":
           toggleMode();
           break;
+        case "p":
+        case "P":
+          // 双页奇偶对齐急救：单页模式下按 P 不产生任何副作用。
+          if (t.mode === "double") {
+            e.preventDefault();
+            toggleSpreadShift();
+          }
+          break;
         case "Escape":
           // 页签菜单开着先关菜单,弹层开着先关弹层,否则返回书库。
           if (tabsMenuOpen) {
@@ -1425,6 +1455,7 @@ export default function Reader() {
       go,
       jumpTo,
       toggleMode,
+      toggleSpreadShift,
       nav,
       showNextChapter,
       goNextChapter,
@@ -1451,6 +1482,8 @@ export default function Reader() {
       "F",
       "m",
       "M",
+      "p",
+      "P",
       "w",
       "W",
       "1",
@@ -2177,6 +2210,8 @@ export default function Reader() {
         onMode={setMode}
         coverOffset={coverOffset}
         onCoverOffset={(value) => setPrefs((p) => ({ ...p, cover: value }))}
+        spreadShift={spreadShift}
+        onSpreadShift={toggleSpreadShift}
         tocOpen={tocOpen}
         onToc={openToc}
         moreOpen={moreOpen}
@@ -2515,37 +2550,62 @@ export default function Reader() {
             </div>
 
             {mode === "double" ? (
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs font-medium text-muted-foreground">
-                  {t("reader.cover.label")}
-                </span>
-                <div
-                  className="flex items-center gap-0.5 rounded-full border border-border/70 bg-background/50 p-0.5"
-                  role="group"
-                  aria-label={t("reader.cover.label")}
-                >
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {t("reader.cover.label")}
+                  </span>
+                  <div
+                    className="flex items-center gap-0.5 rounded-full border border-border/70 bg-background/50 p-0.5"
+                    role="group"
+                    aria-label={t("reader.cover.label")}
+                  >
+                    <Button
+                      type="button"
+                      variant={!coverOffset ? "pill-primary" : "pill-ghost"}
+                      size="pill-sm"
+                      aria-pressed={!coverOffset}
+                      onClick={() => setPrefs((p) => ({ ...p, cover: false }))}
+                      className="h-8 whitespace-nowrap px-2.5 text-[11px]"
+                    >
+                      {t("reader.cover.off")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={coverOffset ? "pill-primary" : "pill-ghost"}
+                      size="pill-sm"
+                      aria-pressed={coverOffset}
+                      onClick={() => setPrefs((p) => ({ ...p, cover: true }))}
+                      className="h-8 whitespace-nowrap px-2.5 text-[11px]"
+                    >
+                      {t("reader.cover.on")}
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {t("reader.spread.label")}
+                    </span>
+                    <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                      {t("reader.spread.hint")}
+                    </p>
+                  </div>
                   <Button
                     type="button"
-                    variant={!coverOffset ? "pill-primary" : "pill-ghost"}
+                    variant={spreadShift ? "pill-primary" : "pill-ghost"}
                     size="pill-sm"
-                    aria-pressed={!coverOffset}
-                    onClick={() => setPrefs((p) => ({ ...p, cover: false }))}
-                    className="h-8 whitespace-nowrap px-2.5 text-[11px]"
+                    aria-pressed={spreadShift}
+                    onClick={toggleSpreadShift}
+                    data-testid="reader-spread-shift"
+                    className="h-8 shrink-0 whitespace-nowrap px-2.5 text-[11px]"
                   >
-                    {t("reader.cover.off")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={coverOffset ? "pill-primary" : "pill-ghost"}
-                    size="pill-sm"
-                    aria-pressed={coverOffset}
-                    onClick={() => setPrefs((p) => ({ ...p, cover: true }))}
-                    className="h-8 whitespace-nowrap px-2.5 text-[11px]"
-                  >
-                    {t("reader.cover.on")}
+                    {t(
+                      spreadShift ? "reader.spread.on" : "reader.spread.off",
+                    )}
                   </Button>
                 </div>
-              </div>
+              </>
             ) : null}
 
             {mode === "webtoon" ? (

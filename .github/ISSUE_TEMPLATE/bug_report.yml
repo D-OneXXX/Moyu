@@ -40,14 +40,6 @@ body:
         - Unsure
     validations:
       required: true
-  - type: input
-    id: build-origin
-    attributes:
-      label: Build origin
-      description: "Settings → About & maintenance shows either Official Release or Community Modified Build."
-      placeholder: Official Release
-    validations:
-      required: false
   - type: dropdown
     id: area
     attributes:

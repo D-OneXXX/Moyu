@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import {
+  ArrowLeftRight,
   BookOpen,
   ChevronLeft,
   ChevronRight,
@@ -63,6 +64,9 @@ interface Props {
   /** 双页模式「首页封面单独成页」开关（仅 double 模式显示）。 */
   coverOffset: boolean;
   onCoverOffset: (value: boolean) => void;
+  /** 双页模式奇偶 ±1 对齐（仅 double 模式显示；会话态，不落盘）。 */
+  spreadShift: boolean;
+  onSpreadShift: () => void;
   tocOpen: boolean;
   onToc: () => void;
   moreOpen: boolean;
@@ -96,6 +100,8 @@ export default function ReaderDock({
   onMode,
   coverOffset,
   onCoverOffset,
+  spreadShift,
+  onSpreadShift,
   tocOpen,
   onToc,
   moreOpen,
@@ -203,18 +209,33 @@ export default function ReaderDock({
         </div>
 
         {mode === "double" ? (
-          <Button
-            type="button"
-            variant={coverOffset ? "pill-primary" : "pill-ghost"}
-            size="pill-icon-sm"
-            onClick={() => onCoverOffset(!coverOffset)}
-            aria-pressed={coverOffset}
-            aria-label={t("reader.cover.toggle")}
-            title={t("reader.cover.toggle")}
-            className="h-8 shrink-0"
-          >
-            <BookOpen className="size-4" />
-          </Button>
+          <>
+            <Button
+              type="button"
+              variant={coverOffset ? "pill-primary" : "pill-ghost"}
+              size="pill-icon-sm"
+              onClick={() => onCoverOffset(!coverOffset)}
+              aria-pressed={coverOffset}
+              aria-label={t("reader.cover.toggle")}
+              title={t("reader.cover.toggle")}
+              className="h-8 shrink-0"
+            >
+              <BookOpen className="size-4" />
+            </Button>
+            <Button
+              type="button"
+              variant={spreadShift ? "pill-primary" : "pill-ghost"}
+              size="pill-icon-sm"
+              onClick={onSpreadShift}
+              aria-pressed={spreadShift}
+              aria-label={t("reader.spread.toggle")}
+              title={t("reader.spread.toggle")}
+              data-testid="reader-dock-spread-shift"
+              className="h-8 shrink-0"
+            >
+              <ArrowLeftRight className="size-4" />
+            </Button>
+          </>
         ) : null}
 
         <span className="mx-0.5 h-5 w-px shrink-0 bg-border/60" aria-hidden />

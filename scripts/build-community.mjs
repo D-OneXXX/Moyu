@@ -7,8 +7,6 @@
  * 私钥时会让 `tauri build` 直接失败。本脚本：
  * - 未检测到签名私钥时，生成 `src-tauri/tauri.community.json` 覆盖层，
  *   把 createUpdaterArtifacts 置为 false，一键产出本地 deb/rpm/AppImage；
- * - 注入 MR_BUILD_ORIGIN=community，使关于页与诊断快照显示
- *   `Community Modified Build`；
  * - 已配置官方私钥时直接走官方构建路径（并提示）。
  *
  * 用法：npm run build:community [-- 透传给 tauri build 的参数]
@@ -39,9 +37,7 @@ let ok = true;
 try {
   if (hasSigningKey) {
     console.log("[build:community] 检测到官方签名私钥，走官方构建路径（社区覆盖层不生效）。");
-    ok = run(["run", "tauri", "--silent", "--", "build", ...passthrough], {
-      MR_BUILD_ORIGIN: "official",
-    });
+    ok = run(["run", "tauri", "--silent", "--", "build", ...passthrough]);
   } else {
     console.log(
       "[build:community] 未检测到 TAURI_SIGNING_PRIVATE_KEY：关闭 updater 产物生成（社区构建，不发布官方更新签名）。",
@@ -51,19 +47,16 @@ try {
       `${JSON.stringify({ bundle: { createUpdaterArtifacts: false } }, null, 2)}\n`,
       "utf8",
     );
-    ok = run(
-      [
-        "run",
-        "tauri",
-        "--silent",
-        "--",
-        "build",
-        "--config",
-        "src-tauri/tauri.community.json",
-        ...passthrough,
-      ],
-      { MR_BUILD_ORIGIN: "community" },
-    );
+    ok = run([
+      "run",
+      "tauri",
+      "--silent",
+      "--",
+      "build",
+      "--config",
+      "src-tauri/tauri.community.json",
+      ...passthrough,
+    ]);
   }
 } finally {
   // 覆盖层是临时产物，无论成败都清理；tauri.community.json 已在 .gitignore。

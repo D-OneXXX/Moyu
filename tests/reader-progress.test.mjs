@@ -7,6 +7,87 @@ import {
   spreadFor,
   stepPage,
 } from "../src/components/Reader/spread.ts";
+
+test("双页奇偶偏移：封面后插入虚拟单页，当前跨页移动 ±1", () => {
+  // RTL 封面单页：标准配对是 [1,2]（视觉 [2,1]），偏移后 [2,3]（视觉 [3,2]）。
+  assert.deepEqual(spreadFor(2, 8, "double", "rtl", { coverOffset: true }), [2, 1]);
+  assert.deepEqual(
+    spreadFor(2, 8, "double", "rtl", { coverOffset: true, pageShift: true }),
+    [3, 2],
+  );
+  // 偏移插入的虚拟单页独立成屏，翻页不会跳过它。
+  assert.deepEqual(
+    spreadFor(1, 8, "double", "rtl", { coverOffset: true, pageShift: true }),
+    [1],
+  );
+  assert.equal(
+    stepPage(0, 8, "double", "rtl", 1, { coverOffset: true, pageShift: true }),
+    1,
+  );
+  assert.equal(
+    stepPage(1, 8, "double", "rtl", 1, { coverOffset: true, pageShift: true }),
+    2,
+  );
+  assert.equal(
+    stepPage(2, 8, "double", "rtl", -1, { coverOffset: true, pageShift: true }),
+    1,
+  );
+  // 非末屏进度页仍取当前锚点，不把偏移页误记成已读。
+  assert.equal(
+    progressPageFor(2, 8, "double", "rtl", {
+      coverOffset: true,
+      pageShift: true,
+    }),
+    2,
+  );
+});
+
+test("双页奇偶偏移：LTR 从第 0 页之后开始，封面设置保持不变", () => {
+  assert.deepEqual(spreadFor(0, 6, "double", "ltr"), [0, 1]);
+  assert.deepEqual(
+    spreadFor(0, 6, "double", "ltr", { coverOffset: false, pageShift: true }),
+    [0],
+  );
+  assert.deepEqual(
+    spreadFor(1, 6, "double", "ltr", { coverOffset: false, pageShift: true }),
+    [1, 2],
+  );
+  assert.deepEqual(
+    spreadFor(3, 6, "double", "ltr", { coverOffset: false, pageShift: true }),
+    [3, 4],
+  );
+  // 页数为偶数时，偏移后最后一页单独成屏（不越界、不吞页）。
+  assert.deepEqual(
+    spreadFor(5, 6, "double", "ltr", { coverOffset: false, pageShift: true }),
+    [5],
+  );
+});
+
+test("双页奇偶偏移不拆散横向跨页大图", () => {
+  const dims = new Map([
+    [0, [1600, 900]],
+    [1, [800, 1200]],
+    [2, [1600, 900]],
+    [3, [800, 1200]],
+  ]);
+  // 第 0 页已是宽页，偏移不再额外插入；宽页保持独占。
+  assert.deepEqual(
+    spreadFor(0, 4, "double", "ltr", {
+      coverOffset: false,
+      pageShift: true,
+      dims,
+    }),
+    [0],
+  );
+  assert.deepEqual(
+    spreadFor(2, 4, "double", "ltr", {
+      coverOffset: false,
+      pageShift: true,
+      dims,
+    }),
+    [2],
+  );
+});
 import {
   readPagesRead,
   readProgressPercent,

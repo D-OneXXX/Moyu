@@ -230,6 +230,11 @@ export async function startQaApp({
   fs.mkdirSync(path.join(dataDir, "logs"), { recursive: true });
 
   const out = fs.openSync(path.join(artifactDir, "qa-app.log"), "a");
+  // QA-only escape hatch for isolated hosts: the runner never touches an
+  // unrelated process holding 127.0.0.1:1420; instead the operator can pin
+  // `localhost` to a dedicated loopback (e.g. `--host-resolver-rules=MAP
+  // localhost [::1]`) while still exercising the real devUrl.
+  const extraWebviewArgs = process.env.MR_QA_EXTRA_WEBVIEW2_ARGS?.trim();
   const app = spawn(appBin, [], {
     cwd: path.join(root, "src-tauri"),
     env: {
@@ -246,7 +251,8 @@ export async function startQaApp({
         `--remote-debugging-port=${cdpPort}` +
         " --disable-background-timer-throttling" +
         " --disable-renderer-backgrounding" +
-        " --disable-backgrounding-occluded-windows",
+        " --disable-backgrounding-occluded-windows" +
+        (extraWebviewArgs ? ` ${extraWebviewArgs}` : ""),
       QA_CDP_PORT: String(cdpPort),
       ...(telegramTestOrigin
         ? { MR_TELEGRAM_TEST_ORIGIN: telegramTestOrigin }

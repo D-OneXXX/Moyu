@@ -95,7 +95,7 @@ impl DataRoute {
             [id] => Some(Self::Book {
                 id: parse_book_id(id)?,
             }),
-            [id, "thumb"] | [id, "thumbnail"] => Some(Self::Thumb {
+            [id, "thumb"] => Some(Self::Thumb {
                 id: parse_book_id(id)?,
             }),
             [id, "pages"] => Some(Self::Pages {
@@ -1061,7 +1061,6 @@ mod tests {
             ("/api/books".to_owned(), true),
             (format!("/api/books/{id}"), true),
             (format!("/api/books/{id}/thumb"), true),
-            (format!("/api/books/{id}/thumbnail"), true),
             (format!("/api/books/{id}/pages"), true),
             (page, true),
             (format!("/api/books/{id}/layout"), true),

@@ -47,13 +47,50 @@ test("built-in skins and the shortcut switch survive startup sanitization", () =
   custom.setItem("mr-skin", "custom-123");
   custom.setItem("mr-shortcuts-enabled", "yes");
   sanitizeStorage(custom);
-  assert.equal(custom.getItem("mr-skin"), "custom-123", "custom skin ids are free-form within 128 chars");
+  assert.equal(
+    custom.getItem("mr-skin"),
+    "custom-123",
+    "custom pack ids use the same lowercase kebab shape",
+  );
   assert.equal(custom.getItem("mr-shortcuts-enabled"), null);
 
   const tooLong = new MemoryStorage();
-  tooLong.setItem("mr-skin", "x".repeat(129));
+  tooLong.setItem("mr-skin", "x".repeat(65));
   sanitizeStorage(tooLong);
   assert.equal(tooLong.getItem("mr-skin"), null);
+
+  for (const invalid of ["Ink", "../ink", "ink/card", "ink skin"]) {
+    const storage = new MemoryStorage();
+    storage.setItem("mr-skin", invalid);
+    sanitizeStorage(storage);
+    assert.equal(storage.getItem("mr-skin"), null, invalid);
+  }
+
+  // Task 21-3: images live in app_data/skins; the legacy data-URL key must die.
+  const legacy = new MemoryStorage();
+  legacy.setItem("mr-skin-custom", JSON.stringify({ id: "custom-123" }));
+  sanitizeStorage(legacy);
+  assert.equal(legacy.getItem("mr-skin-custom"), null);
+});
+
+test("built-in presets are framed without floating artwork", () => {
+  assert.equal(BUILTIN_SKINS[0].id, "default");
+  assert.equal(BUILTIN_SKINS[0].tokens["--mr-skin-viewport-inset"], undefined);
+  for (const skin of BUILTIN_SKINS.slice(1)) {
+    assert.match(
+      skin.tokens["--mr-skin-viewport-inset"],
+      /^(\d+px)( \d+px){0,3}$/,
+      skin.id,
+    );
+    assert.notEqual(skin.tokens["--mr-skin-viewport-inset"], "0px", skin.id);
+    assert.ok(skin.tokens["--mr-skin-backdrop-image"], skin.id);
+    assert.ok(skin.tokens["--mr-skin-frame-overlay"], skin.id);
+    assert.equal(skin.backdrop, undefined, "built-ins must stay CSS-only");
+    assert.equal(skin.frame, undefined, "built-ins must stay CSS-only");
+  }
+  const registry = read("src/features/skin/registry.ts");
+  assert.doesNotMatch(registry, /\.svg/i);
+  assert.doesNotMatch(registry, /floating|mascot/i);
 });
 
 test("backup preferences migrate skin and shortcut preferences", () => {

@@ -9,6 +9,7 @@ import {
   Check,
   Command,
   FolderOpen,
+  Frame,
   Gauge,
   Globe2,
   HardDrive,
@@ -83,6 +84,7 @@ import CaDistributionPanel from "@/components/settings/CaDistributionPanel";
 import WebAccessSummaryCard from "@/components/settings/WebAccessSummaryCard";
 import WebAccessPanel from "@/components/settings/WebAccessPanel";
 import DataBackupPanel from "@/components/settings/DataBackupPanel";
+import SkinGallery from "@/components/settings/SkinGallery";
 import DeveloperFeaturePanel, {
   FeatureDisabledNotice,
 } from "@/components/settings/DeveloperFeaturePanel";
@@ -101,6 +103,8 @@ import {
 import { useShortcutsEnabled } from "@/features/shortcuts/preferences";
 import { useSafeMode } from "@/features/safeMode/SafeModeContext";
 import { recordBreadcrumb } from "@/features/resilience";
+import { useSkin } from "@/features/skin/SkinProvider";
+import { skinDisplayName } from "@/features/skin/registry";
 
 const DEFAULT_FORM: Settings = {
   theme: "system",
@@ -274,6 +278,8 @@ export default function SettingsPage() {
   const { mode, setMode } = useTheme();
   const { locale, setLocale, t, formatNumber } = useI18n();
   const { active: safeMode } = useSafeMode();
+  const { skin } = useSkin();
+  const activeSkinName = skinDisplayName(skin, locale, t);
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState<SettingsTab>(
     () => normalizeSettingsTab(searchParams.get("tab")) ?? "general",
@@ -949,6 +955,21 @@ export default function SettingsPage() {
               <p className="px-1 text-xs text-muted-foreground">
                 {t("settings.theme.systemNote")}
               </p>
+            </SettingsSection>
+
+            <SettingsSection
+              icon={Frame}
+              title={t("settings.skin.title")}
+              description={t("settings.skin.description")}
+              disclosure={{
+                title: t("settings.skin.title"),
+                triggerLabel: t("settings.skin.open"),
+                triggerHint: activeSkinName,
+                width: "3xl",
+                testId: "skin-open",
+              }}
+            >
+              <SkinGallery />
             </SettingsSection>
 
             <SettingsSection

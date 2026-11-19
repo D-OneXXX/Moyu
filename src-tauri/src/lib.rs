@@ -689,6 +689,9 @@ pub fn run() {
             // 两者都只在显式 start 后由 start_inner 挂载，库初始化绝不监听。
             let app_state = app.state::<Arc<AppState>>().inner().clone();
             let web_data = Arc::new(web_access::AppData::new(Arc::clone(&app_state)));
+            // D4: the PDF stream provider is mounted on the same listener; the
+            // library still never starts listening on its own.
+            let web_pdf = Arc::new(web_access::AppPdf::new(Arc::clone(&app_state)));
             let web_progress = Arc::new(web_access::AppProgress::new(app_state));
             app.manage(Arc::new(
                 web_access::WebAccessRuntime::new(
@@ -696,6 +699,7 @@ pub fn run() {
                     Arc::new(web_access::TauriEventSink::new(app.handle().clone())),
                     web_data,
                 )
+                .with_pdf(web_pdf)
                 .with_progress(web_progress),
             ));
             cache_health::install(app.handle().clone());

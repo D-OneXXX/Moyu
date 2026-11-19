@@ -525,13 +525,17 @@ async fn removed_pdf_and_missing_books_are_rejected_without_writes() {
     assert_eq!(status, StatusCode::OK);
     let progress: Value = serde_json::from_slice(&body).expect("progress json");
     assert_eq!(progress.get("pageCount").and_then(Value::as_u64), Some(0));
-    // PDF covers are a separate cache path; without a cached cover the thumb
-    // route is a cover miss (404), not a page-plane 415.
-    let (status, body) = fixture
-        .status_and_body(&format!("/api/books/{pdf}/thumb"))
-        .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(error_code(&body), "thumbnail-missing");
+    // D4: a PDF without a cached desktop cover gets the built-in SVG
+    // placeholder from both the historical `/thumb` and `/thumbnail` aliases,
+    // not a broken-image 404.
+    for path in [
+        format!("/api/books/{pdf}/thumb"),
+        format!("/api/books/{pdf}/thumbnail"),
+    ] {
+        let (status, body) = fixture.status_and_body(&path).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(body.starts_with(b"<svg"), "{path}");
+    }
     assert_eq!(
         before,
         snapshot(fixture.state.as_ref(), &pdf).expect("snapshot")

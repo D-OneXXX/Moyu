@@ -3551,7 +3551,7 @@ export function checkAntiMockGuards(root, report) {
     }
     for (const arm of [
       '[id] => Some(Self::Book',
-      '[id, "thumb"] => Some(Self::Thumb',
+      '[id, "thumb"] | [id, "thumbnail"] => Some(Self::Thumb',
       '[id, "pages"] => Some(Self::Pages',
       '[id, "pages", index] => Some(Self::Page',
       '[id, "layout"] => Some(Self::Layout',
@@ -4559,7 +4559,8 @@ export function checkAntiMockGuards(root, report) {
     for (const name of [
       "real_tls_progress_write_cas_auth_and_guards",
       "real_tls_progress_body_limit_transaction_failure_and_removed",
-      "real_tls_progress_pdf_is_415",
+      "real_tls_progress_pdf_writes",
+      "real_tls_pdf_byte_stream_head_range_and_guards",
     ]) {
       if (!testsRaw.includes(`async fn ${name}`)) {
         errors.push(`缺少真实 TLS 回归测试：${name}`);

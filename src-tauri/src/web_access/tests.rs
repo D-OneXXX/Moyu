@@ -23,6 +23,7 @@ use super::clock::SystemClock;
 use super::data::{DataError, WebDataAccess};
 use super::data_app::AppData;
 use super::pairing::PairingStore;
+use super::pdf_app::AppPdf;
 use super::progress_write::WebProgressWrite;
 use super::progress_write_app::AppProgress;
 use super::router::PairingHttp;
@@ -1449,6 +1450,7 @@ impl WebProgressWrite for TestWrite {
         _page: u32,
         _scroll_pct: Option<f64>,
         _base_rev: i64,
+        _detected_page_count: Option<u32>,
     ) -> Result<ProgressOutcome, DataError> {
         Err(DataError::NotFound)
     }
@@ -1613,6 +1615,29 @@ fn seeded_pdf_state(id: &str, page_count: u32, render_root: PathBuf) -> Arc<AppS
         id,
         "C:/library/progress.pdf",
         "Progress PDF",
+        page_count,
+        db::BOOK_FORMAT_PDF,
+    )
+    .expect("seed");
+    state.db.set(conn);
+    Arc::new(state)
+}
+
+fn seeded_pdf_file_state(
+    id: &str,
+    path: &std::path::Path,
+    page_count: u32,
+    render_root: PathBuf,
+) -> Arc<AppState> {
+    let mut state = AppState::new();
+    state.render = RenderCache::new(render_root);
+    let conn = rusqlite::Connection::open_in_memory().expect("memory db");
+    db::init_schema(&conn).expect("schema");
+    db::upsert_book_with_format(
+        &conn,
+        id,
+        path.to_string_lossy().as_ref(),
+        "PDF stream",
         page_count,
         db::BOOK_FORMAT_PDF,
     )
@@ -2190,9 +2215,10 @@ async fn real_tls_progress_body_limit_transaction_failure_and_removed() {
     assert_eq!(runtime.status().await.phase, "disabled");
 }
 
-/// Real-TLS PDF rejection: the write plane returns 415 and leaves the row alone.
+/// Real-TLS PDF progress write: D4 accepts a page inside the known count and
+/// records it through the same CAS transaction as image books.
 #[tokio::test]
-async fn real_tls_progress_pdf_is_415() {
+async fn real_tls_progress_pdf_writes() {
     let ca = TestCa::new("progress-tls-pdf");
     ca.initialize();
     let id = "e".repeat(64);
@@ -2216,7 +2242,7 @@ async fn real_tls_progress_pdf_is_415() {
     let path = format!("/api/books/{id}/progress");
     let origin = format!("https://{host}");
 
-    let rejected = progress_request(
+    let accepted = progress_request(
         &ca,
         addr,
         &host,
@@ -2226,10 +2252,144 @@ async fn real_tls_progress_pdf_is_415() {
         Some(r#"{"page":1,"baseRev":0}"#),
     )
     .await;
-    assert!(rejected.starts_with("HTTP/1.1 415"), "{rejected:?}");
-    assert!(rejected.contains("pdf-source-unsupported"), "{rejected:?}");
-    assert_eq!(progress_row(&state, &id), (0, 0));
-    assert_eq!(progress_log(&state, &id), 0);
+    assert!(accepted.starts_with("HTTP/1.1 200"), "{accepted:?}");
+    assert!(accepted.contains("\"page\":1"), "{accepted:?}");
+    assert!(accepted.contains("\"rev\":1"), "{accepted:?}");
+    assert_eq!(progress_row(&state, &id), (1, 1));
+    assert_eq!(progress_log(&state, &id), 1);
+
+    // A page outside the PDF's known count is still rejected without writes.
+    let rejected = progress_request(
+        &ca,
+        addr,
+        &host,
+        &path,
+        Some(&cookie),
+        Some(&origin),
+        Some(r#"{"page":5,"baseRev":1}"#),
+    )
+    .await;
+    assert!(rejected.starts_with("HTTP/1.1 400"), "{rejected:?}");
+    assert!(rejected.contains("invalid-parameter"), "{rejected:?}");
+    assert_eq!(progress_row(&state, &id), (1, 1));
+    assert_eq!(progress_log(&state, &id), 1);
+
+    runtime.stop(StopReason::Stopped).await;
+}
+
+/// Real-TLS D4 byte stream: HEAD metadata, one 206 range, 416 bounds, session
+/// auth before file IO, and non-PDF rejection all share the production router.
+#[tokio::test]
+async fn real_tls_pdf_byte_stream_head_range_and_guards() {
+    let ca = TestCa::new("pdf-tls");
+    ca.initialize();
+    let id = "f".repeat(64);
+    let image_id = "9".repeat(64);
+    let total = (crate::pdf::MAX_PDF_CHUNK_BYTES as usize) + 1024;
+    let mut pdf_bytes = b"%PDF-1.7\n".to_vec();
+    pdf_bytes.resize(total, b'x');
+    let pdf_path = ca.wrapper.join("book.pdf");
+    std::fs::write(&pdf_path, &pdf_bytes).expect("pdf fixture");
+    let state = seeded_pdf_file_state(&id, &pdf_path, 5, ca.root.join("render"));
+    state
+        .db
+        .with(|conn| {
+            db::upsert_book(conn, &image_id, "C:/library/image.zip", "Image", 1)
+                .map_err(|error| error.to_string())
+        })
+        .expect("seed image book");
+    let runtime = WebAccessRuntime::for_test_with_data(
+        ca.root.clone(),
+        Arc::new(AppData::new(Arc::clone(&state))),
+    )
+    .with_pdf(Arc::new(AppPdf::new(Arc::clone(&state))))
+    .with_progress(Arc::new(AppProgress::new(Arc::clone(&state))));
+    runtime
+        .start_for_test(Ipv4Addr::LOCALHOST, Ipv4Addr::new(192, 168, 1, 10), 0)
+        .await
+        .unwrap();
+    let host = runtime.status().await.bind_address.expect("bound");
+    let addr: std::net::SocketAddr = host.parse().unwrap();
+    let service = runtime.service_for_test().await.expect("service");
+    let issued = service.issue_session_for_test("Pixel 8");
+    // `data_tls_request` renders the `moyus_session=` cookie name itself.
+    let cookie = issued.token.as_str().to_owned();
+    let path = format!("/api/books/{id}/pdf");
+
+    let head = data_tls_request(&ca, addr, &host, "HEAD", &path, Some(&cookie), &[]).await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head:?}");
+    assert_eq!(
+        response_header(&head, "content-length"),
+        Some(total.to_string().as_str())
+    );
+    assert_eq!(response_header(&head, "accept-ranges"), Some("bytes"));
+    assert_eq!(
+        response_header(&head, "content-type"),
+        Some("application/pdf")
+    );
+    assert_eq!(
+        response_header(&head, "cache-control"),
+        Some("private, no-store")
+    );
+    assert!(response_header(&head, "etag").is_some());
+    assert_request_id(&head);
+
+    let range = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "GET",
+        &path,
+        Some(&cookie),
+        &[("Range", "bytes=0-3")],
+    )
+    .await;
+    assert!(range.starts_with("HTTP/1.1 206"), "{range:?}");
+    assert_eq!(
+        response_header(&range, "content-range"),
+        Some(format!("bytes 0-3/{total}").as_str())
+    );
+    assert_eq!(response_header(&range, "content-length"), Some("4"));
+    let body = range.split("\r\n\r\n").nth(1).unwrap_or_default();
+    assert_eq!(body, "%PDF");
+
+    let outside = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "GET",
+        &path,
+        Some(&cookie),
+        &[("Range", &format!("bytes={}-", total + 10))],
+    )
+    .await;
+    assert!(outside.starts_with("HTTP/1.1 416"), "{outside:?}");
+    assert_eq!(
+        response_header(&outside, "content-range"),
+        Some(format!("bytes */{total}").as_str())
+    );
+
+    let no_range = data_tls_request(&ca, addr, &host, "GET", &path, Some(&cookie), &[]).await;
+    assert!(no_range.starts_with("HTTP/1.1 416"), "{no_range:?}");
+
+    let unauthenticated = data_tls_request(&ca, addr, &host, "GET", &path, None, &[]).await;
+    assert!(
+        unauthenticated.starts_with("HTTP/1.1 401"),
+        "{unauthenticated:?}"
+    );
+
+    let not_pdf = data_tls_request(
+        &ca,
+        addr,
+        &host,
+        "GET",
+        &format!("/api/books/{image_id}/pdf"),
+        Some(&cookie),
+        &[],
+    )
+    .await;
+    assert!(not_pdf.starts_with("HTTP/1.1 415"), "{not_pdf:?}");
+    assert!(not_pdf.contains("pdf-source-unsupported"), "{not_pdf:?}");
 
     runtime.stop(StopReason::Stopped).await;
 }
@@ -2260,12 +2420,23 @@ async fn real_tls_serves_browser_assets_and_revokes_current_session() {
         "/reader.css",
         "/reader-theme.css",
         "/reader-messages.js",
+        "/pdfjs/pdf.min.mjs",
+        "/pdfjs/pdf.worker.min.mjs",
+        "/pdf-assets/cmaps/UniGB-UCS2-H.bcmap",
+        "/pdf-assets/standard_fonts/LiberationSans-Regular.ttf",
     ] {
         let response = data_tls_request(&ca, addr, &host, "GET", path, None, &[]).await;
-        assert!(response.starts_with("HTTP/1.1 200"));
-        assert!(response
-            .to_ascii_lowercase()
-            .contains("content-security-policy:"));
+        assert!(response.starts_with("HTTP/1.1 200"), "{path}");
+        assert!(
+            response
+                .to_ascii_lowercase()
+                .contains("content-security-policy:"),
+            "{path}"
+        );
+        assert!(
+            response.contains("worker-src 'self'"),
+            "PDF assets must allow the same-origin worker: {path}"
+        );
     }
     let response = data_tls_request(
         &ca,

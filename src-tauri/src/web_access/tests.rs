@@ -1462,6 +1462,10 @@ impl WebProgressWrite for TestWrite {
 struct TestData;
 
 impl WebDataAccess for TestData {
+    fn tags(&self) -> Result<Vec<crate::TagInfo>, DataError> {
+        Ok(vec![])
+    }
+
     fn list_books(
         &self,
         _q: Option<&str>,

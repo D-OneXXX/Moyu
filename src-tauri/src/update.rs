@@ -91,6 +91,9 @@ pub struct AppInfo {
     /// Linux 安装形态：`appimage`（可自动替换）/ `system`（deb/rpm，
     /// 引导手动安装）/ `portable` / 空串（非 Linux，前端跳过相关提示）。
     pub linux_install: String,
+    /// Linux WebKitGTK 已退化到软件光栅化（DMABUF 被禁用）；皮肤层据此
+    /// 关闭毛玻璃。非 Linux 恒为 false。
+    pub software_webview_renderer: bool,
 }
 
 /// 单个安装包（补丁或全量）的元信息；不向前端暴露 URL。
@@ -1912,6 +1915,7 @@ pub fn get_app_info(app: tauri::AppHandle) -> AppInfo {
         signature_configured: any_update_signature_configured(&native),
         sha256_enforced: true,
         linux_install: crate::platform::install_channel().to_string(),
+        software_webview_renderer: crate::platform::software_webview_renderer(),
     }
 }
 

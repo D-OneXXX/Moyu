@@ -613,6 +613,21 @@
   z-index: 1;
 }
 
+/*
+ * Software WebKit raster (Linux DMABUF disabled) and reduced-transparency
+ * users keep the framed inset + backdrop art, but drop the costly blur and
+ * raise the tint floor so text contrast does not regress.
+ */
+html[data-skin-no-blur="1"] {
+  --mr-skin-surface-blur: 0px !important;
+}
+
+html[data-skin-no-blur="1"] .mr-skin-viewport::before {
+  opacity: max(var(--mr-skin-surface-opacity), 0.95);
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 html[data-safe-mode="true"] .mr-skin-viewport::before {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;

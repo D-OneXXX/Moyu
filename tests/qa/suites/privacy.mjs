@@ -261,6 +261,50 @@ export async function runPrivacySuite(ctx, report) {
     });
   }
 
+  const updatePanel = await page.eval(`(() => {
+    const button = document.getElementById('update-check');
+    if (!button) return null;
+    const card =
+      button.closest('[data-settings-section-card]') || button.closest('section');
+    const style = getComputedStyle(button);
+    const rect = button.getBoundingClientRect();
+    return {
+      visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0,
+      enabled: !button.disabled,
+      text: card ? card.innerText : '',
+      minHeight: Math.round(rect.height * 10) / 10,
+    };
+  })()`);
+  if (
+    !updatePanel ||
+    !updatePanel.visible ||
+    !updatePanel.enabled ||
+    !updatePanel.text.includes(`v${expectedVersion}`) ||
+    updatePanel.minHeight < 40
+  ) {
+    fail(report, {
+      id: "privacy:update-panel",
+      suite: "privacy",
+      layer: "e2e",
+      title: "软件更新面板未正确渲染或自动进入忙碌态",
+      severity: "P2",
+      details: JSON.stringify(updatePanel),
+      location: "src/components/settings/UpdatesPanel.tsx:245-290",
+      expected: "更新卡可见、检查按钮可用、当前版本与 package.json 一致、热区 ≥40px",
+      actual: JSON.stringify(updatePanel),
+      rootCause: "更新面板挂载/版本来源/自动检查状态异常",
+      fix: "检查 UpdatesPanel 重命名后 props、version 注入与原生更新 provider",
+    });
+  } else {
+    ok(report, {
+      id: "privacy:update-panel",
+      suite: "privacy",
+      layer: "e2e",
+      title: "软件更新面板可见、按钮可用且版本一致",
+      details: `v${expectedVersion}`,
+    });
+  }
+
   const diagnosticsSources = [
     ...fs
       .readdirSync(path.join(ctx.root, "src-tauri", "src"))

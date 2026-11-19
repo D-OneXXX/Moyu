@@ -256,6 +256,28 @@ impl Fixture {
             .expect("test request")
     }
 
+    fn get_unauthenticated(&self, path: &str) -> Request<Full<Bytes>> {
+        Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .header("host", HOST)
+            .body(Full::new(Bytes::new()))
+            .expect("test request")
+    }
+
+    fn post(&self, path: &str) -> Request<Full<Bytes>> {
+        Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header("host", HOST)
+            .header("origin", format!("https://{HOST}"))
+            .header("x-moyu-request", "1")
+            .header("content-type", "application/json")
+            .header("cookie", format!("moyus_session={}", self.token))
+            .body(Full::new(Bytes::from_static(b"{}")))
+            .expect("test request")
+    }
+
     /// Mount the D3 write plane on the same production router/authority.
     fn add_progress(&mut self) {
         let progress: Arc<dyn WebProgressWrite> =
@@ -656,4 +678,118 @@ async fn put_is_served_when_progress_is_mounted_and_reads_still_work() {
     );
     assert_eq!(after.reading_log_rows, before.reading_log_rows);
     assert_eq!(fixture.status("/api/books").await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn tags_requires_a_session_and_rejects_other_methods() {
+    let fixture = Fixture::new();
+
+    let response = fixture
+        .router
+        .handle(fixture.get_unauthenticated("/api/tags"), SOURCE_IP)
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response
+        .headers()
+        .contains_key("access-control-allow-origin"));
+
+    let response = fixture
+        .router
+        .handle(fixture.post("/api/tags"), SOURCE_IP)
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = fixture
+        .router
+        .handle(fixture.get("/api/tags?limit=1"), SOURCE_IP)
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn tags_returns_only_positive_non_removed_counts_in_desktop_order() {
+    let fixture = Fixture::new();
+    let second = id_for('b');
+    let removed = id_for('c');
+    insert_book(
+        fixture.state.as_ref(),
+        &second,
+        "C:/library/second.zip",
+        "Second",
+        1,
+        0,
+        0,
+        "local",
+        "{}",
+        "image",
+    );
+    insert_book(
+        fixture.state.as_ref(),
+        &removed,
+        "C:/library/removed.zip",
+        "Removed",
+        1,
+        0,
+        1,
+        "local",
+        "{}",
+        "image",
+    );
+    fixture
+        .state
+        .db
+        .with(|conn| {
+            let reading = db::create_tag(conn, "Reading", Some("#38A8F8"))
+                .map_err(|error| error.to_string())?;
+            let classic =
+                db::create_tag(conn, "classic", None).map_err(|error| error.to_string())?;
+            let empty = db::create_tag(conn, "Empty", None).map_err(|error| error.to_string())?;
+            db::set_book_tags(conn, &id_for('a'), &[reading.id, classic.id])
+                .map_err(|error| error.to_string())?;
+            db::set_book_tags(conn, &second, &[reading.id]).map_err(|error| error.to_string())?;
+            db::set_book_tags(conn, &removed, &[empty.id]).map_err(|error| error.to_string())?;
+            Ok::<_, String>(())
+        })
+        .expect("seed tags");
+
+    let (status, body) = fixture.status_and_body("/api/tags").await;
+    assert_eq!(status, StatusCode::OK);
+    let response: Value = serde_json::from_slice(&body).expect("tags json");
+    let tags = response
+        .get("tags")
+        .and_then(Value::as_array)
+        .expect("tags array");
+    assert_eq!(tags.len(), 2, "zero-count tags must be omitted");
+    assert_eq!(tags[0].get("name").and_then(Value::as_str), Some("classic"));
+    assert_eq!(tags[0].get("bookCount").and_then(Value::as_u64), Some(1));
+    assert_eq!(tags[1].get("name").and_then(Value::as_str), Some("Reading"));
+    assert_eq!(
+        tags[1].get("bookCount").and_then(Value::as_u64),
+        Some(2),
+        "removed books must not contribute to the count"
+    );
+    assert_eq!(
+        tags[1].get("color").and_then(Value::as_str),
+        Some("#38A8F8")
+    );
+    assert!(response.get("tags").is_some());
+
+    let response = fixture
+        .router
+        .handle(fixture.get("/api/tags"), SOURCE_IP)
+        .await;
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-store")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(VARY)
+            .and_then(|value| value.to_str().ok()),
+        Some("Cookie")
+    );
 }

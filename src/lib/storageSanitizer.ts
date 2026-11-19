@@ -391,6 +391,9 @@ export const DEPRECATED_KEY_PREFIXES: readonly string[] = [
   "mr-data",
   "mr-pretranslate",
   "mr-update-prefs",
+  // v0.20.0 retired runtime brand-icon replacement; the fixed Moyu wordmark
+  // remains. Old profiles may still carry preset/custom payloads.
+  "mr-brand-icon",
 ];
 
 // ---------------------------------------------------------------------------

@@ -381,6 +381,16 @@ mod tests {
     }
 
     impl WebDataAccess for FakeData {
+        fn tags(&self) -> Result<Vec<crate::TagInfo>, DataError> {
+            self.record();
+            Ok(vec![crate::TagInfo {
+                id: 1,
+                name: "Reading".to_owned(),
+                color: "#38A8F8".to_owned(),
+                book_count: 2,
+            }])
+        }
+
         fn list_books(
             &self,
             _q: Option<&str>,
@@ -519,6 +529,9 @@ mod tests {
     struct ErrorData(DataError);
 
     impl WebDataAccess for ErrorData {
+        fn tags(&self) -> Result<Vec<crate::TagInfo>, DataError> {
+            Err(self.0)
+        }
         fn list_books(
             &self,
             _q: Option<&str>,
@@ -680,11 +693,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_eight_data_routes_require_a_session_and_serve_with_one() {
+    async fn all_data_routes_require_a_session_and_serve_with_one() {
         let data = Arc::new(FakeData::default());
         let fixture = Fixture::with_data(data.clone());
         let id = "a".repeat(64);
         let paths = [
+            "/api/tags".to_owned(),
             "/api/books".to_owned(),
             format!("/api/books/{id}"),
             format!("/api/books/{id}/thumb"),
@@ -709,7 +723,7 @@ mod tests {
             assert_eq!(response.status, StatusCode::OK, "{path}");
             assert_eq!(response.header("x-request-id").map(str::len), Some(16));
         }
-        assert_eq!(data.calls(), 8);
+        assert_eq!(data.calls(), 9);
     }
 
     #[tokio::test]

@@ -32,6 +32,9 @@ impl AppData {
 }
 
 impl WebDataAccess for AppData {
+    fn tags(&self) -> Result<Vec<crate::TagInfo>, DataError> {
+        read_service::tags_for_web(self.state.as_ref())
+    }
     fn list_books(
         &self,
         q: Option<&str>,

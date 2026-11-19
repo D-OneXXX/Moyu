@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useState,
@@ -18,7 +19,9 @@ import {
   unregisterSkin,
 } from "./registry";
 import { forgetSkinBundle, getSkinBundle } from "./api";
+import { skinNoBlurEnabled } from "./noBlur";
 import type { SkinDefinition } from "./types";
+import { useUpdater } from "@/features/update/UpdateProvider";
 
 const SKIN_STORAGE_KEY = "mr-skin";
 
@@ -97,6 +100,8 @@ function clearSkinTokens(skin: SkinDefinition): void {
 export function SkinProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const immersive = location.pathname.startsWith("/reader/");
+  const { appInfo } = useUpdater();
+  const [reducedTransparency, setReducedTransparency] = useState(false);
   const [skin, setSkinState] = useState<SkinDefinition>(() => {
     const stored = readStoredSkinId();
     return getSkin(stored) ?? DEFAULT_SKIN;
@@ -121,6 +126,31 @@ export function SkinProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-transparency: reduce)");
+    const sync = () => setReducedTransparency(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+
+  const noBlur = skinNoBlurEnabled(
+    appInfo?.softwareWebviewRenderer === true,
+    reducedTransparency,
+  );
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    if (noBlur) {
+      root.dataset.skinNoBlur = "1";
+    } else {
+      delete root.dataset.skinNoBlur;
+    }
+    return () => {
+      delete root.dataset.skinNoBlur;
+    };
+  }, [noBlur]);
 
   useLayoutEffect(() => {
     applySkin(skin, immersive);

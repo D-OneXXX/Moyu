@@ -22,6 +22,7 @@ export interface SecurityAudit {
     browserWindowOpen: boolean;
     cspConfigured: boolean;
     initScripts: boolean;
+    browserToolbarScripts: boolean;
   };
   network: {
     status: SecurityStatus;

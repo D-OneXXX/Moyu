@@ -92,7 +92,10 @@ pub struct IsolationAudit {
     pub remote_capabilities: u32,
     pub browser_window_open: bool,
     pub csp_configured: bool,
+    /// App-wide/global initialization scripts. The controlled browser window's
+    /// scoped toolbar is reported separately and is not a global injection.
     pub init_scripts: bool,
+    pub browser_toolbar_scripts: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -421,10 +424,12 @@ fn audit_isolation(app: &AppHandle) -> IsolationAudit {
         }
     };
 
-    // This codebase injects no initialization scripts: browser.rs never calls
-    // `.initialization_script` and tauri.conf.json has no global injection.
-    // If one is added later, this flag must be updated.
+    // There is no app-wide/global initialization script and tauri.conf.json
+    // declares none. The controlled remote browser window intentionally injects
+    // its read-only toolbar in browser.rs; report that scoped script separately
+    // instead of pretending it does not exist.
     let init_scripts = false;
+    let browser_toolbar_scripts = true;
     let csp_configured = app.config().app.security.csp.is_some();
     let browser_window_open = app.get_webview_window(BROWSER_LABEL).is_some();
 
@@ -444,6 +449,7 @@ fn audit_isolation(app: &AppHandle) -> IsolationAudit {
         browser_window_open,
         csp_configured,
         init_scripts,
+        browser_toolbar_scripts,
     }
 }
 

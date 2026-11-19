@@ -136,8 +136,8 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Cargo audit (blocking with documented exceptions)
-        run: cargo audit --file src-tauri/Cargo.lock --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 --ignore RUSTSEC-2026-0429
+      - name: Cargo audit (blocking)
+        run: cargo audit --file src-tauri/Cargo.lock
 
       - name: Build QA debug binary
         run: cargo build --manifest-path src-tauri/Cargo.toml
